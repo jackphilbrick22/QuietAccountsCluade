@@ -1,0 +1,158 @@
+/**
+ * The seams between the Quiet Accounts core and the outside world.
+ * Every integration implements one of these; the core never imports a vendor SDK directly.
+ */
+import type { BusinessProfile, Customer, Invoice, Job, Quote, ServiceRequest, Touch } from "@qa/engine";
+
+/* ------------------------------------------------------------------ */
+/* Outbound email                                                      */
+/* ------------------------------------------------------------------ */
+
+export interface OutboundMessage {
+  businessId: string;
+  touchId: string;
+  customerId: string;
+  to: string;
+  toName: string;
+  fromName: string;
+  /** The sending mailbox. For "direct" providers this is the From address. */
+  fromEmail?: string;
+  replyTo?: string;
+  subject: string;
+  /** Plain text. We never send HTML: plain notes read like a person and land in the primary inbox. */
+  text: string;
+  /** Thread follow-ups onto the first note. */
+  inReplyTo?: string;
+  references?: string[];
+  /** RFC 8058 one-click unsubscribe target. */
+  unsubscribeUrl?: string;
+}
+
+export interface SendResult {
+  /** Provider message id (used to match replies to notes). */
+  providerId: string;
+  /** RFC 5322 Message-ID when the provider exposes it. */
+  messageId?: string;
+}
+
+/**
+ * "direct": we decide when each note goes and hand it to the provider (SMTP, Gmail, Postmark...).
+ * "sequencer": a cold-email platform (Instantly) owns mailbox rotation, warmup and send timing;
+ *              we push each person with their pre-written notes and it reports back via webhooks.
+ */
+export type OutboundProvider = DirectProvider | SequencerProvider;
+
+export interface DirectProvider {
+  kind: "direct";
+  name: string;
+  send(msg: OutboundMessage): Promise<SendResult>;
+}
+
+/** One person's full sequence, rendered by the Writer. */
+export interface SequencedLead {
+  customerId: string;
+  opportunityId: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  companyName?: string;
+  /** Notes in order; step 1 first. dueAt is our planned local time (a sequencer may shift it). */
+  notes: { touchId: string; step: number; subject: string; body: string; dueAt: string }[];
+}
+
+export interface SequencerProvider {
+  kind: "sequencer";
+  name: string;
+  /** Make sure the business has a campaign ready to receive leads; returns its id. */
+  ensureCampaign(business: BusinessProfile, opts: { maxSteps: number }): Promise<{ campaignId: string }>;
+  /** Add or update leads (idempotent by email). */
+  upsertLeads(business: BusinessProfile, campaignId: string, leads: SequencedLead[]): Promise<{ added: number; skipped: { email: string; why: string }[] }>;
+  /** Stop everything for one address (reply, stop, bounce) and blocklist it where supported. */
+  stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained"): Promise<void>;
+  pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Inbound events (normalized from any provider's webhooks)            */
+/* ------------------------------------------------------------------ */
+
+export type InboundEvent =
+  | { type: "reply"; businessId?: string; campaignId?: string; from: string; subject?: string; text: string; receivedAt: string; inReplyTo?: string; providerLeadId?: string }
+  | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string }
+  | { type: "bounce"; businessId?: string; campaignId?: string; email: string; at: string; detail?: string }
+  | { type: "unsubscribe"; businessId?: string; campaignId?: string; email: string; at: string }
+  | { type: "complaint"; businessId?: string; campaignId?: string; email: string; at: string };
+
+/* ------------------------------------------------------------------ */
+/* Owner notifications (texts to the business owner)                   */
+/* ------------------------------------------------------------------ */
+
+export interface OwnerNotifier {
+  name: string;
+  /** Send a text (or email fallback) to the owner. Returns a provider id. */
+  notify(to: { phone?: string; email?: string }, text: string): Promise<{ id: string; channel: "sms" | "email" | "log" }>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Field-service software connections (Jobber, Housecall Pro, ...)     */
+/* ------------------------------------------------------------------ */
+
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+  /** ISO time the access token expires. */
+  expiresAt?: string;
+  accountId?: string;
+  accountName?: string;
+  scope?: string;
+}
+
+/** Records pulled straight from the software's API, already in engine shape. */
+export interface PulledRecords {
+  customers: Customer[];
+  quotes: Quote[];
+  jobs: Job[];
+  invoices: Invoice[];
+  requests: ServiceRequest[];
+  /** Cursor/high-water mark for the next incremental pull (e.g. max updatedAt). */
+  nextSince?: string;
+  /** Anything the sync wants a human to know (rate limited, partial page, schema drift). */
+  warnings: string[];
+}
+
+export interface FsmConnector {
+  source: "jobber" | "housecall_pro" | "servicetitan";
+  /** URL to send the owner to for consent. `state` is our signed business token. */
+  authorizeUrl(state: string, redirectUri: string): string;
+  exchangeCode(code: string, redirectUri: string): Promise<OAuthTokens>;
+  refresh(tokens: OAuthTokens): Promise<OAuthTokens>;
+  /** Full backfill when `since` is undefined, else incremental. Must page and respect rate limits. */
+  pull(tokens: OAuthTokens, opts: { since?: string; maxPages?: number; onProgress?: (msg: string) => void }): Promise<PulledRecords>;
+  /** Verify a webhook request's signature. */
+  verifyWebhook(rawBody: string, headers: Record<string, string | undefined>): boolean;
+  /** Parse a webhook payload into "something about this record changed". */
+  parseWebhook(rawBody: string): { topic: string; accountId: string; itemId: string; occurredAt: string } | undefined;
+  /** Leave a note on the customer/quote so the office sees what happened (reply text, booked, stop). */
+  writeNote?(tokens: OAuthTokens, target: { kind: "client" | "quote"; sourceId: string }, text: string): Promise<void>;
+}
+
+/* ------------------------------------------------------------------ */
+/* Helpers shared by providers                                         */
+/* ------------------------------------------------------------------ */
+
+export type Fetch = typeof fetch;
+
+export class ProviderError extends Error {
+  constructor(
+    message: string,
+    readonly provider: string,
+    readonly status?: number,
+    readonly retryable = false,
+  ) {
+    super(message);
+  }
+}
+
+export function touchToLeadNote(t: Touch) {
+  return { touchId: t.id, step: t.step, subject: t.subject ?? "", body: t.body, dueAt: t.dueAt };
+}

@@ -1,0 +1,26 @@
+{
+  "name": "quiet-accounts",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Quiet Accounts \u2014 the breakage-recovery system for home-service businesses. Nothing left on the table.",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @qa/web --filter @qa/server dev",
+    "dev:web": "pnpm --filter @qa/web dev",
+    "dev:server": "pnpm --filter @qa/server dev",
+    "build": "pnpm --filter @qa/web build",
+    "build:single": "pnpm --filter @qa/web build:single",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

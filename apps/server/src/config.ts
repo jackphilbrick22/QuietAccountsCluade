@@ -1,0 +1,67 @@
+import { z } from "zod";
+
+/**
+ * Every setting comes from the environment. Anything optional that's missing just turns
+ * the matching integration off (log-only providers stand in), so a laptop dev run needs nothing.
+ */
+const schema = z.object({
+  PORT: z.coerce.number().default(8787),
+  PUBLIC_URL: z.string().default("http://localhost:8787"),
+  DATABASE_PATH: z.string().default("./.data/quiet-accounts.db"),
+  /** Bearer token for the operator API and console. */
+  OPERATOR_TOKEN: z.string().min(12).default("dev-operator-token-change-me"),
+  /** Signs owner links, OAuth state and encrypts stored tokens. */
+  APP_SECRET: z.string().min(16).default("dev-secret-change-me-please-0000"),
+  /** Shared secret embedded in inbound webhook URLs (Instantly, inbound email, Twilio). */
+  WEBHOOK_SECRET: z.string().min(12).default("dev-webhook-secret"),
+
+  /** "log" | "smtp" | "instantly" */
+  EMAIL_PROVIDER: z.enum(["log", "smtp", "instantly"]).default("log"),
+  SMTP_URL: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  INSTANTLY_API_KEY: z.string().optional(),
+  INSTANTLY_SENDING_ACCOUNTS: z.string().optional(),
+  INSTANTLY_DAILY_LIMIT: z.coerce.number().optional(),
+
+  /** "log" | "twilio" — texts to business owners (hand-offs, nudges, weekly report). */
+  SMS_PROVIDER: z.enum(["log", "twilio"]).default("log"),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM: z.string().optional(),
+
+  JOBBER_CLIENT_ID: z.string().optional(),
+  JOBBER_CLIENT_SECRET: z.string().optional(),
+
+  /** Claude powers the second-opinion reply reader, note personalization and column mapping. Optional. */
+  ANTHROPIC_API_KEY: z.string().optional(),
+  CLAUDE_MODEL: z.string().default("claude-opus-5-5"),
+  /** Let the AI writer personalize first notes (every note still passes the quality gate). */
+  AI_WRITER: z.enum(["off", "on"]).default("off"),
+
+  /** Worker cadence. */
+  WORKER_INTERVAL_MS: z.coerce.number().default(60_000),
+  WORKER_ENABLED: z.enum(["true", "false"]).default("true"),
+  /** Texts about money (the close, pre-charge, free month) wait for an operator by default. */
+  AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
+  /** Owner-waiting threshold before the first nudge. */
+  SLA_FIRST_NUDGE_HOURS: z.coerce.number().default(4),
+});
+
+export type Config = z.infer<typeof schema>;
+
+export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
+  const parsed = schema.safeParse(env);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    throw new Error(`Bad configuration: ${issues}`);
+  }
+  const c = parsed.data;
+  if (c.EMAIL_PROVIDER === "smtp" && !c.SMTP_URL) throw new Error("EMAIL_PROVIDER=smtp needs SMTP_URL");
+  if (c.EMAIL_PROVIDER === "instantly" && !c.INSTANTLY_API_KEY) throw new Error("EMAIL_PROVIDER=instantly needs INSTANTLY_API_KEY");
+  if (c.SMS_PROVIDER === "twilio" && !(c.TWILIO_ACCOUNT_SID && c.TWILIO_AUTH_TOKEN && c.TWILIO_FROM)) throw new Error("SMS_PROVIDER=twilio needs TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM");
+  return c;
+}
+
+export function isProductionLike(c: Config): boolean {
+  return !c.OPERATOR_TOKEN.startsWith("dev-") && !c.APP_SECRET.startsWith("dev-");
+}

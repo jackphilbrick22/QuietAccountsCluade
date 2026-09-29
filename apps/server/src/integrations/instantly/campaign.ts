@@ -1,0 +1,258 @@
+/**
+ * What a Quiet Accounts campaign looks like inside Instantly, as pure builders (no I/O).
+ *
+ * Instantly only sends; Quiet Accounts writes each note. So the campaign's step templates hold nothing but
+ * variables: step N sends subject {{sN}} and body {{bN}}, and every lead brings its own sN/bN in custom_variables.
+ * Instantly can't skip an empty step, so there is one campaign per (business, number of notes).
+ *
+ * VERIFIED
+ *  - POST /api/v2/campaigns body: name, campaign_schedule{ schedules[{ name, timing{from,to "HH:MM"},
+ *    days{"0".."6": bool}, timezone(enum) }] }, sequences[{ steps[{ type:"email", delay, delay_unit, variants[{subject, body}] }] }]
+ *    (only sequences[0] is used), email_list, daily_limit, daily_max_leads, stop_on_reply, stop_on_auto_reply,
+ *    text_only, first_email_text_only, link_tracking, open_tracking, stop_for_company, prioritize_new_leads,
+ *    insert_unsubscribe_header, match_lead_esp. `additionalProperties: false`, `name` and `campaign_schedule` required.
+ *    https://developer.instantly.ai/api-reference/campaign/create-campaign (spec: https://api.instantly.ai/openapi/api_v2.json)
+ *  - `delay` is the wait before sending the NEXT email; `delay_unit` defaults to "days". So step 1's delay is the
+ *    gap to step 2. Days are calendar days (weekends count), and a step that falls outside the schedule waits for
+ *    the next active window. https://help.instantly.ai/en/articles/7916860-time-to-wait-between-steps
+ *    (The Instantly MCP tool's description, "delay before sending this step", contradicts this. We follow the spec
+ *    and the help article.)
+ *  - Threading: a follow-up step with an EMPTY subject carries over the previous step's subject and goes in the same
+ *    thread. A different subject starts a new thread. Follow-ups also go from the same sending account by default.
+ *    https://help.instantly.ai/en/articles/7914807-keep-email-sequences-in-the-same-thread
+ *  - Bodies are HTML: "Use `<br/>` tags for delivered email line breaks" (variant.body in the spec), and a bare
+ *    "\n" is not delivered as a line break. Instantly's own CLI (npm @instantlyai/cli 0.2.7, INSTANTLY.md "Email Body
+ *    Formatting — CRITICAL" and src/core/format.ts `bodyToHtml`) converts plain-text body custom variables to
+ *    `<div>line</div>`, with `<div><br /></div>` for a blank line. We do the same.
+ *  - days: "0" = Sunday, the JS getDay() order. Instantly's CLI default "Mon-Fri" schedule is
+ *    {0:false,1..5:true,6:false}.
+ *  - daily_max_leads = "The daily maximum new leads to contact". If it is at or above the campaign's daily limit,
+ *    only step 1 goes out and follow-ups starve.
+ *    https://help.instantly.ai/en/articles/6759494-how-to-prioritize-new-leads-over-follow-ups
+ *  - stop_for_company stops the whole domain when one lead replies. It must stay off: our people are homeowners on
+ *    gmail.com / yahoo.com.
+ *
+ * ASSUMED
+ *  - The API accepts "" as a follow-up subject, as the UI does. (The spec requires the field and sets no minLength.)
+ *  - Custom variables are substituted into the body HTML as-is. So they carry the HTML (escaped text in divs), and
+ *    text_only makes Instantly send the plain-text rendering of it.
+ *  - Instantly doesn't re-expand "{{...}}" found inside a variable's value.
+ *  - daily_limit caps the whole campaign (the spec says "The daily limit for sending emails"; the MCP tool says
+ *    per account). We pass the configured number through unchanged.
+ *  - A daily_max_leads of 0 might read as "unlimited" (the help article says blank means unlimited), so it is never sent as 0.
+ */
+import type { BusinessProfile } from "@qa/engine";
+import type { SequencedLead } from "../../contracts.ts";
+import { ProviderError } from "../../contracts.ts";
+import { toInstantlyTimezone, type InstantlyTimezone } from "./timezones.ts";
+
+/** Most notes one person gets in one sequence. */
+export const MAX_STEPS = 3;
+/** Days Instantly waits after note 1 before note 2. */
+export const STEP2_DELAY_DAYS = 4;
+/** Days Instantly waits after note 2 before note 3. */
+export const STEP3_DELAY_DAYS = 5;
+/** Instantly's documented max leads per POST /leads/add. */
+export const MAX_LEADS_PER_REQUEST = 1000;
+
+/** Custom-variable keys on each lead. Step templates reference sN/bN. The qa_* keys are for us (webhooks, support). */
+export const VAR = {
+  subject: (step: number) => `s${step}`,
+  body: (step: number) => `b${step}`,
+  touch: (step: number) => `qa_touch_${step}`,
+  businessId: "qa_business_id",
+  customerId: "qa_customer_id",
+  opportunityId: "qa_opportunity_id",
+} as const;
+
+export interface CampaignSettings {
+  sendingAccounts?: string[];
+  dailyLimit?: number;
+  /** Follow-ups reply in note 1's thread (empty template subject). Default true. */
+  threadFollowUps?: boolean;
+  /** Instantly `insert_unsubscribe_header` (List-Unsubscribe). Default true. */
+  insertUnsubscribeHeader?: boolean;
+}
+
+export interface InstantlySchedule {
+  schedules: { name: string; timing: { from: string; to: string }; days: Record<string, boolean>; timezone: InstantlyTimezone }[];
+}
+
+export interface InstantlyStep {
+  type: "email";
+  delay: number;
+  delay_unit: "days";
+  variants: { subject: string; body: string }[];
+}
+
+export interface CreateCampaignBody {
+  name: string;
+  campaign_schedule: InstantlySchedule;
+  sequences: { steps: InstantlyStep[] }[];
+  email_list?: string[];
+  daily_limit?: number;
+  daily_max_leads?: number;
+  stop_on_reply: boolean;
+  stop_on_auto_reply: boolean;
+  stop_for_company: boolean;
+  text_only: boolean;
+  first_email_text_only: boolean;
+  link_tracking: boolean;
+  open_tracking: boolean;
+  insert_unsubscribe_header: boolean;
+  prioritize_new_leads: boolean;
+  match_lead_esp: boolean;
+}
+
+/** The lead object for POST /api/v2/leads/add. */
+export interface InstantlyLeadInput {
+  email: string;
+  first_name?: string;
+  last_name?: string;
+  company_name?: string;
+  custom_variables: Record<string, string>;
+}
+
+export function campaignName(business: Pick<BusinessProfile, "name">, steps: number): string {
+  return `QA · ${business.name.replace(/\s+/g, " ").trim()} · ${steps}-step`;
+}
+
+export function checkSteps(maxSteps: number): number {
+  if (!Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > MAX_STEPS) {
+    throw new ProviderError(`A sequence must have 1-${MAX_STEPS} notes (got ${maxSteps})`, "instantly");
+  }
+  return maxSteps;
+}
+
+const hhmm = (hour: number) => `${String(hour).padStart(2, "0")}:00`;
+
+export function buildSchedule(business: Pick<BusinessProfile, "sendDays" | "sendWindow" | "timezone">, ref?: Date): InstantlySchedule {
+  const days = new Set(business.sendDays.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6));
+  if (days.size === 0) throw new ProviderError("Business has no send days", "instantly");
+  const [start, end] = business.sendWindow;
+  if (!(Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end <= 24 && start < end)) {
+    throw new ProviderError(`Bad send window [${start}, ${end}]`, "instantly");
+  }
+  const dayMap: Record<string, boolean> = {};
+  for (let d = 0; d <= 6; d++) dayMap[String(d)] = days.has(d);
+  return {
+    schedules: [
+      {
+        name: "Quiet Accounts",
+        timing: { from: hhmm(start), to: end === 24 ? "23:59" : hhmm(end) },
+        days: dayMap,
+        timezone: toInstantlyTimezone(business.timezone, ref),
+      },
+    ],
+  };
+}
+
+export function buildSteps(steps: number, threadFollowUps = true): InstantlyStep[] {
+  checkSteps(steps);
+  const gapAfter = [STEP2_DELAY_DAYS, STEP3_DELAY_DAYS];
+  return Array.from({ length: steps }, (_, i) => {
+    const n = i + 1;
+    const last = n === steps;
+    return {
+      type: "email",
+      // The last step has no next email, so its delay is unused.
+      delay: last ? 0 : (gapAfter[i] ?? STEP3_DELAY_DAYS),
+      delay_unit: "days",
+      variants: [{ subject: n === 1 || !threadFollowUps ? `{{${VAR.subject(n)}}}` : "", body: `{{${VAR.body(n)}}}` }],
+    };
+  });
+}
+
+/** New people per send day so the business's weekly cap holds, leaving room under daily_limit for follow-ups. */
+export function dailyNewLeads(business: Pick<BusinessProfile, "weeklyNewContacts" | "sendDays">, dailyLimit?: number): number | undefined {
+  const days = new Set(business.sendDays.filter((d) => d >= 0 && d <= 6)).size;
+  if (!(business.weeklyNewContacts > 0) || days === 0) return undefined;
+  let n = Math.max(1, Math.ceil(business.weeklyNewContacts / days));
+  if (dailyLimit && dailyLimit > 0 && n >= dailyLimit) n = Math.max(1, Math.floor(dailyLimit / 2));
+  return n;
+}
+
+export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
+  const body: CreateCampaignBody = {
+    name: campaignName(business, steps),
+    campaign_schedule: buildSchedule(business, ref),
+    sequences: [{ steps: buildSteps(steps, settings.threadFollowUps ?? true) }],
+    stop_on_reply: true,
+    // An out-of-office shouldn't end the sequence. The reply still reaches us and the Inbox agent reads it.
+    stop_on_auto_reply: false,
+    stop_for_company: false,
+    text_only: true,
+    first_email_text_only: true,
+    link_tracking: false,
+    open_tracking: false,
+    insert_unsubscribe_header: settings.insertUnsubscribeHeader ?? true,
+    // Follow-ups first (Instantly's default): a started conversation beats a new one.
+    prioritize_new_leads: false,
+    match_lead_esp: false,
+  };
+  const accounts = (settings.sendingAccounts ?? []).map((a) => a.trim()).filter(Boolean);
+  if (accounts.length) body.email_list = accounts;
+  if (settings.dailyLimit && settings.dailyLimit > 0) body.daily_limit = settings.dailyLimit;
+  const perDay = dailyNewLeads(business, settings.dailyLimit);
+  if (perDay !== undefined) body.daily_max_leads = perDay;
+  return body;
+}
+
+const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/** Plain-text note → the HTML Instantly delivers line-for-line (one div per line, `<div><br /></div>` for blank lines). */
+export function toInstantlyHtml(text: string): string {
+  return text
+    .replace(/\r\n?/g, "\n")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      return t === "" ? "<div><br /></div>" : `<div>${escapeHtml(t)}</div>`;
+    })
+    .join("");
+}
+
+/** Subjects are one line of plain text. */
+export function cleanSubject(subject: string): string {
+  return subject.replace(/\s+/g, " ").trim();
+}
+
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+const EMAIL_RE = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
+export const looksLikeEmail = (email: string) => EMAIL_RE.test(email);
+
+/** Why this lead can't go into a campaign with `steps` steps, or undefined when it can. */
+export function leadProblem(lead: SequencedLead, steps: number): string | undefined {
+  const notes = [...lead.notes].sort((a, b) => a.step - b.step);
+  if (notes.length === 0) return "no notes to send";
+  if (notes.length !== steps) return `has ${notes.length} note(s) but the campaign has ${steps} step(s)`;
+  for (let i = 0; i < notes.length; i++) {
+    const note = notes[i]!;
+    if (note.step !== i + 1) return `notes must be steps 1..${notes.length} (found step ${note.step})`;
+    if (!note.body.trim()) return `note ${note.step} has an empty body`;
+  }
+  if (!cleanSubject(notes[0]!.subject)) return "note 1 has no subject";
+  return undefined;
+}
+
+export function toInstantlyLead(business: Pick<BusinessProfile, "id">, lead: SequencedLead): InstantlyLeadInput {
+  const vars: Record<string, string> = {
+    [VAR.businessId]: business.id,
+    [VAR.customerId]: lead.customerId,
+    [VAR.opportunityId]: lead.opportunityId,
+  };
+  for (const note of lead.notes) {
+    vars[VAR.subject(note.step)] = cleanSubject(note.subject);
+    vars[VAR.body(note.step)] = toInstantlyHtml(note.body);
+    vars[VAR.touch(note.step)] = note.touchId;
+  }
+  const out: InstantlyLeadInput = { email: normalizeEmail(lead.email), custom_variables: vars };
+  if (lead.firstName?.trim()) out.first_name = lead.firstName.trim();
+  if (lead.lastName?.trim()) out.last_name = lead.lastName.trim();
+  if (lead.companyName?.trim()) out.company_name = lead.companyName.trim();
+  return out;
+}

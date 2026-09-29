@@ -1,0 +1,557 @@
+import type {
+  BreakageType,
+  Channel,
+  Customer,
+  Dataset,
+  ISODate,
+  Invoice,
+  Job,
+  Opportunity,
+  Quote,
+  ServiceRequest,
+  SuppressionReason,
+  TradeId,
+} from "../model.ts";
+import { classifyService, climateOf, findService, jobPhrase, playbook, seasonFit, type ServiceDef } from "../trades/index.ts";
+import {
+  addMonths,
+  clamp,
+  daysBetween,
+  fmtMoney,
+  humanAge,
+  isLikelyValidEmail,
+  makeId,
+  maxDate,
+  monthName,
+  monthOf,
+  round2,
+  spokenWhen,
+} from "../util.ts";
+import { ADJUST, AGE_DECAY, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
+import { quoteById } from "../lookup.ts";
+
+/** What we already know about outreach, from our own records. */
+export interface ContactState {
+  /** customerId -> last date we contacted them (any channel). */
+  lastContacted?: Record<string, ISODate>;
+  /** lowercase email -> why it can never be emailed again. */
+  suppressedEmails?: Record<string, "unsubscribed" | "bounced" | "complained">;
+  /** customerIds the owner told us to leave alone. */
+  doNotContact?: string[];
+  /** Days to wait before contacting someone again after a finished sequence. */
+  cooldownDays?: number;
+  /** Include unpaid invoices (collections is opt-in). */
+  includeInvoices?: boolean;
+  /** Include commercial accounts in automated outreach. */
+  includeCommercial?: boolean;
+}
+
+export interface ScanResult {
+  opportunities: Opportunity[];
+  /** One primary opportunity per reachable customer — what we'd actually work. */
+  primary: Opportunity[];
+  stats: ScanStats;
+}
+
+export interface ScanStats {
+  customers: number;
+  quotes: number;
+  jobs: number;
+  invoices: number;
+  requests: number;
+  /** Date range covered by the data. */
+  from?: ISODate;
+  to?: ISODate;
+  suppressedBy: Partial<Record<SuppressionReason, number>>;
+}
+
+interface Ctx {
+  ds: Dataset;
+  asOf: ISODate;
+  trades: TradeId[];
+  climate: ReturnType<typeof climateOf>;
+  month: number;
+  byCustomer: Map<string, Customer>;
+  quotesBy: Map<string, Quote[]>;
+  jobsBy: Map<string, Job[]>;
+  invoicesBy: Map<string, Invoice[]>;
+  requestsBy: Map<string, ServiceRequest[]>;
+  contact: ContactState;
+  avgJob: number;
+}
+
+function bucket<T extends { customerId: string }>(arr: T[]): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const x of arr) (m.get(x.customerId) ?? m.set(x.customerId, []).get(x.customerId)!).push(x);
+  return m;
+}
+
+function jobDate(j: Job): ISODate | undefined {
+  return j.completedOn ?? j.scheduledOn ?? j.createdOn;
+}
+
+function quoteDate(q: Quote): ISODate | undefined {
+  return q.sentOn ?? q.createdOn ?? q.changesRequestedOn ?? q.approvedOn;
+}
+
+const OPEN_JOB = new Set(["unscheduled", "scheduled", "active", "late", "requires_invoicing", "on_hold"]);
+const DONE_JOB = new Set(["completed", "archived", "requires_invoicing"]);
+
+/** Average paid job, used when a record has no dollar value. */
+function averageJob(ds: Dataset): number {
+  if (ds.business.avgJobValue) return ds.business.avgJobValue;
+  const vals = ds.jobs.filter((j) => j.total > 0 && j.status !== "cancelled").map((j) => j.total);
+  const inv = ds.invoices.filter((i) => i.total > 0 && i.status !== "void").map((i) => i.total);
+  const pool = vals.length >= 5 ? vals : inv.length >= 5 ? inv : ds.quotes.filter((q) => q.total > 0).map((q) => q.total);
+  if (pool.length >= 3) {
+    const sorted = [...pool].sort((a, b) => a - b);
+    return sorted[Math.floor(sorted.length / 2)]!; // median resists one $80k job
+  }
+  return playbook(ds.business.trade).ticket.typical;
+}
+
+export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
+  const trades: TradeId[] = [ds.business.trade, ...ds.business.otherTrades];
+  const ctx: Ctx = {
+    ds,
+    asOf: ds.asOf,
+    trades,
+    climate: climateOf(ds.business.state),
+    month: monthOf(ds.asOf),
+    byCustomer: new Map(ds.customers.map((c) => [c.id, c])),
+    quotesBy: bucket(ds.quotes),
+    jobsBy: bucket(ds.jobs),
+    invoicesBy: bucket(ds.invoices),
+    requestsBy: bucket(ds.requests),
+    contact,
+    avgJob: averageJob(ds),
+  };
+
+  const opps: Opportunity[] = [];
+  for (const q of ds.quotes) {
+    const o = fromQuote(ctx, q);
+    if (o) opps.push(o);
+    opps.push(...declinedOptions(ctx, q));
+  }
+  for (const r of ds.requests) {
+    const o = fromRequest(ctx, r);
+    if (o) opps.push(o);
+  }
+  for (const j of ds.jobs) {
+    const o = unscheduledJob(ctx, j);
+    if (o) opps.push(o);
+  }
+  for (const c of ds.customers) opps.push(...fromHistory(ctx, c));
+  if (contact.includeInvoices !== false) for (const inv of ds.invoices) {
+    const o = fromInvoice(ctx, inv);
+    if (o) opps.push(o);
+  }
+
+  // Deduplicate: one opportunity per customer+service+type, keep the freshest.
+  const dedup = new Map<string, Opportunity>();
+  for (const o of opps) {
+    const k = `${o.customerId}|${o.type}|${o.serviceId}`;
+    const prev = dedup.get(k);
+    if (!prev || o.ageDays < prev.ageDays) dedup.set(k, o);
+  }
+  // A dead quote superseded by a newer quote to the same person for the same service is not its own opportunity.
+  const all = [...dedup.values()];
+  for (const o of all) applySuppressions(ctx, o);
+  for (const o of all) score(ctx, o);
+
+  all.sort((a, b) => b.score - a.score);
+  const primary = pickPrimary(all);
+
+  const suppressedBy: ScanStats["suppressedBy"] = {};
+  for (const o of all) if (o.suppressed) suppressedBy[o.suppressed] = (suppressedBy[o.suppressed] ?? 0) + 1;
+  const dates = [...ds.quotes.map(quoteDate), ...ds.jobs.map(jobDate), ...ds.invoices.map((i) => i.issuedOn)].filter((d): d is string => !!d && d <= ds.asOf).sort();
+  return {
+    opportunities: all,
+    primary,
+    stats: {
+      customers: ds.customers.length,
+      quotes: ds.quotes.length,
+      jobs: ds.jobs.length,
+      invoices: ds.invoices.length,
+      requests: ds.requests.length,
+      from: dates[0],
+      to: dates[dates.length - 1],
+      suppressedBy,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
+/* Detectors                                                           */
+/* ------------------------------------------------------------------ */
+
+function base(
+  ctx: Ctx,
+  type: BreakageType,
+  customerId: string,
+  source: Opportunity["source"],
+  value: number,
+  anchor: ISODate | undefined,
+  title: string,
+  lineItems: Quote["lineItems"],
+  reason: string,
+  evidence: string[],
+  serviceOverride?: ServiceDef,
+): Opportunity | undefined {
+  const w = WINDOW[type];
+  const age = anchor ? daysBetween(anchor, ctx.asOf) : NaN;
+  if (Number.isNaN(age)) {
+    // no date: keep only types that don't depend on age, and mark them old-ish
+  } else if (age < w.minDays || age > w.maxDays) return undefined;
+  const cls = serviceOverride ? { service: serviceOverride, trade: findService(serviceOverride.id)?.trade ?? ctx.ds.business.trade } : classifyService(title, lineItems, ctx.trades);
+  return {
+    id: makeId("op", type, source.kind, source.id, customerId),
+    type,
+    customerId,
+    source,
+    value: round2(value > 0 ? value : ctx.avgJob),
+    expectedValue: 0,
+    recoverProbability: 0,
+    score: 0,
+    ageDays: Number.isNaN(age) ? 400 : age,
+    anchorDate: anchor,
+    reason,
+    evidence: value > 0 ? evidence : [...evidence, `No dollar amount on the record — valued at your typical job (${fmtMoney(ctx.avgJob)}).`],
+    jobPhrase: serviceOverride ? serviceOverride.phrase : jobPhrase(title, cls.trade, lineItems),
+    serviceId: cls.service.id,
+    seasonFit: seasonFit(cls.service, ctx.climate, ctx.month),
+    channels: [],
+  };
+}
+
+function softwareName(ctx: Ctx): string {
+  const s = ctx.ds.business.software;
+  return (
+    {
+      jobber: "Jobber",
+      housecall_pro: "Housecall Pro",
+      servicetitan: "ServiceTitan",
+      quickbooks: "QuickBooks",
+      arborgold: "Arborgold",
+      singleops: "SingleOps",
+      yardbook: "Yardbook",
+      lmn: "LMN",
+      aspire: "Aspire",
+      service_autopilot: "Service Autopilot",
+      workiz: "Workiz",
+      zenmaid: "ZenMaid",
+      gorilladesk: "GorillaDesk",
+      spreadsheet: "your spreadsheet",
+      unknown: "your software",
+    } as const
+  )[s];
+}
+
+function fromQuote(ctx: Ctx, q: Quote): Opportunity | undefined {
+  const d = quoteDate(q);
+  const when = d ? spokenWhen(d, ctx.asOf) : "a while back";
+  const money = q.total > 0 ? fmtMoney(q.total) : "";
+  const ev = [`Quote${q.number ? ` #${q.number}` : ""}: “${q.title || "untitled"}”${money ? ` — ${money}` : ""}`, d ? `Sent ${when} (${humanAge(daysBetween(d, ctx.asOf))} ago)` : "No sent date on the record"];
+  if (q.viewedOn) ev.push(`They opened it online ${spokenWhen(q.viewedOn, ctx.asOf)}`);
+  if (q.rawStatus) ev.push(`Status in ${softwareName(ctx)}: ${q.rawStatus}`);
+  switch (q.status) {
+    case "awaiting_response":
+    case "unknown": {
+      if (q.status === "unknown" && !q.sentOn && !q.createdOn) return undefined;
+      return base(ctx, "unanswered_quote", q.customerId, { kind: "quote", id: q.id }, q.total, d, q.title, q.lineItems,
+        `Got a price ${when}. No yes, no no — it's still sitting open.`, ev);
+    }
+    case "archived":
+    case "expired":
+      return base(ctx, "archived_quote", q.customerId, { kind: "quote", id: q.id }, q.total, q.archivedOn ?? d, q.title, q.lineItems,
+        `Quote from ${when} was filed away without a yes. Nobody ever followed up.`, ev);
+    case "changes_requested": {
+      const asked = q.changesRequestedOn ?? d;
+      // re-quoted since? then it's handled
+      const newer = (ctx.quotesBy.get(q.customerId) ?? []).some((x) => x.id !== q.id && (quoteDate(x) ?? "") > (asked ?? ""));
+      if (newer) return undefined;
+      return base(ctx, "changes_requested", q.customerId, { kind: "quote", id: q.id }, q.total, asked, q.title, q.lineItems,
+        `Asked for changes ${asked ? spokenWhen(asked, ctx.asOf) : "on this quote"} and never got a revised quote.`, ev);
+    }
+    case "approved": {
+      if (q.jobIds.length) return undefined;
+      const said = q.approvedOn ?? d;
+      return base(ctx, "approved_unscheduled", q.customerId, { kind: "quote", id: q.id }, q.total, said, q.title, q.lineItems,
+        `Said yes ${said ? spokenWhen(said, ctx.asOf) : ""} — and never got on the schedule.`.replace(/\s+—/, " —"), [...ev, "Approved, but there's no job for it"]);
+    }
+    case "declined":
+      return base(ctx, "declined_quote", q.customerId, { kind: "quote", id: q.id }, q.total, q.archivedOn ?? d, q.title, q.lineItems,
+        `Said no ${when}. Plans change — worth one respectful check-in.`, ev);
+    default:
+      return undefined;
+  }
+}
+
+function declinedOptions(ctx: Ctx, q: Quote): Opportunity[] {
+  if (q.status !== "converted" && q.status !== "approved") return [];
+  const passed = q.lineItems.filter((l) => l.optional && l.selected === false && l.total > 0);
+  if (!passed.length) return [];
+  const anchor = q.convertedOn ?? q.approvedOn ?? quoteDate(q);
+  const value = passed.reduce((s, l) => s + l.total, 0);
+  const names = passed.map((l) => l.name).join(", ");
+  const o = base(ctx, "declined_option", q.customerId, { kind: "quote", id: q.id }, value, anchor, names, passed,
+    `Took the main job ${anchor ? spokenWhen(anchor, ctx.asOf) : ""} but passed on ${names}.`,
+    [`Quote${q.number ? ` #${q.number}` : ""}: “${q.title}”`, ...passed.map((l) => `Option not picked: ${l.name} — ${fmtMoney(l.total)}`)]);
+  return o ? [o] : [];
+}
+
+function fromRequest(ctx: Ctx, r: ServiceRequest): Opportunity | undefined {
+  // Jobber auto-archives requests that never got a quote — the person still asked for a price.
+  if (r.quoteId || r.status === "converted") return undefined;
+  const d = r.assessmentOn ?? r.createdOn;
+  // a quote for this customer created after the request covers it
+  const quoted = (ctx.quotesBy.get(r.customerId) ?? []).some((q) => (quoteDate(q) ?? "") >= (r.createdOn ?? "9999"));
+  if (quoted) return undefined;
+  return base(ctx, "unquoted_request", r.customerId, { kind: "request", id: r.id }, 0, d, r.title, [],
+    `Asked for a quote ${d ? spokenWhen(d, ctx.asOf) : ""} and never got one.`,
+    [`Request: “${r.title || "no details"}”`, r.createdOn ? `Came in ${spokenWhen(r.createdOn, ctx.asOf)}` : "", r.source ? `Source: ${r.source}` : ""].filter(Boolean));
+}
+
+function unscheduledJob(ctx: Ctx, j: Job): Opportunity | undefined {
+  if (j.status !== "unscheduled") return undefined;
+  if (j.quoteId) {
+    const q = quoteById(ctx.ds, j.quoteId);
+    if (q && q.status === "approved" && !q.jobIds.length) return undefined; // counted on the quote
+  }
+  const d = j.createdOn;
+  return base(ctx, "approved_unscheduled", j.customerId, { kind: "job", id: j.id }, j.total, d, j.title, j.lineItems,
+    `Job created ${d ? spokenWhen(d, ctx.asOf) : ""} but it's still sitting unscheduled.`,
+    [`Job${j.number ? ` #${j.number}` : ""}: “${j.title}”${j.total ? ` — ${fmtMoney(j.total)}` : ""}`, "Status: unscheduled"]);
+}
+
+function fromInvoice(ctx: Ctx, inv: Invoice): Opportunity | undefined {
+  if (!(inv.status === "awaiting_payment" || inv.status === "past_due")) return undefined;
+  if (inv.balance <= 0) return undefined;
+  const due = inv.dueOn ?? (inv.issuedOn ? addDaysISO(inv.issuedOn, 30) : undefined);
+  if (!due || due >= ctx.asOf) return undefined;
+  return base(ctx, "unpaid_invoice", inv.customerId, { kind: "invoice", id: inv.id }, inv.balance, due, inv.subject, [],
+    `Invoice${inv.number ? ` #${inv.number}` : ""} for ${fmtMoney(inv.balance)} has been open since ${spokenWhen(due, ctx.asOf).replace(/^back in /, "")}.`,
+    [`Invoice${inv.number ? ` #${inv.number}` : ""}: ${fmtMoney(inv.total)} total, ${fmtMoney(inv.balance)} still owed`, `Due ${due}`]);
+}
+
+function addDaysISO(d: ISODate, n: number): ISODate {
+  const t = new Date(Date.parse(d + "T00:00:00Z") + n * 86400000);
+  return t.toISOString().slice(0, 10);
+}
+
+/** Past-customer plays: one-and-done, lapsed regulars, service due, missed upsells. */
+function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
+  const jobs = (ctx.jobsBy.get(c.id) ?? [])
+    .filter((j) => DONE_JOB.has(j.status) || (j.status === "unknown" && jobDate(j)))
+    .filter((j) => jobDate(j))
+    .sort((a, b) => (jobDate(a)! < jobDate(b)! ? -1 : 1));
+  // fall back to paid invoices as proof of work when there's no jobs file
+  const paid = (ctx.invoicesBy.get(c.id) ?? []).filter((i) => i.status === "paid" && (i.paidOn ?? i.issuedOn));
+  const work: { date: ISODate; title: string; total: number; id: string; kind: "job" | "invoice"; recurring?: boolean; lineItems: Job["lineItems"] }[] = jobs.length
+    ? jobs.map((j) => ({ date: jobDate(j)!, title: j.title, total: j.total, id: j.id, kind: "job" as const, recurring: j.recurring, lineItems: j.lineItems }))
+    : paid
+        .map((i) => ({ date: (i.issuedOn ?? i.paidOn)!, title: i.subject, total: i.total, id: i.id, kind: "invoice" as const, lineItems: [] }))
+        .sort((a, b) => (a.date < b.date ? -1 : 1));
+  if (!work.length) return [];
+
+  const out: Opportunity[] = [];
+  const last = work[work.length - 1]!;
+  const sinceLast = daysBetween(last.date, ctx.asOf);
+  const evWork = (w: (typeof work)[number]) => `${w.kind === "job" ? "Job" : "Invoice"}: “${w.title || "work"}” — ${w.total ? fmtMoney(w.total) : "no amount"}, ${spokenWhen(w.date, ctx.asOf)}`;
+
+  // Service due: the last time each clock-based service was done.
+  const seenServices = new Map<string, (typeof work)[number]>();
+  for (const w of work) {
+    const { service } = classifyService(w.title, w.lineItems, ctx.trades);
+    seenServices.set(service.id, w);
+  }
+  let dueFound = false;
+  for (const [sid, w] of seenServices) {
+    const svc = findService(sid)?.service;
+    if (!svc?.reserviceMonths || svc.kind === "recurring") continue;
+    const dueOn = addMonths(w.date, svc.reserviceMonths);
+    const until = daysBetween(ctx.asOf, dueOn); // negative = overdue
+    if (until > 45) continue;
+    const overdueDays = -until;
+    if (overdueDays > svc.reserviceMonths * 30 * 2) continue;
+    const o = base(ctx, "service_due", c.id, { kind: w.kind, id: w.id }, w.total, dueOn < ctx.asOf ? dueOn : ctx.asOf, w.title, w.lineItems,
+      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : "due next month"} — every ${svc.reserviceMonths >= 24 ? `${Math.round(svc.reserviceMonths / 12)} years` : `${svc.reserviceMonths} months`} is the rule of thumb.`,
+      [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
+    if (o) {
+      out.push(o);
+      dueFound = true;
+    }
+  }
+
+  // Missed upsells: the natural next job, never quoted or done.
+  for (const w of work) {
+    const { service } = classifyService(w.title, w.lineItems, ctx.trades);
+    for (const f of service.followOns ?? []) {
+      const age = daysBetween(w.date, ctx.asOf);
+      if (age < f.afterDays[0] || age > f.afterDays[1] + 180) continue;
+      const next = findService(f.serviceId)?.service;
+      if (!next) continue;
+      const already =
+        work.some((x) => x.date >= w.date && next.match.test(x.title)) ||
+        (ctx.quotesBy.get(c.id) ?? []).some((q) => next.match.test(q.title) || q.lineItems.some((l) => next.match.test(l.name)));
+      // the original job itself may have included the follow-on ("removal + stump")
+      if (already || next.match.test(w.title) || w.lineItems.some((l) => next.match.test(l.name))) continue;
+      const typical = Math.max(playbook(findService(f.serviceId)!.trade).ticket.low, Math.round(ctx.avgJob * 0.35));
+      const o = base(ctx, "missed_upsell", c.id, { kind: w.kind, id: w.id }, typical, w.date, next.label, [],
+        `Did ${service.phrase.replace(/^the /, "the ")} ${spokenWhen(w.date, ctx.asOf)}. ${capitalize(next.phrase)} was never offered — ${f.why}.`,
+        [evWork(w), `No quote or job for ${next.label.toLowerCase()} on file`], next);
+      if (o) out.push(o);
+    }
+  }
+
+  // Lapsed regulars: a rhythm that stopped.
+  if (work.length >= 2) {
+    const gaps: number[] = [];
+    for (let i = 1; i < work.length; i++) gaps.push(daysBetween(work[i - 1]!.date, work[i]!.date));
+    const sorted = [...gaps].filter((g) => g > 0).sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
+    const recurring = work.some((w) => w.recurring) || (median > 0 && median <= 120 && work.length >= 3);
+    const expected = recurring ? Math.max(median, 7) : median;
+    if (expected > 0 && sinceLast > Math.max(expected * 1.75, expected + 45) && !dueFound) {
+      const perYear = Math.min(52, Math.max(1, Math.round(365 / Math.max(expected, 7))));
+      const avg = work.reduce((s, w) => s + w.total, 0) / work.length;
+      const annual = recurring ? avg * perYear : avg;
+      const o = base(ctx, "lapsed_regular", c.id, { kind: last.kind, id: last.id }, annual, last.date, last.title, last.lineItems,
+        `Used you ${work.length} times${recurring ? ` (about every ${humanAge(expected)})` : ""}. Last visit ${spokenWhen(last.date, ctx.asOf)} — then nothing.`,
+        [evWork(last), `${work.length} visits on file`, recurring ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`]);
+      if (o) out.push(o);
+    }
+  }
+
+  // One and done.
+  if (work.length === 1 && !dueFound) {
+    const pb = playbook(ctx.ds.business.trade);
+    const o = base(ctx, "one_and_done", c.id, { kind: last.kind, id: last.id }, Math.max(last.total * 0.6, pb.ticket.low), last.date, last.title, last.lineItems,
+      `Hired you once, ${spokenWhen(last.date, ctx.asOf)}, and never came back.`, [evWork(last)]);
+    if (o) out.push(o);
+  }
+  return out;
+}
+
+function capitalize(s: string): string {
+  return s ? s[0]!.toUpperCase() + s.slice(1) : s;
+}
+
+/* ------------------------------------------------------------------ */
+/* Suppression, scoring, primary pick                                  */
+/* ------------------------------------------------------------------ */
+
+function channelsFor(ctx: Ctx, c: Customer): Channel[] {
+  const ch: Channel[] = [];
+  const email = c.emails.find((e) => isLikelyValidEmail(e) && !ctx.contact.suppressedEmails?.[e]);
+  if (email) ch.push("email");
+  if (c.address?.street && c.address.zip) ch.push("postcard");
+  if (c.phones.length && c.smsConsent) ch.push("sms");
+  if (c.phones.length) ch.push("call_task");
+  return ch;
+}
+
+function applySuppressions(ctx: Ctx, o: Opportunity): void {
+  const c = ctx.byCustomer.get(o.customerId);
+  if (!c) {
+    o.suppressed = "no_contact_info";
+    return;
+  }
+  o.channels = channelsFor(ctx, c);
+  const email0 = c.emails[0];
+  const sup = email0 ? ctx.contact.suppressedEmails?.[email0] : undefined;
+  if (c.doNotContact || ctx.contact.doNotContact?.includes(c.id)) o.suppressed = "do_not_contact";
+  else if (sup === "complained") o.suppressed = "complained";
+  else if (sup === "unsubscribed") o.suppressed = "unsubscribed";
+  else if (!o.channels.some((x) => x === "email" || x === "postcard" || x === "sms")) o.suppressed = sup === "bounced" ? "bounced" : "no_contact_info";
+  else if (c.isCommercial && !ctx.contact.includeCommercial && o.type !== "unpaid_invoice") o.suppressed = "commercial";
+  if (o.suppressed) return;
+
+  const anchor = o.anchorDate ?? "0000-00-00";
+  const jobs = ctx.jobsBy.get(c.id) ?? [];
+  const quotes = ctx.quotesBy.get(c.id) ?? [];
+
+  // Open work right now: don't step on a live job or a quote the salesperson is still working.
+  const openJob = jobs.some((j) => OPEN_JOB.has(j.status) && j.status !== "requires_invoicing" && !(o.source.kind === "job" && o.source.id === j.id));
+  const freshQuote = quotes.some((q) => {
+    const d = quoteDate(q);
+    return d && (q.status === "awaiting_response" || q.status === "draft" || q.status === "changes_requested") && daysBetween(d, ctx.asOf) < ctx.ds.business.minQuoteAgeDays;
+  });
+  if (o.type !== "unpaid_invoice" && (openJob || freshQuote)) {
+    o.suppressed = "active_work";
+    return;
+  }
+
+  // They came back on their own after this opportunity's anchor date.
+  if (!["unpaid_invoice", "service_due", "missed_upsell", "lapsed_regular", "one_and_done", "declined_option"].includes(o.type)) {
+    const cameBack = jobs.some((j) => {
+      const d = jobDate(j);
+      return d && d > anchor && j.status !== "cancelled" && !(o.source.kind === "job" && o.source.id === j.id);
+    }) || quotes.some((q) => q.id !== o.source.id && (q.status === "converted" || q.status === "approved") && (quoteDate(q) ?? "") > anchor);
+    if (cameBack) {
+      o.suppressed = "already_customer_again";
+      return;
+    }
+  }
+
+  const ageOk = o.ageDays <= ctx.ds.business.maxQuoteAgeMonths * 30.44 || !["unanswered_quote", "archived_quote", "declined_quote"].includes(o.type);
+  if (!ageOk) {
+    o.suppressed = "too_old";
+    return;
+  }
+  if (["unanswered_quote", "archived_quote", "declined_quote", "changes_requested"].includes(o.type) && o.value > 0 && o.value < ctx.ds.business.minQuoteValue) {
+    o.suppressed = "below_minimum";
+    return;
+  }
+  if (o.type === "declined_option") {
+    const svc = findService(o.serviceId)?.service;
+    const boughtLater = svc && jobs.some((j) => (jobDate(j) ?? "") > anchor && (svc.match.test(j.title) || j.lineItems.some((l) => svc.match.test(l.name))));
+    if (boughtLater) {
+      o.suppressed = "already_customer_again";
+      return;
+    }
+  }
+  const last = ctx.contact.lastContacted?.[c.id];
+  if (last && daysBetween(last, ctx.asOf) < (ctx.contact.cooldownDays ?? 120)) o.suppressed = "recently_contacted";
+}
+
+function ageMultiplier(age: number): number {
+  for (const [max, m] of AGE_DECAY) if (age <= max) return m;
+  return 0.35;
+}
+
+function score(ctx: Ctx, o: Opportunity): void {
+  const svc = findService(o.serviceId)?.service;
+  let p = RECOVERY_PRIOR[o.type];
+  if (["unanswered_quote", "archived_quote", "declined_quote", "changes_requested", "unquoted_request", "declined_option"].includes(o.type)) p *= ageMultiplier(o.ageDays);
+  if (svc?.kind === "hazard") p *= ADJUST.hazard;
+  else if (svc?.kind === "repair") p *= ADJUST.repair;
+  if (o.type !== "unpaid_invoice") p *= o.seasonFit === "now" ? ADJUST.seasonNow : o.seasonFit === "soon" ? ADJUST.seasonSoon : ADJUST.seasonOff;
+  const paidBefore = (ctx.jobsBy.get(o.customerId) ?? []).some((j) => DONE_JOB.has(j.status)) || (ctx.invoicesBy.get(o.customerId) ?? []).some((i) => i.status === "paid");
+  if (paidBefore && ["unanswered_quote", "archived_quote", "changes_requested", "unquoted_request"].includes(o.type)) p *= ADJUST.pastCustomer;
+  if (o.source.kind === "quote" && quoteById(ctx.ds, o.source.id)?.viewedOn) p *= ADJUST.viewed;
+  // Big quotes are the shopped ones (3+ bids, financing, price shock) and are the hardest to win back.
+  // "Big" is relative to this shop's own typical job, not a national number.
+  if (o.value > Math.max(ctx.avgJob * 4, 2500)) p *= ADJUST.bigTicket;
+  if (!o.channels.includes("email") && o.channels.includes("postcard")) p *= ADJUST.postcardOnly;
+  p = clamp(p, 0.003, 0.65);
+  o.recoverProbability = round2(p * 1000) / 1000;
+  o.expectedValue = round2(o.value * p);
+
+  // Priority: expected dollars, then warmth, then freshness and season.
+  const ev = Math.log10(Math.max(10, o.expectedValue)) / Math.log10(5000); // ~1.0 at $5k expected
+  const warmth = 1 - (TYPE_RANK[o.type] - 1) / 12;
+  const fresh = 1 - Math.min(1, o.ageDays / 1095);
+  const season = o.seasonFit === "now" ? 1 : o.seasonFit === "soon" ? 0.6 : 0.2;
+  o.score = Math.round(clamp(ev * 45 + warmth * 25 + fresh * 15 + season * 15, 0, 100));
+}
+
+function pickPrimary(all: Opportunity[]): Opportunity[] {
+  const best = new Map<string, Opportunity>();
+  for (const o of all) {
+    if (o.suppressed || o.type === "unpaid_invoice") continue;
+    const prev = best.get(o.customerId);
+    if (!prev || TYPE_RANK[o.type] < TYPE_RANK[prev.type] || (TYPE_RANK[o.type] === TYPE_RANK[prev.type] && o.score > prev.score)) best.set(o.customerId, o);
+  }
+  return [...best.values()].sort((a, b) => b.score - a.score);
+}
