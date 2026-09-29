@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
+  adoptTrade,
   answerNewRequests,
   approveAll,
   counted,
@@ -134,6 +135,7 @@ export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promis
       out.push({ file: p.f.name, kind: record.kind, source: record.source, accepted: record.accepted, rows: record.rows, warnings: record.warnings, assisted: p.assisted });
     }
     state.dataset.asOf = at.slice(0, 10);
+    adoptTrade(state, at);
     ledgerPass(state, at);
   });
   d.accounts.repo.markScanned(bid, d.clock().toISOString());

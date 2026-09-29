@@ -81,3 +81,42 @@ describe("always-on: every new request answered within minutes", () => {
     expect(weeklyReport(st, ASOF)).toMatch(/Always on: answered 1 new request within minutes/);
   });
 });
+
+describe("one-tap setup: the trade is read from their own titles", () => {
+  it("names every sample trade correctly, without inventing a second trade", async () => {
+    const { generateSample } = await import("../src/sample/generate.ts");
+    const { detectTrade } = await import("../src/trades/index.ts");
+    for (const trade of ["tree", "fence", "painting", "cleaning", "septic", "lawn", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool"] as const) {
+      const s = generateSample({ trade, asOf: ASOF });
+      const d = detectTrade([...s.dataset.quotes.map((q) => q.title), ...s.dataset.jobs.map((j) => j.title)]);
+      expect(d.trade).toBe(trade);
+      expect(d.others).toEqual([]);
+    }
+  });
+  it("fills in an unset trade on import and says so; never overrides one the operator set", async () => {
+    const { adoptTrade } = await import("../src/runtime/agents.ts");
+    const st = emptyState(dataset({ business: business({ trade: "general" }), quotes: Array.from({ length: 8 }, (_, i) => quote(`q${i}`, "c1", { title: ["Oak removal", "Stump grinding x3", "Prune maples"][i % 3]! })) }), `${ASOF}T10:00:00`);
+    expect(adoptTrade(st, `${ASOF}T10:00:00`)).toBe(true);
+    expect(st.dataset.business.trade).toBe("tree");
+    expect(st.events.at(-1)!.title).toMatch(/tree service business/i);
+    st.dataset.business.trade = "fence";
+    expect(adoptTrade(st, `${ASOF}T10:00:00`)).toBe(false);
+  });
+});
+
+describe("the money-on-the-table reveal uses only their own numbers", () => {
+  it("states what goes quiet every month and, only when they gave one, the lead spend wasted", async () => {
+    const { summarize } = await import("../src/breakage/forecast.ts");
+    const quotes = Array.from({ length: 24 }, (_, i) => quote(`q${i}`, `c${i}`, { sentOn: ago(20 + i * 12), total: 1000, status: i % 2 ? "awaiting_response" : "converted" }));
+    const customers = quotes.map((q) => customer(q.customerId));
+    const ds = dataset({ business: business(), customers, quotes });
+    const s = summarize(ds, scan(ds));
+    expect(s.onTheTable.perMonth.shareOfQuoted).toBeCloseTo(0.5, 1);
+    expect(s.onTheTable.line).toMatch(/cents of every quoted dollar/);
+    expect(s.onTheTable.wastedLeadSpend).toBeUndefined();
+    const withCost = dataset({ business: business({ leadCost: 100 }), customers, quotes });
+    const s2 = summarize(withCost, scan(withCost));
+    expect(s2.onTheTable.wastedLeadSpend).toBeGreaterThan(0);
+    expect(s2.onTheTable.line).toMatch(/leads you paid for/);
+  });
+});

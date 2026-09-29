@@ -123,3 +123,54 @@ export function isPeak(trade: TradeId, climate: Climate, month: number): boolean
 export function businessClimate(state: string | undefined): Climate {
   return climateOf(state);
 }
+
+/** Words that name a trade's own work. When a title has one, it outvotes broad service patterns. */
+const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
+  tree: /\b(trees?|oaks?|maples?|pines?|spruces?|birch(es)?|ash|hemlocks?|willows?|stumps?|prun\w*|limbs?|arbor\w*|crown thin\w*|cabl(e|ing) & brac\w*)\b/i,
+  fence: /\b(fenc\w*|gates?|pickets?|chain ?link|privacy)\b/i,
+  // "driveway" alone is as likely a wash as a pour; replacing or pouring one is concrete work
+  concrete: /\b(concrete|slab|mudjack\w*|pour\w*|stamped|flatwork|sealcoat\w*|asphalt|(replace|new|install)\w* driveway|driveway (replace\w*|install\w*|extension))\b/i,
+  pressure_washing: /\b(pressure|power ?wash\w*|soft ?wash\w*|house wash|surface clean\w*|driveway (&|and) walks?|(driveway|patio|deck|siding) clean\w*)\b/i,
+  gutter: /\b(gutters?|downspouts?)\b/i,
+  pool: /\b(pool|spa|liner)\b/i,
+  roofing: /\b(roof\w*|shingles?|flashing|skylights?|re-?roof)\b/i,
+  chimney: /\b(chimney|flue|fireplace|dryer vent|tuckpoint\w*)\b/i,
+  window_cleaning: /\b(windows?|skylights?|screens?)\b/i,
+  painting: /\b(paint\w*|stain\w*|primer|cabinets?)\b/i,
+  irrigation: /\b(sprinklers?|irrigation|drip line|blow-?out|backflow|winteriz\w*|start-?up)\b/i,
+  lawn: /\b(mow\w*|lawn|aerat\w*|overseed\w*|fertiliz\w*|weed\w*|grub)\b/i,
+  landscape: /\b(landscap\w*|mulch|pavers?|retaining|sod|shrubs?|plantings?|beds?)\b/i,
+  septic: /\b(septic|pump-?out|drain ?field|leach\w*|effluent|baffles?|risers?|aerobic)\b/i,
+  hvac: /\b(hvac|furnace|a\/?c|air condition\w*|heat pump|mini-?split|duct\w*|thermostat|tune-?up|igniter)\b/i,
+  pest: /\b(pest|termites?|rodents?|mosquito\w*|ticks?|wasps?|hornets?|bed ?bugs?|ants?)\b/i,
+  junk_removal: /\b(junk|haul\w*|clean-?out|debris|dumpster|demolition|removal - |pickup)\b/i,
+  cleaning: /\b(maid|move-?out|deep clean|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
+};
+
+/**
+ * Which trade(s) this business is, read from its own quote and job titles — so setup never asks.
+ * Each title votes: for the trades whose own words it uses, else for the trades whose services it fits;
+ * a title that fits one trade counts fully, one that fits three counts a third to each.
+ */
+export function detectTrade(titles: string[]): { trade: TradeId; others: TradeId[]; confidence: number; counts: Partial<Record<TradeId, number>> } {
+  const counts: Partial<Record<TradeId, number>> = {};
+  const only: Partial<Record<TradeId, number>> = {};
+  const all = (Object.keys(PLAYBOOKS) as TradeId[]).filter((t) => t !== "general");
+  let classified = 0;
+  for (const title of titles.slice(0, 3000)) {
+    if (!title) continue;
+    let fits = all.filter((t) => TRADE_WORDS[t]?.test(title));
+    if (!fits.length)
+      fits = all.filter((t) => playbook(t).services.some((sv) => { const i = earliestSpecific(title, sv.match); return i >= 0 && i < 1000; }));
+    if (!fits.length) continue;
+    classified++;
+    for (const t of fits) counts[t] = (counts[t] ?? 0) + 1 / fits.length;
+    if (fits.length === 1) only[fits[0]!] = (only[fits[0]!] ?? 0) + 1;
+  }
+  const ranked = (Object.entries(counts) as [TradeId, number][]).sort((a, b) => b[1] - a[1]);
+  if (!ranked.length || classified < 5) return { trade: "general", others: [], confidence: 0, counts };
+  const [top, n] = ranked[0]!;
+  // a second trade needs real work of its own (5+ titles only it could mean), not shared words
+  const others = ranked.slice(1).filter(([t, c]) => c / classified >= 0.15 && (only[t] ?? 0) >= 5).map(([t]) => t).slice(0, 3);
+  return { trade: top, others, confidence: Math.round((n / classified) * 100) / 100, counts };
+}

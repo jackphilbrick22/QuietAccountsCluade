@@ -44,7 +44,8 @@ const CreateBusiness = z.object({
     .regex(/^[a-z0-9-]{3,48}$/)
     .optional(),
   name: z.string().min(2),
-  trade: z.enum(TRADES),
+  /** Optional: left out, the first import reads it from their own quote and job titles. */
+  trade: z.enum(TRADES).default("general"),
   ownerName: z.string().min(1),
   ownerPhone: z.string().optional(),
   ownerEmail: z.string().email().optional(),

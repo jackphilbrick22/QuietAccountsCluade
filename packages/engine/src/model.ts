@@ -259,6 +259,8 @@ export interface BusinessProfile {
    * three weeks before it, so replies arrive when there's room on the schedule.
    */
   bookedOutUntil?: ISODate;
+  /** What a lead costs them, in their own words (ads, Angi, their time to quote). Used only to show waste. */
+  leadCost?: Money;
   /** Answer hot replies right away on the owner's behalf (default on). */
   autoAck?: boolean;
   /**

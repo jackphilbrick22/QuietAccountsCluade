@@ -74,6 +74,44 @@ export function silentAudit(ds: Dataset): SilentAudit {
   return { sent: r(a.sent), won: r(a.won), declined: r(a.declined), changesIgnored: r(a.changesIgnored), silent: r(a.silent), byAge: ages.map(r).map((x, i) => ({ label: ages[i]!.label, ...x })), silentShareOfLost, headline };
 }
 
+/**
+ * What an owner is losing, stated in their own numbers — the reveal the whole offer rests on.
+ * Every figure comes from their records (or a lead cost they gave us); none is an industry average.
+ */
+export interface OnTheTable {
+  /** Quotes nobody ever said yes or no to, as of today. */
+  silentNow: { count: number; value: Money };
+  /** New quote value that goes quiet each month, and what share of everything they quote that is. */
+  perMonth: { quotes: number; value: Money; shareOfQuoted: number };
+  /** Requests in the last 12 months that never got a price. */
+  requestsNeverPriced: number;
+  /** Past customers we can reach who haven't been back. */
+  pastCustomersNotBack: number;
+  /** Lead spend thrown away on quotes that went quiet in the last 12 months (only when they told us a lead cost). */
+  wastedLeadSpend?: Money;
+  /** The one sentence to lead with. */
+  line: string;
+}
+
+export function onTheTable(ds: Dataset, result: ScanResult, s: DrawerSummary): OnTheTable {
+  const from = addDays(ds.asOf, -365);
+  const cut = addDays(ds.asOf, -14);
+  const lastYear = ds.quotes.filter((q) => { const d = q.sentOn ?? q.createdOn; return !!d && d >= from && d <= cut && q.status !== "draft" && q.total > 0; });
+  const quiet = lastYear.filter((q) => !["approved", "converted", "declined"].includes(q.status));
+  const quotedValue = sum(lastYear, (q) => q.total);
+  const quietValue = sum(quiet, (q) => q.total);
+  const perMonth = { quotes: round2(quiet.length / 12), value: round2(quietValue / 12), shareOfQuoted: quotedValue ? round2(quietValue / quotedValue) : 0 };
+  const near100 = (v: number) => fmtMoney(v >= 1000 ? Math.round(v / 100) * 100 : v);
+  const requestsNeverPriced = ds.requests.filter((r) => (r.createdOn ?? "") >= from && !r.quoteId && r.status !== "converted" && !ds.quotes.some((q) => q.customerId === r.customerId && (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999"))).length;
+  const pastCustomersNotBack = new Set(result.opportunities.filter((o) => !o.suppressed && (o.type === "one_and_done" || o.type === "lapsed_regular")).map((o) => o.customerId)).size;
+  const cost = ds.business.leadCost;
+  const wastedLeadSpend = cost && cost > 0 ? round2(quiet.length * cost) : undefined;
+  const line = perMonth.value > 0
+    ? `Every month about ${near100(perMonth.value)} of what you quote goes quiet — nobody says yes or no. That's ${Math.round(perMonth.shareOfQuoted * 100)} cents of every quoted dollar${wastedLeadSpend ? `, and ${near100(wastedLeadSpend)} a year in leads you paid for and never heard from again` : ""}.`
+    : `${s.audit.silent.count.toLocaleString("en-US")} of your quotes never got a yes or a no.`;
+  return { silentNow: { count: s.audit.silent.count, value: s.audit.silent.value }, perMonth, requestsNeverPriced, pastCustomersNotBack, wastedLeadSpend, line };
+}
+
 export interface FitCheck {
   score: number;
   verdict: "strong" | "good" | "thin" | "not_yet";
@@ -124,6 +162,8 @@ export interface DrawerSummary {
   profile: ShopProfile;
   /** Won vs said-no vs never-answered, from the shop's own quotes. */
   audit: SilentAudit;
+  /** The money-on-the-table reveal, in the owner's own numbers only. */
+  onTheTable: OnTheTable;
   fit: FitCheck;
 }
 
@@ -238,9 +278,11 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     pastCustomerShare: yearLikely ? round2(sum(types.filter((t) => PAST_TYPES.includes(t.type)), (t) => t.expected) / yearLikely) : undefined,
     profile: shopProfile(ds, averageJob(ds), reachablePeople),
     audit: silentAudit(ds),
+    onTheTable: { silentNow: { count: 0, value: 0 }, perMonth: { quotes: 0, value: 0, shareOfQuoted: 0 }, requestsNeverPriced: 0, pastCustomersNotBack: 0, line: "" },
     fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "", liftLine: "", canSay15: false },
   };
   summary.fit = fitCheck(ds, result, summary);
+  summary.onTheTable = onTheTable(ds, result, summary);
   return summary;
 }
 

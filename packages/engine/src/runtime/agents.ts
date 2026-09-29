@@ -8,6 +8,7 @@ import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from ".
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, closeMessage, guaranteeCheck, handoffText, kickoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
 import { renderRequestAck } from "../copy/render.ts";
+import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
@@ -76,6 +77,7 @@ export function readFiles(state: AccountState, files: FileIn[], now: ISODateTime
     for (const w of r.record.warnings) event(state, now, "reader", "warning", w, f.name);
   }
   state.dataset = ds;
+  adoptTrade(state, now);
   const withEmail = ds.customers.filter((c) => c.emails.length).length;
   event(state, now, "reader", "info", `${plural(ds.customers.length, "customer")} in one clean list`, `Merged across files by client id, email, phone and address. ${Math.round((withEmail / Math.max(1, ds.customers.length)) * 100)}% have an email.`);
   state.updatedAt = now;
@@ -615,4 +617,16 @@ export function answerNewRequests(state: AccountState, now: ISODateTime): number
   }
   if (n) state.updatedAt = now;
   return n;
+}
+
+/** Setup never asks what trade they're in: their own quote and job titles say it. Only fills an unset trade. */
+export function adoptTrade(state: AccountState, now: ISODateTime): boolean {
+  const ds = state.dataset;
+  if (ds.business.trade !== "general") return false;
+  const d = detectTrade([...ds.quotes.map((q) => q.title), ...ds.jobs.map((j) => j.title), ...ds.requests.map((r) => r.title)]);
+  if (d.trade === "general") return false;
+  ds.business.trade = d.trade;
+  ds.business.otherTrades = d.others;
+  event(state, now, "reader", "info", `Looks like a ${playbook(d.trade).label.toLowerCase()} business${d.others.length ? ` (also ${d.others.map((t) => playbook(t).label.toLowerCase()).join(", ")})` : ""}`, "Read from your own quote and job titles. Notes use that trade's words, seasons and follow-ups.");
+  return true;
 }
