@@ -23,6 +23,8 @@ export interface PlanOptions {
   rank?: "reply" | "dollars";
   /** Include opportunities held for a look (priced to lose, realtor/HOA bids). Default false. */
   includeCaution?: boolean;
+  /** Comparison-group people whose wait is over: plan them like anyone else. */
+  released?: Set<string>;
 }
 
 export interface Plan {
@@ -89,7 +91,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
       skipped.push({ customerId: o.customerId, why: `Held for a look: ${o.caution.join("; ")}` });
       continue;
     }
-    if (applyHoldout && inHoldout(o.customerId, b.persistence.holdoutPct)) {
+    if (applyHoldout && !opts.released?.has(o.customerId) && inHoldout(o.customerId, b.persistence.holdoutPct)) {
       holdout.push(o.customerId);
       continue;
     }

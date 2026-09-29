@@ -275,7 +275,7 @@ describe("lift", () => {
       ...Array.from({ length: 10 }, (_, i): OutreachRecord => ({ customerId: `h${i}`, firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true })),
     ];
     const r = (id: string, tier: Recovery["tier"]): Recovery => ({ id, customerId: id, record: { kind: "job", id }, value: 1000, cameBackOn: "2026-11-01", match: "customer_id", confidence: 0.9, tier });
-    const l = lift(outreach, [r("t0", "traced"), r("t1", "after_note"), r("h0", "after_note")]);
+    const l = lift(outreach, [r("t0", "traced"), r("t1", "after_note"), r("h0", "holdout")]);
     expect(l.treated.cameBack).toBe(2);
     expect(l.holdout.cameBack).toBe(1);
     expect(l.baseline).toBe(1000);
@@ -295,12 +295,30 @@ describe("lift", () => {
     expect(found.map((x) => [x.customerId, x.tier])).toEqual([
       ["t0", "traced"],
       ["t1", "after_note"],
-      ["h0", "after_note"],
+      ["h0", "holdout"],
     ]);
     const l = lift(outreach, found);
     expect(l.treated).toMatchObject({ people: 2, cameBack: 2, value: 2000 });
     expect(l.holdout).toMatchObject({ people: 1, cameBack: 1, value: 500 });
     expect(counted(found).map((x) => x.customerId)).toEqual(["t0"]);
+  });
+  it("staggered start: a held person's comeback before their first note is comparison-only; after it, it's ours", () => {
+    const held: OutreachRecord = { customerId: "h0", firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true, releaseOn: addDays(FIRST, 60) };
+    const before = dataset({ customers: [customer("h0")], jobs: [job("j0", "h0", { createdOn: addDays(FIRST, 20) })] });
+    expect(attribute(before, [held]).map((x) => x.tier)).toEqual(["holdout"]);
+    const treatedFrom = addDays(FIRST, 62);
+    const after = dataset({ customers: [customer("h0")], jobs: [job("j1", "h0", { createdOn: addDays(FIRST, 70) })] });
+    const recs = attribute(after, [{ ...held, treatedFrom, lastTouchOn: treatedFrom }], { replied: new Set(["h0"]) });
+    expect(recs.map((x) => x.tier)).toEqual(["traced"]);
+    expect(counted(recs)).toHaveLength(1);
+    // never counted for the owner while they're only in the comparison group
+    expect(counted(attribute(before, [held]))).toHaveLength(0);
+  });
+  it("the comparison group only counts comebacks from before anyone wrote to them", () => {
+    const outreach: OutreachRecord[] = [{ customerId: "h0", firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true, treatedFrom: addDays(FIRST, 61) }];
+    const r = (tier: Recovery["tier"]): Recovery => ({ id: "x", customerId: "h0", record: { kind: "job", id: "j" }, value: 500, cameBackOn: "2026-12-20", match: "customer_id", confidence: 0.9, tier });
+    expect(lift(outreach, [r("traced")]).holdout.cameBack).toBe(0);
+    expect(lift(outreach, [r("holdout")]).holdout.cameBack).toBe(1);
   });
   it("handles an empty ledger", () => {
     const l = lift([], []);

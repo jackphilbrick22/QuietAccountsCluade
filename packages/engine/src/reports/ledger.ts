@@ -38,7 +38,8 @@ const MATCH_WORDS: Record<Recovery["match"], string> = {
 
 export function ledgerRows(state: AccountState): LedgerRow[] {
   const ds = state.dataset;
-  return [...state.recoveries]
+  return state.recoveries
+    .filter((r) => r.tier !== "holdout") // the comparison group never got a note; it isn't a ledger line
     .sort((a, b) => (a.cameBackOn < b.cameBackOn ? 1 : -1))
     .map((r) => {
       const c = customerById(ds, r.customerId);

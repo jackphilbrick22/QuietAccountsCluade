@@ -4,7 +4,7 @@ import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
 import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
 import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
-import { attribute, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
+import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, closeMessage, guaranteeCheck, handoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
 import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
@@ -15,7 +15,8 @@ function outreachFor(state: AccountState, customerId: string) {
   // outreach is append-only per customer; a Map keyed by the array keeps markSent O(1)
   let idx = outreachIdx.get(state.outreach);
   if (!idx || idx.len !== state.outreach.length) {
-    idx = { len: state.outreach.length, map: new Map(state.outreach.filter((o) => !o.holdout).map((o) => [o.customerId, o])) };
+    // one record per customer (the store keys it that way) — comparison-group records included
+    idx = { len: state.outreach.length, map: new Map(state.outreach.map((o) => [o.customerId, o])) };
     outreachIdx.set(state.outreach, idx);
   }
   return idx.map.get(customerId);
@@ -107,14 +108,17 @@ export function find(state: AccountState, now: ISODateTime): AccountState {
 export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean }): Plan {
   if (!state.scan) find(state, now);
   const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped").map((t) => t.customerId));
-  for (const o of state.outreach) active.add(o.customerId);
+  // the comparison group waits ~60 days, then gets worked too (nobody's quote is held back for good)
+  const released = new Set(state.outreach.filter((o) => o.holdout && !o.treatedFrom && o.releaseOn && o.releaseOn <= opts.startOn).map((o) => o.customerId));
+  for (const o of state.outreach) if (!released.has(o.customerId) || active.has(o.customerId)) active.add(o.customerId);
   const isTrial = state.dataset.business.plan.stage === "trial";
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
   const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank });
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   state.touches.push(...plan.touches.map((t) => ({ ...t, status })));
-  for (const id of plan.holdout) if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true });
+  for (const id of plan.holdout)
+    if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true, releaseOn: addDays(opts.startOn, HOLDOUT_DAYS) });
   const flagged = plan.touches.filter((t) => t.flags.length).length;
   event(state, now, "writer", "action", `Wrote ${plural(plan.touches.length, "note")} for ${plural(plan.people.length, "person", "people")}`, `Each one about their own job, signed by ${state.dataset.business.signerName}. ${flagged ? `${flagged} need a second look.` : "All passed the quality check."}`);
   if (plan.firstDay) event(state, now, "sender", "action", `Scheduled ${plan.firstDay} → ${plan.lastDay}`, `${state.dataset.business.weeklyNewContacts} new people a week, on your send days, inside your hours.${plan.holdout.length ? ` ${plan.holdout.length} held back to measure true lift.` : ""}`);
@@ -190,8 +194,16 @@ export function markSent(state: AccountState, touchId: string, at: ISODateTime, 
   if (providerId) t.providerId = providerId;
   const day = at.slice(0, 10);
   const rec = outreachFor(state, t.customerId);
-  if (rec) rec.lastTouchOn = day;
-  else {
+  if (rec) {
+    rec.lastTouchOn = day;
+    if (rec.holdout && !rec.treatedFrom) {
+      // a released comparison-group person just got their first note
+      const opp = oppById(state.scan?.opportunities, t.opportunityId);
+      rec.treatedFrom = day;
+      rec.opportunityId = t.opportunityId;
+      rec.sourceId = opp?.source.id;
+    }
+  } else {
     const opp = oppById(state.scan?.opportunities, t.opportunityId);
     state.outreach.push({ customerId: t.customerId, opportunityId: t.opportunityId, sourceId: opp?.source.id, firstTouchOn: day, lastTouchOn: day });
   }
@@ -389,6 +401,10 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
     state.recoveries.push(r);
     added++;
     const name = state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? "A customer";
+    if (r.tier === "holdout") {
+      event(state, now, "ledger", "info", "Someone in the comparison group came back on their own", "Used only to measure true lift — not counted as ours.", [{ kind: "customer", id: r.customerId }]);
+      continue;
+    }
     event(
       state,
       now,

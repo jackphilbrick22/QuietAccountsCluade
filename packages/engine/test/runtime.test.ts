@@ -489,3 +489,28 @@ describe("booked out", () => {
     }
   });
 });
+
+describe("comparison group: a staggered start, never a permanent hold", () => {
+  it("holds some people on a paying account, then plans and writes to them ~60 days later", () => {
+    const s = fresh();
+    s.dataset.business.plan.stage = "paying";
+    s.dataset.business.persistence.holdoutPct = 0.2;
+    const p1 = planBatch(s, NOW, { startOn: START, limitPeople: 200 });
+    expect(p1.holdout.length).toBeGreaterThan(0);
+    const heldId = p1.holdout[0]!;
+    const rec = s.outreach.find((o) => o.customerId === heldId)!;
+    expect(rec.holdout).toBe(true);
+    expect(rec.releaseOn).toBe(addDays(START, 60));
+    // before release: still not planned
+    planBatch(s, NOW, { startOn: addDays(START, 30), limitPeople: 5000 });
+    expect(s.touches.some((t) => t.customerId === heldId)).toBe(false);
+    // after release: planned, and the first note marks when treatment began
+    planBatch(s, NOW, { startOn: addDays(START, 61), limitPeople: 5000 });
+    const first = s.touches.find((t) => t.customerId === heldId && t.step === 1);
+    expect(first).toBeTruthy();
+    markSent(s, first!.id, `${first!.dueAt.slice(0, 10)}T09:00:00`);
+    expect(s.outreach.find((o) => o.customerId === heldId)!.treatedFrom).toBe(first!.dueAt.slice(0, 10));
+    // still exactly one record per person (the store keys outreach by customer)
+    expect(s.outreach.filter((o) => o.customerId === heldId)).toHaveLength(1);
+  });
+});

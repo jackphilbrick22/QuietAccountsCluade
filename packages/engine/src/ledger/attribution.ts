@@ -10,7 +10,14 @@ export interface OutreachRecord {
   firstTouchOn: ISODate;
   lastTouchOn: ISODate;
   holdout?: boolean;
+  /** Held people are written to after this date (a staggered start), so no owner loses a quote for good. */
+  releaseOn?: ISODate;
+  /** When a released holdout got their first note. Before it they're the comparison group; after, treated. */
+  treatedFrom?: ISODate;
 }
+
+/** How long the comparison group waits before it's worked too. */
+export const HOLDOUT_DAYS = 60;
 
 export interface AttributionOptions {
   /** Days after the last note that a traced comeback (they replied, or the same quote converted) counts. */
@@ -73,7 +80,34 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
   const invBy = new Map<string, typeof ds.invoices>();
   for (const i of ds.invoices) (invBy.get(i.customerId) ?? invBy.set(i.customerId, []).get(i.customerId)!).push(i);
 
-  for (const r of outreach) {
+  const firstComeback = (customerId: string, ok: (d: ISODate | undefined) => boolean): { record: Recovery["record"]; value: Money; on: ISODate } | undefined => {
+    const job = (jobsBy.get(customerId) ?? []).filter((j) => j.status !== "cancelled" && !used.has(j.id) && ok(j.createdOn ?? j.scheduledOn ?? j.completedOn)).sort((a, b) => ((a.createdOn ?? a.scheduledOn ?? "") < (b.createdOn ?? b.scheduledOn ?? "") ? -1 : 1))[0];
+    if (job) {
+      used.add(job.id);
+      return { record: { kind: "job", id: job.id }, value: job.total, on: (job.createdOn ?? job.scheduledOn ?? job.completedOn)! };
+    }
+    const q = (quotesBy.get(customerId) ?? []).find((x) => WON.has(x.status) && !used.has(x.id) && ok(x.approvedOn ?? x.convertedOn));
+    if (q) {
+      used.add(q.id);
+      return { record: { kind: "quote", id: q.id }, value: q.total, on: (q.approvedOn ?? q.convertedOn)! };
+    }
+    return undefined;
+  };
+
+  for (const held of outreach) {
+    let r = held;
+    if (held.holdout) {
+      // the comparison group: comebacks before they were ever written to (tier "holdout", lift only)
+      const until = held.treatedFrom;
+      const natural = firstComeback(held.customerId, (d) => !!d && d >= held.firstTouchOn && (!until || d < until) && daysBetween(held.firstTouchOn, d) <= silentDays);
+      if (natural) {
+        out.push({ ...rec(held, natural.record, natural.value, natural.on, "customer_id", 0.9), tier: "holdout" });
+        continue;
+      }
+      if (!held.treatedFrom) continue;
+      // released and written to: from here on they're like anyone else we worked
+      r = { ...held, holdout: false, firstTouchOn: held.treatedFrom };
+    }
     const replied = !!opts.replied?.has(r.customerId);
     const windowDays = replied ? tracedDays : silentDays;
     const tier: Recovery["tier"] = replied ? "traced" : "after_note";
@@ -155,8 +189,9 @@ export function lift(outreach: OutreachRecord[], all: Recovery[]): LiftReport {
   const recoveries = all.filter((r) => !r.disputed);
   const treatedIds = new Set(outreach.filter((o) => !o.holdout).map((o) => o.customerId));
   const holdIds = new Set(outreach.filter((o) => o.holdout).map((o) => o.customerId));
-  const tRec = recoveries.filter((r) => treatedIds.has(r.customerId));
-  const hRec = recoveries.filter((r) => holdIds.has(r.customerId));
+  const tRec = recoveries.filter((r) => treatedIds.has(r.customerId) && r.tier !== "holdout");
+  // the comparison group only counts comebacks from before anyone wrote to them
+  const hRec = recoveries.filter((r) => holdIds.has(r.customerId) && (r.tier === "holdout" || r.tier === undefined));
   const tBack = new Set(tRec.map((r) => r.customerId)).size;
   const hBack = new Set(hRec.map((r) => r.customerId)).size;
   const tRate = treatedIds.size ? tBack / treatedIds.size : 0;
