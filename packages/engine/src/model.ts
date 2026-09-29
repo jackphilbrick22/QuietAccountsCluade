@@ -176,6 +176,8 @@ export interface ServiceRequest {
   status: RequestStatus;
   rawStatus: string;
   createdOn?: ISODate;
+  /** Exact time it came in, when the source has it (Jobber API) — needed to answer within minutes. */
+  createdAt?: ISODateTime;
   assessmentOn?: ISODate;
   quoteId?: string;
   quoteRef?: string;
@@ -259,6 +261,11 @@ export interface BusinessProfile {
   bookedOutUntil?: ISODate;
   /** Answer hot replies right away on the owner's behalf (default on). */
   autoAck?: boolean;
+  /**
+   * Always-on: every new request answered in minutes, every new quote followed from day 2 until a yes or a no,
+   * every "yes" chased onto the schedule. This is what the monthly subscription is. Default: on once paying.
+   */
+  alwaysOn?: boolean;
   /** How the notes read. */
   voice: {
     /** Put the original price in the first note. Off by default (it re-triggers sticker shock). */
@@ -432,6 +439,10 @@ export interface Touch {
   writer?: "template" | "ai";
   /** Days this note was pushed back because the owner was booked out (undone when they open up). */
   heldDays?: number;
+  /** Goes out the moment it's due, any day or hour (the answer to a brand-new request). */
+  instant?: boolean;
+  /** Which always-on track wrote it, for the owner's "what we did this week" numbers. */
+  track?: "new_request" | "fresh_quote";
 }
 
 export type ReplyIntent =

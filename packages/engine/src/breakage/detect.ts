@@ -28,7 +28,7 @@ import {
   round2,
   spokenWhen,
 } from "../util.ts";
-import { ADJUST, AGE_DECAY, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
+import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
 import { quoteById } from "../lookup.ts";
 
 /** What we already know about outreach, from our own records. */
@@ -86,6 +86,7 @@ interface Ctx {
   contact: ContactState;
   avgJob: number;
   caution: CautionContext;
+  alwaysOn: boolean;
 }
 
 function bucket<T extends { customerId: string }>(arr: T[]): Map<string, T[]> {
@@ -134,6 +135,7 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
     contact,
     avgJob: averageJob(ds),
     caution: { medianByService: new Map(), typicalJob: 0 },
+    alwaysOn: alwaysOnFor(ds.business),
   };
   ctx.caution = { medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id), typicalJob: ctx.avgJob };
 
@@ -214,10 +216,11 @@ function base(
   serviceOverride?: ServiceDef,
 ): Opportunity | undefined {
   const w = WINDOW[type];
+  const minDays = ctx.alwaysOn ? (ALWAYS_ON_MIN_DAYS[type] ?? w.minDays) : w.minDays;
   const age = anchor ? daysBetween(anchor, ctx.asOf) : NaN;
   if (Number.isNaN(age)) {
     // no date: keep only types that don't depend on age, and mark them old-ish
-  } else if (age < w.minDays || age > w.maxDays) return undefined;
+  } else if (age < minDays || age > w.maxDays) return undefined;
   const cls = serviceOverride ? { service: serviceOverride, trade: findService(serviceOverride.id)?.trade ?? ctx.ds.business.trade } : classifyService(title, lineItems, ctx.trades);
   return {
     id: makeId("op", type, source.kind, source.id, customerId),
@@ -490,7 +493,9 @@ function applySuppressions(ctx: Ctx, o: Opportunity): void {
   const openJob = jobs.some((j) => OPEN_JOB.has(j.status) && j.status !== "requires_invoicing" && !(o.source.kind === "job" && o.source.id === j.id));
   const freshQuote = quotes.some((q) => {
     const d = quoteDate(q);
-    return d && (q.status === "awaiting_response" || q.status === "draft" || q.status === "changes_requested") && daysBetween(d, ctx.asOf) < ctx.ds.business.minQuoteAgeDays;
+    // always-on: we ARE the follow-up from day 2; otherwise leave the salesperson their window
+    const window = ctx.alwaysOn ? Math.min(ctx.ds.business.minQuoteAgeDays, ALWAYS_ON_MIN_DAYS.unanswered_quote ?? 2) : ctx.ds.business.minQuoteAgeDays;
+    return d && (q.status === "awaiting_response" || q.status === "draft" || q.status === "changes_requested") && daysBetween(d, ctx.asOf) < window;
   });
   if (o.type !== "unpaid_invoice" && (openJob || freshQuote)) {
     o.suppressed = "active_work";

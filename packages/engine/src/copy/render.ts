@@ -1,10 +1,10 @@
-import type { BusinessProfile, Customer, Dataset, ISODate, MessageAngle, Opportunity } from "../model.ts";
+import type { BusinessProfile, Customer, Dataset, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
 import { climateOf, findService, jobPhrase, playbook, seasonFit } from "../trades/index.ts";
-import { STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, mondayOf, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
 import { quoteById, scheduledWork, type ScheduledWork } from "../lookup.ts";
-import { SEQUENCES, TEMPLATES, templateKey, type NoteTemplate } from "./templates.ts";
+import { sequenceFor, TEMPLATES, templateKey, type NoteTemplate } from "./templates.ts";
 
 export interface RenderedNote {
   subject: string;
@@ -18,6 +18,8 @@ export interface RenderContext {
   ds: Dataset;
   /** The day this note goes out (drives "a crew nearby next week" and season lines). */
   sendOn: ISODate;
+  /** We've written to this person before — so never say "that's on us for not following up". */
+  contactedBefore?: boolean;
 }
 
 /** Factual crew-nearby line from the real schedule or the owner's open-crew weeks. Never invented. */
@@ -68,6 +70,7 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     job: o.jobPhrase,
     when,
     priceClause: b.voice.mentionPrice && o.value > 0 && !stale && ["unanswered_quote", "archived_quote", "changes_requested"].includes(o.type) ? ` (${fmtMoney(o.value)})` : "",
+    neverFollowed: rc.contactedBefore ? "" : "yes",
     freshLook: stale ? "If you still need it, we'd come take a fresh look first, since a fair bit has changed since then." : "",
     street: c.address?.street ?? "",
     streetName: streetName(c.address?.street),
@@ -188,7 +191,7 @@ function applySwaps(s: string, swaps: [string, string][]): string {
  */
 export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step: number): RenderedNote | undefined {
   const b = rc.ds.business;
-  const seq = SEQUENCES[o.type];
+  const seq = sequenceFor(o, alwaysOnFor(b));
   const plan = seq.steps.find((s) => s.step === step);
   if (!plan) return undefined;
   const t = tokens(o, c, b, rc);
@@ -214,5 +217,44 @@ export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step:
     .join("\n")
     .trim();
   body = `${body}\n\n${footer(b, o.type)}`;
-  return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, step, commercial: o.type !== "unpaid_invoice", requireJob: step === 1 && ["quote", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
+  return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, step, commercial: o.type !== "unpaid_invoice", requireJob: step === 1 && ["quote", "fresh", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
+}
+
+/** "Today" before 3pm, else the next weekday — a call-back window an owner can actually keep. */
+export function callbackWhen(localNow: ISODateTime): string {
+  const hour = Number(localNow.slice(11, 13));
+  const today = localNow.slice(0, 10);
+  const dow = (d: string) => new Date(`${d}T12:00:00Z`).getUTCDay();
+  if (hour < 15 && ![0, 6].includes(dow(today))) return "today";
+  let d = addDays(today, 1);
+  while ([0, 6].includes(dow(d))) d = addDays(d, 1);
+  return d === addDays(today, 1) ? "tomorrow" : `on ${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][dow(d)]}`;
+}
+
+/**
+ * The answer to a brand-new request, sent within minutes at any hour. Homeowners ask several companies and
+ * most hire whoever answers first; only about 1 in 5 pros answer within the hour. It promises a call-back
+ * window only — never a price or a date.
+ */
+export function renderRequestAck(ds: Dataset, r: ServiceRequest, c: Customer, localNow: ISODateTime): { subject: string; body: string; promise: string; flags: string[] } {
+  const b = ds.business;
+  const job = jobPhrase(r.title || "", b.trade);
+  const specific = job !== playbook(b.trade).workPhrase;
+  const first = greetingName(c.firstName);
+  const when = callbackWhen(localNow);
+  const isOwner = b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase();
+  const who = isOwner ? "I'll give you a call" : `${b.ownerFirstName} will give you a call`;
+  const lines = [
+    `Hi ${first},`,
+    ``,
+    `Thanks for reaching out to ${b.name.replace(/\.$/, "")}${specific ? ` about ${job}` : ""}. ${who} ${when} to set up a time to take a look.`,
+    ``,
+    `If there's a better time or number to reach you, just reply here.`,
+    ``,
+    b.signerName,
+  ];
+  const body = `${tidy(lines.join("\n"))}\n\n${footer(b, "unquoted_request")}`;
+  const subject = specific ? `Your request: ${job}` : `Your request to ${b.name.replace(/\.$/, "")}`;
+  const flags = lint(subject.length > 60 ? "Your request" : subject, body, { firstName: first, job, requireJob: false, step: 1, commercial: true });
+  return { subject: subject.length > 60 ? "Your request" : subject, body, promise: `you'll call them ${when}`, flags };
 }

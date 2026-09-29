@@ -382,6 +382,8 @@ export function mapRequest(r: ApiRequest, warn?: (msg: string) => void): Service
   };
   const created = isoDate(r.createdAt);
   if (created) out.createdOn = created;
+  // the exact moment matters for answering within minutes
+  if (typeof r.createdAt === "string" && /T\d\d:\d\d/.test(r.createdAt)) out.createdAt = r.createdAt;
   const assess = isoDate(r.assessment?.startAt);
   if (assess) out.assessmentOn = assess;
   const qn = r.quotes?.nodes?.[0]?.quoteNumber;

@@ -7,7 +7,9 @@ import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, closeMessage, guaranteeCheck, handoffText, kickoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
-import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
+import { renderRequestAck } from "../copy/render.ts";
+import { alwaysOnFor } from "../breakage/assumptions.ts";
+import { addDays, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 
@@ -115,7 +117,8 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const firstEver = !state.touches.some((t) => t.status !== "cancelled");
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
   const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released });
+  const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   state.touches.push(...plan.touches.map((t) => ({ ...t, status })));
   for (const id of plan.holdout)
@@ -166,8 +169,17 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
       held.push({ touch: t, why: "No sendable email (unsubscribed, bounced or missing)" });
       continue;
     }
-    if (replied.has(c.id)) {
+    // an instant answer to a NEW request goes even if they wrote to us about something else before
+    if (!t.instant && replied.has(c.id)) {
       held.push({ touch: t, why: "They replied — the sequence stops" });
+      continue;
+    }
+    if (t.instant) {
+      if (health.paused) {
+        held.push({ touch: t, why: health.reason ?? "Paused" });
+        continue;
+      }
+      due.push({ touch: t, to, customerName: c.name });
       continue;
     }
     if (!b.sendDays.includes(weekday(day))) {
@@ -559,4 +571,48 @@ export function disputeRecovery(state: AccountState, recoveryId: string, reason:
   event(state, now, "ledger", "info", `${name} (${fmtMoney(r.value)}) marked not ours`, r.disputed.reason, [{ kind: "customer", id: r.customerId }]);
   state.updatedAt = now;
   return true;
+}
+
+/**
+ * Always-on: every request that came in during the last day gets an answer within minutes, any hour —
+ * "Thanks for reaching out, Dave will call you today" — and the owner gets the lead by text. If no visit
+ * or quote follows, the unquoted-request follow-up takes over after two days.
+ */
+export function answerNewRequests(state: AccountState, now: ISODateTime): number {
+  const ds = state.dataset;
+  const b = ds.business;
+  if (!alwaysOnFor(b)) return 0;
+  const nowMs = Date.parse(`${now.slice(0, 19)}Z`);
+  let n = 0;
+  for (const r of ds.requests) {
+    if (r.quoteId || r.status === "converted" || r.status === "archived") continue;
+    const when = r.createdAt ?? (r.createdOn ? `${r.createdOn}T12:00:00Z` : undefined);
+    if (!when) continue;
+    const ageH = (nowMs - Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(when) ? when : `${when}Z`)) / 3_600_000;
+    // a day's grace either side absorbs the local/UTC difference between the source's clock and ours
+    if (!(ageH >= -14 && ageH <= 36)) continue;
+    const id = makeId("t", "req", r.id, 1);
+    if (state.touches.some((t) => t.id === id)) continue;
+    const c = customerById(ds, r.customerId);
+    if (!c || c.doNotContact) continue;
+    const to = sendableEmail(c.emails, state.suppressions);
+    const quotedSince = ds.quotes.some((q) => q.customerId === c.id && (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999"));
+    if (quotedSince) continue;
+    const ack = renderRequestAck(ds, r, c, now);
+    if (to && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f)))
+      state.touches.push({ id, opportunityId: `req:${r.id}`, customerId: c.id, channel: "email", step: 1, angle: "check_in", dueAt: now.slice(0, 16), status: "approved", subject: ack.subject, body: ack.body, flags: ack.flags, instant: true, track: "new_request" });
+    const street = c.address?.street ? `, ${c.address.street}` : "";
+    const phone = c.phones[0] ? fmtPhone(c.phones[0]) : c.emails[0] ?? "no phone on file";
+    ownerMsg(
+      state,
+      now,
+      "handoff",
+      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, to ? `We already wrote back that ${ack.promise}.` : `No email on file, so we couldn't answer them — call soon.`, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
+      [{ kind: "customer", id: c.id }],
+    );
+    event(state, now, "inbox", "action", `New request from ${c.name} — answered${to ? " in minutes" : " (no email: owner texted)"}`, r.title, [{ kind: "customer", id: c.id }]);
+    n++;
+  }
+  if (n) state.updatedAt = now;
+  return n;
 }

@@ -1,4 +1,4 @@
-import type { BreakageType } from "../model.ts";
+import type { BreakageType, BusinessProfile } from "../model.ts";
 
 /**
  * Recovery priors: the share of reachable opportunities of each type that turn into
@@ -79,6 +79,24 @@ export const WINDOW: Record<BreakageType, { minDays: number; maxDays: number }> 
   missed_upsell: { minDays: 3, maxDays: 540 },
   unpaid_invoice: { minDays: 7, maxDays: 730 },
 };
+
+/**
+ * Always-on: how soon after the event we step in. A quote gets its first follow-up two days after it was
+ * sent (the trade press standard is "confirm it arrived, then call at five business days"); a fresh quote
+ * runs its own four-note sequence for ~3 weeks, then joins the normal re-check cycle.
+ */
+export const ALWAYS_ON_MIN_DAYS: Partial<Record<BreakageType, number>> = {
+  unanswered_quote: 2,
+  changes_requested: 3,
+  unquoted_request: 2,
+  approved_unscheduled: 7,
+};
+export const FRESH_QUOTE_DAYS = 30;
+
+/** Always-on is the paid product; the free round is the backlog sweep. An operator can switch it either way. */
+export function alwaysOnFor(b: BusinessProfile): boolean {
+  return b.alwaysOn ?? b.plan.stage === "paying";
+}
 
 /** Forecast bands around the expected value. */
 export const BAND = { conservative: 0.6, likely: 1.0, strong: 1.5 };

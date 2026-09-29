@@ -1,7 +1,8 @@
 import type { BreakageType, Dataset, ISODate, Opportunity, Touch } from "../model.ts";
 import type { ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
-import { SEQUENCES } from "../copy/templates.ts";
+import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
+import { alwaysOnFor } from "../breakage/assumptions.ts";
 import { addDays, hash, makeId, mondayOf, weekday } from "../util.ts";
 
 export interface PlanOptions {
@@ -25,6 +26,8 @@ export interface PlanOptions {
   includeCaution?: boolean;
   /** Comparison-group people whose wait is over: plan them like anyone else. */
   released?: Set<string>;
+  /** People we've already written to at some point (changes what a first note may honestly say). */
+  contacted?: Set<string>;
 }
 
 export interface Plan {
@@ -145,13 +148,13 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     }
     if (held) heldDay = day;
     else nowDay = day;
-    const seq = SEQUENCES[o.type];
+    const seq = sequenceFor(o, alwaysOnFor(b));
     const notes: Touch[] = [];
     let lastSend = day;
     let ok = true;
     for (const st of seq.steps) {
       const sendOn = st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
-      const n = renderNote(o, c, { ds, sendOn }, st.step);
+      const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id) }, st.step);
       if (!n) {
         if (st.step === 1) ok = false;
         continue;
@@ -174,6 +177,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
         subject: n.subject,
         body: n.body,
         flags: n.flags,
+        ...(seq === FRESH_SEQUENCE ? { track: "fresh_quote" as const } : {}),
       });
     }
     if (!ok || !notes.length) continue;

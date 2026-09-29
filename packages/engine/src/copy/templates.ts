@@ -35,6 +35,8 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "q1a",
       angle: "check_in",
       subject: "{job}",
+      // "that's on us for not following up" is only true if nobody ever did
+      needs: ["neverFollowed"],
       body: "Hi {first},\n\nIt's {signer} at {company}. You got a price from us {when} for {job}{priceClause}.\n\nWe never heard back, and that's on us for not following up. Is it still something you want done?\n\n{freshLook}\n\nIf you went another way, that's fine. Just reply \"pass\" and I'll close it out.\n\n{signer}",
     },
     {
@@ -99,6 +101,47 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       angle: "close_file",
       subject: "Re: {job}",
       body: `Last note from me on this, {first}. If {job} is handled, no need to reply. If it's still on your list, reply and we'll get you a date.\n\n${CLOSE_QUESTION}\n\n{signer}`,
+    },
+  ],
+
+  /* ------------------------ fresh quotes (always-on) ------------------------ */
+  // A quote that went out in the last few weeks. Nobody has dropped the ball yet — this is the follow-up
+  // owners mean to do and don't: make sure it landed, answer questions, give an easy yes, then close it out.
+  "fresh.check_in": [
+    {
+      id: "f1a",
+      angle: "check_in",
+      subject: "{job}",
+      body: "Hi {first},\n\nIt's {signer} at {company}. Just making sure the quote for {job} came through okay.\n\nAny questions on it, or anything you'd like changed? Happy to go over it on the phone too.\n\n{signer}",
+    },
+    {
+      id: "f1b",
+      angle: "check_in",
+      subject: "{job}",
+      body: "Hi {first},\n\n{signer} here from {company}. Wanted to check that the quote for {job} landed and made sense.\n\nIf anything's unclear, or you'd like it done a little differently, just reply and I'll sort it out.\n\n{signer}",
+    },
+  ],
+  "fresh.easy_yes": [
+    {
+      id: "f2e",
+      angle: "easy_yes",
+      subject: "Re: {job}",
+      body: "{first}, any thoughts on the quote for {job}?\n\nIf you'd like to go ahead, just reply \"yes\" and I'll get you on the schedule. If something doesn't fit, tell me and I'll rework it.\n\n{signer}",
+    },
+  ],
+  "fresh.revise": [
+    {
+      id: "f3o",
+      angle: "revise",
+      subject: "Re: {job}",
+      needs: ["bigJob"],
+      body: "{first}, if the number on {job} is the sticking point, there's usually another way to do it, like splitting it into two visits or doing the most important part first.\n\nTell me what would work and I'll price it that way.\n\n{signer}",
+    },
+    {
+      id: "f3r",
+      angle: "revise",
+      subject: "Re: {job}",
+      body: "{first}, if something about the quote for {job} isn't working, like the price, the timing or part of the work, tell me and I'll put together another option.\n\nOne line back is plenty.\n\n{signer}",
     },
   ],
 
@@ -288,6 +331,27 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
 };
 
 /** Which template families and steps each breakage type uses. */
+/** The always-on sequence for a quote sent in the last few weeks (replaces the FSM's two canned reminders). */
+export const FRESH_SEQUENCE: { family: string; steps: StepPlan[] } = {
+  family: "fresh",
+  steps: [
+    { step: 1, day: 0, angles: ["check_in"] },
+    { step: 2, day: 5, angles: ["crew_nearby", "timing", "problem_grows", "easy_yes"] },
+    { step: 3, day: 11, angles: ["revise"] },
+    { step: 4, day: 19, angles: ["close_file"] },
+  ],
+};
+
+/**
+ * Which sequence an opportunity runs. With always-on, a quote sent in the last few weeks gets the fresh
+ * follow-up; the backlog sweep (and anything older) runs its type's sequence.
+ */
+export function sequenceFor(o: { type: BreakageType; ageDays: number }, alwaysOn = false): { family: string; steps: StepPlan[] } {
+  if (alwaysOn && o.type === "unanswered_quote" && o.ageDays <= FRESH_SEQUENCE_MAX_AGE) return FRESH_SEQUENCE;
+  return SEQUENCES[o.type];
+}
+const FRESH_SEQUENCE_MAX_AGE = 30;
+
 export const SEQUENCES: Record<BreakageType, { family: string; steps: StepPlan[] }> = {
   unanswered_quote: {
     family: "quote",
@@ -380,6 +444,10 @@ export function templateKey(family: string, angle: MessageAngle, step = 1): stri
   const direct = `${family}.${angle}`;
   const alias: Record<string, string[]> = {
     "changes.close_file": ["quote.close_file"],
+    "fresh.crew_nearby": ["quote.crew_nearby"],
+    "fresh.timing": ["quote.timing"],
+    "fresh.problem_grows": ["quote.problem_grows"],
+    "fresh.close_file": ["quote.close_file"],
     "changes.timing": ["quote.timing"],
     "request.timing": ["quote.timing"],
     "request.easy_yes": ["quote.easy_yes"],

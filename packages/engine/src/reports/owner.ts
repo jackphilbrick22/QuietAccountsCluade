@@ -194,6 +194,16 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     head,
     "",
     `Notes out: ${w.sent} (to ${w.people} people)`,
+    (() => {
+      // the always-on work the owner would otherwise have to remember to do
+      const end = addDays(mondayOf(monday), 7);
+      const inWk = (t: { sentAt?: string; dueAt: string }) => { const d = (t.sentAt ?? t.dueAt).slice(0, 10); return d >= mondayOf(monday) && d < end; };
+      const sentT = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && inWk(t));
+      const reqs = sentT.filter((t) => t.track === "new_request").length;
+      const fresh = new Set(sentT.filter((t) => t.track === "fresh_quote").map((t) => t.customerId)).size;
+      if (!reqs && !fresh) return "";
+      return `Always on: ${[reqs ? `answered ${reqs} new ${reqs === 1 ? "request" : "requests"} within minutes` : "", fresh ? `followed up ${fresh} new ${fresh === 1 ? "quote" : "quotes"}` : ""].filter(Boolean).join(", ")}`;
+    })(),
     `Wrote back: ${w.replied}`,
     `Want a price or a date: ${w.wants}`,
     `Booked: ${w.booked}${w.bookedValue ? ` · ${fmtMoney(w.bookedValue)}` : ""}`,

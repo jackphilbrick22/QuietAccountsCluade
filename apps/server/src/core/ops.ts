@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
+  answerNewRequests,
   approveAll,
   counted,
   sendableEmail,
@@ -633,10 +634,13 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
     const fresh = (pulled as { tokens?: OAuthTokens }).tokens;
     if (fresh) d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(fresh)) });
     let newRecoveries = 0;
+    let answered = 0;
     await d.accounts.withAccount(bid, (state) => {
       const at = nowLocal(d, state);
       state.dataset = mergePulled(state.dataset, pulled, kind);
       state.dataset.asOf = at.slice(0, 10);
+      // always-on: a request that just came in gets its answer now, not tomorrow
+      answered = answerNewRequests(state, at);
       const n = pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length;
       if (n) state.events.push({ id: `ev_sync_${at}`, at, agent: "reader", kind: "action", title: `Synced ${n.toLocaleString("en-US")} records from ${kind === "jobber" ? "Jobber" : kind}`, detail: pulled.warnings.join(" ") || undefined });
       newRecoveries = ledgerPass(state, at).newRecoveries;
@@ -644,6 +648,7 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
     d.accounts.repo.putIntegration(bid, kind, { cursor: pulled.nextSince ?? integ.cursor, lastSyncAt: d.clock().toISOString(), lastError: null, status: "connected" });
     d.accounts.repo.markScanned(bid, d.clock().toISOString());
     await deliverOwnerMessages(d, bid);
+    if (answered) await sendDue(d, bid);
     return { records: pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length, newRecoveries };
   } catch (e) {
     d.accounts.repo.putIntegration(bid, kind, { lastError: (e as Error).message });
