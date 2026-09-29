@@ -43,6 +43,17 @@ Updated every loop iteration. Newest first.
 - Worker 20x faster: saves skip unchanged records (idle tick 107ms → 6ms; 23 sends 1.24s → 60ms).
 - Jobber write-back: replies and bookings leave a note on the quote in Jobber; rotated tokens always saved.
 
+**Also (owner-voice + compliance research)**
+- Easy "reply pass" in first notes; loss reasons ("5 went with someone else, 3 price") in the Friday text.
+- Don't-chase holds: "go away" prices and realtor/HOA/insurance bids wait for an OK; bad-customer tags never contacted.
+- Silent Quote Audit: won vs said no vs never answered, by age — the problem owners don't know they have.
+- Booked-out mode: owner texts BUSY until <date> / OPEN; new work lands when there's room.
+- Honest why-line on every commercial note (CAN-SPAM); no fake "Re:" on first notes.
+- Address risk (typos, placeholders, throwaways, role inboxes last) + DNS check before sending.
+- Brakes: pause at 3% bounces, 0.2% complaints, or 1% "who is this?".
+- Instant answer to hot replies in the homeowner's thread ("Dave will call you Monday"), 7am–8pm local,
+  never promising a price or a date; the owner's hand-off says what was promised.
+
 **Next**
 - Operator console on live server data (in progress, delegated); demo mode kept for sales calls.
 - Sample catalogs for the other 14 trades + recurring visits for route trades (demo realism).

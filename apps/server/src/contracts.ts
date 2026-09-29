@@ -70,6 +70,8 @@ export interface SequencerProvider {
   /** Stop everything for one address (reply, stop, bounce) and blocklist it where supported. */
   stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained"): Promise<void>;
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
+  /** Answer a reply in its own thread, from the mailbox it came in on. */
+  replyTo?(business: BusinessProfile, thread: { replyEmailId: string; account: string; to: string; subject: string }, text: string): Promise<void>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -77,7 +79,22 @@ export interface SequencerProvider {
 /* ------------------------------------------------------------------ */
 
 export type InboundEvent =
-  | { type: "reply"; businessId?: string; campaignId?: string; from: string; subject?: string; text: string; receivedAt: string; inReplyTo?: string; providerLeadId?: string }
+  | {
+      type: "reply";
+      businessId?: string;
+      campaignId?: string;
+      from: string;
+      subject?: string;
+      text: string;
+      receivedAt: string;
+      inReplyTo?: string;
+      providerLeadId?: string;
+      /** RFC Message-ID of their reply (direct mail), so our answer threads under it. */
+      messageId?: string;
+      /** Sequencer: the provider's id for their reply email, and our mailbox that received it. */
+      replyEmailId?: string;
+      toAccount?: string;
+    }
   | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string }
   | { type: "bounce"; businessId?: string; campaignId?: string; email: string; at: string; detail?: string }
   | { type: "unsubscribe"; businessId?: string; campaignId?: string; email: string; at: string }

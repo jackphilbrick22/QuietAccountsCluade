@@ -35,7 +35,7 @@ import { readReplyWithClaude } from "../agents/replies.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
 import type { Accounts } from "./accounts.ts";
-import { localIso } from "./clock.ts";
+import { localHour, localIso } from "./clock.ts";
 import { decrypt, encrypt } from "./crypto.ts";
 
 export interface Deps {
@@ -390,13 +390,27 @@ export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string |
     let reply: Reply | undefined;
     let note: FsmNote | undefined;
     await d.accounts.withAccount(bid, (state) => {
-      reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: ev.receivedAt.slice(0, 19), inReplyTo: ev.inReplyTo }, override);
+      // the engine reasons in the business's local time ("call you today" depends on it)
+      const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
+      reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: ev.inReplyTo }, override);
       if (reply && !["auto_reply", "bounce"].includes(reply.intent)) {
         const name = customerById(state.dataset, reply.customerId)?.name ?? reply.from;
         note = fsmNote(state, reply.customerId, reply.opportunityId, `Quiet Accounts: ${name} replied to our follow-up (${INTENT_WORDS[reply.intent] ?? "replied"}): "${oneLine(reply.text, 400)}"`);
       }
     });
     if (note) queueFsmNote(d, bid, note);
+    const hot = reply as Reply | undefined;
+    if (hot?.ack && !hot.ack.sentAt) {
+      const task = { replyId: hot.id, to: email ?? ev.from, subject: ev.subject ?? "", messageId: ev.messageId ?? "", replyEmailId: ev.replyEmailId ?? "", toAccount: ev.toAccount ?? "" };
+      const tz = d.accounts.peek(bid)?.state.dataset.business.timezone ?? "America/New_York";
+      const hour = localHour(d.clock(), tz);
+      if (hour >= 7 && hour < 20) await sendAck(d, bid, task);
+      else {
+        // nobody wants a 2am "thanks" — send it at 7:30 local
+        const wait = ((24 - hour + 7) % 24) * 3600_000 + 30 * 60_000;
+        d.accounts.repo.enqueue("reply.ack", task, { businessId: bid, runAt: new Date(d.clock().getTime() + wait).toISOString() });
+      }
+    }
     if (reply && d.email.kind === "sequencer" && email) {
       const reason = reply.intent === "stop" ? "unsubscribed" : reply.intent === "complaint" ? "complained" : reply.intent === "bounce" ? "bounced" : "replied";
       await stopEverywhere(d, bid, email, reason);
@@ -712,4 +726,57 @@ export function parseBusyUntil(t: string, today: string): string {
 function fmtDay(iso: string): string {
   const [, m, d] = iso.split("-").map(Number) as [number, number, number];
   return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`;
+}
+
+/* ------------------------- instant answer to hot replies ------------------------- */
+
+export interface AckTask {
+  replyId: string;
+  to: string;
+  subject: string;
+  messageId: string;
+  replyEmailId: string;
+  toAccount: string;
+}
+
+/** Send the instant answer in the homeowner's thread. Failures are recorded; the owner's text already went. */
+export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void> {
+  const state = d.accounts.peek(bid)?.state;
+  const r = state?.replies.find((x) => x.id === task.replyId);
+  if (!state || !r?.ack || r.ack.sentAt) return;
+  if (r.ownerContactedAt) return; // the owner already got to them — no need
+  const b = state.dataset.business;
+  const subject = /^re:/i.test(task.subject) ? task.subject : `Re: ${task.subject || "your note"}`;
+  let error: string | undefined;
+  try {
+    if (d.email.kind === "direct") {
+      const c = customerById(state.dataset, r.customerId);
+      await d.email.send({
+        businessId: bid,
+        touchId: `ack_${r.id}`,
+        customerId: r.customerId ?? "",
+        to: task.to,
+        toName: c?.name ?? "",
+        fromName: `${b.signerName} at ${b.name}`,
+        replyTo: b.replyTo,
+        subject,
+        text: r.ack.text,
+        inReplyTo: task.messageId || undefined,
+        references: task.messageId ? [task.messageId] : undefined,
+      });
+    } else if (d.email.replyTo && task.replyEmailId && task.toAccount) {
+      await d.email.replyTo(b, { replyEmailId: task.replyEmailId, account: task.toAccount, to: task.to, subject }, r.ack.text);
+    } else {
+      error = "No thread to answer in";
+    }
+  } catch (e) {
+    error = (e as Error).message;
+  }
+  await d.accounts.withAccount(bid, (s) => {
+    const live = s.replies.find((x) => x.id === r.id);
+    if (!live?.ack) return;
+    if (error) live.ack.error = error;
+    else live.ack.sentAt = nowLocal(d, s);
+  });
+  if (error) d.log(`[ack] ${bid} ${r.id}: ${error}`);
 }

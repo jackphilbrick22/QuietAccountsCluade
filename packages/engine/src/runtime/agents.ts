@@ -6,7 +6,7 @@ import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { closeMessage, guaranteeCheck, handoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
+import { ackFor, closeMessage, guaranteeCheck, handoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
 import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
@@ -149,7 +149,8 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   const day = now.slice(0, 10);
   const due: DueTouch[] = [];
   const held: { touch: Touch; why: string }[] = [];
-  const replied = new Set(state.replies.filter((r) => r.customerId).map((r) => r.customerId!));
+  // an out-of-office or a bounce isn't the person writing back
+  const replied = new Set(state.replies.filter((r) => r.customerId && r.intent !== "auto_reply" && r.intent !== "bounce").map((r) => r.customerId!));
   const health = sendHealth(state);
   for (const t of state.touches) {
     if (t.status !== "approved" || t.dueAt > local) continue;
@@ -256,9 +257,16 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     ? { ...base, intent: override.intent, confidence: override.confidence, summary: override.summary ?? base.summary, extracted: { ...base.extracted, ...override.extracted } }
     : base;
   const email = extractEmails(msg.from)[0] ?? msg.from.toLowerCase();
-  const c = customerByEmail(state.dataset, email);
+  const sender = customerByEmail(state.dataset, email);
+  const answered = msg.inReplyTo ? state.touches.find((t) => t.providerId === msg.inReplyTo) : undefined;
+  // A bounce comes from the mail system, not the person: find them by the note it answers, or the address it names.
+  const bounced =
+    reading.intent === "bounce" && !sender
+      ? (answered && customerById(state.dataset, answered.customerId)) || extractEmails(msg.text).map((e) => customerByEmail(state.dataset, e)).find(Boolean)
+      : undefined;
+  const c = sender ?? bounced;
   const touch = msg.inReplyTo
-    ? state.touches.find((t) => t.providerId === msg.inReplyTo)
+    ? answered
     : state.touches.filter((t) => t.customerId === c?.id && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
   const r: Reply = {
     id: makeId("r", email, now, msg.text.slice(0, 40)),
@@ -287,10 +295,12 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     return r;
   }
   if (r.intent === "bounce") {
-    state.suppressions[email] = "bounced";
+    // the dead address is the one we wrote to, not the mailer-daemon's
+    const dead = bounced ? (bounced.emails.find((e) => msg.text.toLowerCase().includes(e)) ?? bounced.emails.find((e) => !state.suppressions[e]) ?? email) : email;
+    state.suppressions[dead] = "bounced";
     if (c) stopSequence(state, c.id);
     r.status = "done";
-    event(state, now, "guard", "info", `Bad address for ${name} — removed`, email);
+    event(state, now, "guard", "info", `Bad address for ${name} — removed`, dead);
     return r;
   }
   if (r.intent === "auto_reply") {
@@ -301,6 +311,8 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   if (c) stopSequence(state, c.id);
 
   if (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") {
+    const ack = ackFor(state, r);
+    if (ack) r.ack = ack;
     const text = handoffText(state, r);
     ownerMsg(state, now, "handoff", text, c ? [{ kind: "customer", id: c.id }] : undefined);
     r.status = "handed_off";

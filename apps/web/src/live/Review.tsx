@@ -121,8 +121,13 @@ function Item({ it }: { it: ReviewItem }) {
       {it.kind === "flagged_note" && (
         <>
           <div className="text-[14px]">
-            Note {it.step} to <b>{it.name || "a customer"}</b> failed a quality check: <span className="text-warn">{it.flags.join("; ")}</span>
+            Note {it.step} to <b>{it.name || "a customer"}</b> failed a quality check:
           </div>
+          <ul className="list-disc pl-5 text-[12.5px] text-warn">
+            {it.flags.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
           {editing ? (
             <NoteEditor bid={bid} touch={{ id: it.touchId, subject: it.subject, body: it.body, status: it.status, flags: it.flags }} onDone={() => setEditing(false)} />
           ) : (

@@ -517,7 +517,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
       return c.json({ ok: true, imported: res });
     }
     try {
-      const bid = await handleInbound(d, { type: "reply", from, subject, text, receivedAt: new Date(String(body.Date ?? d.clock().toISOString())).toISOString(), inReplyTo });
+      const messageId = headers.find((h) => /^message-id$/i.test(h.Name))?.Value ?? (body["Message-ID"] as string | undefined);
+      const bid = await handleInbound(d, { type: "reply", from, subject, text, receivedAt: new Date(String(body.Date ?? d.clock().toISOString())).toISOString(), inReplyTo, messageId });
       repo.finishWebhook(id, bid ? "processed" : "ignored", bid);
     } catch (e) {
       repo.finishWebhook(id, "failed", undefined, (e as Error).message);

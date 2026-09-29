@@ -257,6 +257,8 @@ export interface BusinessProfile {
    * three weeks before it, so replies arrive when there's room on the schedule.
    */
   bookedOutUntil?: ISODate;
+  /** Answer hot replies right away on the owner's behalf (default on). */
+  autoAck?: boolean;
   /** How the notes read. */
   voice: {
     /** Put the original price in the first note. Off by default (it re-triggers sticker shock). */
@@ -464,6 +466,11 @@ export interface Reply {
   ownerContactedAt?: ISODateTime;
   outcome?: "booked" | "quoted" | "lost" | "no_answer";
   outcomeValue?: Money;
+  /**
+   * The instant answer we sent back ("Thanks Mark, Dave will call you today"), so a hot lead never sits
+   * in silence while the owner is up a tree. `promise` is what the owner is now on the hook for.
+   */
+  ack?: { text: string; promise: string; sentAt?: ISODateTime; error?: string };
 }
 
 export interface ReplyExtract {

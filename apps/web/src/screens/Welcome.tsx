@@ -28,11 +28,11 @@ export function Welcome() {
               </span>
             )}
             <Button variant="ghost" size="sm" aria-label="Demo console" className="whitespace-nowrap" onClick={() => (order.length ? go({ area: "ops", tab: "overview" }) : void seedDemo().then(() => go({ area: "ops", tab: "overview" })))}>
-              <LayoutGrid size={15} /> <span className="hidden sm:inline">Demo console</span>
+              <LayoutGrid size={15} className="hidden sm:inline" /> <span className="hidden sm:inline">Demo console</span>
               <span className="sm:hidden">Demo</span>
             </Button>
             <Button variant="navy" size="sm" aria-label="Operator sign-in" className="whitespace-nowrap" onClick={() => go({ area: "live", tab: "clients" })}>
-              <KeyRound size={15} /> <span className="hidden sm:inline">Operator sign-in</span>
+              <KeyRound size={15} className="hidden sm:inline" /> <span className="hidden sm:inline">Operator sign-in</span>
               <span className="sm:hidden">Sign in</span>
             </Button>
           </div>

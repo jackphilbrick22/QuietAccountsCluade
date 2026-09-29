@@ -159,6 +159,12 @@ describe("end to end", () => {
     expect(text).toMatch(/Wants it done/);
     expect(text).toMatch(/\(603\) 555-0142/);
     expect(text).toMatch(/#[A-Z0-9]{3}/);
+    // they got an instant answer in their thread (Saturday, so the promise is Monday, not "today")
+    const ack = d.email.sent.at(-1)!;
+    expect(ack.to).toBe(target.to);
+    expect(ack.subject).toMatch(/^Re: /);
+    expect(ack.text).toMatch(/Dave, who'll give you a call at \(603\) 555-0142 on Monday/);
+    expect(text).toContain("We already wrote back that you'll call them on Monday.");
     // the same webhook again is ignored (idempotent)
     const dup = await app.request(`/webhooks/inbound-email/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ MessageID: "m-yes-1", From: target.to, Subject: "x", TextBody: "Yes" }) });
     expect(((await dup.json()) as { duplicate?: boolean }).duplicate).toBe(true);

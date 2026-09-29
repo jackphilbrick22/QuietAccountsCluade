@@ -44,6 +44,7 @@ import type { BusinessProfile } from "@qa/engine";
 import type { Fetch, SequencerProvider } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import {
+  toInstantlyHtml,
   MAX_LEADS_PER_REQUEST,
   buildCampaignBody,
   campaignName,
@@ -341,6 +342,18 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
           if (!(e instanceof ProviderError && e.status === 404)) throw e;
         }
       }
+    },
+
+    // POST /emails/reply: answer in the same thread from the mailbox that received it. `to` makes Instantly
+    // check the thread's recipient before sending, so a wrong id can never mail the wrong person.
+    async replyTo(_business, thread, text) {
+      await client.post("/emails/reply", {
+        reply_to_uuid: thread.replyEmailId,
+        eaccount: thread.account,
+        subject: thread.subject,
+        to: thread.to,
+        body: { text, html: toInstantlyHtml(text) },
+      });
     },
 
     async pauseCampaign(_business, campaignId, paused) {

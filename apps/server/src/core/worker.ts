@@ -1,6 +1,6 @@
 import { billingCheck, chase, closeIfDue, find, isoWeekKey, reportWeek } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { deliverOwnerMessages, handleInbound, plan, sendDue, syncFsm, writeFsmNote, type Deps } from "./ops.ts";
+import { deliverOwnerMessages, handleInbound, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
 /**
  * The heartbeat. Every minute, for every business, in its own local time:
@@ -108,6 +108,7 @@ export async function runTasks(d: Deps, report?: TickReport): Promise<void> {
       const p = JSON.parse(t.payload) as Record<string, string>;
       if (t.type === "jobber.sync" && t.business_id) await syncFsm(d, t.business_id, "jobber");
       else if (t.type === "inbound.retry") await handleInbound(d, JSON.parse(p.event!));
+      else if (t.type === "reply.ack" && t.business_id) await sendAck(d, t.business_id, p as unknown as AckTask);
       else if (t.type === "jobber.note" && t.business_id) await writeFsmNote(d, t.business_id, { kind: p.kind as "quote" | "client", sourceId: p.sourceId!, text: p.text! });
       else if (t.type === "sequencer.stop" && d.email.kind === "sequencer" && p.bid) {
         const state = d.accounts.peek(p.bid)?.state;

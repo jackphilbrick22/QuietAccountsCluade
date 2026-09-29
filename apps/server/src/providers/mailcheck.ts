@@ -8,10 +8,10 @@ export type MailCheck = (domain: string) => Promise<MailCheckResult>;
  * sites); every one is a guaranteed bounce, and bounces are what get a sender throttled. Checked once per
  * domain per day. Lookup failures other than "doesn't exist" come back "unknown" and never block a send.
  */
-export function createMailCheck(opts: { ttlMs?: number; lookupMx?: typeof resolveMx; lookupA?: typeof resolve4 } = {}): MailCheck {
+export function createMailCheck(opts: { ttlMs?: number; lookupMx?: (d: string) => Promise<{ exchange: string; priority: number }[]>; lookupA?: (d: string) => Promise<string[]> } = {}): MailCheck {
   const ttl = opts.ttlMs ?? 24 * 3600_000;
   const mx = opts.lookupMx ?? resolveMx;
-  const a = opts.lookupA ?? resolve4;
+  const a = opts.lookupA ?? ((d: string) => resolve4(d));
   const cache = new Map<string, { at: number; result: MailCheckResult }>();
   const gone = (e: unknown) => ["ENOTFOUND", "ENODATA", "NXDOMAIN"].includes((e as { code?: string }).code ?? "");
   return async (domain) => {

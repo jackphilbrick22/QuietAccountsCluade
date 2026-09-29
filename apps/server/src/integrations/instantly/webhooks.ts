@@ -161,7 +161,7 @@ export function parseInstantlyWebhook(body: unknown, now: Date = new Date()): In
 
   if (REPLY_EVENTS.has(type)) {
     const text = str(p.reply_text) ?? (str(p.reply_html) ? htmlToText(p.reply_html!) : undefined) ?? str(p.reply_text_snippet) ?? "";
-    return { type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at };
+    return { type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at, replyEmailId: str(p.email_id), toAccount: str(p.email_account) };
   }
   switch (type) {
     case "email_sent":

@@ -53,12 +53,48 @@ export function handoffText(state: AccountState, r: Reply): string {
     `${tradeMark(b)} NEW — ${name}${street}`,
     o ? `Original: ${o.anchorDate ? spokenWhen(o.anchorDate, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
     staleNote(b, o, r.receivedAt.slice(0, 10)),
+    r.ack ? `We already wrote back that ${r.ack.promise}.` : "",
     `They said: “${oneLine(r.text, 160)}”`,
     `Best contact: ${r.extracted.phone ? fmtPhone(r.extracted.phone) : c?.phones[0] ? fmtPhone(c.phones[0]) : c?.emails[0] ?? r.from}${r.extracted.bestTime ? ` (${r.extracted.bestTime})` : ""}`,
     `Wants: ${wantsLine(r)}`,
     `Text back BOOKED + amount, DONE, or NO · #${leadCode(r.id)}`,
   ].filter(Boolean);
   return lines.join("\n");
+}
+
+const WEEKDAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * The instant answer to a hot reply, in the signer's voice. It promises only a call-back window the owner
+ * can keep (today if it's before 3pm, else the next weekday) — never a price, a date or a discount.
+ */
+export function ackFor(state: AccountState, r: Reply): { text: string; promise: string } | undefined {
+  const b = state.dataset.business;
+  if (b.autoAck === false) return undefined;
+  if (!(r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question")) return undefined;
+  const c = state.dataset.customers.find((x) => x.id === r.customerId);
+  if (!c) return undefined;
+  const first = c.firstName && !/^(customer|client|owner|resident|homeowner)$/i.test(c.firstName) ? c.firstName : "";
+  const hour = Number(r.receivedAt.slice(11, 13));
+  const today = r.receivedAt.slice(0, 10);
+  let when = "today";
+  if (hour >= 15 || [0, 6].includes(new Date(`${today}T12:00:00Z`).getUTCDay())) {
+    let d = addDays(today, 1);
+    while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay())) d = addDays(d, 1);
+    when = d === addDays(today, 1) ? "tomorrow" : `on ${WEEKDAY[new Date(`${d}T12:00:00Z`).getUTCDay()]}`;
+  }
+  const isOwner = b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase();
+  const at = r.extracted.phone ? ` at ${fmtPhone(r.extracted.phone)}` : "";
+  const hi = first ? `Thanks ${first}.` : "Thanks.";
+  const who = isOwner ? "I'll" : `I've passed this to ${b.ownerFirstName}, who'll`;
+  const body =
+    r.intent === "question"
+      ? `${first ? `Thanks ${first}, good question.` : "Good question."} ${isOwner ? "I'll get back to you" : `I've passed it to ${b.ownerFirstName}, who'll get back to you`} ${when}.`
+      : r.intent === "wants_price"
+        ? `${hi} ${who} give you a call${at} ${when} to go over it and get you an updated price.`
+        : `${hi} ${who} give you a call${at} ${when} to get it on the schedule.`;
+  const promise = r.intent === "question" ? `you'll get back to them ${when}` : `you'll call them ${when}`;
+  return { text: `${body}\n\n${b.signerName}\n${b.name}`, promise };
 }
 
 /** Old quotes get re-priced, not honored by accident. */

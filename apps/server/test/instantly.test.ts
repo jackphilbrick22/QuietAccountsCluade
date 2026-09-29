@@ -557,6 +557,8 @@ describe("parseInstantlyWebhook", () => {
       subject: "Re: the oak by the driveway",
       text: "Yes! Can you come Thursday? Afternoons are best.\n\nOn Mon, Oct 5, 2026 Sarah wrote:\n> Hi Pat,",
       receivedAt: "2026-10-06T14:03:11.000Z",
+      replyEmailId: "0199b1a2-reply",
+      toAccount: base.email_account,
     });
     expect(isInstantlyAutoReply(body)).toBe(false);
   });
