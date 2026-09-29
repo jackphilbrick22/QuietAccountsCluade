@@ -222,6 +222,7 @@ export const MSG_KIND: Record<string, string> = {
   close: "Free round results",
   precharge: "Before a charge",
   free_month: "Free month",
+  kickoff: "Welcome text",
   info: "Heads up",
 };
 
