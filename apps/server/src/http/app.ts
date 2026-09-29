@@ -10,6 +10,7 @@ import {
   weekNumbers,
   mondayOf,
   readiness,
+  relabelReply,
   type AccountState,
   type BusinessProfile,
   type FileIn,
@@ -306,6 +307,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.post("/businesses/:id/replies/:rid/outcome", async (c) => {
     const body = Outcome.parse(await c.req.json());
     await logOutcome(c.req.param("id"), c.req.param("rid"), body.outcome, body.value);
+    return c.json({ ok: true });
+  });
+
+  // A person sorts a reply the rules couldn't place; the same dispatch runs (yes → owner text, stop → suppress).
+  const Intent = z.object({ intent: z.enum(["wants_it", "wants_price", "question", "later", "already_done", "not_interested", "moved", "wrong_person", "stop", "complaint", "auto_reply", "bounce", "unclear"]) });
+  op.post("/businesses/:id/replies/:rid/intent", async (c) => {
+    const { intent } = Intent.parse(await c.req.json());
+    const bid = c.req.param("id");
+    let found = false;
+    await d.accounts.withAccount(bid, (state) => {
+      found = !!relabelReply(state, c.req.param("rid"), intent, localIso(d.clock(), state.dataset.business.timezone).slice(0, 19));
+    });
+    if (!found) return c.json({ error: "No such reply" }, 404);
+    repo.audit(bid, c.get("actor") ?? "operator", "reply.intent", { rid: c.req.param("rid"), intent });
+    await deliverOwnerMessages(d, bid);
     return c.json({ ok: true });
   });
 

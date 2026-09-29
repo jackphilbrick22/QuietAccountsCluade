@@ -479,3 +479,35 @@ export function setBookedOut(state: AccountState, until: string | undefined, now
   state.updatedAt = now;
   return { moved };
 }
+
+/**
+ * A person read a reply the rules couldn't place ("unclear") and says what it means. The same dispatch runs
+ * as for a reply read automatically: a yes goes to the owner, a stop suppresses everywhere.
+ */
+export function relabelReply(state: AccountState, replyId: string, intent: Reply["intent"], now: ISODateTime): Reply | undefined {
+  const r = state.replies.find((x) => x.id === replyId);
+  if (!r) return undefined;
+  const c = customerById(state.dataset, r.customerId);
+  const name = c?.name ?? r.from;
+  const refs = c ? [{ kind: "customer" as const, id: c.id }] : undefined;
+  r.intent = intent;
+  r.confidence = 1;
+  if (c) stopSequence(state, c.id);
+  if (intent === "stop" || intent === "complaint" || intent === "bounce") {
+    state.suppressions[r.from] = intent === "complaint" ? "complained" : intent === "bounce" ? "bounced" : "unsubscribed";
+    r.status = "done";
+    event(state, now, "guard", "action", `${name} — removed everywhere (sorted by a person)`, undefined, refs);
+  } else if (intent === "wants_it" || intent === "wants_price" || intent === "question") {
+    if (r.status !== "handed_off") {
+      r.status = "handed_off";
+      r.handedOffAt = now;
+      ownerMsg(state, now, "handoff", handoffText(state, r), refs);
+    }
+    event(state, now, "dispatcher", "win", `${name} ${intent === "wants_it" ? "wants it done" : intent === "wants_price" ? "wants a price" : "has a question"} — texted to you`, "Sorted by a person.", refs);
+  } else {
+    r.status = "done";
+    event(state, now, "inbox", "info", `${name}: marked "${intent.replace(/_/g, " ")}" by a person`, undefined, refs);
+  }
+  state.updatedAt = now;
+  return r;
+}

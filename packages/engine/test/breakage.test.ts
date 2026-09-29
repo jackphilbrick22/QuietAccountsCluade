@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { scan, type ScanResult } from "../src/breakage/detect.ts";
-import { closeRate, summarize } from "../src/breakage/forecast.ts";
+import { closeRate, silentAudit, summarize } from "../src/breakage/forecast.ts";
 import { shopProfile } from "../src/breakage/profile.ts";
 import { readiness } from "../src/breakage/readiness.ts";
 import { ADJUST, BAND, TYPE_RANK } from "../src/breakage/assumptions.ts";
@@ -465,6 +465,79 @@ describe("scoring", () => {
     expect(fresh.recoverProbability).toBeGreaterThan(stale.recoverProbability);
     expect(fresh.score).toBeGreaterThan(stale.score);
   });
+
+  describe("lead source", () => {
+    /** The same quote for a customer from `source` and one with no source on file. */
+    const bySource = (source: string) => {
+      const r = scan(dataset({ customers: [customer("a", { leadSource: source }), customer("b")], quotes: [quote("qa", "a"), quote("qb", "b")] }));
+      return oneOpp(r, "a", "unanswered_quote").recoverProbability / oneOpp(r, "b", "unanswered_quote").recoverProbability;
+    };
+    it("referrals and repeat clients are more likely to come back", () => {
+      expect(bySource("Referral")).toBeCloseTo(ADJUST.referral, 1);
+      expect(bySource("Repeat")).toBeCloseTo(ADJUST.referral, 1);
+      expect(bySource("Word of mouth")).toBeCloseTo(ADJUST.referral, 1);
+    });
+    it("shared-marketplace leads are less likely", () => {
+      expect(bySource("HomeAdvisor")).toBeCloseTo(ADJUST.marketplace, 1);
+      expect(bySource("Angi")).toBeCloseTo(ADJUST.marketplace, 1);
+      expect(bySource("Thumbtack")).toBeCloseTo(ADJUST.marketplace, 1);
+    });
+    it("other sources don't move it", () => {
+      expect(bySource("Google")).toBeCloseTo(1, 2);
+      expect(bySource("Yard sign")).toBeCloseTo(1, 2);
+    });
+  });
+});
+
+describe("caution holds", () => {
+  /** Twelve ordinary crown-thinning quotes around $1,000, plus whatever the test adds. */
+  const shop = (extra: Parameters<typeof quote>[2] & { customer?: Partial<Customer> } = {}, ordinary = 12) => {
+    const { customer: who, ...q } = extra;
+    const customers = [customer("odd", who), ...Array.from({ length: ordinary }, (_, i) => customer(`c${i}`))];
+    const quotes = [quote("q-odd", "odd", q), ...Array.from({ length: ordinary }, (_, i) => quote(`q${i}`, `c${i}`, { total: 800 + i * 40 }))];
+    return dataset({ customers, quotes });
+  };
+  const odd = (r: ScanResult) => oneOpp(r, "odd", "unanswered_quote");
+
+  it("an ordinary quote goes ahead", () => {
+    expect(odd(scan(shop({ total: 1100 }))).caution).toBeUndefined();
+  });
+  it("a quote priced far outside what this shop charges for that work is held for a look", () => {
+    const o = odd(scan(shop({ total: 9000 })));
+    expect(o.caution).toHaveLength(1);
+    expect(o.caution![0]).toMatch(/^Priced \d+x your usual for this work/);
+    expect(o.suppressed).toBeUndefined(); // held, not thrown away
+  });
+  it("needs enough of the shop's own quotes for that work to judge the price", () => {
+    expect(odd(scan(shop({ total: 9000 }, 8))).caution).toBeUndefined();
+  });
+  it("holds quotes that were never a real bid: realtors, HOAs, insurance, ballparks", () => {
+    expect(odd(scan(shop({ title: "Crown thinning, 3 maples - estimate for realtor" }))).caution![0]).toMatch(/^Mentions "realtor"/);
+    expect(odd(scan(shop({ title: "Ballpark: crown thinning" }))).caution![0]).toMatch(/Mentions "Ballpark"/);
+    expect(odd(scan(shop({ customer: { companyName: "Maple Village HOA" } }))).caution![0]).toMatch(/Mentions "HOA"/);
+    expect(odd(scan(shop({ customer: { tags: ["insurance claim"] } }))).caution![0]).toMatch(/Mentions "insurance claim"/);
+  });
+  it("an operator can clear the hold", () => {
+    const d = shop({ total: 9000 });
+    const held = odd(scan(d));
+    expect(odd(scan(d, { cleared: [held.id] })).caution).toBeUndefined();
+  });
+  it("only dead quotes are judged on price", () => {
+    const d = shop();
+    d.quotes[0] = quote("q-odd", "odd", { status: "approved", approvedOn: ago(30), total: 9000 });
+    expect(oneOpp(scan(d), "odd", "approved_unscheduled").caution).toBeUndefined();
+  });
+  it("suppressed people aren't flagged too", () => {
+    expect(odd(scan(shop({ total: 9000, customer: { doNotContact: true } }))).caution).toBeUndefined();
+  });
+  it("people tagged as bad customers are never contacted", () => {
+    for (const tag of ["Do not service", "Blacklisted", "bad payer", "sent to collections"]) {
+      const r = scan(dataset({ customers: [customer("c1", { tags: [tag] })], quotes: [quote("q1", "c1", { sentOn: ago(200) })] }));
+      expect(oneOpp(r, "c1", "unanswered_quote").suppressed, tag).toBe("do_not_contact");
+    }
+    const ok = scan(dataset({ customers: [customer("c1", { tags: ["VIP", "Referral"] })], quotes: [quote("q1", "c1", { sentOn: ago(200) })] }));
+    expect(oneOpp(ok, "c1", "unanswered_quote").suppressed).toBeUndefined();
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -538,6 +611,54 @@ describe("summarize and fitCheck", () => {
     expect(s.fit.checks.find((c) => c.id === "payback")?.ok).toBe(false);
     expect(s.closeRate).toBeUndefined(); // too few quotes to say
     expect(s.fit.headline).toMatch(/Not enough/);
+  });
+});
+
+describe("silentAudit", () => {
+  const shop = () =>
+    dataset({
+      quotes: [
+        quote("w1", "a", { status: "converted", total: 2000, sentOn: ago(100) }),
+        quote("w2", "a", { status: "approved", total: 1000, sentOn: ago(50) }),
+        quote("d1", "b", { status: "declined", total: 700, sentOn: ago(200) }),
+        quote("c1", "c", { status: "changes_requested", total: 900, sentOn: ago(40) }),
+        quote("s1", "d", { status: "awaiting_response", total: 500, sentOn: ago(30) }),
+        quote("s2", "e", { status: "archived", total: 1500, sentOn: ago(150) }),
+        quote("s3", "f", { status: "expired", total: 1200, sentOn: ago(400) }),
+        quote("s4", "g", { status: "awaiting_response", total: 800, sentOn: ago(900) }),
+        // not counted: too new to call, and never sent
+        quote("new", "h", { total: 5000, sentOn: ago(5) }),
+        quote("draft", "i", { status: "draft", total: 5000, sentOn: ago(60) }),
+      ],
+    });
+  it("splits the shop's own quotes into won, said no, changes ignored and never answered", () => {
+    const a = silentAudit(shop());
+    expect(a.sent).toEqual({ count: 8, value: 8600 });
+    expect(a.won).toEqual({ count: 2, value: 3000 });
+    expect(a.declined).toEqual({ count: 1, value: 700 });
+    expect(a.changesIgnored).toEqual({ count: 1, value: 900 });
+    expect(a.silent).toEqual({ count: 4, value: 4000 });
+    // of the 6 that didn't become work, 4 never got an answer
+    expect(a.silentShareOfLost).toBe(0.67);
+    expect(a.headline).toBe("Of 6 quotes that didn't turn into work, 4 (67%) never got a yes or a no — $4,000 that wasn't lost on price. Nobody answered.");
+  });
+  it("buckets the silent ones by age, newest first", () => {
+    expect(silentAudit(shop()).byAge).toEqual([
+      { label: "Last 3 months", count: 1, value: 500 },
+      { label: "3–6 months", count: 1, value: 1500 },
+      { label: "6–12 months", count: 0, value: 0 },
+      { label: "1–2 years", count: 1, value: 1200 },
+      { label: "Over 2 years", count: 1, value: 800 },
+    ]);
+  });
+  it("says so when every quote got an answer", () => {
+    const a = silentAudit(dataset({ quotes: [quote("w", "a", { status: "converted" }), quote("d", "b", { status: "declined" })] }));
+    expect(a.silent.count).toBe(0);
+    expect(a.headline).toBe("Every quote got an answer. That's rare.");
+  });
+  it("is part of the summary", () => {
+    const ds = shop();
+    expect(summarize(ds, scan(ds)).audit).toEqual(silentAudit(ds));
   });
 });
 

@@ -2,7 +2,7 @@ import type { BusinessProfile, Dataset, ISODate, TradeId } from "../model.ts";
 import { emptyDataset, ingestFile, toCSV } from "../ingest/index.ts";
 import { playbook } from "../trades/index.ts";
 import { addDays, addMonths, daysBetween, monthOf, rng } from "../util.ts";
-import { CATALOG, EMAIL_DOMAINS, FIRST_NAMES, LAST_NAMES, STREETS, TOWNS, type CatalogItem } from "./catalog.ts";
+import { CATALOG, EMAIL_DOMAINS, FIRST_NAMES, LAST_NAMES, RECURRING_VISIT, STREETS, TOWNS, type CatalogItem } from "./catalog.ts";
 
 export interface SampleOptions {
   trade: TradeId;
@@ -139,7 +139,8 @@ export function generateSample(opts: SampleOptions): Sample {
   const qpm = opts.quotesPerMonth ?? (trade === "septic" ? 48 : trade === "lawn" ? 55 : trade === "pressure_washing" ? 60 : 58);
   const start = addMonths(opts.asOf, -months);
   const salespeople = [opts.ownerName ?? "Dave Ridge", "Marcus Hale"];
-  const recurring = trade === "lawn" || trade === "pressure_washing";
+  const visit = RECURRING_VISIT[trade];
+  const recurring = !!visit;
 
   const business: BusinessProfile = {
     id: `demo-${trade}`,
@@ -373,11 +374,11 @@ export function generateSample(opts: SampleOptions): Sample {
   if (recurring) {
     const regulars = clients.slice(0, Math.min(60, clients.length));
     for (const c of regulars) {
-      const every = trade === "lawn" ? 14 : 180;
+      const every = visit!.everyDays;
       let d = addDays(start, Math.floor(r() * 60));
       const stopAt = r() < 0.4 ? addDays(opts.asOf, -Math.floor(120 + r() * 300)) : opts.asOf;
       while (d < stopAt && d < addDays(opts.asOf, -3)) {
-        addJob(c, trade === "lawn" ? "Mowing visit" : "House wash - soft wash", trade === "lawn" ? 55 : 425, d, undefined, "Recurring");
+        addJob(c, visit!.title, visit!.price, d, undefined, "Recurring");
         d = addDays(d, every);
       }
     }

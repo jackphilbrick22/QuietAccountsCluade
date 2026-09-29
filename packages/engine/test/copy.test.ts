@@ -150,6 +150,14 @@ describe("stale-quote guard", () => {
   it("a fresh quote leaves the price out by default", () => {
     for (const { c, o, ds } of quotes(60, false)) expect(renderNote(o, c, { ds, sendOn: ASOF }, 1)!.body).not.toMatch(/\$/);
   });
+  it("the owner can move the line", () => {
+    const at120 = quotes(120, true).find((x) => !x.c.address)!;
+    expect(renderNote(at120.o, at120.c, { ds: at120.ds, sendOn: ASOF }, 1)!.body).toContain("($2,400)");
+    const strict = { ...at120.ds, business: { ...at120.ds.business, voice: { ...at120.ds.business.voice, staleQuoteDays: 90 } } };
+    const n = renderNote(at120.o, at120.c, { ds: strict, sendOn: ASOF }, 1)!;
+    expect(n.body).not.toMatch(/\$/);
+    expect(n.body).toMatch(/fresh look/);
+  });
   it("the line is at 180 days: 180 still shows the price, 181 does not", () => {
     const at180 = quotes(180, true).find((x) => !x.c.address)!;
     const at181 = quotes(181, true).find((x) => !x.c.address)!;
@@ -195,6 +203,17 @@ describe("crew nearby", () => {
     expect(n.body).toContain("crew working on Oak Ln the week of January 18");
     expect(n.flags).toEqual([]);
   });
+  it("offers no open days while the owner is booked out, but a crew on the street is still true", () => {
+    const c = customer("c1", { address: { street: "14 Oak Ln", city: "Concord", state: "NH", zip: "03301" } });
+    const booked = dataset({ customers: [c], business: { openCrewWeeks: ["2026-10-05"], bookedOutUntil: "2026-12-15" } });
+    expect(crewLine(booked, c, ASOF)).toBeUndefined();
+    const street = dataset({
+      customers: [c, customer("c2", { address: { street: "9 Oak Ln", city: "Concord", state: "NH", zip: "03301" } })],
+      jobs: [job("j2", "c2", { status: "scheduled", scheduledOn: "2026-10-07", completedOn: undefined })],
+      business: { bookedOutUntil: "2026-12-15" },
+    });
+    expect(crewLine(street, c, ASOF)).toMatch(/crew working on Oak Ln/);
+  });
   it("crew lines come only from the real schedule or the owner's open weeks", () => {
     const c = customer("c1", { address: { street: "14 Oak Ln", city: "Concord", state: "NH", zip: "03301" } });
     expect(crewLine(dataset({ customers: [c] }), c, ASOF)).toBeUndefined();
@@ -209,6 +228,22 @@ describe("crew nearby", () => {
     // more than three weeks out doesn't count
     const far = dataset({ customers: [c, customer("c2", { address: { street: "9 Oak Ln", city: "Concord", state: "NH", zip: "03301" } })], jobs: [job("j2", "c2", { status: "scheduled", scheduledOn: "2026-11-30", completedOn: undefined })] });
     expect(crewLine(far, c, ASOF)).toBeUndefined();
+  });
+});
+
+describe("the easy out", () => {
+  it("first notes on a dead quote let them say no in one word", () => {
+    const customers = Array.from({ length: 10 }, (_, i) => customer(`c${i}`, { address: undefined }));
+    const ds = dataset({ customers, quotes: customers.map((c) => quote(`q-${c.id}`, c.id)) });
+    const r = scan(ds);
+    const ids = new Set<string>();
+    for (const c of customers) {
+      const n = renderNote(oneOpp(r, c.id, "unanswered_quote"), c, { ds, sendOn: ASOF }, 1)!;
+      ids.add(n.templateId);
+      expect(n.body).toContain('reply "pass" and I\'ll close it out');
+      expect(n.flags).toEqual([]);
+    }
+    expect(ids.size).toBeGreaterThan(1); // both opener variants carry it
   });
 });
 
@@ -274,6 +309,17 @@ describe("lint", () => {
   it("does not mistake a plain number for a stat", () => {
     expect(bannedStatIn("We did 3 oaks on your street.")).toBeUndefined();
     expect(lint(SUBJECT, note("We did 3 oaks on your street last week."), ctx)).toEqual([]);
+  });
+  it.each([
+    ["I hope this email finds you well.", "I hope this email finds you well"],
+    ["As a valued customer, we wanted to write.", "valued customer"],
+    ["I wanted to touch base.", "touch base"],
+    ["We can circle back next week.", "circle back"],
+    ["Don't hesitate to call.", "Don't hesitate to"],
+    ["I'm reaching out about it.", "I'm reaching out"],
+    ["Reply at your earliest convenience.", "at your earliest convenience"],
+  ])("flags canned phrasing: %s", (sentence, phrase) => {
+    expect(lint(SUBJECT, note(sentence), ctx)).toEqual([`Sounds canned: "${phrase}"`]);
   });
   it("flags links, exclamation marks, missing footer lines and long subjects", () => {
     expect(lint(SUBJECT, note("See www.ridgeline.com for photos."), ctx)).toContain("Has a link — plain notes without links land in the inbox and read like a person");

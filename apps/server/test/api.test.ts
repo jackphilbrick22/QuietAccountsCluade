@@ -163,3 +163,29 @@ describe("operator console reads", () => {
     expect(after.items.map((i) => i.kind)).toEqual(["unclear"]);
   });
 });
+
+describe("sorting an unclear reply", () => {
+  it("a person marks it a yes and the owner gets the hand-off text", async () => {
+    const t = await api("GET", `/api/businesses/${bid}/touches?status=approved&limit=1`);
+    const touch = (t.json as { items: { customerId: string }[] }).items[0]!;
+    const people = await api("GET", `/api/businesses/${bid}/people?ids=${touch.customerId}`);
+    const email = JSON.stringify(people.json).match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/i)![0];
+    await app.request("/webhooks/inbound-email/test-webhook-secret", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ MessageID: "m-hmm-1", From: email, Subject: "Re: the oak", TextBody: "hmm" }),
+    });
+    const replies = await api("GET", `/api/businesses/${bid}/replies`);
+    const r = (replies.json as { items?: Reply[] } & Reply[]);
+    const list = (Array.isArray(r) ? r : r.items ?? []) as Reply[];
+    const unclear = list.find((x) => x.from === email.toLowerCase())!;
+    expect(unclear.intent).toBe("unclear");
+    const before = d.notifier.sent.length;
+    const res = await api("POST", `/api/businesses/${bid}/replies/${unclear.id}/intent`, { intent: "wants_it" });
+    expect(res.status).toBe(200);
+    expect(d.notifier.sent.length).toBe(before + 1);
+    expect(d.notifier.sent.at(-1)!.text).toMatch(/NEW/);
+    const bad = await api("POST", `/api/businesses/${bid}/replies/nope/intent`, { intent: "wants_it" });
+    expect(bad.status).toBe(404);
+  });
+});

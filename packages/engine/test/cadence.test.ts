@@ -1,11 +1,11 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { scan, type ScanResult } from "../src/breakage/detect.ts";
-import { inHoldout, MAX_TYPE_SHARE, planOutreach, sendTime, type Plan } from "../src/cadence/plan.ts";
+import { HOLD_WHEN_BOOKED, inHoldout, MAX_TYPE_SHARE, planOutreach, sendTime, type Plan } from "../src/cadence/plan.ts";
 import { SEQUENCES } from "../src/copy/templates.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { BreakageType, BusinessProfile, Dataset, Opportunity, Touch } from "../src/model.ts";
 import { addDays, daysBetween, mondayOf, weekday } from "../src/util.ts";
-import { ASOF, dataset } from "./fixtures.ts";
+import { ASOF, customer, dataset, quote } from "./fixtures.ts";
 
 const START = "2026-10-05"; // a Monday
 
@@ -230,6 +230,60 @@ describe("who goes first", () => {
     const total = (ids: string[], f: (o: Opportunity) => number) => ids.reduce((a, id) => a + f(oppOf.get(id)!), 0);
     expect(total(dollars.people, (o) => o.expectedValue)).toBeGreaterThan(total(reply.people, (o) => o.expectedValue));
     expect(total(reply.people, (o) => o.recoverProbability)).toBeGreaterThan(total(dollars.people, (o) => o.recoverProbability));
+  });
+});
+
+describe("held for a look", () => {
+  /** A dozen ordinary quotes and one priced to lose. */
+  const shop = () => {
+    const customers = Array.from({ length: 13 }, (_, i) => customer(`c${i}`));
+    const quotes = customers.map((c, i) => quote(`q${i}`, c.id, { total: i === 0 ? 9000 : 800 + i * 40 }));
+    return dataset({ customers, quotes });
+  };
+  it("a caution-flagged opportunity is skipped with the reason, not silently dropped", () => {
+    const ds = shop();
+    const plan = planOutreach(ds, scan(ds), { startOn: START });
+    expect(plan.people).not.toContain("c0");
+    expect(plan.people).toHaveLength(12);
+    const skip = plan.skipped.find((s) => s.customerId === "c0")!;
+    expect(skip.why).toMatch(/^Held for a look: Priced \d+x your usual/);
+  });
+  it("goes out when the plan asks for held ones too, or once it's cleared", () => {
+    const ds = shop();
+    const r = scan(ds);
+    expect(planOutreach(ds, r, { startOn: START, includeCaution: true }).people).toContain("c0");
+    const held = r.opportunities.find((o) => o.customerId === "c0")!;
+    expect(planOutreach(ds, scan(ds, { cleared: [held.id] }), { startOn: START }).people).toContain("c0");
+  });
+});
+
+describe("booked out", () => {
+  const types = () => new Map(treeScan.primary.map((o) => [o.customerId, o.type]));
+
+  it("new work starts about three weeks before the schedule opens; yeses go now", () => {
+    const booked = withBusiness(tree.dataset, { bookedOutUntil: "2026-12-15" });
+    const plan = planOutreach(booked, treeScan, { startOn: START, limitPeople: 150 });
+    const t = types();
+    const firsts = plan.touches.filter((x) => x.step === 1);
+    expect(firsts.some((x) => HOLD_WHEN_BOOKED.has(t.get(x.customerId)!))).toBe(true);
+    expect(firsts.some((x) => !HOLD_WHEN_BOOKED.has(t.get(x.customerId)!))).toBe(true);
+    for (const x of firsts) {
+      if (HOLD_WHEN_BOOKED.has(t.get(x.customerId)!)) expect(dateOf(x) >= "2026-11-24").toBe(true);
+      else expect(dateOf(x) < "2026-11-24").toBe(true);
+    }
+    // the caps still hold
+    const perWeek = countBy(firsts, (x) => mondayOf(dateOf(x)));
+    for (const n of perWeek.values()) expect(n).toBeLessThanOrEqual(booked.business.weeklyNewContacts);
+  });
+  it("said-yes and unpaid-invoice work never waits", () => {
+    expect(HOLD_WHEN_BOOKED.has("approved_unscheduled")).toBe(false);
+    expect(HOLD_WHEN_BOOKED.has("unpaid_invoice")).toBe(false);
+  });
+  it("booked out for less than three weeks changes nothing", () => {
+    const soon = withBusiness(tree.dataset, { bookedOutUntil: addDays(START, 14) });
+    const a = planOutreach(soon, treeScan, { startOn: START, limitPeople: 60 });
+    const b = planOutreach(tree.dataset, treeScan, { startOn: START, limitPeople: 60 });
+    expect(a.touches.map((t) => t.dueAt)).toEqual(b.touches.map((t) => t.dueAt));
   });
 });
 
