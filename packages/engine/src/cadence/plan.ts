@@ -21,6 +21,8 @@ export interface PlanOptions {
    * people answer). "dollars" = most expected revenue (paying accounts). Default follows the plan stage.
    */
   rank?: "reply" | "dollars";
+  /** Include opportunities held for a look (priced to lose, realtor/HOA bids). Default false. */
+  includeCaution?: boolean;
 }
 
 export interface Plan {
@@ -35,6 +37,9 @@ export interface Plan {
   /** People skipped because no note could be written cleanly. */
   skipped: { customerId: string; why: string }[];
 }
+
+/** New work that waits while the owner is booked out. Said-yes-but-unscheduled and invoices never wait. */
+export const HOLD_WHEN_BOOKED = new Set<BreakageType>(["unanswered_quote", "archived_quote", "changes_requested", "unquoted_request", "declined_quote", "declined_option", "one_and_done", "lapsed_regular", "missed_upsell", "service_due"]);
 
 /** No single kind of leak takes more than this share of a limited round. */
 export const MAX_TYPE_SHARE = 0.4;
@@ -52,7 +57,7 @@ function allowedDay(ds: Dataset, d: ISODate): boolean {
   return true;
 }
 
-function nextAllowed(ds: Dataset, d: ISODate): ISODate {
+export function nextAllowed(ds: Dataset, d: ISODate): ISODate {
   let x = d;
   for (let i = 0; i < 60; i++) {
     if (allowedDay(ds, x)) return x;
@@ -80,6 +85,10 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     if (!o.channels.includes("email")) continue;
     if (opts.types && !opts.types.includes(o.type)) continue;
     if (opts.skipCustomers?.has(o.customerId)) continue;
+    if (o.caution?.length && !opts.includeCaution) {
+      skipped.push({ customerId: o.customerId, why: `Held for a look: ${o.caution.join("; ")}` });
+      continue;
+    }
     if (applyHoldout && inHoldout(o.customerId, b.persistence.holdoutPct)) {
       holdout.push(o.customerId);
       continue;
@@ -102,6 +111,9 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
       }
       candidates.splice(0, candidates.length, ...first, ...later);
     }
+  } else {
+    // Most expected revenue first. (The scan's priority score also weighs warmth, freshness and season.)
+    candidates.sort((x, y) => y.expectedValue - x.expectedValue || y.score - x.score || x.id.localeCompare(y.id));
   }
   const limit = opts.limitPeople ?? candidates.length;
   const weeklyNew = opts.weeklyNew ?? b.weeklyNewContacts;
@@ -111,18 +123,26 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
   const people: string[] = [];
   const dayCount = new Map<ISODate, number>();
   const weekCount = new Map<ISODate, number>();
-  let day = nextAllowed(ds, opts.startOn);
+  let nowDay = nextAllowed(ds, opts.startOn);
+  // Booked out: new work waits until about three weeks before the schedule opens up, so the leads land
+  // when the owner can actually take them (owners let quotes die when they're busy, then regret it).
+  const heldFrom = b.bookedOutUntil && b.bookedOutUntil > addDays(opts.startOn, 21) ? addDays(b.bookedOutUntil, -21) : undefined;
+  let heldDay = heldFrom ? nextAllowed(ds, heldFrom) : nowDay;
 
   for (const o of candidates) {
     if (people.length >= limit) break;
     const c = byId.get(o.customerId);
     if (!c) continue;
+    const held = !!heldFrom && HOLD_WHEN_BOOKED.has(o.type);
+    let day = held ? heldDay : nowDay;
     // find a start day with room in the day and the week
     for (let guard = 0; guard < 400; guard++) {
       const wk = mondayOf(day);
       if ((dayCount.get(day) ?? 0) < perDay && (weekCount.get(wk) ?? 0) < weeklyNew) break;
       day = nextAllowed(ds, addDays(day, 1));
     }
+    if (held) heldDay = day;
+    else nowDay = day;
     const seq = SEQUENCES[o.type];
     const notes: Touch[] = [];
     let lastSend = day;

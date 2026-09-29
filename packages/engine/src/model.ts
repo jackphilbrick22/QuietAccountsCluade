@@ -252,12 +252,19 @@ export interface BusinessProfile {
   crewNote?: string;
   /** Mondays of weeks the owner says have open crew days. Only then do notes mention openings. */
   openCrewWeeks: ISODate[];
+  /**
+   * The owner is booked solid until this date (texted "BUSY until Nov 15"). New-work outreach starts about
+   * three weeks before it, so replies arrive when there's room on the schedule.
+   */
+  bookedOutUntil?: ISODate;
   /** How the notes read. */
   voice: {
     /** Put the original price in the first note. Off by default (it re-triggers sticker shock). */
     mentionPrice: boolean;
     /** Allow "we can split it into two visits / do the key part first" offers. */
     offerOptions: boolean;
+    /** Quotes older than this many days never repeat the old price (default 180). */
+    staleQuoteDays?: number;
     /** Words the owner wants swapped: [["estimate","quote"]]. */
     wordSwaps: [string, string][];
   };
@@ -373,6 +380,11 @@ export interface Opportunity {
   serviceId: string;
   seasonFit: SeasonFit;
   suppressed?: SuppressionReason;
+  /**
+   * Reasons to hold this one for a look before anyone writes (priced to lose, realtor/HOA/insurance bid).
+   * Held opportunities are left out of plans until an operator or the owner clears them.
+   */
+  caution?: string[];
   channels: Channel[];
 }
 
@@ -416,6 +428,8 @@ export interface Touch {
   lastError?: string;
   /** Who wrote it: the template library or the AI writer (with the template as fallback). */
   writer?: "template" | "ai";
+  /** Days this note was pushed back because the owner was booked out (undone when they open up). */
+  heldDays?: number;
 }
 
 export type ReplyIntent =

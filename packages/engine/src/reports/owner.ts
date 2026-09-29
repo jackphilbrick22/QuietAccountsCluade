@@ -52,7 +52,7 @@ export function handoffText(state: AccountState, r: Reply): string {
   const lines = [
     `${tradeMark(b)} NEW — ${name}${street}`,
     o ? `Original: ${o.anchorDate ? spokenWhen(o.anchorDate, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
-    staleNote(o, r.receivedAt.slice(0, 10)),
+    staleNote(b, o, r.receivedAt.slice(0, 10)),
     `They said: “${oneLine(r.text, 160)}”`,
     `Best contact: ${r.extracted.phone ? fmtPhone(r.extracted.phone) : c?.phones[0] ? fmtPhone(c.phones[0]) : c?.emails[0] ?? r.from}${r.extracted.bestTime ? ` (${r.extracted.bestTime})` : ""}`,
     `Wants: ${wantsLine(r)}`,
@@ -62,11 +62,11 @@ export function handoffText(state: AccountState, r: Reply): string {
 }
 
 /** Old quotes get re-priced, not honored by accident. */
-function staleNote(o: Opportunity | undefined, today: ISODate): string {
+function staleNote(b: BusinessProfile, o: Opportunity | undefined, today: ISODate): string {
   if (!o?.anchorDate || !o.value) return "";
   if (!["unanswered_quote", "archived_quote", "changes_requested", "declined_quote"].includes(o.type)) return "";
   const days = daysBetween(o.anchorDate, today);
-  if (days <= STALE_QUOTE_DAYS) return "";
+  if (days <= (b.voice.staleQuoteDays ?? STALE_QUOTE_DAYS)) return "";
   return `Heads up: that price is ${humanAge(days)} old. We didn't mention it; re-price before you book.`;
 }
 
@@ -138,10 +138,31 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     `Booked: ${w.booked}${w.bookedValue ? ` · ${fmtMoney(w.bookedValue)}` : ""}`,
     w.avgHoursToCall !== undefined ? `Your average time to call them back: ${w.avgHoursToCall}h` : "",
     w.waiting.length ? `\nStill waiting on a call from you: ${w.waiting.slice(0, 6).join(", ")}${w.waiting.length > 6 ? ` +${w.waiting.length - 6} more` : ""}` : "",
+    (() => {
+      const why = lossReasons(state);
+      const n = why.reduce((a, x) => a + x.count, 0);
+      return n >= 3 ? `\nWhy the quiet ones said no: ${why.slice(0, 4).map((x) => `${x.count} ${x.reason}`).join(", ")}.` : "";
+    })(),
     "",
     `Since you started: ${total.booked} booked, ${fmtMoney(total.bookedValue)}. ${total.remaining.toLocaleString("en-US")} people still to work.`,
   ];
   return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n").trim();
+}
+
+/**
+ * Why quotes died, in the homeowners' own words. Homeowners ghost because saying no is awkward, so
+ * owners never learn this — the easy "reply pass" line and the close-out question surface it.
+ */
+export function lossReasons(state: AccountState): { reason: string; count: number }[] {
+  const tally = new Map<string, number>();
+  const add = (k: string) => tally.set(k, (tally.get(k) ?? 0) + 1);
+  for (const r of state.replies) {
+    if (r.intent === "already_done") add(r.extracted.mentionsCompetitor || /\b(someone|somebody|another|other (company|guy|crew)|went with)\b/i.test(r.text) ? "went with someone else" : "got it done another way");
+    else if (r.intent === "not_interested") add(r.extracted.mentionsPrice ? "price" : "don't need it anymore");
+    else if (r.intent === "later") add("timing");
+    else if (r.intent === "moved") add("moved");
+  }
+  return [...tally.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
 }
 
 export function totals(state: AccountState): { booked: number; bookedValue: Money; contacted: number; replied: number; wants: number; remaining: number } {

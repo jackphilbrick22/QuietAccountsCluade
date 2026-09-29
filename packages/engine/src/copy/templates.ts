@@ -35,7 +35,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "q1a",
       angle: "check_in",
       subject: "{job}",
-      body: "Hi {first},\n\nIt's {signer} at {company}. You got a price from us {when} for {job}{priceClause}.\n\nWe never heard back, and that's on us for not following up. Is it still something you want done?\n\n{freshLook}\n\n{signer}",
+      body: "Hi {first},\n\nIt's {signer} at {company}. You got a price from us {when} for {job}{priceClause}.\n\nWe never heard back, and that's on us for not following up. Is it still something you want done?\n\n{freshLook}\n\nIf you went another way, that's fine. Just reply \"pass\" and I'll close it out.\n\n{signer}",
     },
     {
       id: "q1b",
@@ -48,7 +48,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "q1c",
       angle: "check_in",
       subject: "{job}",
-      body: "Hi {first},\n\nThis is {signer} with {company}. We priced {job} for you {when}{priceClause}. Did you still want us to take care of that?\n\n{freshLook}\n\n{signer}",
+      body: "Hi {first},\n\nThis is {signer} with {company}. We priced {job} for you {when}{priceClause}. Did you still want us to take care of that?\n\n{freshLook}\n\nIf not, just reply \"pass\" and I'll close it out.\n\n{signer}",
     },
   ],
   "quote.problem_grows": [

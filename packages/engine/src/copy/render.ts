@@ -41,6 +41,7 @@ export function crewLine(ds: Dataset, customer: Customer, sendOn: ISODate): stri
     if (street && hit.street === street) return `We've actually got a crew working on ${titleCaseWords(hit.street)} ${weekText}.`;
     return `We've got a crew working in ${titleCaseWords(hit.city) || customer.address?.city} ${weekText}.`;
   }
+  if (ds.business.bookedOutUntil && ds.business.bookedOutUntil > horizon) return undefined; // no openings to offer
   const open = ds.business.openCrewWeeks.find((w) => w >= mondayOf(sendOn) && w <= horizon);
   if (open) return `We've got a couple of open days the week of ${monthName(open)} ${Number(open.slice(8))}.`;
   return undefined;
@@ -56,7 +57,7 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   const anchor = o.anchorDate;
   const when = anchor ? spokenWhen(anchor, rc.sendOn) : "a while back";
   const quoteFamily = ["unanswered_quote", "archived_quote", "changes_requested", "declined_quote"].includes(o.type);
-  const stale = quoteFamily && !!anchor && daysBetween(anchor, rc.sendOn) > STALE_QUOTE_DAYS;
+  const stale = quoteFamily && !!anchor && daysBetween(anchor, rc.sendOn) > (b.voice.staleQuoteDays ?? STALE_QUOTE_DAYS);
   // out-of-season work that would do harm (oaks in summer) never gets offered a near-term slot
   const holdForSeason = !!svc?.strictSeason && seasonFit(svc, climate, Number(rc.sendOn.slice(5, 7))) !== "now";
   const t: Record<string, string> = {

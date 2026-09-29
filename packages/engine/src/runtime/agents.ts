@@ -1,7 +1,7 @@
 import { scan } from "../breakage/detect.ts";
 import { summarize } from "../breakage/forecast.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
-import { planOutreach, type Plan } from "../cadence/plan.ts";
+import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
 import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
@@ -412,4 +412,54 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
     event(state, now, "guard", "action", "Guarantee: this month is free", "Nobody asked for a price or a date this period, so you won't be charged.");
   }
   return ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
+}
+
+/**
+ * The owner texted "BUSY until <date>" (or "OPEN"). New-work sequences that haven't started yet move so
+ * their first note lands about three weeks before the schedule opens; "OPEN" brings them back.
+ * Sequences already under way are left alone — pausing mid-conversation reads strangely.
+ */
+export function setBookedOut(state: AccountState, until: string | undefined, now: ISODateTime): { moved: number } {
+  const ds = state.dataset;
+  const today = now.slice(0, 10);
+  ds.business.bookedOutUntil = until;
+  const started = new Set(state.touches.filter((t) => t.step === 1 && (t.status === "sent" || t.status === "delivered")).map((t) => t.opportunityId));
+  const byOpp = new Map<string, Touch[]>();
+  for (const t of state.touches) {
+    if (t.status !== "approved" && t.status !== "planned") continue;
+    if (started.has(t.opportunityId)) continue;
+    (byOpp.get(t.opportunityId) ?? byOpp.set(t.opportunityId, []).get(t.opportunityId)!).push(t);
+  }
+  let moved = 0;
+  for (const [oppId, ts] of byOpp) {
+    const o = oppById(state.scan?.opportunities, oppId);
+    if (!o || !HOLD_WHEN_BOOKED.has(o.type)) continue;
+    const first = ts.reduce((a, b) => (a.dueAt < b.dueAt ? a : b));
+    let shift = 0;
+    if (until) {
+      const floor = nextAllowed(ds, addDays(until, -21));
+      if (first.dueAt.slice(0, 10) < floor) shift = daysBetween(first.dueAt.slice(0, 10), floor);
+    } else if (first.heldDays) {
+      const earliest = nextAllowed(ds, addDays(today, 1));
+      const back = addDays(first.dueAt.slice(0, 10), -first.heldDays);
+      shift = -daysBetween(back < earliest ? earliest : back, first.dueAt.slice(0, 10));
+    }
+    if (!shift) continue;
+    for (const t of ts) {
+      const d = nextAllowed(ds, addDays(t.dueAt.slice(0, 10), shift));
+      t.dueAt = `${d}${t.dueAt.slice(10)}`;
+      t.heldDays = until ? (t.heldDays ?? 0) + shift : undefined;
+    }
+    moved++;
+  }
+  event(
+    state,
+    now,
+    "dispatcher",
+    "action",
+    until ? `Booked out until ${until} — new work waits` : "Schedule open again — held notes are back on",
+    moved ? `${plural(moved, "person", "people")} moved${until ? ` so their first note lands the week of ${mondayOf(addDays(until, -21))}` : " back to the next send day"}.` : undefined,
+  );
+  state.updatedAt = now;
+  return { moved };
 }

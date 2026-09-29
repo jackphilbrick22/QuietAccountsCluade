@@ -45,6 +45,10 @@ export const ADJUST = {
   bigTicket: 0.8,
   /** They opened the quote online (Jobber client hub) — they looked. */
   viewed: 1.2,
+  /** Lead came by referral or is a repeat client (owners report 75-85%+ close rates on referrals). */
+  referral: 1.25,
+  /** Lead came from a shared marketplace (Angi, HomeAdvisor, Thumbtack): shopped hard, often ghosted. */
+  marketplace: 0.8,
   /** Contact only by postcard (no email). */
   postcardOnly: 0.5,
 };

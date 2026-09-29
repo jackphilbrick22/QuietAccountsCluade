@@ -15,6 +15,65 @@ export interface TypeSummary {
   expected: Money;
 }
 
+/**
+ * The Silent Quote Audit: the owner's own quotes split into won, said no, and never answered.
+ * Owners treat a 30-60% loss rate as proof their prices are right. Most of those "losses" never got a
+ * yes or a no from anyone — they weren't lost on price, nobody answered. Only this shop's numbers are used.
+ */
+export interface SilentAudit {
+  sent: { count: number; value: Money };
+  won: { count: number; value: Money };
+  declined: { count: number; value: Money };
+  changesIgnored: { count: number; value: Money };
+  silent: { count: number; value: Money };
+  /** Silent quotes by age, newest first. */
+  byAge: { label: string; count: number; value: Money }[];
+  /** Share of the quotes that didn't become work that never got an answer. */
+  silentShareOfLost: number;
+  headline: string;
+}
+
+const AGE_BUCKETS: [number, string][] = [
+  [90, "Last 3 months"],
+  [180, "3–6 months"],
+  [365, "6–12 months"],
+  [730, "1–2 years"],
+  [Infinity, "Over 2 years"],
+];
+
+export function silentAudit(ds: Dataset): SilentAudit {
+  const cut = addDays(ds.asOf, -14);
+  const acc = () => ({ count: 0, value: 0 });
+  const a = { sent: acc(), won: acc(), declined: acc(), changesIgnored: acc(), silent: acc() };
+  const ages = AGE_BUCKETS.map(([, label]) => ({ label, count: 0, value: 0 }));
+  for (const q of ds.quotes) {
+    const d = q.sentOn ?? q.createdOn;
+    if (!d || d > cut || q.status === "draft") continue;
+    const add = (k: keyof typeof a) => {
+      a[k].count++;
+      a[k].value += q.total;
+    };
+    add("sent");
+    if (q.status === "approved" || q.status === "converted") add("won");
+    else if (q.status === "declined") add("declined");
+    else if (q.status === "changes_requested") add("changesIgnored");
+    else {
+      add("silent");
+      const age = daysBetween(d, ds.asOf);
+      const i = AGE_BUCKETS.findIndex(([max]) => age <= max);
+      ages[i]!.count++;
+      ages[i]!.value += q.total;
+    }
+  }
+  const lost = a.sent.count - a.won.count;
+  const silentShareOfLost = lost ? round2(a.silent.count / lost) : 0;
+  const r = (x: { count: number; value: number }) => ({ count: x.count, value: round2(x.value) });
+  const headline = a.silent.count
+    ? `Of ${lost.toLocaleString("en-US")} quotes that didn't turn into work, ${a.silent.count.toLocaleString("en-US")} (${Math.round(silentShareOfLost * 100)}%) never got a yes or a no — ${fmtMoney(a.silent.value, { compact: true })} that wasn't lost on price. Nobody answered.`
+    : "Every quote got an answer. That's rare.";
+  return { sent: r(a.sent), won: r(a.won), declined: r(a.declined), changesIgnored: r(a.changesIgnored), silent: r(a.silent), byAge: ages.map(r).map((x, i) => ({ label: ages[i]!.label, ...x })), silentShareOfLost, headline };
+}
+
 export interface FitCheck {
   score: number;
   verdict: "strong" | "good" | "thin" | "not_yet";
@@ -57,6 +116,8 @@ export interface DrawerSummary {
   pastCustomerShare?: number;
   /** How this shop makes money (ticket, volume, repeat work) and the strategy that follows. */
   profile: ShopProfile;
+  /** Won vs said-no vs never-answered, from the shop's own quotes. */
+  audit: SilentAudit;
   fit: FitCheck;
 }
 
@@ -167,8 +228,9 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     liftPct,
     paybackMultiple: ds.business.plan.monthlyPrice ? round2(yearOne.likely / (ds.business.plan.monthlyPrice * 12)) : undefined,
     closeRate: closeRate(ds),
-    pastCustomerShare: expectedLikely ? round2(sum(types.filter((t) => PAST_TYPES.includes(t.type)), (t) => t.expected) / yearLikely) : undefined,
+    pastCustomerShare: yearLikely ? round2(sum(types.filter((t) => PAST_TYPES.includes(t.type)), (t) => t.expected) / yearLikely) : undefined,
     profile: shopProfile(ds, averageJob(ds), reachablePeople),
+    audit: silentAudit(ds),
     fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "" },
   };
   summary.fit = fitCheck(ds, result, summary);

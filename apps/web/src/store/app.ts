@@ -19,9 +19,9 @@ import {
   type ReplyIntent,
   type TradeId,
 } from "@qa/engine";
-import { load, remove as removeKey, save } from "../lib/persist";
+import { getPref, load, remove as removeKey, save, setPref } from "../lib/persist";
 
-export type Area = "welcome" | "onboarding" | "owner" | "ops";
+export type Area = "welcome" | "onboarding" | "owner" | "ops" | "live";
 
 export interface View {
   area: Area;

@@ -12,6 +12,7 @@ import type {
   SuppressionReason,
   TradeId,
 } from "../model.ts";
+import { cautionReasons, isBadCustomer, MARKETPLACE_SOURCE, medianByService, REFERRAL_SOURCE, type CautionContext } from "./caution.ts";
 import { classifyService, climateOf, findService, jobPhrase, playbook, seasonFit, type ServiceDef } from "../trades/index.ts";
 import {
   addMonths,
@@ -44,6 +45,8 @@ export interface ContactState {
   includeInvoices?: boolean;
   /** Include commercial accounts in automated outreach. */
   includeCommercial?: boolean;
+  /** Opportunity ids someone looked at and OK'd despite a caution flag. */
+  cleared?: string[];
 }
 
 export interface ScanResult {
@@ -78,6 +81,7 @@ interface Ctx {
   requestsBy: Map<string, ServiceRequest[]>;
   contact: ContactState;
   avgJob: number;
+  caution: CautionContext;
 }
 
 function bucket<T extends { customerId: string }>(arr: T[]): Map<string, T[]> {
@@ -125,7 +129,9 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
     requestsBy: bucket(ds.requests),
     contact,
     avgJob: averageJob(ds),
+    caution: { medianByService: new Map(), typicalJob: 0 },
   };
+  ctx.caution = { medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id), typicalJob: ctx.avgJob };
 
   const opps: Opportunity[] = [];
   for (const q of ds.quotes) {
@@ -157,6 +163,11 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
   // A dead quote superseded by a newer quote to the same person for the same service is not its own opportunity.
   const all = [...dedup.values()];
   for (const o of all) applySuppressions(ctx, o);
+  for (const o of all) {
+    if (o.suppressed || ctx.contact.cleared?.includes(o.id)) continue;
+    const reasons = cautionReasons(o, ctx.byCustomer.get(o.customerId), o.source.kind === "quote" ? quoteById(ds, o.source.id) : undefined, ctx.caution);
+    if (reasons.length) o.caution = reasons;
+  }
   for (const o of all) score(ctx, o);
 
   all.sort((a, b) => b.score - a.score);
@@ -460,7 +471,7 @@ function applySuppressions(ctx: Ctx, o: Opportunity): void {
   o.channels = channelsFor(ctx, c);
   const email0 = c.emails[0];
   const sup = email0 ? ctx.contact.suppressedEmails?.[email0] : undefined;
-  if (c.doNotContact || ctx.contact.doNotContact?.includes(c.id)) o.suppressed = "do_not_contact";
+  if (c.doNotContact || ctx.contact.doNotContact?.includes(c.id) || isBadCustomer(c)) o.suppressed = "do_not_contact";
   else if (sup === "complained") o.suppressed = "complained";
   else if (sup === "unsubscribed") o.suppressed = "unsubscribed";
   else if (!o.channels.some((x) => x === "email" || x === "postcard" || x === "sms")) o.suppressed = sup === "bounced" ? "bounced" : "no_contact_info";
@@ -530,6 +541,9 @@ function score(ctx: Ctx, o: Opportunity): void {
   const paidBefore = (ctx.jobsBy.get(o.customerId) ?? []).some((j) => DONE_JOB.has(j.status)) || (ctx.invoicesBy.get(o.customerId) ?? []).some((i) => i.status === "paid");
   if (paidBefore && ["unanswered_quote", "archived_quote", "changes_requested", "unquoted_request"].includes(o.type)) p *= ADJUST.pastCustomer;
   if (o.source.kind === "quote" && quoteById(ctx.ds, o.source.id)?.viewedOn) p *= ADJUST.viewed;
+  const src = ctx.byCustomer.get(o.customerId)?.leadSource;
+  if (src && REFERRAL_SOURCE.test(src)) p *= ADJUST.referral;
+  else if (src && MARKETPLACE_SOURCE.test(src)) p *= ADJUST.marketplace;
   // Big quotes are the shopped ones (3+ bids, financing, price shock) and are the hardest to win back.
   // "Big" is relative to this shop's own typical job, not a national number.
   if (o.value > Math.max(ctx.avgJob * 4, 2500)) p *= ADJUST.bigTicket;

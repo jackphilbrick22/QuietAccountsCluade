@@ -1,6 +1,8 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import {
+  addDays,
   approveAll,
+  setBookedOut,
   customerById,
   detect,
   dueTouches,
@@ -480,6 +482,25 @@ export async function ownerCommand(d: Deps, fromPhone: string, text: string): Pr
     const booked = s.recoveries.reduce((a, r) => a + r.value, 0);
     return { businessId: bid, reply: `So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} asked for a price or a date, $${Math.round(booked).toLocaleString("en-US")} booked.` };
   }
+  // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
+  if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(t) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
+    let reply = "";
+    await d.accounts.withAccount(bid, (state) => {
+      const today = nowLocal(d, state).slice(0, 10);
+      const until = parseBusyUntil(t, today);
+      const r = setBookedOut(state, until, nowLocal(d, state));
+      reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
+    });
+    return { businessId: bid, reply };
+  }
+  if (/^(open|not busy|free|room|slow)\b/.test(t)) {
+    let reply = "";
+    await d.accounts.withAccount(bid, (state) => {
+      const r = setBookedOut(state, undefined, nowLocal(d, state));
+      reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us on your next send day.` : ""}`;
+    });
+    return { businessId: bid, reply };
+  }
   const code = text.match(/#\s?([A-Z0-9]{3})\b/i)?.[1]?.toUpperCase();
   const amount = Number((text.match(/\$?\s?(\d[\d,]*(?:\.\d{1,2})?)\s?(k)?\b/i)?.[1] ?? "").replace(/,/g, "")) * (/\d\s?k\b/i.test(text) ? 1000 : 1);
   let outcome: Reply["outcome"] | undefined;
@@ -643,4 +664,34 @@ export async function writeFsmNote(d: Deps, bid: string, note: FsmNote): Promise
 function oneLine(s: string, max: number): string {
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > max ? t.slice(0, max - 1).trimEnd() + "…" : t;
+}
+
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** "until nov 15", "6 weeks", "2 months", "11/15", "till december" → a date; plain "busy" = four weeks. */
+export function parseBusyUntil(t: string, today: string): string {
+  const n = (re: RegExp) => Number(t.match(re)?.[1]);
+  const weeks = n(/(\d+)\s*(weeks?|wks?)\b/);
+  if (weeks) return addDays(today, weeks * 7);
+  const days = n(/(\d+)\s*days?\b/);
+  if (days) return addDays(today, days);
+  const months = n(/(\d+)\s*(months?|mos?)\b/);
+  if (months) return addDays(today, Math.round(months * 30.44));
+  const [y, m0, d0] = today.split("-").map(Number) as [number, number, number];
+  const pick = (month: number, day: number) => {
+    const iso = (yy: number) => `${yy}-${String(month).padStart(2, "0")}-${String(Math.min(day, 28 + (month === 2 ? 0 : 3))).padStart(2, "0")}`;
+    return iso(y) > today ? iso(y) : iso(y + 1);
+  };
+  const named = t.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s*(\d{1,2})?/);
+  if (named) return pick(MONTHS.indexOf(named[1]!) + 1, named[2] ? Number(named[2]) : 1);
+  const md = t.match(/\b(\d{1,2})[/-](\d{1,2})\b/);
+  if (md && Number(md[1]) <= 12) return pick(Number(md[1]), Number(md[2]));
+  void m0;
+  void d0;
+  return addDays(today, 28);
+}
+
+function fmtDay(iso: string): string {
+  const [, m, d] = iso.split("-").map(Number) as [number, number, number];
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`;
 }
