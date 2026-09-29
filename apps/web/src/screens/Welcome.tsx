@@ -1,4 +1,4 @@
-import { ArrowRight, FileSpreadsheet, LayoutGrid, MailCheck, PhoneCall } from "lucide-react";
+import { ArrowRight, FileSpreadsheet, KeyRound, LayoutGrid, MailCheck, PhoneCall } from "lucide-react";
 import { CLAIMS } from "@qa/engine";
 import { useApp } from "../store/app";
 import { Button, Card, Wordmark } from "../components/ui";
@@ -19,15 +19,21 @@ export function Welcome() {
       <div className="mx-auto flex w-full max-w-[1080px] flex-col gap-10 px-4 pt-6 pb-16 sm:px-6">
         <header className="flex items-center justify-between gap-3">
           <Wordmark />
-          <div className="flex gap-1">
+          <div className="flex items-center gap-1">
             {order.length > 0 && (
-              <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => go({ area: "owner", tab: "today" })}>
-                My account
-              </Button>
+              <span className="hidden sm:block">
+                <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => go({ area: "owner", tab: "today" })}>
+                  Demo owner view
+                </Button>
+              </span>
             )}
-            <Button variant="ghost" size="sm" aria-label="Operator console" className="whitespace-nowrap" onClick={() => (order.length ? go({ area: "ops", tab: "overview" }) : void seedDemo().then(() => go({ area: "ops", tab: "overview" })))}>
-              <LayoutGrid size={15} /> <span className="hidden sm:inline">Operator console</span>
-              <span className="sm:hidden">Ops</span>
+            <Button variant="ghost" size="sm" aria-label="Demo console" className="whitespace-nowrap" onClick={() => (order.length ? go({ area: "ops", tab: "overview" }) : void seedDemo().then(() => go({ area: "ops", tab: "overview" })))}>
+              <LayoutGrid size={15} /> <span className="hidden sm:inline">Demo console</span>
+              <span className="sm:hidden">Demo</span>
+            </Button>
+            <Button variant="navy" size="sm" aria-label="Operator sign-in" className="whitespace-nowrap" onClick={() => go({ area: "live", tab: "clients" })}>
+              <KeyRound size={15} /> <span className="hidden sm:inline">Operator sign-in</span>
+              <span className="sm:hidden">Sign in</span>
             </Button>
           </div>
         </header>

@@ -7,7 +7,7 @@ import { ingestFile } from "../ingest/index.ts";
 import { attribute, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { closeMessage, guaranteeCheck, handoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
-import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, weekday } from "../util.ts";
+import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 
@@ -154,7 +154,7 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   for (const t of state.touches) {
     if (t.status !== "approved" || t.dueAt > local) continue;
     const c = customerById(state.dataset, t.customerId);
-    const to = c?.emails.find((e) => !state.suppressions[e]);
+    const to = c ? sendableEmail(c.emails, state.suppressions) : undefined;
     if (!c || !to) {
       held.push({ touch: t, why: "No sendable email (unsubscribed, bounced or missing)" });
       continue;
@@ -214,12 +214,16 @@ export function sendHealth(state: AccountState): { sent: number; bounces: number
   const sent = state.touches.filter((t) => t.status === "sent" || t.status === "delivered" || t.status === "bounced").length;
   const bounces = state.replies.filter((r) => r.intent === "bounce").length + state.touches.filter((t) => t.status === "bounced").length;
   const complaints = state.replies.filter((r) => r.intent === "complaint").length;
+  // "Who is this?" means they don't recognize the sender — the step before a spam click.
+  const confused = state.replies.filter((r) => r.intent === "wrong_person").length;
   const stops = state.replies.filter((r) => r.intent === "stop").length;
   const bounceRate = sent ? bounces / sent : 0;
   const complaintRate = sent ? complaints / sent : 0;
   let reason: string | undefined;
-  if (sent >= 50 && bounceRate > 0.04) reason = `Bounce rate ${(bounceRate * 100).toFixed(1)}% is over 4% — paused to protect your sending reputation. The list needs cleaning.`;
-  else if (sent >= 100 && complaintRate > 0.003) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused. Gmail's limit is 0.3%.`;
+  // Small senders get no spam-rate data from Gmail, so the brakes here trip well before the providers' limits.
+  if (sent >= 40 && bounceRate > 0.03) reason = `Bounce rate ${(bounceRate * 100).toFixed(1)}% is over 3% — paused to protect the sending reputation. The list needs cleaning.`;
+  else if (sent >= 300 && complaintRate > 0.002) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused well before Gmail's 0.3% limit.`;
+  else if (sent >= 100 && (complaints + confused) / sent > 0.01) reason = `${complaints + confused} people didn't recognize the business or complained — paused. Check the sender name and that these people really asked for a price.`;
   return { sent, bounces, complaints, stops, bounceRate, complaintRate, paused: !!reason, reason };
 }
 

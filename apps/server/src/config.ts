@@ -43,6 +43,8 @@ const schema = z.object({
   WORKER_ENABLED: z.enum(["true", "false"]).default("true"),
   /** Texts about money (the close, pre-charge, free month) wait for an operator by default. */
   AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
+  /** Pre-send check that each address's domain accepts mail (DNS MX). "off" skips it. */
+  MAIL_CHECK: z.enum(["on", "off"]).default("on"),
   /** Owner-waiting threshold before the first nudge. */
   SLA_FIRST_NUDGE_HOURS: z.coerce.number().default(4),
 });

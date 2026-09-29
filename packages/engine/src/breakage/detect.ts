@@ -20,7 +20,7 @@ import {
   daysBetween,
   fmtMoney,
   humanAge,
-  isLikelyValidEmail,
+  sendableEmail,
   makeId,
   maxDate,
   monthName,
@@ -454,7 +454,7 @@ function capitalize(s: string): string {
 
 function channelsFor(ctx: Ctx, c: Customer): Channel[] {
   const ch: Channel[] = [];
-  const email = c.emails.find((e) => isLikelyValidEmail(e) && !ctx.contact.suppressedEmails?.[e]);
+  const email = sendableEmail(c.emails, ctx.contact.suppressedEmails);
   if (email) ch.push("email");
   if (c.address?.street && c.address.zip) ch.push("postcard");
   if (c.phones.length && c.smsConsent) ch.push("sms");

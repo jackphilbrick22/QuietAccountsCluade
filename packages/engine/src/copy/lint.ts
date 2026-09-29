@@ -21,11 +21,12 @@ export function wordCount(s: string): number {
   return s.split(/\s+/).filter(Boolean).length;
 }
 
-export function lint(subject: string, body: string, ctx: { firstName: string; job: string; requireJob?: boolean }): string[] {
+export function lint(subject: string, body: string, ctx: { firstName: string; job: string; requireJob?: boolean; step?: number; commercial?: boolean }): string[] {
   const flags: string[] = [];
   const unresolved = (subject + body).match(/\{\w+\}/g);
   if (unresolved) flags.push(`Unfilled blank: ${[...new Set(unresolved)].join(", ")}`);
-  const main = body.split(/\n\n[^\n]*·[^\n]*\nReply "stop"/)[0] ?? body;
+  // everything above the footer (the "Company · address" line starts it)
+  const main = body.split(/\n\n[^\n]*·[^\n]*\n/)[0] ?? body;
   const words = wordCount(main);
   if (words > 120) flags.push(`Long (${words} words) — short notes get more replies`);
   if (words < 15) flags.push(`Very short (${words} words)`);
@@ -44,5 +45,8 @@ export function lint(subject: string, body: string, ctx: { firstName: string; jo
   else if (/\d\s?%/.test(main)) flags.push("Has a percentage — notes to homeowners never quote stats");
   if (subject.length > 60) flags.push("Subject too long");
   if (/^re:\s*re:/i.test(subject)) flags.push("Double Re:");
+  // "Re:" is only honest on a real reply in the same thread — never on a first note.
+  if ((ctx.step ?? 1) === 1 && /^(re|fwd?):/i.test(subject)) flags.push("Fake Re:/Fwd: on a first note");
+  if (ctx.commercial && !/You're getting this/.test(body)) flags.push("Missing the why-you're-getting-this line (required)");
   return flags;
 }

@@ -38,9 +38,14 @@ function Console() {
       <aside className="flex flex-col gap-4 border-b border-line bg-surface px-4 py-4 lg:sticky lg:top-0 lg:h-dvh lg:border-r lg:border-b-0 lg:px-3 lg:py-5">
         <div className="flex items-center justify-between gap-2">
           <Wordmark sub="Live" />
-          <button type="button" className="cursor-pointer rounded-lg px-2 py-1 text-[13px] font-semibold text-ink-3 hover:bg-surface-2 lg:hidden" onClick={() => signOut()}>
-            Sign out
-          </button>
+          <span className="flex gap-1 lg:hidden">
+            <button type="button" className="cursor-pointer rounded-lg px-2 py-1 text-[13px] font-semibold text-ink-3 hover:bg-surface-2" onClick={() => go({ area: "welcome", tab: "today" })}>
+              Demo
+            </button>
+            <button type="button" className="cursor-pointer rounded-lg px-2 py-1 text-[13px] font-semibold text-ink-3 hover:bg-surface-2" onClick={() => signOut()}>
+              Sign out
+            </button>
+          </span>
         </div>
         <nav className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible" aria-label="Live console">
           {NAV.map((n) => (

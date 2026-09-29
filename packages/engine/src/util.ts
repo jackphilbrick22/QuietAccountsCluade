@@ -205,12 +205,44 @@ export function extractEmails(input: unknown): string[] {
 }
 
 export function isLikelyValidEmail(e: string): boolean {
-  if (!/^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i.test(e)) return false;
-  if (/\.\./.test(e)) return false;
-  const [local, domain] = e.split("@") as [string, string];
-  if (/^(noreply|no-reply|donotreply|test|example|none|na|n\/a)$/i.test(local)) return false;
-  if (/(example\.(com|org)|test\.com|email\.com|none\.com|noemail|nomail)/i.test(domain)) return false;
-  return true;
+  return emailRisk(e).ok;
+}
+
+/** Common misspellings of the big mailbox domains. Old quote lists are full of them; they always bounce. */
+const DOMAIN_TYPOS: Record<string, string> = {
+  "gmial.com": "gmail.com", "gmai.com": "gmail.com", "gamil.com": "gmail.com", "gnail.com": "gmail.com", "gmail.co": "gmail.com",
+  "gmail.con": "gmail.com", "gmaill.com": "gmail.com", "gmal.com": "gmail.com", "gmail.cm": "gmail.com", "gmali.com": "gmail.com",
+  "yaho.com": "yahoo.com", "yahooo.com": "yahoo.com", "yahoo.co": "yahoo.com", "yahoo.con": "yahoo.com", "yhaoo.com": "yahoo.com",
+  "hotmial.com": "hotmail.com", "hotmal.com": "hotmail.com", "hotmail.co": "hotmail.com", "hotmail.con": "hotmail.com", "hotmai.com": "hotmail.com",
+  "outlok.com": "outlook.com", "outloo.com": "outlook.com", "outlook.co": "outlook.com", "iclod.com": "icloud.com", "icloud.co": "icloud.com",
+  "aol.co": "aol.com", "aol.con": "aol.com", "comcast.nt": "comcast.net", "comcast.com": "comcast.net", "verizon.com": "verizon.net",
+  "sbcglobal.com": "sbcglobal.net", "att.com": "att.net",
+};
+/** Throwaway inboxes: nobody reads them. */
+const DISPOSABLE = /(^|\.)(mailinator|guerrillamail|10minutemail|tempmail|temp-mail|yopmail|trashmail|sharklasers|getnada|dispostable|maildrop|throwawaymail)\./i;
+/** Shared role inboxes: for a homeowner these are rare, bounce-prone and complaint-prone. */
+const ROLE = /^(info|office|admin|sales|billing|accounts?|contact|support|hello|service|team|mail|postmaster|webmaster)$/i;
+
+/** The address to write to: a usable, unsuppressed one, personal inboxes before shared "info@" ones. */
+export function sendableEmail(emails: string[], suppressed: Record<string, unknown> = {}): string | undefined {
+  const usable = emails.filter((e) => emailRisk(e).ok && !suppressed[e]);
+  return usable.find((e) => !emailRisk(e).role) ?? usable[0];
+}
+
+/**
+ * Pre-send check on one address. `ok: false` never gets email. `role` addresses are allowed but used last.
+ * A typo'd big-provider domain comes back with a `suggestion` the operator can apply.
+ */
+export function emailRisk(e: string): { ok: boolean; reason?: string; suggestion?: string; role?: boolean } {
+  const email = e.trim().toLowerCase();
+  if (!/^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}$/i.test(email) || /\.\./.test(email)) return { ok: false, reason: "not a real address" };
+  const [local, domain] = email.split("@") as [string, string];
+  if (/^(noreply|no-reply|donotreply|test|example|none|na|n\/a|no|noemail|nomail|unknown|x+)$/i.test(local)) return { ok: false, reason: "placeholder address" };
+  if (/(example\.(com|org)|test\.com|email\.com|none\.com|noemail|nomail|no\.com)/i.test(domain)) return { ok: false, reason: "placeholder address" };
+  const fix = DOMAIN_TYPOS[domain];
+  if (fix) return { ok: false, reason: `looks like a typo of ${fix}`, suggestion: `${local}@${fix}` };
+  if (DISPOSABLE.test(domain)) return { ok: false, reason: "throwaway inbox" };
+  return ROLE.test(local) ? { ok: true, role: true } : { ok: true };
 }
 
 /** US-centric phone normalization to E.164. Returns undefined for junk. */

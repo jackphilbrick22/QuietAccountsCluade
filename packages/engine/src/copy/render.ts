@@ -136,8 +136,30 @@ function eligible(tpl: NoteTemplate, t: Record<string, string>): boolean {
   return (tpl.needs ?? []).every((k) => (t[k] ?? "").trim() !== "");
 }
 
-export function footer(b: BusinessProfile): string {
+/**
+ * Why they're getting this, stated honestly. A note about an old quote is commercial email under CAN-SPAM
+ * (they never agreed to the job), so it says plainly that it's a sales follow-up. Invoices are transactional.
+ */
+export function whyLineFor(type: Opportunity["type"] | undefined): string {
+  switch (type) {
+    case "unpaid_invoice":
+      return "";
+    case "approved_unscheduled":
+      return "You're getting this because you approved a quote from us.";
+    case "one_and_done":
+    case "lapsed_regular":
+    case "service_due":
+    case "missed_upsell":
+      return "You're getting this sales note because we've worked for you before.";
+    default:
+      return "You're getting this sales follow-up because you asked us for a price.";
+  }
+}
+
+export function footer(b: BusinessProfile, type?: Opportunity["type"]): string {
   const lines = [[b.name, b.mailingAddress].filter(Boolean).join(" · ")];
+  const why = whyLineFor(type);
+  if (why) lines.push(why);
   lines.push('Reply "stop" and you won\'t hear from us again.');
   return lines.join("\n");
 }
@@ -182,6 +204,6 @@ export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step:
     .filter((line, i, arr) => !(line.trim() === "" && arr[i - 1]?.trim() === ""))
     .join("\n")
     .trim();
-  body = `${body}\n\n${footer(b)}`;
-  return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, requireJob: step === 1 && ["quote", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
+  body = `${body}\n\n${footer(b, o.type)}`;
+  return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, step, commercial: o.type !== "unpaid_invoice", requireJob: step === 1 && ["quote", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
 }

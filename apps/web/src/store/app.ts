@@ -20,6 +20,7 @@ import {
   type TradeId,
 } from "@qa/engine";
 import { getPref, load, remove as removeKey, save, setPref } from "../lib/persist";
+import { getToken } from "../live/api";
 
 export type Area = "welcome" | "onboarding" | "owner" | "ops" | "live";
 
@@ -100,6 +101,9 @@ export const useApp = create<Store>((set, get) => ({
   view: { area: "welcome", tab: "today" },
 
   async init() {
+    // Live console (the real server) when asked for by URL, or when the operator last used it and is signed in.
+    const hash = typeof location !== "undefined" ? location.hash.replace("#", "") : "";
+    const live = hash === "live" || (hash !== "ops" && getPref("mode") === "live" && !!getToken());
     const idx = await load<{ order: string[]; activeId?: string; meta: Record<string, AccountMeta>; view?: View }>("index");
     if (idx?.order?.length) {
       const accounts: Record<string, AccountState> = {};
@@ -109,18 +113,28 @@ export const useApp = create<Store>((set, get) => ({
       }
       const order = idx.order.filter((id) => accounts[id]);
       if (order.length) {
-        const hash = typeof location !== "undefined" ? location.hash.replace("#", "") : "";
-        const view: View = idx.view && idx.view.area !== "onboarding" ? idx.view : { area: "owner", tab: "today" };
+        let view: View = idx.view && idx.view.area !== "onboarding" && idx.view.area !== "live" ? idx.view : { area: "owner", tab: "today" };
         if (hash === "ops") view.area = "ops";
+        if (live) view = idx.view?.area === "live" ? idx.view : { area: "live", tab: "clients" };
         set({ accounts, order, meta: idx.meta ?? {}, activeId: idx.activeId && accounts[idx.activeId] ? idx.activeId : order[0], view, ready: true, rev: 1 });
         return;
       }
     }
-    set({ ready: true });
+    set({ ready: true, view: live ? (idx?.view?.area === "live" ? idx.view : { area: "live", tab: "clients" }) : get().view });
   },
 
   go(v) {
     set((s) => ({ view: { ...s.view, ...v, detail: v.detail ?? (v.tab && v.tab !== s.view.tab ? undefined : v.detail ?? s.view.detail) } }));
+    if (v.area) {
+      // remember Live vs Demo, and keep the URL bookmarkable (#live / #ops)
+      setPref("mode", v.area === "live" ? "live" : "demo");
+      try {
+        const hash = v.area === "live" ? "#live" : v.area === "ops" ? "#ops" : "";
+        if (location.hash !== hash) history.replaceState(null, "", `${location.pathname}${location.search}${hash}`);
+      } catch {
+        /* sandboxed frames can refuse history changes */
+      }
+    }
     if (typeof window !== "undefined") window.scrollTo({ top: 0 });
     void save("index", { order: get().order, activeId: get().activeId, meta: get().meta, view: get().view });
   },

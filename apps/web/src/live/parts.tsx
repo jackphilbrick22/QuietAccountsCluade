@@ -57,7 +57,7 @@ export function ReadinessPanel({ r, ownerFirst }: { r?: Readiness; ownerFirst?: 
             const L = LEVEL[g.level];
             return (
               <li key={g.id} className="flex flex-col gap-1 px-3 py-2.5 sm:flex-row sm:items-start sm:gap-3">
-                <span className="shrink-0 sm:w-44">
+                <span className="shrink-0 sm:w-52">
                   <Pill tone={L.tone}>
                     <L.icon size={12} /> {L.label}
                   </Pill>

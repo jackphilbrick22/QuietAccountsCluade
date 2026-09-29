@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
   approveAll,
+  sendableEmail,
   setBookedOut,
   customerById,
   detect,
@@ -29,6 +30,7 @@ import type { Config } from "../config.ts";
 import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundProvider, OwnerNotifier, SequencedLead, SequencerProvider } from "../contracts.ts";
 import { ProviderError } from "../contracts.ts";
 import type { Llm } from "../agents/llm.ts";
+import type { MailCheck } from "../providers/mailcheck.ts";
 import { readReplyWithClaude } from "../agents/replies.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
@@ -46,6 +48,17 @@ export interface Deps {
   log: (msg: string) => void;
   /** Real instant (injectable for tests). */
   clock: () => Date;
+  /** Pre-send "does this domain take mail?" check. Absent = skip (tests, or MAIL_CHECK=off). */
+  mailCheck?: MailCheck;
+}
+
+/** False (and the address suppressed as bounced) when the domain can't receive mail. */
+async function deliverable(d: Deps, bid: string, email: string): Promise<boolean> {
+  if (!d.mailCheck) return true;
+  const domain = email.split("@")[1] ?? "";
+  if ((await d.mailCheck(domain)) !== "no_mail") return true;
+  await suppress(d, bid, email, "bounced", `${domain} doesn't accept email — caught before sending.`);
+  return false;
 }
 
 const MAX_SEND_ATTEMPTS = 5;
@@ -228,6 +241,10 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
     const b = state.dataset.business;
     const t = item.touch;
     const prev = t.step > 1 ? state.touches.find((x) => x.opportunityId === t.opportunityId && x.step === 1 && x.providerId) : undefined;
+    if (!(await deliverable(d, bid, item.to))) {
+      held++;
+      continue;
+    }
     try {
       const res = await (provider as DirectProvider).send({
         businessId: bid,
@@ -289,9 +306,10 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   for (const [cid, ts] of byCustomer) {
     ts.sort((x, y) => x.step - y.step);
     if (!ts[0] || ts[0].step !== 1 || ts[0].dueAt.slice(0, 10) > horizon) continue;
-    const c = state.dataset.customers.find((x) => x.id === cid);
-    const email = c?.emails.find((e) => !state.suppressions[e]);
+    const c = customerById(state.dataset, cid);
+    const email = c ? sendableEmail(c.emails, state.suppressions) : undefined;
     if (!c || !email) continue;
+    if (!(await deliverable(d, bid, email))) continue;
     const lead: SequencedLead = {
       customerId: cid,
       opportunityId: ts[0].opportunityId,

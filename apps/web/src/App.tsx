@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from "react";
-import { Archive, BarChart3, ChevronDown, Inbox, LayoutGrid, Mail, Settings as SettingsIcon, Sun, Users, Bot, ShieldCheck, Wallet, ListChecks } from "lucide-react";
+import { Archive, BarChart3, ChevronDown, Inbox, LayoutGrid, Radio, Mail, Settings as SettingsIcon, Sun, Users, Bot, ShieldCheck, Wallet, ListChecks } from "lucide-react";
 import { useApp, useAccount } from "./store/app";
 import { derive } from "./lib/derive";
 import { clientRows, reviewItems } from "./lib/ops";
@@ -17,6 +17,7 @@ import { OpsReview } from "./screens/ops/Review";
 import { OpsAgents } from "./screens/ops/Agents";
 import { OpsBilling } from "./screens/ops/Billing";
 import { OpsHealth } from "./screens/ops/Health";
+import { LiveShell } from "./live/LiveShell";
 
 const OWNER_TABS = [
   { id: "today", label: "Home", icon: Sun },
@@ -58,6 +59,7 @@ export function App() {
       {view.area === "onboarding" && <Onboarding />}
       {view.area === "owner" && <OwnerShell />}
       {view.area === "ops" && <OpsShell />}
+      {view.area === "live" && <LiveShell />}
       {busy && (
         <div className="fixed inset-0 z-[60] grid place-items-center bg-bg/80 backdrop-blur-sm" role="status" aria-live="polite">
           <div className="flex flex-col items-center gap-3">
@@ -217,7 +219,7 @@ function OpsShell() {
     <div className="min-h-full lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
       <aside className="flex flex-col gap-4 border-b border-line bg-surface px-4 py-4 lg:sticky lg:px-3 lg:top-0 lg:h-dvh lg:border-r lg:border-b-0 lg:py-5">
         <div className="flex items-center justify-between gap-2">
-          <Wordmark sub="Ops" />
+          <Wordmark sub="Demo" />
           <button className="cursor-pointer rounded-lg px-2 py-1 text-[13px] font-semibold text-ink-3 hover:bg-surface-2 lg:hidden" onClick={() => go({ area: "owner", tab: "today" })}>
             Owner view
           </button>
@@ -228,6 +230,10 @@ function OpsShell() {
           ))}
         </nav>
         <div className="mt-auto hidden flex-col gap-2 lg:flex">
+          <p className="rounded-md bg-warn-soft px-3 py-2 text-[12px] text-warn">Demo: sample businesses running in this browser. Nothing here touches real clients.</p>
+          <button className="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[13.5px] font-semibold text-ink-3 hover:bg-surface-2 hover:text-ink" onClick={() => go({ area: "live", tab: "clients" })}>
+            <Radio size={16} /> Live console
+          </button>
           <button className="flex cursor-pointer items-center gap-2 rounded-xl px-3 py-2 text-left text-[13.5px] font-semibold text-ink-3 hover:bg-surface-2 hover:text-ink" onClick={() => go({ area: "owner", tab: "today" })}>
             <Sun size={16} /> Owner view
           </button>

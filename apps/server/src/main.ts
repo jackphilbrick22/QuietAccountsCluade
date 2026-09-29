@@ -10,6 +10,7 @@ import { startWorker } from "./core/worker.ts";
 import { createApp, type HttpDeps } from "./http/app.ts";
 import { LogEmailProvider, SmtpEmailProvider } from "./providers/email.ts";
 import { LogNotifier, TwilioNotifier } from "./providers/sms.ts";
+import { createMailCheck } from "./providers/mailcheck.ts";
 import { createLlm } from "./agents/llm.ts";
 import { createInstantlyProvider, parseInstantlyWebhook, webhookUrlFor, type InstantlyProvider } from "./integrations/instantly/index.ts";
 import { encrypt } from "./core/crypto.ts";
@@ -51,7 +52,8 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
           }),
         }
       : {};
-  return { cfg, accounts, email, notifier, llm, fsm, log, clock: () => new Date(), parsers: { instantly: parseInstantlyWebhook } };
+  const mailCheck = cfg.MAIL_CHECK === "off" ? undefined : createMailCheck();
+  return { cfg, accounts, email, notifier, llm, fsm, log, clock: () => new Date(), parsers: { instantly: parseInstantlyWebhook }, mailCheck };
 }
 
 export function start(env: Record<string, string | undefined> = process.env) {

@@ -23,7 +23,6 @@ const TABS: { id: ClientTab; label: string }[] = [
 ];
 
 export function LiveClient({ id }: { id: string }) {
-  const go = useApp((s) => s.go);
   const tab = useLive((s) => s.clientTab);
   const setTab = useLive((s) => s.setClientTab);
   const enc = encodeURIComponent(id);
@@ -206,7 +205,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
             <dd className="num text-right font-semibold">{o.week?.wants ?? 0}</dd>
             <dt className="text-ink-3">Booked</dt>
             <dd className="num text-right font-semibold">{fmtMoney(o.week?.bookedValue ?? 0)}</dd>
-            <dt className="text-ink-3">Owner's avg. call-back</dt>
+            <dt className="text-ink-3">Owner call-back time</dt>
             <dd className="num text-right font-semibold">{o.week?.avgHoursToCall !== undefined ? `${o.week.avgHoursToCall}h` : "—"}</dd>
           </dl>
         </Box>
