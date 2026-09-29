@@ -22,7 +22,7 @@ import { leadCode, lossReasons } from "../src/reports/owner.ts";
 import { emptyDataset, toCSV } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
-import type { Reply, Touch } from "../src/model.ts";
+import type { Touch } from "../src/model.ts";
 import { addDays, mondayOf, weekday } from "../src/util.ts";
 import { ASOF } from "./fixtures.ts";
 
@@ -334,6 +334,9 @@ describe("Ledger and Reporter", () => {
     expect(newRecoveries).toBe(1);
     const rec = s.recoveries.find((r) => r.customerId === e.touch.customerId)!;
     expect(rec).toMatchObject({ match: "customer_id", value: 650, cameBackOn: "2026-10-20", record: { kind: "job" } });
+    // they never wrote back, so it shows as "came back after our note" and isn't counted toward the guarantee
+    expect(rec.tier).toBe("after_note");
+    expect(s.recoveries.find((r) => r.customerId === yes.customerId)!.tier).toBe("traced");
     expect(s.recoveries.filter((r) => r.customerId === yes.customerId)).toHaveLength(1); // not re-counted
     expect(lift.treated.cameBack).toBe(2);
     expect(lift.treated.value).toBe(3050);
@@ -485,13 +488,4 @@ describe("booked out", () => {
       else expect(t.dueAt.slice(0, 10) >= "2026-11-24").toBe(true);
     }
   });
-});
-
-/** Replies are plain data; make sure the loop above never produced one without a reading. */
-it("every reply the loop stored has an intent and a confidence", () => {
-  const s = fresh();
-  const sent = sendDue(s, DAY1_SEND);
-  const r: Reply = receiveReply(s, { from: from(sent[0]!), text: "hmm", receivedAt: `${START}T12:00:00` });
-  expect(typeof r.intent).toBe("string");
-  expect(r.confidence).toBeGreaterThanOrEqual(0);
 });

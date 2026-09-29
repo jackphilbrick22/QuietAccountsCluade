@@ -207,6 +207,14 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       needs: ["timingLine", "streetName"],
       body: "{first}, {timingLine}\n\nIf there's anything you'd like looked at before then, reply and we'll come by while we're in the area.\n\n{signer}",
     },
+    {
+      // no street on file: stays in the thread opened by "checking in from {company}"
+      id: "p2b",
+      angle: "timing",
+      subject: "Re: checking in from {company}",
+      needs: ["timingLine"],
+      body: "{first}, {timingLine}\n\nIf there's anything you'd like looked at before then, just reply and we'll set it up.\n\n{signer}",
+    },
   ],
   "past.close_file": [
     {
@@ -214,6 +222,12 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       angle: "close_file",
       subject: "Re: {streetName}",
       needs: ["streetName"],
+      body: "Last one from me, {first}. If everything's in good shape, no reply needed. If not, reply and we'll get you a date.\n\n{signer}",
+    },
+    {
+      id: "p3b",
+      angle: "close_file",
+      subject: "Re: checking in from {company}",
       body: "Last one from me, {first}. If everything's in good shape, no reply needed. If not, reply and we'll get you a date.\n\n{signer}",
     },
   ],

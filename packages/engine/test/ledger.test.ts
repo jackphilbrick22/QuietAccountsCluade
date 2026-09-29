@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attribute, lift, ownerReported, type OutreachRecord } from "../src/ledger/attribution.ts";
+import { attribute, counted, COUNTING_RULES, lift, ownerReported, type OutreachRecord } from "../src/ledger/attribution.ts";
 import type { Recovery, Reply } from "../src/model.ts";
 import { addDays } from "../src/util.ts";
 import { customer, dataset, invoice, job, quote } from "./fixtures.ts";
@@ -7,69 +7,110 @@ import { customer, dataset, invoice, job, quote } from "./fixtures.ts";
 const FIRST = "2026-10-06";
 const LAST = "2026-10-15";
 const worked = (over: Partial<OutreachRecord> = {}): OutreachRecord => ({ customerId: "c1", opportunityId: "op1", sourceId: "q1", firstTouchOn: FIRST, lastTouchOn: LAST, ...over });
+/** c1 answered one of our notes. */
+const REPLIED = { replied: new Set(["c1"]) };
 
 describe("attribute", () => {
-  it("the very quote we chased got approved: a same-record match", () => {
-    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", approvedOn: "2026-10-20", convertedOn: "2026-10-21", total: 2400 })] });
-    const [rec, ...rest] = attribute(ds, [worked()]);
-    expect(rest).toEqual([]);
-    expect(rec).toMatchObject({ customerId: "c1", opportunityId: "op1", record: { kind: "quote", id: "q1" }, value: 2400, cameBackOn: "2026-10-21", match: "same_record", confidence: 1, lagDays: 6 });
-  });
-  it("a new job for the customer after the first note", () => {
-    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: "2026-03-01" })], jobs: [job("j1", "c1", { title: "Stump grinding", createdOn: "2026-11-02", completedOn: "2026-11-10", total: 650 })] });
-    const [rec] = attribute(ds, [worked()]);
-    expect(rec).toMatchObject({ record: { kind: "job", id: "j1" }, value: 650, cameBackOn: "2026-11-02", match: "customer_id", confidence: 0.9 });
-  });
-  it("picks the earliest new job when there are several", () => {
-    const ds = dataset({ customers: [customer("c1")], jobs: [job("late", "c1", { createdOn: "2026-12-01" }), job("early", "c1", { createdOn: "2026-10-25" })] });
-    expect(attribute(ds, [worked()])[0]!.record.id).toBe("early");
-  });
-  it("a newly approved quote, not yet a job in the export", () => {
-    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: "2026-03-01" }), quote("q2", "c1", { title: "Hedge trimming", status: "approved", sentOn: "2026-10-18", approvedOn: "2026-10-22", total: 500 })] });
-    const [rec] = attribute(ds, [worked()]);
-    expect(rec).toMatchObject({ record: { kind: "quote", id: "q2" }, value: 500, match: "customer_id", confidence: 0.85 });
-  });
-  it("a paid invoice when there's no jobs file", () => {
-    const ds = dataset({ customers: [customer("c1")], invoices: [invoice("i1", "c1", { status: "paid", issuedOn: "2026-11-05", paidOn: "2026-11-20", total: 900, balance: 0 })] });
-    const [rec] = attribute(ds, [worked()]);
-    expect(rec).toMatchObject({ record: { kind: "invoice", id: "i1" }, value: 900, cameBackOn: "2026-11-05", match: "customer_id", confidence: 0.8 });
-  });
-  it("prefers the chased quote over a job, and a job over a later approval or invoice", () => {
-    const ds = dataset({
-      customers: [customer("c1"), customer("c2")],
-      quotes: [
-        quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn: "2026-10-21", jobIds: ["j1"] }),
-        quote("q2", "c2", { status: "approved", sentOn: "2026-10-18", approvedOn: "2026-10-19" }),
-      ],
-      jobs: [job("j1", "c1", { createdOn: "2026-10-21", quoteId: "q1" }), job("j2", "c2", { createdOn: "2026-11-01" })],
-      invoices: [invoice("i2", "c2", { status: "paid", issuedOn: "2026-10-20", balance: 0 })],
+  describe("what came back", () => {
+    it("the very quote we chased got approved: a same-record match", () => {
+      const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", approvedOn: "2026-10-20", convertedOn: "2026-10-21", total: 2400 })] });
+      const [rec, ...rest] = attribute(ds, [worked()]);
+      expect(rest).toEqual([]);
+      expect(rec).toMatchObject({ customerId: "c1", opportunityId: "op1", record: { kind: "quote", id: "q1" }, value: 2400, cameBackOn: "2026-10-21", match: "same_record", confidence: 1, lagDays: 6 });
     });
-    const recs = attribute(ds, [worked(), worked({ customerId: "c2", sourceId: "qX" })]);
-    expect(recs.map((r) => [r.customerId, r.record.kind, r.match])).toEqual([
-      ["c1", "quote", "same_record"],
-      ["c2", "job", "customer_id"],
-    ]);
+    it("a new job for the customer after the first note", () => {
+      const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: "2026-03-01" })], jobs: [job("j1", "c1", { title: "Stump grinding", createdOn: "2026-11-02", completedOn: "2026-11-10", total: 650 })] });
+      const [rec] = attribute(ds, [worked()]);
+      expect(rec).toMatchObject({ record: { kind: "job", id: "j1" }, value: 650, cameBackOn: "2026-11-02", match: "customer_id", confidence: 0.9 });
+    });
+    it("picks the earliest new job when there are several", () => {
+      const ds = dataset({ customers: [customer("c1")], jobs: [job("late", "c1", { createdOn: "2026-12-01" }), job("early", "c1", { createdOn: "2026-10-25" })] });
+      expect(attribute(ds, [worked()])[0]!.record.id).toBe("early");
+    });
+    it("a newly approved quote, not yet a job in the export", () => {
+      const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: "2026-03-01" }), quote("q2", "c1", { title: "Hedge trimming", status: "approved", sentOn: "2026-10-18", approvedOn: "2026-10-22", total: 500 })] });
+      const [rec] = attribute(ds, [worked()]);
+      expect(rec).toMatchObject({ record: { kind: "quote", id: "q2" }, value: 500, match: "customer_id", confidence: 0.85 });
+    });
+    it("a paid invoice when there's no jobs file", () => {
+      const ds = dataset({ customers: [customer("c1")], invoices: [invoice("i1", "c1", { status: "paid", issuedOn: "2026-11-05", paidOn: "2026-11-20", total: 900, balance: 0 })] });
+      const [rec] = attribute(ds, [worked()]);
+      expect(rec).toMatchObject({ record: { kind: "invoice", id: "i1" }, value: 900, cameBackOn: "2026-11-05", match: "customer_id", confidence: 0.8 });
+    });
+    it("prefers the chased quote over a job, and a job over a later approval or invoice", () => {
+      const ds = dataset({
+        customers: [customer("c1"), customer("c2")],
+        quotes: [
+          quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn: "2026-10-21", jobIds: ["j1"] }),
+          quote("q2", "c2", { status: "approved", sentOn: "2026-10-18", approvedOn: "2026-10-19" }),
+        ],
+        jobs: [job("j1", "c1", { createdOn: "2026-10-21", quoteId: "q1" }), job("j2", "c2", { createdOn: "2026-11-01" })],
+        invoices: [invoice("i2", "c2", { status: "paid", issuedOn: "2026-10-20", balance: 0 })],
+      });
+      const recs = attribute(ds, [worked(), worked({ customerId: "c2", sourceId: "qX" })]);
+      expect(recs.map((r) => [r.customerId, r.record.kind, r.match])).toEqual([
+        ["c1", "quote", "same_record"],
+        ["c2", "job", "customer_id"],
+      ]);
+    });
   });
 
-  describe("the 120-day window", () => {
+  describe("traced vs came back after our note", () => {
+    const withJob = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: "2026-03-01" })], jobs: [job("j1", "c1", { createdOn: "2026-11-02" })] });
+    it("new work from someone who wrote back is traced", () => {
+      expect(attribute(withJob, [worked()], REPLIED)[0]!.tier).toBe("traced");
+    });
+    it("new work from someone who never wrote back is only 'after our note'", () => {
+      expect(attribute(withJob, [worked()])[0]!.tier).toBe("after_note");
+      expect(attribute(withJob, [worked()], { replied: new Set(["someone-else"]) })[0]!.tier).toBe("after_note");
+    });
+    it("the chased quote converting is traced even without a reply", () => {
+      const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn: "2026-10-21" })] });
+      expect(attribute(ds, [worked()])[0]).toMatchObject({ match: "same_record", tier: "traced" });
+    });
+    it("approvals and paid invoices follow the same rule", () => {
+      const approval = dataset({ customers: [customer("c1")], quotes: [quote("q2", "c1", { status: "approved", sentOn: "2026-10-18", approvedOn: "2026-10-22" })] });
+      expect(attribute(approval, [worked()])[0]!.tier).toBe("after_note");
+      expect(attribute(approval, [worked()], REPLIED)[0]!.tier).toBe("traced");
+      const paid = dataset({ customers: [customer("c1")], invoices: [invoice("i1", "c1", { status: "paid", issuedOn: "2026-11-05", balance: 0 })] });
+      expect(attribute(paid, [worked()])[0]!.tier).toBe("after_note");
+      expect(attribute(paid, [worked()], REPLIED)[0]!.tier).toBe("traced");
+    });
+  });
+
+  describe("windows", () => {
     const jobOn = (createdOn: string) => dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { createdOn, completedOn: undefined, status: "scheduled" })] });
-    it("counts work up to 120 days after the last note", () => {
-      expect(attribute(jobOn(addDays(LAST, 120)), [worked()])).toHaveLength(1);
-      expect(attribute(jobOn(addDays(LAST, 120)), [worked()])[0]!.lagDays).toBe(120);
+    const convertsOn = (convertedOn: string) => dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn })] });
+
+    it("someone who wrote back: up to 180 days after the last note", () => {
+      const [rec] = attribute(jobOn(addDays(LAST, 180)), [worked()], REPLIED);
+      expect(rec).toMatchObject({ tier: "traced", lagDays: 180 });
+      expect(attribute(jobOn(addDays(LAST, 181)), [worked()], REPLIED)).toEqual([]);
     });
-    it("not a day after", () => {
-      expect(attribute(jobOn(addDays(LAST, 121)), [worked()])).toEqual([]);
+    it("someone who never wrote back: up to 90 days", () => {
+      expect(attribute(jobOn(addDays(LAST, 90)), [worked()])[0]).toMatchObject({ tier: "after_note", lagDays: 90 });
+      expect(attribute(jobOn(addDays(LAST, 91)), [worked()])).toEqual([]);
     });
-    it("not work that started before the first note", () => {
-      expect(attribute(jobOn(addDays(FIRST, -1)), [worked()])).toEqual([]);
+    it("the chased quote gets the 180-day window even without a reply", () => {
+      expect(attribute(convertsOn(addDays(LAST, 150)), [worked()])[0]).toMatchObject({ match: "same_record", tier: "traced" });
+      expect(attribute(convertsOn(addDays(LAST, 180)), [worked()])).toHaveLength(1);
+      expect(attribute(convertsOn(addDays(LAST, 181)), [worked()])).toEqual([]);
     });
-    it("the chased quote converting after the window doesn't count either", () => {
-      const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn: addDays(LAST, 150) })] });
-      expect(attribute(ds, [worked()])).toEqual([]);
+    it("nothing that started before the first note", () => {
+      expect(attribute(jobOn(addDays(FIRST, -1)), [worked()], REPLIED)).toEqual([]);
+      expect(attribute(convertsOn(addDays(FIRST, -1)), [worked()])).toEqual([]);
     });
-    it("the window can be changed", () => {
-      expect(attribute(jobOn(addDays(LAST, 60)), [worked()], { windowDays: 30 })).toEqual([]);
-      expect(attribute(jobOn(addDays(LAST, 60)), [worked()], { windowDays: 90 })).toHaveLength(1);
+    it("each window can be set on its own", () => {
+      expect(attribute(jobOn(addDays(LAST, 60)), [worked()], { silentWindowDays: 30 })).toEqual([]);
+      expect(attribute(jobOn(addDays(LAST, 120)), [worked()], { silentWindowDays: 150 })).toHaveLength(1);
+      expect(attribute(jobOn(addDays(LAST, 60)), [worked()], { ...REPLIED, tracedWindowDays: 30 })).toEqual([]);
+      // the traced window doesn't stretch the silent one
+      expect(attribute(jobOn(addDays(LAST, 120)), [worked()], { tracedWindowDays: 365 })).toEqual([]);
+    });
+    it("windowDays sets both at once", () => {
+      for (const opts of [{ windowDays: 30 }, { windowDays: 30, ...REPLIED }]) expect(attribute(jobOn(addDays(LAST, 60)), [worked()], opts)).toEqual([]);
+      for (const opts of [{ windowDays: 120 }, { windowDays: 120, ...REPLIED }]) expect(attribute(jobOn(addDays(LAST, 100)), [worked()], opts)).toHaveLength(1);
+      expect(attribute(convertsOn(addDays(LAST, 100)), [worked()], { windowDays: 90 })).toEqual([]);
     });
   });
 
@@ -80,7 +121,7 @@ describe("attribute", () => {
       jobs: [job("j1", "c1", { status: "cancelled", createdOn: "2026-10-20" })],
       invoices: [invoice("i1", "c1", { issuedOn: "2026-10-20" })],
     });
-    expect(attribute(ds, [worked()])).toEqual([]);
+    expect(attribute(ds, [worked()], REPLIED)).toEqual([]);
   });
   it("finds comebacks for holdout people too (that's what the comparison needs)", () => {
     const ds = dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { createdOn: "2026-10-30" })] });
@@ -88,8 +129,42 @@ describe("attribute", () => {
   });
   it("never uses one record twice", () => {
     const ds = dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { createdOn: "2026-10-30" })] });
-    const recs = attribute(ds, [worked(), worked({ opportunityId: "op2", sourceId: "q2" })]);
+    const recs = attribute(ds, [worked(), worked({ opportunityId: "op2", sourceId: "q2" })], REPLIED);
     expect(recs).toHaveLength(1);
+  });
+});
+
+describe("counted", () => {
+  const rec = (id: string, over: Partial<Recovery>): Recovery => ({ id, customerId: id, record: { kind: "job", id }, value: 1000, cameBackOn: "2026-11-01", match: "customer_id", confidence: 0.9, ...over });
+  it("counts traced comebacks and owner-reported bookings, not 'after our note' or disputed ones", () => {
+    const all = [
+      rec("traced", { tier: "traced" }),
+      rec("same", { tier: "traced", match: "same_record" }),
+      rec("owner", { tier: "traced", match: "owner_reported" }),
+      rec("after", { tier: "after_note" }),
+      rec("disputed", { tier: "traced", disputed: { at: "2026-11-05T10:00:00", reason: "already booked by phone", by: "owner" } }),
+    ];
+    expect(counted(all).map((r) => r.id)).toEqual(["traced", "same", "owner"]);
+  });
+  it("what attribute finds without a reply never counts, unless it's the chased quote", () => {
+    const ds = dataset({
+      customers: [customer("c1"), customer("c2")],
+      quotes: [quote("q1", "c1", { status: "converted", sentOn: "2026-03-01", convertedOn: "2026-10-21" })],
+      jobs: [job("j2", "c2", { createdOn: "2026-10-30" })],
+    });
+    const found = attribute(ds, [worked(), worked({ customerId: "c2", sourceId: "qX" })]);
+    expect(found).toHaveLength(2);
+    expect(counted(found).map((r) => r.customerId)).toEqual(["c1"]);
+  });
+});
+
+describe("COUNTING_RULES", () => {
+  it("say, word for word, the windows the code uses", () => {
+    const text = COUNTING_RULES.join(" ");
+    expect(text).toContain("up to 180 days after our last note");
+    expect(text).toContain("(up to 90 days)");
+    expect(text).toMatch(/never counts toward the guarantee/);
+    expect(text).toMatch(/One credit per job/);
   });
 });
 
@@ -111,7 +186,8 @@ describe("ownerReported", () => {
   it("turns a booking the owner texted in into a recovery", () => {
     const [rec, ...rest] = ownerReported([reply({ outcome: "booked", outcomeValue: 2400, ownerContactedAt: "2026-10-08T09:00:00" })], []);
     expect(rest).toEqual([]);
-    expect(rec).toMatchObject({ customerId: "c1", opportunityId: "op1", value: 2400, cameBackOn: "2026-10-08", match: "owner_reported", confidence: 0.75, record: { kind: "job", id: "r1" } });
+    expect(rec).toMatchObject({ customerId: "c1", opportunityId: "op1", value: 2400, cameBackOn: "2026-10-08", match: "owner_reported", confidence: 0.75, record: { kind: "job", id: "r1" }, tier: "traced" });
+    expect(counted([rec!])).toHaveLength(1);
   });
   it("dates it by the reply when the call time wasn't logged", () => {
     expect(ownerReported([reply({ outcome: "booked", outcomeValue: 100 })], [])[0]!.cameBackOn).toBe("2026-10-07");
@@ -179,6 +255,52 @@ describe("lift", () => {
     const l = lift(outreach, [r("a", 500), r("b", 700)]);
     expect(l.treated.cameBack).toBe(1);
     expect(l.treated.value).toBe(1200);
+  });
+  it("leaves out anything the owner marked as not ours, in both groups", () => {
+    const outreach: OutreachRecord[] = [
+      { customerId: "t0", firstTouchOn: FIRST, lastTouchOn: LAST },
+      { customerId: "t1", firstTouchOn: FIRST, lastTouchOn: LAST },
+      { customerId: "h0", firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true },
+    ];
+    const disputed = { at: "2026-11-05T10:00:00", reason: "calls every spring", by: "owner" };
+    const r = (id: string, over: Partial<Recovery> = {}): Recovery => ({ id, customerId: id, record: { kind: "job", id }, value: 1000, cameBackOn: "2026-11-01", match: "customer_id", confidence: 0.9, tier: "traced", ...over });
+    const l = lift(outreach, [r("t0"), r("t1", { disputed }), r("h0", { disputed })]);
+    expect(l.treated).toMatchObject({ cameBack: 1, value: 1000 });
+    expect(l.holdout).toMatchObject({ cameBack: 0, value: 0 });
+  });
+  it("counts both tiers, in the treated and the holdout group alike", () => {
+    // holdout people never get a note, so they can never be "traced" — comparing only traced work would be rigged
+    const outreach: OutreachRecord[] = [
+      ...Array.from({ length: 10 }, (_, i): OutreachRecord => ({ customerId: `t${i}`, firstTouchOn: FIRST, lastTouchOn: LAST })),
+      ...Array.from({ length: 10 }, (_, i): OutreachRecord => ({ customerId: `h${i}`, firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true })),
+    ];
+    const r = (id: string, tier: Recovery["tier"]): Recovery => ({ id, customerId: id, record: { kind: "job", id }, value: 1000, cameBackOn: "2026-11-01", match: "customer_id", confidence: 0.9, tier });
+    const l = lift(outreach, [r("t0", "traced"), r("t1", "after_note"), r("h0", "after_note")]);
+    expect(l.treated.cameBack).toBe(2);
+    expect(l.holdout.cameBack).toBe(1);
+    expect(l.baseline).toBe(1000);
+    expect(l.incremental).toBe(1000);
+  });
+  it("works end to end with what attribute finds", () => {
+    const ds = dataset({
+      customers: [customer("t0"), customer("t1"), customer("h0")],
+      jobs: [job("j0", "t0", { createdOn: "2026-10-20", total: 800 }), job("j1", "t1", { createdOn: "2026-10-25", total: 1200 }), job("j2", "h0", { createdOn: "2026-10-22", total: 500 })],
+    });
+    const outreach: OutreachRecord[] = [
+      { customerId: "t0", firstTouchOn: FIRST, lastTouchOn: LAST },
+      { customerId: "t1", firstTouchOn: FIRST, lastTouchOn: LAST },
+      { customerId: "h0", firstTouchOn: FIRST, lastTouchOn: FIRST, holdout: true },
+    ];
+    const found = attribute(ds, outreach, { replied: new Set(["t0"]) });
+    expect(found.map((x) => [x.customerId, x.tier])).toEqual([
+      ["t0", "traced"],
+      ["t1", "after_note"],
+      ["h0", "after_note"],
+    ]);
+    const l = lift(outreach, found);
+    expect(l.treated).toMatchObject({ people: 2, cameBack: 2, value: 2000 });
+    expect(l.holdout).toMatchObject({ people: 1, cameBack: 1, value: 500 });
+    expect(counted(found).map((x) => x.customerId)).toEqual(["t0"]);
   });
   it("handles an empty ledger", () => {
     const l = lift([], []);

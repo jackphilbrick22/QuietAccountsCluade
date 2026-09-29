@@ -2,8 +2,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
   approveAll,
+  counted,
   sendableEmail,
   setBookedOut,
+  totals,
   customerById,
   detect,
   dueTouches,
@@ -511,8 +513,31 @@ export async function ownerCommand(d: Deps, fromPhone: string, text: string): Pr
   if (/^(status|how|numbers)\b/.test(t)) {
     const s = d.accounts.peek(bid)!.state;
     const wants = s.replies.filter((r) => r.intent === "wants_it" || r.intent === "wants_price").length;
-    const booked = s.recoveries.reduce((a, r) => a + r.value, 0);
+    const booked = counted(s.recoveries).reduce((a, r) => a + r.value, 0);
     return { businessId: bid, reply: `So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} asked for a price or a date, $${Math.round(booked).toLocaleString("en-US")} booked.` };
+  }
+  // Month to month, cancel by text. The first CANCEL shows the facts; CANCEL YES does it.
+  if (/^cancel\b/.test(t)) {
+    const s = d.accounts.peek(bid)!.state;
+    if (s.dataset.business.plan.stage === "cancelled") return { businessId: bid, reply: "You're already cancelled. Text START if you ever want us back." };
+    if (!/^cancel\s+(yes|confirm)\b/.test(t)) {
+      const tt = totals(s);
+      const open = new Set(s.touches.filter((x) => x.status === "approved" || x.status === "planned").map((x) => x.customerId)).size;
+      return {
+        businessId: bid,
+        reply: `No problem. So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} traced. Cancelling stops notes to ${open} ${open === 1 ? "person" : "people"} still in line; everything we found stays yours. Text CANCEL YES to confirm.`,
+      };
+    }
+    await d.accounts.withAccount(bid, (state) => {
+      const at = nowLocal(d, state);
+      state.dataset.business.plan.stage = "cancelled";
+      let n = 0;
+      for (const x of state.touches) if (x.status === "approved" || x.status === "planned") (x.status = "cancelled"), n++;
+      state.events.push({ id: `ev_cancel_${at}`, at, agent: "guard", kind: "warning", title: "Owner cancelled by text", detail: `${n} queued notes stopped. No further charges.` });
+    });
+    d.accounts.setPaused(bid, true);
+    d.accounts.repo.audit(bid, "owner-sms", "cancel", {});
+    return { businessId: bid, reply: "Done — cancelled. No more notes and no more charges. Your ledger link keeps working, and your data is yours to take. Thanks for giving us a shot." };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(t) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {

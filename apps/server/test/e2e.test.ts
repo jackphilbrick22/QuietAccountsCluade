@@ -229,4 +229,21 @@ describe("end to end", () => {
     const forged = await app.request(`/api/owner/${token.slice(0, -2)}xx/overview`);
     expect(forged.status).toBe(401);
   });
+
+  it("shows the owner a ledger they can check, and 'not ours' takes a win out of every number", async () => {
+    const token = sign("test-app-secret-0123456789", `owner|${bid}`);
+    const res = await app.request(`/api/owner/${token}/ledger`);
+    const ledger = (await res.json()) as { rules: string[]; rows: { id: string; value: number; counts: boolean; match: string; theyWrote?: string }[] };
+    expect(ledger.rules.join(" ")).toMatch(/180 days/);
+    const win = ledger.rows.find((r) => r.value === 2400)!;
+    expect(win.counts).toBe(true);
+    expect(win.match).toBe("you told us you booked it");
+    expect(win.theyWrote).toMatch(/Yes please/);
+    const csv = await (await app.request(`/api/owner/${token}/ledger.csv`)).text();
+    expect(csv.split("\n")[0]).toContain("How we matched it");
+    const dispute = await app.request(`/api/owner/${token}/ledger/${win.id}/not-ours`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ reason: "already booked by phone" }) });
+    expect(((await dispute.json()) as { ok: boolean }).ok).toBe(true);
+    const ov = await api("GET", `/api/businesses/${bid}`);
+    expect(ov.json.recoveredValue).toBe(0);
+  });
 });

@@ -179,19 +179,17 @@ export function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+const MONEY_WHOLE = new Intl.NumberFormat("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+const MONEY_CENTS = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
 export function fmtMoney(n: Money, opts: { cents?: boolean; compact?: boolean } = {}): string {
   const v = Number(n) || 0;
   if (opts.compact && Math.abs(v) >= 10000) {
     if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(v >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}M`;
     return `$${Math.round(v / 1000)}k`;
   }
-  return (
-    (v < 0 ? "-$" : "$") +
-    Math.abs(v).toLocaleString("en-US", {
-      minimumFractionDigits: opts.cents ? 2 : 0,
-      maximumFractionDigits: opts.cents ? 2 : 0,
-    })
-  );
+  // building a number formatter is expensive; the scan formats thousands of amounts
+  return (v < 0 ? "-$" : "$") + (opts.cents ? MONEY_CENTS : MONEY_WHOLE).format(Math.abs(v));
 }
 
 /* ----------------------------- people ----------------------------- */

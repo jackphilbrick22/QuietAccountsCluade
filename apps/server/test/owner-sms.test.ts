@@ -93,4 +93,17 @@ describe("owner texts BUSY / OPEN", () => {
     const reply = await sms("booked 2400");
     expect(reply).not.toContain("new work waits");
   });
+
+  it("cancels by text: facts first, then CANCEL YES does it", async () => {
+    const first = await sms("cancel");
+    expect(first).toContain("CANCEL YES");
+    let ov = await api("GET", "/api/businesses/ridge-tree");
+    expect((ov.business as { plan: { stage: string } }).plan.stage).not.toBe("cancelled");
+    const done = await sms("Cancel yes");
+    expect(done).toContain("cancelled");
+    ov = await api("GET", "/api/businesses/ridge-tree");
+    expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
+    expect(ov.paused).toBe(true);
+    expect((ov.counts as { queued: number }).queued).toBe(0);
+  });
 });

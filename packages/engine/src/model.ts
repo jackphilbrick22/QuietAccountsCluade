@@ -496,6 +496,14 @@ export interface Recovery {
   confidence: number;
   /** Days between our last touch and their return. */
   lagDays?: number;
+  /**
+   * traced = they answered our note, or the very quote we chased converted (180-day window).
+   * after_note = new work from someone who never replied (90-day window) — shown separately and never
+   * counted toward the guarantee or the return on the fee.
+   */
+  tier?: "traced" | "after_note";
+  /** The owner said this one wasn't ours ("already booked by phone", "calls every spring"). Excluded everywhere. */
+  disputed?: { at: ISODateTime; reason: string; by: string };
 }
 
 /* ------------------------------------------------------------------ */

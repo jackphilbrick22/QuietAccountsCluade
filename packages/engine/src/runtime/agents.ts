@@ -378,7 +378,10 @@ export function reconcile(state: AccountState, files: FileIn[], now: ISODateTime
 /** Match new jobs/invoices/approvals in the current data to the people we contacted. Then re-scan. */
 export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveries: number; lift: LiftReport } {
   state.dataset.asOf = now.slice(0, 10);
-  const found = attribute(state.dataset, state.outreach);
+  const replied = new Set(state.replies.filter((r) => r.customerId && !["auto_reply", "bounce"].includes(r.intent)).map((r) => r.customerId!));
+  const found = attribute(state.dataset, state.outreach, { replied });
+  // someone who came back quietly and then wrote to us is now traced
+  for (const r of state.recoveries) if (r.tier === "after_note" && replied.has(r.customerId)) r.tier = "traced";
   const known = new Set(state.recoveries.map((r) => r.customerId));
   let added = 0;
   for (const r of found) {
@@ -386,7 +389,15 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
     state.recoveries.push(r);
     added++;
     const name = state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? "A customer";
-    event(state, now, "ledger", "win", `${name} came back — ${fmtMoney(r.value)}`, `${r.lagDays ?? 0} days after the last note.`, [{ kind: "customer", id: r.customerId }]);
+    event(
+      state,
+      now,
+      "ledger",
+      r.tier === "after_note" ? "info" : "win",
+      r.tier === "after_note" ? `${name} came back after a note — ${fmtMoney(r.value)} (not counted: no reply)` : `${name} came back — ${fmtMoney(r.value)}`,
+      `${r.lagDays ?? 0} days after the last note.`,
+      [{ kind: "customer", id: r.customerId }],
+    );
   }
   const l = lift(state.outreach, state.recoveries);
   event(state, now, "ledger", "info", `Recovered so far: ${fmtMoney(l.treated.value)}`, l.note);
@@ -492,9 +503,18 @@ export function relabelReply(state: AccountState, replyId: string, intent: Reply
   const refs = c ? [{ kind: "customer" as const, id: c.id }] : undefined;
   r.intent = intent;
   r.confidence = 1;
+  // an out-of-office isn't the person answering: their notes carry on
+  if (intent === "auto_reply") {
+    r.status = "done";
+    event(state, now, "inbox", "info", `${name}: out-of-office (sorted by a person)`, "Sequence continues as planned.", refs);
+    state.updatedAt = now;
+    return r;
+  }
   if (c) stopSequence(state, c.id);
   if (intent === "stop" || intent === "complaint" || intent === "bounce") {
-    state.suppressions[r.from] = intent === "complaint" ? "complained" : intent === "bounce" ? "bounced" : "unsubscribed";
+    // a bounce names the customer's dead address, not the mail server that sent the notice
+    const addresses = intent === "bounce" && c ? c.emails : [r.from];
+    for (const a of addresses) state.suppressions[a] = intent === "complaint" ? "complained" : intent === "bounce" ? "bounced" : "unsubscribed";
     r.status = "done";
     event(state, now, "guard", "action", `${name} — removed everywhere (sorted by a person)`, undefined, refs);
   } else if (intent === "wants_it" || intent === "wants_price" || intent === "question") {
@@ -510,4 +530,15 @@ export function relabelReply(state: AccountState, replyId: string, intent: Reply
   }
   state.updatedAt = now;
   return r;
+}
+
+/** The owner (or operator) says a win wasn't ours. It leaves every total, the guarantee and the return. */
+export function disputeRecovery(state: AccountState, recoveryId: string, reason: string, by: string, now: ISODateTime): boolean {
+  const r = state.recoveries.find((x) => x.id === recoveryId);
+  if (!r || r.disputed) return false;
+  r.disputed = { at: now, reason: reason.trim().slice(0, 200) || "not ours", by };
+  const name = customerById(state.dataset, r.customerId)?.name ?? "A customer";
+  event(state, now, "ledger", "info", `${name} (${fmtMoney(r.value)}) marked not ours`, r.disputed.reason, [{ kind: "customer", id: r.customerId }]);
+  state.updatedAt = now;
+  return true;
 }

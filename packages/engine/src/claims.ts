@@ -123,3 +123,22 @@ export function bannedStatIn(text: string): string | undefined {
 export function claim(id: string): Claim | undefined {
   return CLAIMS.find((c) => c.id === id);
 }
+
+/**
+ * Checks our OWN marketing and onboarding copy (landing page, audit, sales texts) against the lines that
+ * got HomeAdvisor and others in trouble. Returns the problems; empty = fine to publish.
+ */
+export function lintMarketing(text: string): string[] {
+  const out: string[] = [];
+  const t = text.replace(/\s+/g, " ");
+  const banned = bannedStatIn(t);
+  if (banned) out.push(`Repeats an unsourced stat: ${banned}`);
+  if (/\bguarantee[ds]?\b[^.]{0,40}\b\d{1,3}\s?%/i.test(t) || /\b\d{1,3}\s?%[^.]{0,40}\bguarantee[ds]?\b/i.test(t)) out.push("Guarantees a percentage — the guarantee is about replies, never a lift figure");
+  if (/\brisk[- ]free\b/i.test(t)) out.push('"Risk-free" — say exactly what happens instead (the month is free if nobody asks for a price or a date)');
+  if (/\bmoney[- ]back\b/i.test(t)) out.push('"Money-back" means a full refund on request under the FTC Guarantee Guides — we don\'t offer that; describe the free month instead');
+  if (/\bup to \d{1,3}\s?%/i.test(t) && !/\b(typical|median|most (shops|owners))\b/i.test(t)) out.push('"Up to N%" without the typical result beside it');
+  if (/\b(only|just) \d+ (spots|slots|openings) (left|remaining)\b|\b(expires|ends) (tonight|today|soon)\b/i.test(t)) out.push("Scarcity or deadline language — only with a real, enforced limit");
+  if (/\bexclusive (territory|area|market)\b/i.test(t)) out.push("Territory exclusivity — only if the system enforces it");
+  if (/\b(ai|artificial intelligence)[- ]powered\b/i.test(t)) out.push('Leads with "AI" — owners distrust it; lead with the result');
+  return out;
+}

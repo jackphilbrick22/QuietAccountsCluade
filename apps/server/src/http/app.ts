@@ -11,6 +11,10 @@ import {
   mondayOf,
   readiness,
   relabelReply,
+  COUNTING_RULES,
+  disputeRecovery,
+  ledgerCSV,
+  ledgerRows,
   type AccountState,
   type BusinessProfile,
   type FileIn,
@@ -136,7 +140,7 @@ export function overview(state: AccountState, paused: boolean) {
       sent: state.touches.filter((x) => x.status === "sent").length,
     },
     waitingOnOwner: hot.map((r) => ({ id: r.id, name: state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from, intent: r.intent, receivedAt: r.receivedAt, text: r.text.slice(0, 280) })),
-    recoveredValue: state.recoveries.reduce((a, r) => a + r.value, 0),
+    recoveredValue: t.bookedValue,
     events: state.events.slice(-40).reverse(),
   };
 }
@@ -325,6 +329,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
+  const Dispute = z.object({ reason: z.string().max(200).optional() });
+
   op.get("/businesses/:id/events", (c) => {
     const bid = c.req.param("id");
     const limit = Math.min(1000, Number(c.req.query("limit") ?? 200));
@@ -454,8 +460,47 @@ export function createApp(d: HttpDeps): Hono<Env> {
     repo.audit(c.get("bid"), "owner", paused ? "pause" : "resume");
     return c.json({ ok: true });
   });
+  // The Recovered Ledger on the owner's private link: every win, checkable against their own books.
+  own.get("/:token/ledger", (c) => {
+    const l = d.accounts.peek(c.get("bid")!);
+    if (!l) throw new NotFound("No such business");
+    return c.json({ rules: COUNTING_RULES, rows: ledgerRows(l.state), totals: totals(l.state) });
+  });
+  own.get("/:token/ledger.csv", (c) => {
+    const l = d.accounts.peek(c.get("bid")!);
+    if (!l) throw new NotFound("No such business");
+    return c.body(ledgerCSV(l.state), 200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="recovered-ledger.csv"' });
+  });
+  own.post("/:token/ledger/:rid/not-ours", async (c) => {
+    const { reason } = Dispute.parse(await c.req.json().catch(() => ({})));
+    return c.json({ ok: await dispute(c.get("bid")!, c.req.param("rid"), reason ?? "not ours", "owner") });
+  });
   app.route("/api/owner", own);
+
+  op.get("/businesses/:id/ledger", (c) => {
+    const l = d.accounts.peek(c.req.param("id"));
+    if (!l) throw new NotFound("No such business");
+    return c.json({ rules: COUNTING_RULES, rows: ledgerRows(l.state), totals: totals(l.state) });
+  });
+  op.get("/businesses/:id/ledger.csv", (c) => {
+    const l = d.accounts.peek(c.req.param("id"));
+    if (!l) throw new NotFound("No such business");
+    return c.body(ledgerCSV(l.state), 200, { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": 'attachment; filename="recovered-ledger.csv"' });
+  });
+  op.post("/businesses/:id/ledger/:rid/not-ours", async (c) => {
+    const { reason } = Dispute.parse(await c.req.json().catch(() => ({})));
+    return c.json({ ok: await dispute(c.req.param("id"), c.req.param("rid"), reason ?? "not ours", "operator") });
+  });
   app.route("/api", op);
+
+  async function dispute(bid: string, rid: string, reason: string, by: string): Promise<boolean> {
+    let ok = false;
+    await d.accounts.withAccount(bid, (state) => {
+      ok = disputeRecovery(state, rid, reason, by, localIso(d.clock(), state.dataset.business.timezone).slice(0, 19));
+    });
+    if (ok) repo.audit(bid, by, "ledger.not_ours", { rid, reason });
+    return ok;
+  }
 
   async function logOutcome(bid: string, rid: string, outcome: Reply["outcome"], value?: number) {
     const { markContacted } = await import("@qa/engine");

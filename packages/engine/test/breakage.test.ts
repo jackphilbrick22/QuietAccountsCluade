@@ -794,3 +794,33 @@ const COVERED: BreakageType[] = [
 it("covers all twelve breakage types", () => {
   expect(new Set(COVERED).size).toBe(Object.keys(TYPE_RANK).length);
 });
+
+describe("what we may say about lift", () => {
+  it("says 15–20% only when the shop's careful forecast reaches 15%, otherwise its own number", async () => {
+    const { generateSample } = await import("../src/sample/generate.ts");
+    const { scan } = await import("../src/breakage/detect.ts");
+    const { summarize } = await import("../src/breakage/forecast.ts");
+    for (const trade of ["tree", "septic", "fence"] as const) {
+      const s = generateSample({ trade, asOf: "2026-09-29" });
+      const sum = summarize(s.dataset, scan(s.dataset));
+      const careful = sum.liftPct!.conservative;
+      expect(sum.fit.canSay15).toBe(careful >= 15 && sum.fit.guaranteeEligible);
+      if (sum.fit.canSay15) expect(sum.fit.liftLine).toContain("15–20%");
+      else expect(sum.fit.liftLine).not.toContain("15–20%");
+      expect(sum.fit.liftLine).toContain(`${Math.round(careful)}%`);
+    }
+  });
+});
+
+describe("marketing copy checker", () => {
+  it("blocks the lines that get lead-gen companies in trouble", async () => {
+    const { lintMarketing } = await import("../src/claims.ts");
+    expect(lintMarketing("Guaranteed 20% more revenue!")).not.toEqual([]);
+    expect(lintMarketing("Totally risk-free.")).not.toEqual([]);
+    expect(lintMarketing("Money-back guarantee")).not.toEqual([]);
+    expect(lintMarketing("Up to 40% more jobs")).not.toEqual([]);
+    expect(lintMarketing("80% of sales need 5 follow-ups")).not.toEqual([]);
+    expect(lintMarketing("Only 3 spots left")).not.toEqual([]);
+    expect(lintMarketing("If nobody asks for a price or a date this month, you don't pay for it.")).toEqual([]);
+  });
+});

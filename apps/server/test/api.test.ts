@@ -176,8 +176,8 @@ describe("sorting an unclear reply", () => {
       body: JSON.stringify({ MessageID: "m-hmm-1", From: email, Subject: "Re: the oak", TextBody: "hmm" }),
     });
     const replies = await api("GET", `/api/businesses/${bid}/replies`);
-    const r = (replies.json as { items?: Reply[] } & Reply[]);
-    const list = (Array.isArray(r) ? r : r.items ?? []) as Reply[];
+    const r = replies.json as unknown as { items?: Reply[] } | Reply[];
+    const list = Array.isArray(r) ? r : (r.items ?? []);
     const unclear = list.find((x) => x.from === email.toLowerCase())!;
     expect(unclear.intent).toBe("unclear");
     const before = d.notifier.sent.length;

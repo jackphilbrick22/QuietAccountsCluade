@@ -2,6 +2,7 @@ import type { BusinessProfile, ISODate, Money, Opportunity, Recovery, Reply } fr
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, humanAge, isoWeekKey, mondayOf, monthName, round2, spokenWhen, sum } from "../util.ts";
 import { STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { counted } from "../ledger/attribution.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
 
@@ -134,7 +135,7 @@ export function weekNumbers(state: AccountState, monday: ISODate): WeekNumbers {
   const inWeek = (d: string | undefined) => !!d && d.slice(0, 10) >= monday && d.slice(0, 10) < end;
   const sent = state.touches.filter((t) => t.status === "sent" || t.status === "delivered").filter((t) => inWeek(t.sentAt ?? t.dueAt));
   const replies = state.replies.filter((r) => inWeek(r.receivedAt) && !["auto_reply", "bounce"].includes(r.intent));
-  const recovered = state.recoveries.filter((r) => inWeek(r.cameBackOn));
+  const recovered = counted(state.recoveries).filter((r) => inWeek(r.cameBackOn));
   const waiting = state.replies
     .filter((r) => WANTS.has(r.intent) && r.status !== "done" && !r.ownerContactedAt)
     .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from);
@@ -181,6 +182,12 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     })(),
     "",
     `Since you started: ${total.booked} booked, ${fmtMoney(total.bookedValue)}. ${total.remaining.toLocaleString("en-US")} people still to work.`,
+    (() => {
+      const fees = feesPaid(b, monday);
+      if (!fees.total) return "";
+      return `You've paid us ${fmtMoney(fees.total)}${fees.freeMonths ? ` (${fees.freeMonths} free ${fees.freeMonths === 1 ? "month" : "months"})` : ""}. Traced back: ${fmtMoney(total.bookedValue)}${total.bookedValue > 0 ? ` — ${round2(total.bookedValue / fees.total)}x` : ""}.`;
+    })(),
+    total.afterNote ? `Also came back after a note without writing to us: ${total.afterNote} (${fmtMoney(total.afterNoteValue)}) — not counted above.` : "",
   ];
   return lines.filter((l, i, a) => !(l === "" && a[i - 1] === "")).join("\n").trim();
 }
@@ -201,14 +208,16 @@ export function lossReasons(state: AccountState): { reason: string; count: numbe
   return [...tally.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
 }
 
-export function totals(state: AccountState): { booked: number; bookedValue: Money; contacted: number; replied: number; wants: number; remaining: number } {
+export function totals(state: AccountState): { booked: number; bookedValue: Money; afterNote: number; afterNoteValue: Money; contacted: number; replied: number; wants: number; remaining: number } {
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
   const workable = new Set((state.scan?.primary ?? []).filter((o) => o.channels.includes("email")).map((o) => o.customerId));
   for (const id of contacted) workable.delete(id);
   for (const o of state.outreach) if (o.holdout) workable.delete(o.customerId);
   return {
-    booked: state.recoveries.length,
-    bookedValue: round2(sum(state.recoveries, (r) => r.value)),
+    booked: counted(state.recoveries).length,
+    bookedValue: round2(sum(counted(state.recoveries), (r) => r.value)),
+    afterNote: state.recoveries.filter((r) => !r.disputed && r.tier === "after_note").length,
+    afterNoteValue: round2(sum(state.recoveries.filter((r) => !r.disputed && r.tier === "after_note"), (r) => r.value)),
     contacted: contacted.size,
     replied: state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent)).length,
     wants: state.replies.filter((r) => WANTS.has(r.intent)).length,
@@ -223,7 +232,7 @@ export function totals(state: AccountState): { booked: number; bookedValue: Mone
 export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string } = {}): string {
   const b = state.dataset.business;
   const t = totals(state);
-  const names = state.recoveries
+  const names = counted(state.recoveries)
     .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name)
     .filter(Boolean)
     .slice(0, 4) as string[];
@@ -261,6 +270,20 @@ function joinNames(n: string[]): string {
 /* ------------------------------------------------------------------ */
 
 /** Next monthly charge on or after `asOf - 3 days`, anchored to the first paid day. */
+/** What the owner has actually been charged so far: monthly charges since paidOn, minus guarantee months. */
+export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
+  if (!b.plan.paidOn || b.plan.paidOn > asOf) return { total: 0, months: 0, freeMonths: 0 };
+  let months = 0;
+  let free = 0;
+  for (let n = 0; n < 240; n++) {
+    const d = addMonths(b.plan.paidOn, n);
+    if (d > asOf) break;
+    if (b.plan.freeMonths.includes(d)) free++;
+    else months++;
+  }
+  return { total: round2(months * b.plan.monthlyPrice), months, freeMonths: free };
+}
+
 export function nextCharge(paidOn: ISODate, asOf: ISODate): { chargeOn: ISODate; periodStart: ISODate } {
   let n = 0;
   let charge = paidOn;
@@ -287,12 +310,14 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const { chargeOn, periodStart } = nextCharge(b.plan.paidOn, asOf);
   const inPeriod = (d: string) => d.slice(0, 10) >= periodStart && d.slice(0, 10) < chargeOn;
   const asked = state.replies.filter((r) => WANTS.has(r.intent) && inPeriod(r.receivedAt));
-  const booked = state.recoveries.filter((r) => inPeriod(r.cameBackOn));
+  const booked = counted(state.recoveries).filter((r) => inPeriod(r.cameBackOn));
   const free = asked.length === 0;
+  const notesInPeriod = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && inPeriod(t.sentAt ?? t.dueAt)).length;
+  const repliesInPeriod = state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent) && inPeriod(r.receivedAt)).length;
   const t = totals(state);
   const since = spokenWhen(periodStart, asOf).replace(/^back in /, "");
   const text = free
-    ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
+    ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
     : [
         `${b.ownerFirstName}, here's who came back since ${since}:`,
         ...asked.slice(0, 8).map((r) => {

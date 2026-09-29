@@ -75,7 +75,7 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     crewLine: holdForSeason ? "" : crewLine(rc.ds, c, rc.sendOn) ?? "",
     worse: lowerFirst(svc?.worseIfWaiting ?? ""),
     timingLine: svc?.timingLine?.[climate] ?? "",
-    interval: svc?.reserviceMonths ? (svc.reserviceMonths >= 24 ? `${Math.round(svc.reserviceMonths / 12)} years` : `${svc.reserviceMonths} months`) : "",
+    interval: svc?.reserviceMonths ? intervalWords(svc.reserviceMonths) : "",
     service: svc?.label.toLowerCase() ?? "",
     years: anchor ? humanAge(daysBetween(anchor, rc.sendOn)) : "",
     phoneLine: b.businessPhone ? fmtPhone(b.businessPhone) : "",
@@ -106,6 +106,15 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     t.balance = fmtMoney(o.value);
   }
   return t;
+}
+
+/** 36 → "3 years", 30 → "2½ years", 18 → "18 months". */
+export function intervalWords(months: number): string {
+  if (months < 24) return `${months} months`;
+  const y = months / 12;
+  if (Number.isInteger(y)) return `${y} years`;
+  if (Number.isInteger(y * 2)) return `${Math.floor(y)}½ years`;
+  return `${months} months`;
 }
 
 function playbookTicket(b: BusinessProfile): number {

@@ -13,8 +13,33 @@ export interface OutreachRecord {
 }
 
 export interface AttributionOptions {
-  /** Days after the last note that a comeback still counts. */
+  /** Days after the last note that a traced comeback (they replied, or the same quote converted) counts. */
+  tracedWindowDays?: number;
+  /** Days after the last note that new work from someone who never replied still shows (separately). */
+  silentWindowDays?: number;
+  /** Customers who answered one of our notes. */
+  replied?: Set<string>;
+  /** Shorthand: one window for both kinds (tests, what-ifs). */
   windowDays?: number;
+}
+
+/** Published counting rules — shown to owners word for word. */
+export const COUNTING_RULES = [
+  "A job counts as ours when the person wrote back to one of our notes, or when the exact quote we followed up on was approved — up to 180 days after our last note.",
+  "Work from someone who never wrote back is shown separately as “came back after our note” (up to 90 days) and never counts toward the guarantee or your return.",
+  "The value is what you invoiced for that job. One credit per job, and a job you mark “not ours” comes out of every number.",
+  "People already in a live job or an open conversation with you when we started aren't counted.",
+];
+
+/** Recoveries that count: not disputed, and traced (not merely "came back after our note"). */
+export function counted(recoveries: Recovery[]): Recovery[] {
+  return recoveries.filter((r) => !r.disputed && isTraced(r));
+}
+
+/** Records from before tiers existed count only when the match itself proves it (same quote, owner said so). */
+function isTraced(r: Recovery): boolean {
+  if (r.tier) return r.tier === "traced";
+  return r.match === "same_record" || r.match === "owner_reported";
 }
 
 export interface LiftReport {
@@ -37,7 +62,8 @@ const WON = new Set(["converted", "approved"]);
  * the first note and within the window after the last one.
  */
 export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: AttributionOptions = {}): Recovery[] {
-  const windowDays = opts.windowDays ?? 120;
+  const tracedDays = opts.tracedWindowDays ?? opts.windowDays ?? 180;
+  const silentDays = opts.silentWindowDays ?? opts.windowDays ?? 90;
   const out: Recovery[] = [];
   const used = new Set<string>();
   const jobsBy = new Map<string, typeof ds.jobs>();
@@ -48,12 +74,17 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
   for (const i of ds.invoices) (invBy.get(i.customerId) ?? invBy.set(i.customerId, []).get(i.customerId)!).push(i);
 
   for (const r of outreach) {
-    const inWindow = (d: ISODate | undefined) => !!d && d >= r.firstTouchOn && daysBetween(r.lastTouchOn, d) <= windowDays;
-    // 1) the very quote we chased got approved/converted
+    const replied = !!opts.replied?.has(r.customerId);
+    const windowDays = replied ? tracedDays : silentDays;
+    const tier: Recovery["tier"] = replied ? "traced" : "after_note";
+    const inWindow = (d: ISODate | undefined, days = windowDays) => !!d && d >= r.firstTouchOn && daysBetween(r.lastTouchOn, d) <= days;
+    // 1) the very quote we chased got approved/converted — traced even without a reply
     const src = r.sourceId ? ds.quotes.find((q) => q.id === r.sourceId) : undefined;
-    if (src && WON.has(src.status) && inWindow(src.convertedOn ?? src.approvedOn)) {
+    if (src && WON.has(src.status) && inWindow(src.convertedOn ?? src.approvedOn, Math.max(tracedDays, silentDays))) {
       used.add(src.id);
-      out.push(rec(r, { kind: "quote", id: src.id }, src.total, (src.convertedOn ?? src.approvedOn)!, "same_record", 1));
+      // the job (and invoice) that quote became are the same win — never a second one
+      for (const j of jobsBy.get(r.customerId) ?? []) if (j.quoteId === src.id) used.add(j.id);
+      out.push({ ...rec(r, { kind: "quote", id: src.id }, src.total, (src.convertedOn ?? src.approvedOn)!, "same_record", 1), tier: "traced" });
       continue;
     }
     // 2) any new job for this customer in the window
@@ -63,21 +94,21 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
     if (job) {
       used.add(job.id);
       if (job.quoteId) used.add(job.quoteId);
-      out.push(rec(r, { kind: "job", id: job.id }, job.total, (job.createdOn ?? job.scheduledOn ?? job.completedOn)!, "customer_id", 0.9));
+      out.push({ ...rec(r, { kind: "job", id: job.id }, job.total, (job.createdOn ?? job.scheduledOn ?? job.completedOn)!, "customer_id", 0.9), tier });
       continue;
     }
     // 3) a newly approved quote (work agreed, not yet a job in the export)
     const q = (quotesBy.get(r.customerId) ?? []).find((x) => WON.has(x.status) && !used.has(x.id) && inWindow(x.approvedOn ?? x.convertedOn));
     if (q) {
       used.add(q.id);
-      out.push(rec(r, { kind: "quote", id: q.id }, q.total, (q.approvedOn ?? q.convertedOn)!, "customer_id", 0.85));
+      out.push({ ...rec(r, { kind: "quote", id: q.id }, q.total, (q.approvedOn ?? q.convertedOn)!, "customer_id", 0.85), tier });
       continue;
     }
     // 4) a paid invoice with no job file
     const inv = (invBy.get(r.customerId) ?? []).find((i) => i.status === "paid" && !used.has(i.id) && inWindow(i.issuedOn ?? i.paidOn));
     if (inv) {
       used.add(inv.id);
-      out.push(rec(r, { kind: "invoice", id: inv.id }, inv.total, (inv.issuedOn ?? inv.paidOn)!, "customer_id", 0.8));
+      out.push({ ...rec(r, { kind: "invoice", id: inv.id }, inv.total, (inv.issuedOn ?? inv.paidOn)!, "customer_id", 0.8), tier });
     }
   }
   return out;
@@ -111,6 +142,7 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
       cameBackOn: (r.ownerContactedAt ?? r.receivedAt).slice(0, 10),
       match: "owner_reported" as const,
       confidence: 0.75,
+      tier: "traced" as const,
     }));
 }
 
@@ -118,7 +150,9 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
  * Compare people we contacted with people we deliberately didn't.
  * This is what turns "jobs booked after a message" into "revenue the messages caused".
  */
-export function lift(outreach: OutreachRecord[], recoveries: Recovery[]): LiftReport {
+export function lift(outreach: OutreachRecord[], all: Recovery[]): LiftReport {
+  // every matched comeback counts in both groups alike (fair comparison); disputed ones never do
+  const recoveries = all.filter((r) => !r.disputed);
   const treatedIds = new Set(outreach.filter((o) => !o.holdout).map((o) => o.customerId));
   const holdIds = new Set(outreach.filter((o) => o.holdout).map((o) => o.customerId));
   const tRec = recoveries.filter((r) => treatedIds.has(r.customerId));

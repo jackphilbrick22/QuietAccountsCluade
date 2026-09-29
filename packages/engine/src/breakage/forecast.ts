@@ -78,6 +78,12 @@ export interface FitCheck {
   score: number;
   verdict: "strong" | "good" | "thin" | "not_yet";
   guaranteeEligible: boolean;
+  /**
+   * What we may say about lift to THIS owner. "15–20%" only when this shop's own careful (conservative)
+   * forecast reaches 15%; otherwise their real number. Never a blanket promise (FTC: reasonable basis).
+   */
+  liftLine: string;
+  canSay15: boolean;
   checks: { id: string; ok: boolean; label: string; detail: string }[];
   headline: string;
 }
@@ -214,10 +220,11 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     reachableValue: round2(sum(opps.filter(reachable), (o) => o.value)),
     reachablePeople,
     opportunities: opps.length,
+    // new work only; unpaid invoices are reported once, under cashToCollect
     expected: {
-      conservative: round2(expectedLikely * BAND.conservative),
-      likely: expectedLikely,
-      strong: round2(expectedLikely * BAND.strong),
+      conservative: round2(newWorkExpected * BAND.conservative),
+      likely: round2(newWorkExpected),
+      strong: round2(newWorkExpected * BAND.strong),
     },
     byType: types,
     cashToCollect: { value: invoices?.reachableValue ?? 0, expected: invoices?.expected ?? 0 },
@@ -231,7 +238,7 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     pastCustomerShare: yearLikely ? round2(sum(types.filter((t) => PAST_TYPES.includes(t.type)), (t) => t.expected) / yearLikely) : undefined,
     profile: shopProfile(ds, averageJob(ds), reachablePeople),
     audit: silentAudit(ds),
-    fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "" },
+    fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "", liftLine: "", canSay15: false },
   };
   summary.fit = fitCheck(ds, result, summary);
   return summary;
@@ -303,5 +310,12 @@ export function fitCheck(ds: Dataset, result: ScanResult, s: DrawerSummary): Fit
         : verdict === "thin"
           ? "There's money here, but the drawer is thin — we'll tell you straight what to expect."
           : "Not enough in the drawer yet to promise a result. We'd rather tell you now.";
-  return { score, verdict, guaranteeEligible, checks, headline };
+  const careful = s.liftPct?.conservative;
+  const canSay15 = !!careful && careful >= 15 && guaranteeEligible;
+  const liftLine = canSay15
+    ? `Your own records say a careful year one is about ${Math.round(careful!)}% more revenue — in the 15–20% range we aim for.`
+    : careful
+      ? `Your own records say a careful year one is about ${Math.round(careful)}% more revenue (${fmtMoney(s.yearOne.conservative)}). That's the number we'll hold ourselves to — not a bigger one.`
+      : `We need a year of invoices or jobs to put a percentage on it; the dollar estimate is ${fmtMoney(s.yearOne.conservative)} in year one.`;
+  return { score, verdict, guaranteeEligible, checks, headline, liftLine, canSay15 };
 }
