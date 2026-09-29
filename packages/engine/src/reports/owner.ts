@@ -98,6 +98,30 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
   return { text: `${body}\n\n${b.signerName}\n${b.name}`, promise };
 }
 
+/**
+ * The first text an owner gets, when the free round is scheduled. It's their whole manual: what we found
+ * (their own numbers), when notes start, that they don't have to do anything, and the only replies they need.
+ */
+export function kickoffText(state: AccountState, firstDay: ISODate, people: number): string {
+  const b = state.dataset.business;
+  const a = state.summary?.audit;
+  const found = a && a.silent.count ? `We found ${a.silent.count.toLocaleString("en-US")} quotes nobody ever said yes or no to (${fmtMoney(a.silent.value, { compact: true })}), plus past customers who are due.` : `We went through everything you sent and found the people worth a note.`;
+  const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
+  return [
+    `${b.ownerFirstName}, it's Quiet Accounts. ${found}`,
+    ``,
+    `Starting ${day}, ${b.signerName}'s notes go to the ${people} most likely to answer — each one about their own job, from ${b.name.replace(/\.$/, "")}. You don't have to do anything.`,
+    ``,
+    `When someone wants a price or a date, I'll text you their name, number and what they said. Just reply:`,
+    `BOOKED 2400 (the amount) when you book one`,
+    `NO if it's dead`,
+    `BUSY until Nov 15 if you're slammed — we'll wait`,
+    `PAUSE to stop everything`,
+    ``,
+    `The first ${b.plan.trialSize} are free.`,
+  ].join("\n");
+}
+
 /** Old quotes get re-priced, not honored by accident. */
 function staleNote(b: BusinessProfile, o: Opportunity | undefined, today: ISODate): string {
   if (!o?.anchorDate || !o.value) return "";

@@ -6,7 +6,7 @@ import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, guaranteeCheck, handoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
+import { ackFor, closeMessage, guaranteeCheck, handoffText, kickoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
 import { addDays, daysBetween, extractEmails, fmtMoney, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
@@ -112,6 +112,7 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const released = new Set(state.outreach.filter((o) => o.holdout && !o.treatedFrom && o.releaseOn && o.releaseOn <= opts.startOn).map((o) => o.customerId));
   for (const o of state.outreach) if (!released.has(o.customerId) || active.has(o.customerId)) active.add(o.customerId);
   const isTrial = state.dataset.business.plan.stage === "trial";
+  const firstEver = !state.touches.some((t) => t.status !== "cancelled");
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
   const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
   const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released });
@@ -121,6 +122,7 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
     if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true, releaseOn: addDays(opts.startOn, HOLDOUT_DAYS) });
   const flagged = plan.touches.filter((t) => t.flags.length).length;
   event(state, now, "writer", "action", `Wrote ${plural(plan.touches.length, "note")} for ${plural(plan.people.length, "person", "people")}`, `Each one about their own job, signed by ${state.dataset.business.signerName}. ${flagged ? `${flagged} need a second look.` : "All passed the quality check."}`);
+  if (plan.firstDay && isTrial && firstEver && !state.ownerMessages.some((m) => m.kind === "kickoff")) ownerMsg(state, now, "kickoff", kickoffText(state, plan.firstDay, plan.people.length));
   if (plan.firstDay) event(state, now, "sender", "action", `Scheduled ${plan.firstDay} → ${plan.lastDay}`, `${state.dataset.business.weeklyNewContacts} new people a week, on your send days, inside your hours.${plan.holdout.length ? ` ${plan.holdout.length} held back to measure true lift.` : ""}`);
   state.updatedAt = now;
   return plan;
