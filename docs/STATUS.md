@@ -54,8 +54,20 @@ Updated every loop iteration. Newest first.
 - Instant answer to hot replies in the homeowner's thread ("Dave will call you Monday"), 7am–8pm local,
   never promising a price or a date; the owner's hand-off says what was promised.
 
+**Also (offer research → product)**
+- Recovered Ledger with published counting rules (traced 180 days / "came back after our note" 90 days,
+  never counted), CSV + owner link, "not ours" disputes; guarantee evidence automatic; fees-vs-traced
+  multiple in the weekly text; cancel by text; "15–20%" only when the shop's careful forecast reaches 15%;
+  marketing copy checker.
+- Unpaid invoices: detected for the owner's "cash to collect" only — never messaged (debt-collection law
+  review pending from the research gap-fill).
+- Live operator console on the real server; demo mode kept for sales calls.
+- Test suite: engine 698, server 92.
+
 **Next**
-- Operator console on live server data (in progress, delegated); demo mode kept for sales calls.
+- Adversarial review (5 lenses + verifiers) running → fix confirmed findings.
+- Research gap-fills + synthesis → Breakage & Offer Blueprint (publish) → final plain-language breakdown.
+- Staggered holdout (held people start ~60 days late instead of never) so no owner permanently loses quotes.
 - Sample catalogs for the other 14 trades + recurring visits for route trades (demo realism).
 - Research synthesis → Breakage & Offer Blueprint (judge-panel the offer framing).
 - Engine test suites for breakage/cadence/copy/ledger/reports/runtime + a 10k-row performance test.

@@ -41,7 +41,11 @@ export interface ContactState {
   doNotContact?: string[];
   /** Days to wait before contacting someone again after a finished sequence. */
   cooldownDays?: number;
-  /** Include unpaid invoices (collections is opt-in). */
+  /**
+   * Detect unpaid invoices so the owner sees the cash to collect (default on). Detection only: invoices are
+   * never a primary opportunity, so no reminder is ever sent — collecting for someone else is debt-collection
+   * territory (FDCPA, state creditor rules) and stays off until reviewed.
+   */
   includeInvoices?: boolean;
   /** Include commercial accounts in automated outreach. */
   includeCommercial?: boolean;
