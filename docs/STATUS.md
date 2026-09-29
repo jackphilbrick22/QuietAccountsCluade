@@ -31,7 +31,21 @@ Updated every loop iteration. Newest first.
 - Instantly: one workspace serves many businesses, so `skip_if_in_workspace` is off.
 - Claims library: 10 sourced claims; 12 banned stats, now enforced by the note linter.
 
+**Also this iteration**
+- Shop profile (`breakage/profile.ts`): each shop's own ticket size, volume and repeat work set its strategy —
+  small-ticket repeat shops lead with likeliest yeses; big-ticket one-off shops lead with expected dollars and
+  get AI-drafted first notes on every quote. No per-trade configuration.
+- Readiness (`breakage/readiness.ts`): the operator's "ask the owner for this next" list — which export is
+  missing, what it unlocks, and the exact menu path in their software. In every client overview.
+- Forecast honesty: unpaid invoices are cash to collect, not revenue lift, so they're out of the lift.
+  Careful year-one lift on a ~50%-close shop: 15–19% across tree/septic/lawn/fence/pressure washing.
+- Tree sample prices rebased on HomeAdvisor/Fixr (typical job ~$875).
+- Worker 20x faster: saves skip unchanged records (idle tick 107ms → 6ms; 23 sends 1.24s → 60ms).
+- Jobber write-back: replies and bookings leave a note on the quote in Jobber; rotated tokens always saved.
+
 **Next**
+- Operator console on live server data (in progress, delegated); demo mode kept for sales calls.
+- Sample catalogs for the other 14 trades + recurring visits for route trades (demo realism).
 - Research synthesis → Breakage & Offer Blueprint (judge-panel the offer framing).
 - Engine test suites for breakage/cadence/copy/ledger/reports/runtime + a 10k-row performance test.
 - Worker tick speed (≈0.75s per business per tick in the e2e test).

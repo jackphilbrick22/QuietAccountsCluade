@@ -97,8 +97,8 @@ function quoteDate(q: Quote): ISODate | undefined {
 const OPEN_JOB = new Set(["unscheduled", "scheduled", "active", "late", "requires_invoicing", "on_hold"]);
 const DONE_JOB = new Set(["completed", "archived", "requires_invoicing"]);
 
-/** Average paid job, used when a record has no dollar value. */
-function averageJob(ds: Dataset): number {
+/** Typical (median) paid job, used when a record has no dollar value and to size the shop. */
+export function averageJob(ds: Dataset): number {
   if (ds.business.avgJobValue) return ds.business.avgJobValue;
   const vals = ds.jobs.filter((j) => j.total > 0 && j.status !== "cancelled").map((j) => j.total);
   const inv = ds.invoices.filter((i) => i.total > 0 && i.status !== "void").map((i) => i.total);

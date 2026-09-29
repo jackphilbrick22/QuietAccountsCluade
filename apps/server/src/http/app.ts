@@ -9,6 +9,7 @@ import {
   totals,
   weekNumbers,
   mondayOf,
+  readiness,
   type AccountState,
   type BusinessProfile,
   type FileIn,
@@ -118,6 +119,7 @@ export function overview(state: AccountState, paused: boolean) {
     paused,
     asOf: state.dataset.asOf,
     summary: state.summary,
+    readiness: readiness(state.dataset),
     totals: t,
     week: weekNumbers(state, mondayOf(state.dataset.asOf)),
     lift: lift(state.outreach, state.recoveries),
@@ -340,6 +342,75 @@ export function createApp(d: HttpDeps): Hono<Env> {
       importToken: sign(d.cfg.APP_SECRET, `import|${id}`),
     });
   });
+
+  /* ----------------------------- operator console reads -----------------------------
+   * Read-only routes for the live operator console. None of them change anything.
+   *   GET /api/review                       everything across all clients that needs a person
+   *   GET /api/businesses/:id/people?ids=   names + contact details for customer ids (touches and replies carry ids only)
+   *   GET /api/businesses/:id/files         the export files we've read for this business
+   *   GET /api/businesses/:id/integrations  field-service connection status (never secrets)
+   */
+  op.get("/review", (c) => {
+    const sla = d.cfg.SLA_FIRST_NUDGE_HOURS;
+    const items: Record<string, unknown>[] = [];
+    for (const b of repo.listBusinesses()) {
+      const l = d.accounts.peek(b.id);
+      if (!l) continue;
+      const s = l.state;
+      const biz = { businessId: b.id, businessName: s.dataset.business.name };
+      const people = new Map(s.dataset.customers.map((x) => [x.id, x]));
+      // same clock math as the worker's SLA nudges (local wall time)
+      const nowLocal = localIso(d.clock(), s.dataset.business.timezone);
+      for (const r of s.replies) {
+        const who = r.customerId ? people.get(r.customerId) : undefined;
+        const person = { customerId: r.customerId, name: who?.name ?? r.from, phone: r.extracted.phone ?? who?.phones[0], email: who?.emails[0] ?? r.from };
+        if (r.intent === "unclear" && r.status === "new") {
+          items.push({ kind: "unclear", ...biz, at: r.receivedAt, replyId: r.id, ...person, text: r.text.slice(0, 1000) });
+        } else if ((r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt) {
+          const hours = (Date.parse(nowLocal) - Date.parse(r.handedOffAt ?? r.receivedAt)) / 3_600_000;
+          if (hours >= sla) items.push({ kind: "late_lead", ...biz, at: r.handedOffAt ?? r.receivedAt, replyId: r.id, ...person, intent: r.intent, hours: Math.round(hours), text: r.text.slice(0, 1000) });
+        }
+      }
+      const flagged = s.touches.filter((t) => t.flags.length && (t.status === "planned" || t.status === "approved")).slice(0, 100);
+      for (const t of flagged)
+        items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
+      for (const m of [...repo.ownerMessages(b.id, { delivery: "review" }), ...repo.ownerMessages(b.id, { delivery: "failed" })])
+        items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
+    }
+    items.sort((x, y) => (String(x.at) < String(y.at) ? -1 : 1));
+    return c.json({ now: d.clock().toISOString(), slaHours: sla, items });
+  });
+
+  op.get("/businesses/:id/people", (c) => {
+    const l = d.accounts.peek(c.req.param("id"));
+    if (!l) throw new NotFound("No such business");
+    const ids = new Set((c.req.query("ids") ?? "").split(",").map((x) => x.trim()).filter(Boolean).slice(0, 500));
+    return c.json(
+      l.state.dataset.customers
+        .filter((x) => ids.has(x.id))
+        .map((x) => ({ id: x.id, name: x.name, email: x.emails[0] ?? null, phone: x.phones[0] ?? null, street: x.address?.street ?? null, city: x.address?.city ?? null })),
+    );
+  });
+
+  op.get("/businesses/:id/files", (c) => {
+    const l = d.accounts.peek(c.req.param("id"));
+    if (!l) throw new NotFound("No such business");
+    return c.json(
+      l.state.dataset.imports
+        .map((f) => ({ id: f.id, fileName: f.fileName, importedAt: f.importedAt, source: f.source, kind: f.kind, rows: f.rows, accepted: f.accepted, rejected: f.rejected, warnings: f.warnings }))
+        .sort((x, y) => (x.importedAt < y.importedAt ? 1 : -1)),
+    );
+  });
+
+  op.get("/businesses/:id/integrations", (c) => {
+    const id = c.req.param("id");
+    if (!repo.exists(id)) throw new NotFound("No such business");
+    const j = repo.getIntegration(id, "jobber");
+    return c.json({
+      jobber: { available: !!d.fsm.jobber, connected: j?.status === "connected" && !!j.secret, status: j?.status ?? "not_connected", lastSyncAt: j?.last_sync_at ?? null, lastError: j?.last_error ?? null },
+    });
+  });
+  /* --------------------------- end operator console reads --------------------------- */
 
   // (mounted after the owner routes below: op's "*" guard would otherwise swallow /api/owner/*)
 

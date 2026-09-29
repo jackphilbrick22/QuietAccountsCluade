@@ -109,7 +109,9 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped").map((t) => t.customerId));
   for (const o of state.outreach) active.add(o.customerId);
   const isTrial = state.dataset.business.plan.stage === "trial";
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial });
+  // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
+  const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   state.touches.push(...plan.touches.map((t) => ({ ...t, status })));
   for (const id of plan.holdout) if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true });

@@ -1,7 +1,8 @@
 import type { BreakageType, Dataset, Money, Opportunity } from "../model.ts";
 import { addDays, daysBetween, fmtMoney, round2, sum } from "../util.ts";
 import { BAND, BREAKAGE_LABEL, RECOVERY_PRIOR, SALES_TYPES } from "./assumptions.ts";
-import type { ScanResult } from "./detect.ts";
+import { averageJob, type ScanResult } from "./detect.ts";
+import { shopProfile, type ShopProfile } from "./profile.ts";
 
 export interface TypeSummary {
   type: BreakageType;
@@ -37,7 +38,12 @@ export interface DrawerSummary {
   revenueSource: "invoices" | "jobs" | "quotes" | "owner" | "none";
   /** New breakage created each month by normal business, and what we'd expect to recover from it. */
   monthly: { newQuotes: number; newDeadValue: Money; expectedRecovered: Money };
-  /** Year-one recovered revenue (backlog + ongoing), and the lift it represents. */
+  /**
+   * Unpaid invoices: money already earned and billed. Collecting it is cash, not new revenue,
+   * so it's reported here and kept out of the lift.
+   */
+  cashToCollect: { value: Money; expected: Money };
+  /** Year-one recovered revenue (backlog + ongoing), and the lift it represents. New work only. */
   yearOne: { conservative: Money; likely: Money; strong: Money };
   liftPct?: { conservative: number; likely: number; strong: number };
   /** How many months of our fee the likely year-one recovery covers. */
@@ -49,6 +55,8 @@ export interface DrawerSummary {
   closeRate?: { byCount: number; byValue: number; quotes: number };
   /** Share of the likely year-one number that comes from past customers (not dead quotes). */
   pastCustomerShare?: number;
+  /** How this shop makes money (ticket, volume, repeat work) and the strategy that follows. */
+  profile: ShopProfile;
   fit: FitCheck;
 }
 
@@ -122,9 +130,11 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
   types.sort((a, b) => b.reachableValue - a.reachableValue);
 
   const expectedLikely = round2(sum(types, (t) => t.expected));
+  const invoices = types.find((t) => t.type === "unpaid_invoice");
+  const newWorkExpected = expectedLikely - (invoices?.expected ?? 0);
   const rev = revenue(ds);
   const monthly = monthlyFlow(ds);
-  const yearLikely = expectedLikely + monthly.expectedRecovered * 12;
+  const yearLikely = newWorkExpected + monthly.expectedRecovered * 12;
   const yearOne = {
     conservative: round2(yearLikely * BAND.conservative),
     likely: round2(yearLikely),
@@ -149,6 +159,7 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
       strong: round2(expectedLikely * BAND.strong),
     },
     byType: types,
+    cashToCollect: { value: invoices?.reachableValue ?? 0, expected: invoices?.expected ?? 0 },
     annualRevenue: rev.value,
     revenueSource: rev.source,
     monthly,
@@ -157,6 +168,7 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     paybackMultiple: ds.business.plan.monthlyPrice ? round2(yearOne.likely / (ds.business.plan.monthlyPrice * 12)) : undefined,
     closeRate: closeRate(ds),
     pastCustomerShare: expectedLikely ? round2(sum(types.filter((t) => PAST_TYPES.includes(t.type)), (t) => t.expected) / yearLikely) : undefined,
+    profile: shopProfile(ds, averageJob(ds), reachablePeople),
     fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "" },
   };
   summary.fit = fitCheck(ds, result, summary);

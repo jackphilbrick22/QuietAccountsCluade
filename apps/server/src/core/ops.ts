@@ -149,11 +149,14 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
   });
   // AI personalization of first notes (optional), outside the lock, then written back.
   if (d.llm && d.cfg.AI_WRITER === "on" && planned.length) {
-    const firsts = planned.filter((t) => t.step === 1);
     const snapshot = d.accounts.peek(bid)!.state;
+    // The shop's own strategy decides which first notes are worth a personal draft (all of them for a
+    // big-ticket fence shop; only the bigger jobs on a small-ticket lawn route).
+    const above = snapshot.summary?.profile?.strategy.personalizeAbove ?? 0;
+    const firsts = planned.filter((t) => t.step === 1 && (oppById(snapshot.scan?.opportunities, t.opportunityId)?.value ?? 0) >= above);
     const rewrites = new Map<string, { subject: string; body: string }>();
     for (const t of firsts.slice(0, 500)) {
-      const o = snapshot.scan?.opportunities.find((x) => x.id === t.opportunityId);
+      const o = oppById(snapshot.scan?.opportunities, t.opportunityId);
       if (!o) continue;
       const r = await personalizeFirstNote(d.llm, snapshot, o, t);
       if (r) rewrites.set(t.id, r);

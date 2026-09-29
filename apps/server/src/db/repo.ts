@@ -12,6 +12,16 @@ export interface Loaded {
   messageIds: Set<string>;
   suppressionKeys: Set<string>;
   scannedAt?: string;
+  /**
+   * The dataset arrays as of the last save. Imports and syncs replace these arrays (never edit records in
+   * place), so when every array is the same object with the same length, no record changed and the
+   * 10k-row hash pass is skipped. That keeps a send (one touch changes) cheap.
+   */
+  savedArrays?: unknown[][];
+  savedLengths?: number[];
+  /** Same idea for the scan: a re-scan builds a new opportunities array; nothing edits one afterwards. */
+  savedOpps?: unknown[];
+  savedOppsLength?: number;
 }
 
 const RECORD_KINDS = ["customer", "quote", "job", "invoice", "request", "import"] as const;
@@ -170,7 +180,9 @@ export class Repo {
         ["request", s.dataset.requests],
         ["import", s.dataset.imports],
       ];
-      for (const [kind, arr] of recs) {
+      const arrays = recs.map(([, arr]) => arr as unknown[]);
+      const datasetUnchanged = !!l.savedArrays && arrays.every((a, i) => a === l.savedArrays![i] && a.length === l.savedLengths![i]);
+      for (const [kind, arr] of datasetUnchanged ? [] : recs) {
         for (const r of arr) {
           put(`rec:${kind}:${r.id}`, r, (hv) => {
             this.db.run(
@@ -183,7 +195,10 @@ export class Repo {
           });
         }
       }
-      if (s.scan) {
+      l.savedArrays = arrays;
+      l.savedLengths = arrays.map((a) => a.length);
+      const oppsUnchanged = !!s.scan && s.scan.opportunities === l.savedOpps && s.scan.opportunities.length === l.savedOppsLength;
+      if (s.scan && !oppsUnchanged) {
         for (const o of s.scan.opportunities)
           put(`opportunities:${o.id}`, o, (hv) =>
             this.db.run(
@@ -240,7 +255,7 @@ export class Repo {
         written++;
       }
       // Opportunities that no longer exist after a re-scan.
-      if (s.scan) {
+      if (s.scan && !oppsUnchanged) {
         const stale = [...l.hashes.keys()].filter((k) => k.startsWith("opportunities:") && !seen.has(k));
         for (const k of stale) {
           this.db.run("DELETE FROM opportunities WHERE business_id = ? AND id = ?", bid, k.slice("opportunities:".length));
@@ -248,6 +263,8 @@ export class Repo {
           written++;
         }
       }
+      l.savedOpps = s.scan?.opportunities;
+      l.savedOppsLength = s.scan?.opportunities.length;
       this.db.run(
         "UPDATE businesses SET profile = ?, as_of = ?, summary = ?, scan_stats = ?, scan_primary = ?, trial_completed_on = ?, updated_at = ? WHERE id = ?",
         JSON.stringify(s.dataset.business),
