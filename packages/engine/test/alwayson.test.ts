@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
 import { planOutreach } from "../src/cadence/plan.ts";
 import { FRESH_SEQUENCE, SEQUENCES } from "../src/copy/templates.ts";
-import { answerNewRequests, dueTouches, markSent } from "../src/runtime/agents.ts";
+import { answerNewRequests, answerTime, dueTouches, markSent } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { weeklyReport } from "../src/reports/owner.ts";
 import { ASOF, ago, business, customer, dataset, quote, request } from "./fixtures.ts";
@@ -48,12 +48,14 @@ describe("always-on: every new request answered within minutes", () => {
     const ds = dataset({ business: paying(over), customers: [customer("c1", { phones: ["+16035550142"] })], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T21:30:00Z`, status: "new" })] });
     return emptyState(ds, `${ASOF}T18:00:00`);
   };
-  it("writes back at once, any hour, and texts the owner the lead", () => {
+  it("writes back at once in the daytime, outside send hours, and texts the owner the lead", () => {
     const st = setup();
-    const now = `${ASOF}T22:40:00`; // 10:40pm local, outside send hours
+    const now = `${ASOF}T17:40:00`; // 5:40pm local, after the send window
     expect(answerNewRequests(st, now)).toBe(1);
     const t = st.touches.find((x) => x.track === "new_request")!;
     expect(t.instant).toBe(true);
+    expect(t.dueAt).toBe(`${ASOF}T17:40`);
+    expect(t.askedAt).toBe(`${ASOF}T17:40`);
     expect(t.body).toMatch(/Thanks for reaching out to Ridgeline Tree Co about the oak over the garage/);
     expect(t.body).toMatch(/Dave will give you a call tomorrow/);
     expect(t.flags).toEqual([]);
@@ -64,7 +66,37 @@ describe("always-on: every new request answered within minutes", () => {
     expect(owner).toMatch(/\(603\) 555-0142/);
     expect(owner).toMatch(/We already wrote back that you'll call them tomorrow/);
     // once only
-    expect(answerNewRequests(st, `${ASOF}T22:50:00`)).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T17:50:00`)).toBe(0);
+  });
+  it("a request that lands at night is answered at 7:00, worded for the morning", () => {
+    const st = setup();
+    const now = `${ASOF}T22:40:00`; // Tuesday 10:40pm local
+    expect(answerNewRequests(st, now)).toBe(1);
+    const t = st.touches.find((x) => x.track === "new_request")!;
+    expect(t.dueAt).toBe("2026-09-30T07:00");
+    expect(t.askedAt).toBe(`${ASOF}T22:40`);
+    // read at 7am Wednesday: "today"
+    expect(t.body).toMatch(/Dave will give you a call today/);
+    expect(dueTouches(st, now).due).toEqual([]);
+    expect(dueTouches(st, "2026-09-30T06:59").due).toEqual([]);
+    expect(dueTouches(st, "2026-09-30T07:00").due.map((d) => d.touch.id)).toEqual([t.id]);
+    // the owner reads it tonight, so Wednesday is "tomorrow" to them
+    expect(st.ownerMessages.at(-1)!.text).toMatch(/At 7am we'll write back that you'll call them tomorrow/);
+    expect(st.events.at(-1)!.title).toMatch(/answer goes at 7am/);
+  });
+  it("before 7am the answer goes at 7:00 the same day", () => {
+    const st = setup();
+    expect(answerNewRequests(st, "2026-09-30T05:15:00")).toBe(1);
+    const t = st.touches.find((x) => x.track === "new_request")!;
+    expect(t.dueAt).toBe("2026-09-30T07:00");
+    expect(st.ownerMessages.at(-1)!.text).toMatch(/At 7am we'll write back that you'll call them today/);
+  });
+  it("answerTime keeps 7:00–20:00 and moves the night to 7:00", () => {
+    expect(answerTime(`${ASOF}T07:00:00`)).toBe(`${ASOF}T07:00:00`);
+    expect(answerTime(`${ASOF}T19:59:30`)).toBe(`${ASOF}T19:59:30`);
+    expect(answerTime(`${ASOF}T20:00:00`)).toBe("2026-09-30T07:00:00");
+    expect(answerTime(`${ASOF}T00:10:00`)).toBe(`${ASOF}T07:00:00`);
+    expect(answerTime("2026-12-31T23:30")).toBe("2027-01-01T07:00:00");
   });
   it("skips requests that already have a quote, and does nothing on the free round", () => {
     const st = setup();
@@ -75,10 +107,27 @@ describe("always-on: every new request answered within minutes", () => {
   });
   it("shows the owner what always-on did this week", () => {
     const st = setup();
-    answerNewRequests(st, `${ASOF}T22:40:00`);
+    answerNewRequests(st, `${ASOF}T17:40:00`);
     const t = st.touches.find((x) => x.track === "new_request")!;
-    markSent(st, t.id, `${ASOF}T22:41:00`);
+    markSent(st, t.id, `${ASOF}T17:43:00`);
     expect(weeklyReport(st, ASOF)).toMatch(/Always on: answered 1 new request within minutes/);
+  });
+  it("only claims 'within minutes' when the recorded send time says so", () => {
+    const st = setup();
+    st.dataset.requests.push(request("r2", "c2", { title: "Stump", createdOn: ASOF, createdAt: `${ASOF}T21:30:00Z`, status: "new" }));
+    st.dataset.customers.push(customer("c2"));
+    answerNewRequests(st, `${ASOF}T22:40:00`); // both land at night
+    const [a, b] = st.touches.filter((x) => x.track === "new_request");
+    // the sending platform reported one at 7:02 the next morning, the other hasn't gone yet
+    markSent(st, a!.id, "2026-09-30T07:02:00");
+    let report = weeklyReport(st, ASOF);
+    expect(report).toMatch(/Always on: answered 1 new request(?! within)/);
+    expect(report).not.toMatch(/within minutes/);
+    // a daytime one sent 4 minutes after it came in
+    b!.askedAt = "2026-09-30T13:00";
+    markSent(st, b!.id, "2026-09-30T13:04:00");
+    report = weeklyReport(st, ASOF);
+    expect(report).toMatch(/Always on: answered 2 new requests \(1 within minutes\)/);
   });
 });
 

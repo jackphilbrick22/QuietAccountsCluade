@@ -443,10 +443,12 @@ export interface Touch {
   writer?: "template" | "ai";
   /** Days this note was pushed back because the owner was booked out (undone when they open up). */
   heldDays?: number;
-  /** Goes out the moment it's due, any day or hour (the answer to a brand-new request). */
+  /** Goes out the moment it's due, any day (the answer to a brand-new request; due 7:00–20:00 local). */
   instant?: boolean;
   /** Which always-on track wrote it, for the owner's "what we did this week" numbers. */
   track?: "new_request" | "fresh_quote";
+  /** When the request it answers reached us (local), so "answered within minutes" is measured, not assumed. */
+  askedAt?: ISODateTime;
 }
 
 export type ReplyIntent =
