@@ -74,6 +74,7 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   // a timing line only goes out in the months it's true ("leaf-off months" is a winter line)
   const lineMonths = svc?.timingMonths?.[climate] ?? svc?.season[climate] ?? svc?.season.cold ?? [];
   const timingLine = svc?.timingLine?.[climate] && (!lineMonths.length || lineMonths.includes(month)) ? svc.timingLine[climate]! : "";
+  const dueAsk = holdForSeason ? "" : svc?.dueAsk ?? "";
   const t: Record<string, string> = {
     first: greetingName(c.firstName),
     signer: b.signerName,
@@ -97,7 +98,9 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     waitLine: holdForSeason ? svc?.waitLine ?? "" : "",
     // only where the owner doesn't charge to come out (never HVAC, septic or pest by default)
     freeLook: (b.voice.freeLook ?? playbook(b.trade).freeLook) ? " No charge to look." : "",
-    interval: svc?.reserviceMonths ? intervalWords(svc.reserviceMonths) : "",
+    // seasonal work that just comes back around asks its own question instead of a rule of thumb
+    interval: svc?.reserviceMonths && !dueAsk ? intervalWords(svc.reserviceMonths) : "",
+    dueAsk,
     service: svc?.label.toLowerCase() ?? "",
     years: doneOn ? humanAge(daysBetween(doneOn, rc.sendOn)) : "",
     phoneLine: b.businessPhone ? fmtPhone(b.businessPhone) : "",

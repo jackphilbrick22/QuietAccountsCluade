@@ -135,7 +135,7 @@ describe("one-tap setup: the trade is read from their own titles", () => {
   it("names every sample trade correctly, without inventing a second trade", { timeout: 60_000 }, async () => {
     const { generateSample } = await import("../src/sample/generate.ts");
     const { detectTrade } = await import("../src/trades/index.ts");
-    for (const trade of ["tree", "fence", "painting", "cleaning", "septic", "lawn", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool"] as const) {
+    for (const trade of ["tree", "fence", "painting", "cleaning", "septic", "lawn", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool", "holiday_lighting", "deck"] as const) {
       const s = generateSample({ trade, asOf: ASOF });
       const d = detectTrade([...s.dataset.quotes.map((q) => q.title), ...s.dataset.jobs.map((j) => j.title)]);
       expect(d.trade).toBe(trade);

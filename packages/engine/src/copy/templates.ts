@@ -8,7 +8,8 @@ import type { BreakageType, MessageAngle } from "../model.ts";
  *         {crewLine} {worse} {timingLine} {interval} {service} {mainJob} {option} {why}
  *         {years} {number} {balance} {ownerFirst} {phoneLine} {freeLook}
  * Season: {inSeason} (the work is in season on the send day), {seasonMonth} (else, the month it's back),
- *         {nearTerm} / {held} (strict-season work out of season never gets a near-term slot), {waitLine}.
+ *         {nearTerm} / {held} (strict-season work out of season never gets a near-term slot), {waitLine},
+ *         {dueAsk} (the question for seasonal work that comes back every year; it replaces {interval}).
  * Lines that end up empty after rendering are dropped.
  */
 export interface NoteTemplate {
@@ -371,15 +372,23 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "s1",
       angle: "due_now",
       subject: "{job}",
-      needs: ["nearTerm"],
+      needs: ["nearTerm", "interval"],
       body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, and you're coming up on when it's due again. {interval} is the rule of thumb.\n\nWant me to get you on the schedule? Reply with a week that works.\n\n{signer}",
     },
     {
       id: "s1h",
       angle: "due_now",
       subject: "{job}",
-      needs: ["held"],
+      needs: ["held", "interval"],
       body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, and you're coming up on when it's due again. {interval} is the rule of thumb.\n\n{waitLine} Want me to put you down for the first open week in {seasonMonth}?\n\n{signer}",
+    },
+    {
+      // seasonal work that comes back every year (holiday lights): ask the plain question, no rule of thumb
+      id: "s1a",
+      angle: "due_now",
+      subject: "{job}",
+      needs: ["nearTerm", "dueAsk"],
+      body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}. {dueAsk}\n\n{timingLine}\n\nIf so, just reply \"yes\" and I'll get you on the schedule.\n\n{signer}",
     },
   ],
   "due.problem_grows": [

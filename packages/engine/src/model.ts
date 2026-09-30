@@ -204,6 +204,8 @@ export type TradeId =
   | "irrigation"
   | "chimney"
   | "cleaning"
+  | "holiday_lighting"
+  | "deck"
   | "general";
 
 export type Channel = "email" | "postcard" | "sms" | "call_task" | "voicemail" | "retarget";
