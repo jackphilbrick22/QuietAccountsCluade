@@ -6,7 +6,7 @@ import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
@@ -717,6 +717,65 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
   return choice === "year"
     ? `Done — another year from ${when}, same price. The guarantee still runs every month.`
     : `Done — month to month from ${when}, ${fmtMoney(plan.monthlyPrice)} a month, cancel by text any time.`;
+}
+
+/**
+ * The owner texted CANCEL. One text does it: every queued note stops, nothing more is charged, and a yearly
+ * plan gets back what it didn't use (never more than monthly would have cost; the year floor on the months
+ * used). What it stopped is kept for a day so UNDO can put it all back.
+ */
+export function cancelPlan(state: AccountState, now: ISODateTime): { stopped: number; refund: number; line: string } {
+  const plan = state.dataset.business.plan;
+  if (plan.stage === "cancelled") return { stopped: 0, refund: 0, line: "" };
+  const stageBefore = plan.stage;
+  const today = now.slice(0, 10);
+  const touchIds: string[] = [];
+  for (const t of state.touches)
+    if (t.status === "approved" || t.status === "planned") {
+      t.status = "cancelled";
+      touchIds.push(t.id);
+    }
+  let refund = 0;
+  let line = "";
+  const early = stageBefore === "paying" ? earlyLeaveRefund(state, today) : undefined;
+  if (early && early.refund > 0) {
+    refund = early.refund;
+    plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early.yearStart), { yearStart: early.yearStart, amount: refund, early: true }];
+    line = `${fmtMoney(refund, { cents: true })} of your year comes back to your card within 5 business days.`;
+    const b = state.dataset.business;
+    ownerMsg(
+      state,
+      now,
+      "refund",
+      `${b.ownerFirstName}, here's the math on your year: you paid ${fmtMoney(early.paid, { cents: true })} and used ${plural(early.monthsUsed, "month")}${early.quiet ? ` (${early.quiet} quiet, so free)` : ""}. Month to month that's ${fmtMoney(early.asMonthly)}, and the jobs on your ledger in that time came to ${fmtMoney(early.traced)}. You keep the lower of those, so ${fmtMoney(refund, { cents: true })} goes back to your card within 5 business days.`,
+      [{ kind: "year_refund", id: early.yearStart }],
+    );
+  }
+  plan.stage = "cancelled";
+  state.cancelled = { at: now, stageBefore, touchIds, ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}) };
+  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touchIds.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
+  state.updatedAt = now;
+  return { stopped: touchIds.length, refund, line };
+}
+
+/** UNDO within a day of CANCEL: the same notes back in line, the plan as it was, no refund due. */
+export function undoCancel(state: AccountState, now: ISODateTime): { restored: number } | undefined {
+  const c = state.cancelled;
+  const plan = state.dataset.business.plan;
+  if (!c || plan.stage !== "cancelled" || Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return undefined;
+  plan.stage = c.stageBefore;
+  const ids = new Set(c.touchIds);
+  let restored = 0;
+  for (const t of state.touches)
+    if (ids.has(t.id) && t.status === "cancelled") {
+      t.status = "approved";
+      restored++;
+    }
+  if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
+  state.cancelled = undefined;
+  event(state, now, "guard", "action", "Owner undid the cancel", `${plural(restored, "note")} back in line.${c.refund ? " No yearly refund due." : ""}`);
+  state.updatedAt = now;
+  return { restored };
 }
 
 /**

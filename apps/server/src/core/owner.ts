@@ -1,12 +1,12 @@
-import { addDays, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { deliverOwnerMessages, fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
  *
  *   About a lead:      BOOKED 2400 #K7Q · DONE · NO · QUOTED · NO ANSWER   (the #code is on every hand-off text)
- *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · RENEW · MONTHLY · CANCEL, then CANCEL YES
+ *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · RENEW · MONTHLY · CANCEL (UNDO within a day)
  *   About a person:    SKIP Karen Whitfield — off every list (already won it, said no on the phone, a friend)
  *   About our texts:   STOP turns them off (the follow-ups keep running; hand-offs go by email) · START turns them on
  *
@@ -50,7 +50,7 @@ const HELP_TEXT =
   'About a lead: BOOKED 2400 #code, DONE, NO or QUOTED (the #code is on the lead text). About a person: SKIP and their name takes them off the list. About the service: PAUSE, RESUME, BUSY until Nov 15, OPEN, STATUS, CANCEL. STOP turns off our texts (your follow-ups keep running); START turns them back on.';
 
 /** Words that are commands, never a business's short name. */
-const COMMAND_WORDS = new Set(["skip", "remove", "pause", "resume", "open", "busy", "booked", "book", "done", "no", "status", "cancel", "yes", "stop", "start", "renew", "monthly", "yearly", "quoted", "sold", "won", "lost", "full", "free", "hold", "go", "help"]);
+const COMMAND_WORDS = new Set(["skip", "remove", "undo", "pause", "resume", "open", "busy", "booked", "book", "done", "no", "status", "cancel", "yes", "stop", "start", "renew", "monthly", "yearly", "quoted", "sold", "won", "lost", "full", "free", "hold", "go", "help"]);
 const NAME_NOISE = new Set(["the", "and", "co", "company", "inc", "llc", "ltd", "services", "service", "of"]);
 
 const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
@@ -200,31 +200,45 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     await pause(d, one.id, false);
     return { businessId: one.id, reply: `${tag(one)}${choice === "year" ? `${reply} Jack will text you the payment link.` : reply}`, handled: `renew_${choice}` };
   }
-  // Month to month, cancel by text. CANCEL shows the facts; CANCEL YES does it.
+  // Month to month, cancel by text: one text does it (a yearly plan gets back what it didn't use). UNDO within a day puts it all back.
   if (/^cancel\b/.test(bare)) {
     if (!one) return askWhich();
     const s = d.accounts.peek(one.id)!.state;
-    if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled. Want back in? Reply here and Jack will set it up.`, handled: "cancel_again" };
-    if (!/^cancel (yes|confirm)\b/.test(bare)) {
-      const tt = totals(s);
-      const open = new Set(s.touches.filter((x) => x.status === "approved" || x.status === "planned").map((x) => x.customerId)).size;
-      return {
-        businessId: one.id,
-        reply: `${tag(one)}No problem. So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} traced. Cancelling stops notes to ${open} ${open === 1 ? "person" : "people"} still in line; everything we found stays yours. Text CANCEL YES${multi ? ` ${tags.get(one.id)}` : ""} to confirm. Only want our texts to stop? Text STOP instead — your follow-ups keep running.`,
-        handled: "cancel_ask",
-      };
-    }
+    if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled.${s.cancelled ? " Didn't mean it? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "cancel_again" };
+    let r = { stopped: 0, refund: 0, line: "" };
+    let until = "";
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
-      state.dataset.business.plan.stage = "cancelled";
-      let n = 0;
-      for (const x of state.touches) if (x.status === "approved" || x.status === "planned") (x.status = "cancelled"), n++;
-      state.events.push({ id: `ev_cancel_${at}`, at, agent: "guard", kind: "warning", title: "Owner cancelled by text", detail: `${n} queued notes stopped. No further charges, and no more texts to the owner.` });
+      r = cancelPlan(state, at);
+      until = `${fmtClock(at)} tomorrow`;
     });
-    // cancel everywhere: queued notes stop, the platform's campaigns pause and leads still waiting are taken back
+    // cancel everywhere: the platform's campaigns pause and leads still waiting are taken back
     await holdSending(d, one.id, "cancel").catch((e) => d.log(`[owner] ${one.id} cancel on the sending platform failed: ${(e as Error).message}`));
-    d.accounts.repo.audit(one.id, "owner-sms", "cancel", {});
-    return { businessId: one.id, reply: `${tag(one)}Done — cancelled. No more notes, no more charges, and this is our last text. Your ledger link keeps working, and your data is yours to take. Thanks for giving us a shot.`, handled: "cancel" };
+    d.accounts.repo.audit(one.id, "owner-sms", "cancel", { stopped: r.stopped, refund: r.refund });
+    // a yearly refund text goes straight to the operator's queue: they issue it, then send it
+    if (r.refund) await deliverOwnerMessages(d, one.id);
+    const tt = totals(d.accounts.peek(one.id)!.state);
+    return {
+      businessId: one.id,
+      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours. Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} and it all picks back up.`,
+      handled: "cancel",
+    };
+  }
+  if (/^undo\b/.test(bare)) {
+    const pool = (one ? [one] : all).filter((b) => d.accounts.peek(b.id)?.state.cancelled);
+    if (pool.length > 1) return askWhich();
+    const b = pool[0];
+    if (!b) return { businessId: fallback().id, reply: "There's nothing to undo. Text HELP for what you can text us.", handled: "undo_nothing" };
+    let r: { restored: number } | undefined;
+    await d.accounts.withAccount(b.id, (state) => {
+      r = undoCancel(state, nowLocal(d, state));
+    });
+    if (!r) return { businessId: b.id, reply: `${tag(b)}It's been more than a day, so Jack will set you back up himself. He'll text you.`, handled: "undo_late", needsPerson: true };
+    await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
+    // a yearly refund nobody has sent yet isn't owed any more
+    d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'cancelled' WHERE business_id = ? AND kind = 'refund' AND delivery IN ('review','pending')", b.id);
+    d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: r.restored });
+    return { businessId: b.id, reply: `${tag(b)}Back on — nothing was lost. ${r.restored ? `${r.restored} ${r.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}`, handled: "undo_cancel" };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(bare) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
@@ -428,4 +442,10 @@ function joinOr(items: string[], word: "and" | "or"): string {
 function fmtDay(iso: string): string {
   const [, m, d] = iso.split("-").map(Number) as [number, number, number];
   return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`;
+}
+
+/** "4:05pm" from a local ISO time. */
+function fmtClock(iso: string): string {
+  const [h, m] = iso.slice(11, 16).split(":").map(Number) as [number, number];
+  return `${h % 12 || 12}${m ? `:${String(m).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`;
 }

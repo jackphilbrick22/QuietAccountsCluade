@@ -330,6 +330,7 @@ export const MSG_KIND: Record<string, string> = {
   free_month: "Free month",
   kickoff: "Welcome text",
   renewal: "Year renewal",
+  refund: "Yearly refund (issue it, then send)",
   info: "Heads up",
 };
 
@@ -338,6 +339,7 @@ export const DELIVERY: Record<string, { label: string; tone: "ok" | "warn" | "ba
   pending: { label: "Sending", tone: "info" },
   review: { label: "Waiting for you", tone: "warn" },
   failed: { label: "Failed", tone: "bad" },
+  cancelled: { label: "Not needed", tone: "neutral" },
   skipped: { label: "Skipped", tone: "neutral" },
 };
 

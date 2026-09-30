@@ -1071,7 +1071,7 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 /* Dispatcher: owner texts in and out                                  */
 /* ------------------------------------------------------------------ */
 
-const BILLING_KINDS = new Set(["close", "precharge", "free_month"]);
+const BILLING_KINDS = new Set(["close", "precharge", "free_month", "refund"]);
 
 /** Twilio refuses a number that texted STOP (error 21610): the owner is opted out at the carrier. */
 const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
@@ -1080,7 +1080,7 @@ const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
  * Owner messages go out by text. With no cell on file, or texts turned off (the owner texted STOP, or their carrier
  * says they did), they go by email through the direct mail provider when there is one; otherwise they're marked
  * failed, which puts them in the operator's review queue. Nothing is ever "sent" to a log in production.
- * A cancelled client gets nothing more.
+ * A cancelled client gets nothing more, except the refund text when they leave a yearly plan early.
  */
 export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowBilling?: boolean } = {}): Promise<number> {
   let n = 0;
@@ -1091,7 +1091,8 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
     const b = loaded.state.dataset.business;
     const done = (delivery: "sent" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, delivery, { ...f, at: d.clock().toISOString() });
-    if (b.plan.stage === "cancelled") {
+    // the one exception: the refund we owe them when they leave a yearly plan early
+    if (b.plan.stage === "cancelled" && m.kind !== "refund") {
       done("skipped", { error: "Cancelled: nothing more goes to the owner." });
       continue;
     }

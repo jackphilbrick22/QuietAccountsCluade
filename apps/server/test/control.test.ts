@@ -159,7 +159,7 @@ describe("stopping a business reaches Instantly", () => {
   it("CANCEL YES pauses the campaigns, pulls every lead still waiting on a note, and RESUME never restarts them", async () => {
     const p = await pushed("cedar", "Cedar Tree", ["cy.lee@gmail.com", "di.lee@gmail.com"]);
     expect(leadsIn("cedar")).toEqual(["cy.lee@gmail.com", "di.lee@gmail.com"]);
-    expect(await sms(p.ownerPhone!, "CANCEL YES")).toMatch(/cancelled/);
+    expect(await sms(p.ownerPhone!, "CANCEL")).toMatch(/cancelled/);
     expect(statusOf("cedar")).toEqual([2]);
     await runTasks(d);
     expect(leadsIn("cedar")).toEqual([]);

@@ -106,17 +106,28 @@ describe("owner texts BUSY / OPEN", () => {
     expect((ov.business as { plan: { billing: string } }).plan.billing).toBe("annual");
   });
 
-  it("cancels by text: facts first, then CANCEL YES does it", async () => {
-    const first = await sms("cancel");
-    expect(first).toContain("CANCEL YES");
+  it("cancels in one text, refunds the unused year, and UNDO within a day puts it all back", async () => {
+    const queuedBefore = ((await api("GET", "/api/businesses/ridge-tree")).counts as { queued: number }).queued;
+    const done = await sms("cancel");
+    expect(done).toMatch(/Done — cancelled\. No more notes, no more charges\./);
+    // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor)
+    expect(done).toContain("$4,970.00 of your year comes back to your card within 5 business days");
+    expect(done).toMatch(/Text UNDO by \d{1,2}(:\d\d)?(am|pm) tomorrow/);
     let ov = await api("GET", "/api/businesses/ridge-tree");
-    expect((ov.business as { plan: { stage: string } }).plan.stage).not.toBe("cancelled");
-    const done = await sms("Cancel yes");
-    expect(done).toContain("cancelled");
-    ov = await api("GET", "/api/businesses/ridge-tree");
     expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
     expect(ov.paused).toBe(true);
     expect((ov.counts as { queued: number }).queued).toBe(0);
+    // the refund text is held for the operator (they issue it, then send), even though the client is cancelled
+    const held = (await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string; text: string }[];
+    expect(held.find((m) => m.kind === "refund")!.text).toMatch(/goes back to your card within 5 business days/);
+    const undo = await sms("undo");
+    expect(undo).toMatch(/Back on — nothing was lost\./);
+    ov = await api("GET", "/api/businesses/ridge-tree");
+    expect((ov.business as { plan: { stage: string; yearRefunds?: unknown[] } }).plan.stage).toBe("paying");
+    expect((ov.business as { plan: { yearRefunds?: unknown[] } }).plan.yearRefunds ?? []).toHaveLength(0);
+    expect((ov.counts as { queued: number }).queued).toBe(queuedBefore);
+    expect(((await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string }[]).some((m) => m.kind === "refund")).toBe(false);
+    expect(await sms("undo")).toContain("nothing to undo");
   });
 });
 

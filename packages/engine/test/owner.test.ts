@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
-import { ackFor, closeMessage, guaranteeCheck, handoffText } from "../src/reports/owner.ts";
+import { ackFor, closeMessage, earlyLeaveRefund, guaranteeCheck, handoffText } from "../src/reports/owner.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
 import { ASOF, ago, customer, dataset, job, oneOpp, quote, request } from "./fixtures.ts";
@@ -120,5 +120,29 @@ describe("the guarantee text", () => {
     const g = guaranteeCheck(st, "2026-09-29")!;
     expect(g.free).toBe(false);
     expect(g.asked.map((r) => r.id)).toEqual(["r1"]);
+  });
+});
+
+describe("leaving a yearly plan early", () => {
+  const yearly = (traced: number) => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2026-06-01", yearsPaidOn: ["2026-06-01"], freeMonths: ["2026-07-01"] };
+    if (traced) st.recoveries = [{ id: "rec1", customerId: "c1", record: { kind: "job", id: "j9" }, value: traced, cameBackOn: "2026-08-10", match: "reply", confidence: 1, tier: "traced" } as unknown as Recovery];
+    return st;
+  };
+  it("never costs more than monthly would have: four months used, one quiet, three charged at $497", () => {
+    const r = earlyLeaveRefund(yearly(3000), "2026-09-15")!;
+    expect(r).toMatchObject({ monthsUsed: 4, quiet: 1, paid: 4555.83, asMonthly: 1491, traced: 3000 });
+    expect(r.refund).toBe(3064.83);
+  });
+  it("and never more than the jobs on the ledger in those months (the year floor)", () => {
+    expect(earlyLeaveRefund(yearly(800), "2026-09-15")!.refund).toBe(3755.83);
+    expect(earlyLeaveRefund(yearly(0), "2026-09-15")!.refund).toBe(4555.83);
+  });
+  it("is only for a yearly plan inside its year", () => {
+    const st = yearly(0);
+    expect(earlyLeaveRefund(st, "2027-06-02")).toBeUndefined();
+    st.dataset.business.plan.billing = "monthly";
+    expect(earlyLeaveRefund(st, "2026-09-15")).toBeUndefined();
   });
 });

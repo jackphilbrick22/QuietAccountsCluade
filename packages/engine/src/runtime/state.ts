@@ -21,13 +21,15 @@ export interface AccountState {
   trialCompletedOn?: string;
   /** The welcome text showed the owner the first note; nothing goes out until they reply OK (or the operator approves). */
   awaitingOwnerOk?: ISODateTime;
+  /** The owner texted CANCEL: what it stopped, so UNDO (within a day) can put it all back. */
+  cancelled?: { at: ISODateTime; stageBefore: "trial" | "paying" | "paused"; touchIds: string[]; refund?: { yearStart: string; amount: number } };
   updatedAt: ISODateTime;
 }
 
 export interface OwnerMessage {
   id: string;
   at: ISODateTime;
-  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal";
+  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund";
   text: string;
   refs?: { kind: string; id: string }[];
 }

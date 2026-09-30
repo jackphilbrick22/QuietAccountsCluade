@@ -456,7 +456,7 @@ export function annualRefund(b: BusinessProfile): Money {
 /** What the owner has actually been charged so far, net of quiet months and any year that didn't pay for itself. */
 export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
   const f = grossFees(b, asOf);
-  const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
+  const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => r.early || addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
   return { ...f, total: round2(f.total - refunded) };
 }
 
@@ -464,6 +464,26 @@ export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; mon
 export function grossFees(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
   const f = feesThisArrangement(b, asOf);
   return { ...f, total: round2(f.total + (b.plan.priorFees ?? 0)) };
+}
+
+/**
+ * Leaving a yearly plan early: it never costs more than monthly would have. The months used are charged at
+ * the monthly price (quiet months free), and the year floor still applies to them; the rest comes back.
+ */
+export function earlyLeaveRefund(state: AccountState, today: ISODate): { yearStart: ISODate; monthsUsed: number; quiet: number; asMonthly: Money; paid: Money; traced: Money; refund: Money } | undefined {
+  const b = state.dataset.business;
+  if (b.plan.billing !== "annual" || !b.plan.paidOn) return undefined;
+  const yearStart = [...(b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn])].filter((d) => d <= today).sort().pop();
+  if (!yearStart || addMonths(yearStart, 12) <= today) return undefined;
+  let monthsUsed = 0;
+  while (monthsUsed < 12 && addMonths(yearStart, monthsUsed) <= today) monthsUsed++;
+  const quiet = b.plan.freeMonths.filter((d) => d >= yearStart && d <= today).length;
+  const paid = round2(annualPrice(b) - quiet * annualRefund(b));
+  const asMonthly = round2(Math.max(0, monthsUsed - quiet) * b.plan.monthlyPrice);
+  // never more than monthly would have cost, and (the year floor, on the months used) never more than the jobs traced in them
+  const traced = round2(sum(counted(state.recoveries).filter((r) => r.cameBackOn >= yearStart && r.cameBackOn <= today), (r) => r.value));
+  const keep = Math.min(paid, asMonthly, traced);
+  return { yearStart, monthsUsed, quiet, asMonthly, paid, traced, refund: round2(Math.max(0, paid - keep)) };
 }
 
 /**

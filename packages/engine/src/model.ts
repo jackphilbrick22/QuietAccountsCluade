@@ -332,7 +332,7 @@ export interface PlanState {
   /** Fees paid under an earlier billing arrangement (a year before going month to month). */
   priorFees?: Money;
   /** A paid year whose traced jobs didn't cover what was paid: the difference we refunded. */
-  yearRefunds?: { yearStart: ISODate; amount: Money }[];
+  yearRefunds?: { yearStart: ISODate; amount: Money; /** Left mid-year: the unused months, refunded when they cancelled. */ early?: boolean }[];
 }
 
 export interface ImportRecord {

@@ -87,10 +87,9 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     expect(h.d.accounts.peek("bbb-tree")!.paused).toBe(true);
     expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);
 
-    expect(await h.sms("CANCEL YES")).toMatch(/Which one\?.*"CANCEL YES AAA" or "CANCEL YES BBB"/);
+    expect(await h.sms("CANCEL")).toMatch(/Which one\?.*"CANCEL AAA" or "CANCEL BBB"/);
     expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
-    expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: No problem\..*Text CANCEL YES BBB to confirm\. Only want our texts to stop\? Text STOP instead/);
-    expect(await h.sms("Cancel yes BBB")).toMatch(/^BBB Tree: Done — cancelled/);
+    expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: Done — cancelled\..*Text UNDO BBB by .* tomorrow/);
     expect(state(h, "bbb-tree").dataset.business.plan.stage).toBe("cancelled");
     expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
     expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);
@@ -194,7 +193,7 @@ describe("carrier keywords and cancelling (n27)", () => {
     expect(notifier.sent).toHaveLength(1);
   });
 
-  it("after CANCEL YES nothing more goes to the owner: no Friday report, no reminders, no queued texts", async () => {
+  it("after CANCEL nothing more goes to the owner: no Friday report, no reminders, no queued texts", async () => {
     const h = make();
     const notifier = h.d.notifier as LogNotifier;
     await h.business("ridge");
@@ -202,9 +201,7 @@ describe("carrier keywords and cancelling (n27)", () => {
     await h.d.accounts.withAccount("ridge", (s) => {
       s.touches.push({ id: "t1", opportunityId: "o1", customerId: "c-r1", channel: "email", step: 1, angle: "check_in", dueAt: "2026-09-29T08:00", status: "sent", sentAt: "2026-09-29T08:00:00", body: "Hi Kim", flags: [] });
     });
-    const facts = await h.sms("cancel");
-    expect(facts).toMatch(/Text CANCEL YES to confirm\. Only want our texts to stop\? Text STOP instead — your follow-ups keep running\.$/);
-    expect(await h.sms("CANCEL YES")).toMatch(/^Done — cancelled\. No more notes, no more charges, and this is our last text\./);
+    expect(await h.sms("cancel")).toMatch(/^Done — cancelled\. No more notes, no more charges\./);
     await pushOwner(h, "ridge", { id: "om-late", kind: "info", text: "Heads up" });
     for (const at of ["2026-10-02T20:30:00Z", "2026-10-09T20:30:00Z", "2026-10-16T20:30:00Z"]) {
       h.setNow(at); // Fridays, 4:30pm New York
