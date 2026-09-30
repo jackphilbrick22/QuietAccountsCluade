@@ -251,7 +251,7 @@ export function sendHealth(state: AccountState): { sent: number; bounces: number
   let reason: string | undefined;
   // Small senders get no spam-rate data from Gmail, so the brakes here trip well before the providers' limits.
   if (sent >= 40 && bounceRate > 0.03) reason = `Bounce rate ${(bounceRate * 100).toFixed(1)}% is over 3% — paused to protect the sending reputation. The list needs cleaning.`;
-  else if (sent >= 300 && complaintRate > 0.002) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused well before Gmail's 0.3% limit.`;
+  else if (sent >= 300 && complaintRate > 0.001) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused at 0.1%, well before Gmail's 0.3% limit.`;
   else if (sent >= 100 && (complaints + confused) / sent > 0.01) reason = `${complaints + confused} people didn't recognize the business or complained — paused. Check the sender name and that these people really asked for a price.`;
   return { sent, bounces, complaints, stops, bounceRate, complaintRate, paused: !!reason, reason };
 }

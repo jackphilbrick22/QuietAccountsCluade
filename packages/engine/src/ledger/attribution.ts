@@ -201,7 +201,8 @@ export function lift(outreach: OutreachRecord[], all: Recovery[]): LiftReport {
   const avgBack = tBack ? tValue / tBack : hBack ? hValue / hBack : 0;
   const baseline = round2(treatedIds.size * hRate * avgBack);
   const incremental = round2(Math.max(0, tValue - baseline));
-  const confidence: LiftReport["confidence"] = holdIds.size >= 150 ? "solid" : holdIds.size >= 50 ? "fair" : "early";
+  // One shop's comparison group is small; "solid" is kept for pooled groups of 1,000+.
+  const confidence: LiftReport["confidence"] = holdIds.size >= 1000 ? "solid" : holdIds.size >= 50 ? "fair" : "early";
   const note =
     confidence === "early"
       ? `Only ${holdIds.size} people are in the comparison group so far — the lift number firms up as more of the list is worked.`

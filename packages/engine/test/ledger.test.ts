@@ -228,12 +228,14 @@ describe("lift", () => {
     // 5% of 200 would have come back anyway, at the treated group's average ticket
     expect(l.baseline).toBe(10000);
     expect(l.incremental).toBe(20000);
-    expect(l.confidence).toBe("solid");
+    expect(l.confidence).toBe("fair");
     expect(l.note).toBe("5% of the people we didn't contact came back on their own, versus 15% of the people we did.");
   });
   it("labels confidence by how big the comparison group is", () => {
-    expect(world(200, 150, 10, 2).confidence).toBe("solid");
-    expect(world(200, 149, 10, 2).confidence).toBe("fair");
+    // one shop's group is never "solid"; that's kept for pooled groups of 1,000+
+    expect(world(200, 1000, 10, 2).confidence).toBe("solid");
+    expect(world(200, 999, 10, 2).confidence).toBe("fair");
+    expect(world(200, 150, 10, 2).confidence).toBe("fair");
     expect(world(200, 50, 10, 2).confidence).toBe("fair");
     const early = world(200, 49, 10, 2);
     expect(early.confidence).toBe("early");

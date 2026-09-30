@@ -3,7 +3,7 @@ import { scan, type ScanResult } from "../src/breakage/detect.ts";
 import { closeRate, silentAudit, summarize } from "../src/breakage/forecast.ts";
 import { shopProfile } from "../src/breakage/profile.ts";
 import { readiness } from "../src/breakage/readiness.ts";
-import { ADJUST, BAND, TYPE_RANK } from "../src/breakage/assumptions.ts";
+import { ADJUST, rangeFactor, TYPE_RANK } from "../src/breakage/assumptions.ts";
 import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { BreakageType, Customer, Dataset, Job } from "../src/model.ts";
@@ -567,8 +567,13 @@ describe("summarize and fitCheck", () => {
     expect(s.reachableValue).toBeCloseTo(reach, 0);
     expect(s.opportunities).toBe(r.opportunities.length);
     expect(s.reachableValue).toBeLessThan(s.totalValue);
-    expect(s.expected.conservative).toBeCloseTo(s.expected.likely * BAND.conservative, 0);
-    expect(s.expected.strong).toBeCloseTo(s.expected.likely * BAND.strong, 0);
+    // each type's own low and high end, not a flat haircut
+    const newWork = s.byType.filter((t) => t.type !== "unpaid_invoice");
+    expect(s.expected.conservative).toBeCloseTo(newWork.reduce((a, t) => a + t.expected * rangeFactor(t.type, "low"), 0), 0);
+    expect(s.expected.strong).toBeCloseTo(newWork.reduce((a, t) => a + t.expected * rangeFactor(t.type, "high"), 0), 0);
+    expect(s.expected.conservative).toBeLessThan(s.expected.likely);
+    expect(s.backlogShare).toBeGreaterThan(0);
+    expect(s.backlogShare).toBeLessThanOrEqual(1);
     for (let i = 1; i < s.byType.length; i++) expect(s.byType[i]!.reachableValue).toBeLessThanOrEqual(s.byType[i - 1]!.reachableValue);
     expect(s.revenueSource).toBe("invoices");
     expect(s.annualRevenue).toBeGreaterThan(0);
@@ -796,18 +801,22 @@ it("covers all twelve breakage types", () => {
 });
 
 describe("what we may say about lift", () => {
-  it("says 15–20% only when the shop's careful forecast reaches 15%, otherwise its own number", async () => {
+  it("shows a percentage only to a Tier A shop, as a year-one range with the backlog share; never a blanket 15–20%", async () => {
     const { generateSample } = await import("../src/sample/generate.ts");
     const { scan } = await import("../src/breakage/detect.ts");
     const { summarize } = await import("../src/breakage/forecast.ts");
-    for (const trade of ["tree", "septic", "fence"] as const) {
+    for (const trade of ["tree", "septic", "fence", "painting", "cleaning"] as const) {
       const s = generateSample({ trade, asOf: "2026-09-29" });
       const sum = summarize(s.dataset, scan(s.dataset));
-      const careful = sum.liftPct!.conservative;
-      expect(sum.fit.canSay15).toBe(careful >= 15 && sum.fit.guaranteeEligible);
-      if (sum.fit.canSay15) expect(sum.fit.liftLine).toContain("15–20%");
-      else expect(sum.fit.liftLine).not.toContain("15–20%");
-      expect(sum.fit.liftLine).toContain(`${Math.round(careful)}%`);
+      const f = sum.fit;
+      expect(f.liftLine).not.toContain("15–20%");
+      expect(f.canSay15).toBe(f.tier === "A");
+      if (f.tier === "A") {
+        expect(sum.liftPct!.likely).toBeGreaterThanOrEqual(15);
+        expect(sum.liftPct!.conservative).toBeGreaterThanOrEqual(8);
+        expect(f.liftLine).toMatch(/\d+–\d+% more revenue, \d+% of it the one-time backlog/);
+      } else expect(f.liftLine).not.toMatch(/%\s*more revenue/);
+      if (f.tier === "audit_only") expect(f.guaranteeEligible).toBe(false);
     }
   });
 });

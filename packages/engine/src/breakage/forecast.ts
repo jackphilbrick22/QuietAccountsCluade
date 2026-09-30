@@ -1,6 +1,6 @@
 import type { BreakageType, Dataset, Money, Opportunity } from "../model.ts";
 import { addDays, daysBetween, fmtMoney, round2, sum } from "../util.ts";
-import { BAND, BREAKAGE_LABEL, RECOVERY_PRIOR, SALES_TYPES } from "./assumptions.ts";
+import { BREAKAGE_LABEL, rangeFactor, RECOVERY_PRIOR, SALES_TYPES } from "./assumptions.ts";
 import { averageJob, type ScanResult } from "./detect.ts";
 import { shopProfile, type ShopProfile } from "./profile.ts";
 import { callList, type CallList } from "./calllist.ts";
@@ -123,6 +123,12 @@ export interface FitCheck {
    */
   liftLine: string;
   canSay15: boolean;
+  /**
+   * A: may be shown a year-one percentage range (split into backlog and ongoing). B: qualifies for the
+   * guarantee, shown in dollars only. audit_only: the free audit, no promise. Gate inputs are stored so
+   * "we screen for fit" stays true.
+   */
+  tier: "A" | "B" | "audit_only";
   checks: { id: string; ok: boolean; label: string; detail: string }[];
   headline: string;
 }
@@ -147,6 +153,8 @@ export interface DrawerSummary {
    * so it's reported here and kept out of the lift.
    */
   cashToCollect: { value: Money; expected: Money };
+  /** How much of year one is the one-time backlog (the rest is ongoing, from new quotes). */
+  backlogShare: number;
   /** Year-one recovered revenue (backlog + ongoing), and the lift it represents. New work only. */
   yearOne: { conservative: Money; likely: Money; strong: Money };
   liftPct?: { conservative: number; likely: number; strong: number };
@@ -192,8 +200,8 @@ function monthlyFlow(ds: Dataset): DrawerSummary["monthly"] {
   const newQuotes = pool.length / span;
   const dead = pool.filter((x) => ["awaiting_response", "archived", "expired", "unknown", "changes_requested"].includes(x.q.status));
   const newDeadValue = sum(dead, (x) => x.q.total) / span;
-  // fresh dead quotes are worked at their warmest (the first 90 days)
-  const expectedRecovered = newDeadValue * RECOVERY_PRIOR.unanswered_quote * 1.25;
+  // No boost for freshness until measured age buckets say so.
+  const expectedRecovered = newDeadValue * RECOVERY_PRIOR.unanswered_quote;
   return { newQuotes: round2(newQuotes), newDeadValue: round2(newDeadValue), expectedRecovered: round2(expectedRecovered) };
 }
 
@@ -244,11 +252,23 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
   const newWorkExpected = expectedLikely - (invoices?.expected ?? 0);
   const rev = revenue(ds);
   const monthly = monthlyFlow(ds);
-  const yearLikely = newWorkExpected + monthly.expectedRecovered * 12;
+  // Each type's own low and high end, not a flat haircut.
+  const newWork = types.filter((t) => t.type !== "unpaid_invoice");
+  const backlog = {
+    conservative: sum(newWork, (t) => t.expected * rangeFactor(t.type, "low")),
+    likely: newWorkExpected,
+    strong: sum(newWork, (t) => t.expected * rangeFactor(t.type, "high")),
+  };
+  const ongoing = {
+    conservative: monthly.expectedRecovered * 12 * rangeFactor("unanswered_quote", "low"),
+    likely: monthly.expectedRecovered * 12,
+    strong: monthly.expectedRecovered * 12 * rangeFactor("unanswered_quote", "high"),
+  };
+  const yearLikely = backlog.likely + ongoing.likely;
   const yearOne = {
-    conservative: round2(yearLikely * BAND.conservative),
+    conservative: round2(backlog.conservative + ongoing.conservative),
     likely: round2(yearLikely),
-    strong: round2(yearLikely * BAND.strong),
+    strong: round2(backlog.strong + ongoing.strong),
   };
   const liftPct = rev.value
     ? {
@@ -264,11 +284,8 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     reachablePeople,
     opportunities: opps.length,
     // new work only; unpaid invoices are reported once, under cashToCollect
-    expected: {
-      conservative: round2(newWorkExpected * BAND.conservative),
-      likely: round2(newWorkExpected),
-      strong: round2(newWorkExpected * BAND.strong),
-    },
+    expected: { conservative: round2(backlog.conservative), likely: round2(backlog.likely), strong: round2(backlog.strong) },
+    backlogShare: yearLikely ? round2(backlog.likely / yearLikely) : 0,
     byType: types,
     cashToCollect: { value: invoices?.reachableValue ?? 0, expected: invoices?.expected ?? 0 },
     annualRevenue: rev.value,
@@ -282,7 +299,7 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     profile: shopProfile(ds, averageJob(ds), reachablePeople),
     audit: silentAudit(ds),
     onTheTable: { silentNow: { count: 0, value: 0 }, perMonth: { quotes: 0, value: 0, shareOfQuoted: 0 }, requestsNeverPriced: 0, pastCustomersNotBack: 0, line: "" },
-    fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "", liftLine: "", canSay15: false },
+    fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "", liftLine: "", canSay15: false, tier: "audit_only" },
     callList: callList(ds, result),
   };
   summary.fit = fitCheck(ds, result, summary);
@@ -345,8 +362,17 @@ export function fitCheck(ds: Dataset, result: ScanResult, s: DrawerSummary): Fit
   const weights: Record<string, number> = { volume: 30, email: 15, ticket: 15, history: 10, payback: 20, lift: 10 };
   const totalW = checks.reduce((a, c) => a + (weights[c.id] ?? 0), 0);
   const score = Math.round((checks.reduce((a, c) => a + (c.ok ? (weights[c.id] ?? 0) : 0), 0) / totalW) * 100);
-  const must = ["volume", "ticket", "payback"];
-  const guaranteeEligible = must.every((id) => checks.find((c) => c.id === id)?.ok);
+  // The fit gate (research brief §8). Tier A needs real revenue (invoices or jobs, never a number the
+  // owner told us), a careful floor of 8%, and enough dead quotes and warm work to carry it.
+  const R = s.revenueSource === "invoices" || s.revenueSource === "jobs" ? s.annualRevenue : undefined;
+  const reach = (types: BreakageType[]) => sum(s.byType.filter((t) => types.includes(t.type)), (t) => t.reachableValue);
+  const deadV = reach(["unanswered_quote", "archived_quote", "changes_requested"]);
+  const warmV = reach(["approved_unscheduled", "unquoted_request", "service_due", "lapsed_regular"]);
+  const tierA = !!R && !!s.liftPct && s.liftPct.likely >= 15 && s.liftPct.conservative >= 8 && deadV >= 1.5 * R && warmV >= 0.4 * R;
+  const tierB = s.yearOne.conservative >= 3 * price * 12 && s.reachablePeople >= trial;
+  const tier: FitCheck["tier"] = tierA ? "A" : tierB ? "B" : "audit_only";
+  const must = ["volume", "ticket"];
+  const guaranteeEligible = tier !== "audit_only" && must.every((id) => checks.find((c) => c.id === id)?.ok);
   const verdict: FitCheck["verdict"] = guaranteeEligible && score >= 85 ? "strong" : guaranteeEligible ? "good" : score >= 50 ? "thin" : "not_yet";
   const headline =
     verdict === "strong"
@@ -356,12 +382,13 @@ export function fitCheck(ds: Dataset, result: ScanResult, s: DrawerSummary): Fit
         : verdict === "thin"
           ? "There's money here, but the drawer is thin — we'll tell you straight what to expect."
           : "Not enough in the drawer yet to promise a result. We'd rather tell you now.";
-  const careful = s.liftPct?.conservative;
-  const canSay15 = !!careful && careful >= 15 && guaranteeEligible;
-  const liftLine = canSay15
-    ? `Your own records say a careful year one is about ${Math.round(careful!)}% more revenue — in the 15–20% range we aim for.`
-    : careful
-      ? `Your own records say a careful year one is about ${Math.round(careful)}% more revenue (${fmtMoney(s.yearOne.conservative)}). That's the number we'll hold ourselves to — not a bigger one.`
-      : `We need a year of invoices or jobs to put a percentage on it; the dollar estimate is ${fmtMoney(s.yearOne.conservative)} in year one.`;
-  return { score, verdict, guaranteeEligible, checks, headline, liftLine, canSay15 };
+  const canSay15 = tier === "A" && guaranteeEligible;
+  const backlogPct = Math.round(s.backlogShare * 100);
+  const liftLine =
+    tier === "A" && s.liftPct
+      ? `From your own records, a careful year one is about ${Math.round(s.liftPct.conservative)}–${Math.round(s.liftPct.likely)}% more revenue, ${backlogPct}% of it the one-time backlog of quiet quotes. A forecast, not a promise.`
+      : tier === "B"
+        ? `From your own records, a careful year one is about ${fmtMoney(s.yearOne.conservative)} (${fmtMoney(s.yearOne.likely)} likely), ${backlogPct}% of it the one-time backlog. That's the number we hold ourselves to.`
+        : `Your records show about ${fmtMoney(s.yearOne.conservative)} in a careful year one. That's not enough for us to promise anything, so the audit is yours, free.`;
+  return { score, verdict, guaranteeEligible, checks, headline, liftLine, canSay15, tier };
 }

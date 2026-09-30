@@ -9,19 +9,44 @@ import type { BreakageType, BusinessProfile } from "../model.ts";
  * Never present these as promises or as industry statistics.
  */
 export const RECOVERY_PRIOR: Record<BreakageType, number> = {
-  approved_unscheduled: 0.4, // they already said yes
-  unpaid_invoice: 0.45, // the work is done; a polite nudge collects many
-  changes_requested: 0.15, // they engaged and asked for something
-  unquoted_request: 0.1, // asked for a price, never got one
-  service_due: 0.1, // septic/chimney/gutter clocks
-  lapsed_regular: 0.09,
-  unanswered_quote: 0.05,
-  archived_quote: 0.04,
-  declined_option: 0.05,
-  one_and_done: 0.035,
-  missed_upsell: 0.03,
-  declined_quote: 0.015,
+  approved_unscheduled: 0.3, // they already said yes; counted only once the owner confirms it wasn't done
+  unpaid_invoice: 0.05, // incremental over the software's own reminders; never part of lift
+  changes_requested: 0.1, // they engaged and asked for something
+  unquoted_request: 0.05, // asked for a price, never got one
+  service_due: 0.08, // septic/chimney/gutter clocks (reminder meta-analysis, as an analog)
+  lapsed_regular: 0.08, // Capital City: 17 of 150 booked
+  unanswered_quote: 0.025, // Dow's and Nelson: 4 of 150 each (2.7%)
+  archived_quote: 0.02,
+  declined_option: 0.03,
+  one_and_done: 0.02,
+  missed_upsell: 0.02,
+  declined_quote: 0.01,
 };
+
+/**
+ * The honest range around each prior (low, high), from the research brief. A careful forecast uses the
+ * low end type by type — not a flat haircut — so a shop that's mostly dead quotes gets a much lower floor.
+ */
+export const RECOVERY_RANGE: Record<BreakageType, [number, number]> = {
+  approved_unscheduled: [0.15, 0.45],
+  unpaid_invoice: [0.01, 0.1],
+  changes_requested: [0.05, 0.2],
+  unquoted_request: [0.03, 0.1],
+  service_due: [0.04, 0.12],
+  lapsed_regular: [0.05, 0.12],
+  unanswered_quote: [0.015, 0.04],
+  archived_quote: [0.01, 0.035],
+  declined_option: [0.02, 0.06],
+  one_and_done: [0.01, 0.035],
+  missed_upsell: [0.01, 0.04],
+  declined_quote: [0.005, 0.015],
+};
+
+/** Low and high as a share of the prior, per type. */
+export function rangeFactor(type: BreakageType, end: "low" | "high"): number {
+  const [lo, hi] = RECOVERY_RANGE[type];
+  return (end === "low" ? lo : hi) / RECOVERY_PRIOR[type];
+}
 
 /**
  * Quotes older than this never repeat the old price: owners re-bid old work (materials,
@@ -108,8 +133,6 @@ export function alwaysOnFor(b: BusinessProfile): boolean {
   return b.alwaysOn ?? b.plan.stage === "paying";
 }
 
-/** Forecast bands around the expected value. */
-export const BAND = { conservative: 0.6, likely: 1.0, strong: 1.5 };
 
 /** Plain-English labels for each breakage type, as an owner would say it. */
 export const BREAKAGE_LABEL: Record<BreakageType, { title: string; short: string; explain: string; icon: string }> = {
