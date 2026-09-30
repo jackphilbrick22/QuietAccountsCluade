@@ -28,9 +28,9 @@ import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
 import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
 import { NotFound } from "../core/accounts.ts";
-import { replyEmailKey } from "../core/backstop.ts";
+import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { localIso } from "../core/clock.ts";
-import { answerInThread, approve, deliverOwnerMessages, handleInbound, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
+import { answerInThread, approve, clearSendBrake, deliverOwnerMessages, handleInbound, holdSending, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
 import { verifyTwilioSignature } from "../providers/sms.ts";
 
 export interface HttpDeps extends Deps {
@@ -171,7 +171,12 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ error: "Something went wrong on our side." }, 500);
   });
 
-  app.get("/api/health", (c) => c.json({ ok: true, businesses: repo.listBusinesses().length, email: d.email.name, sms: d.notifier.name, ai: d.llm ? d.llm.model : null, time: d.clock().toISOString() }));
+  app.get("/api/health", (c) => {
+    // the sending platform's webhooks (replies, bounces, unsubscribes arrive through them); no error text here, it's public
+    const hooks = d.email.kind === "sequencer" ? webhookSetup(d) : undefined;
+    const webhooks = d.email.kind !== "sequencer" ? undefined : !hooks ? "unknown" : hooks.ok ? "ok" : "failing";
+    return c.json({ ok: true, businesses: repo.listBusinesses().length, email: d.email.name, sms: d.notifier.name, ai: d.llm ? d.llm.model : null, time: d.clock().toISOString(), ...(webhooks ? { webhooks } : {}) });
+  });
 
   /* ----------------------------- auth ----------------------------- */
   const operator: MiddlewareHandler<Env> = async (c, next) => {
@@ -229,8 +234,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
       patch.ownerPhone = cell;
     }
     const id = c.req.param("id");
+    let stageBefore: string | undefined;
     await d.accounts.withAccount(id, (state) => {
       const b = state.dataset.business;
+      stageBefore = b.plan.stage;
       const { voice, persistence, plan: planPatch, ...rest } = patch;
       Object.assign(b, rest);
       if (rest.ownerName) b.ownerFirstName = rest.ownerName.split(/\s+/)[0] ?? b.ownerFirstName;
@@ -238,12 +245,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
       if (persistence) b.persistence = { ...b.persistence, ...persistence };
       if (planPatch) b.plan = { ...b.plan, ...planPatch };
     });
+    // A stage of Paused or Cancelled really stops sending (and the platform's campaigns); back to trial/paying resumes.
+    const stage = patch.plan?.stage;
+    if (stage && stage !== stageBefore) {
+      if (stage === "paused") await holdSending(d, id, "pause");
+      else if (stage === "cancelled") await holdSending(d, id, "cancel");
+      else if (stageBefore === "paused" || stageBefore === "cancelled") await holdSending(d, id, "resume");
+    }
     repo.audit(id, "operator", "business.update", patch);
     return c.json({ ok: true });
   });
 
-  op.delete("/businesses/:id", (c) => {
+  op.delete("/businesses/:id", async (c) => {
     const id = c.req.param("id");
+    // nothing already handed to the sending platform keeps going in the name of a client that's gone
+    await holdSending(d, id, "cancel");
     repo.delete(id);
     d.accounts.forget(id);
     repo.audit(id, "operator", "business.delete");
@@ -271,14 +287,18 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses/:id/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
-    d.accounts.setPaused(c.req.param("id"), paused);
-    if (d.email.kind === "sequencer") {
-      const state = d.accounts.peek(c.req.param("id"))?.state;
-      const campaigns = new Set((state?.touches ?? []).map((t) => t.providerId?.split(":")[1]).filter(Boolean) as string[]);
-      for (const cid of campaigns) await d.email.pauseCampaign(state!.dataset.business, cid, paused);
-    }
+    if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
+    await holdSending(d, c.req.param("id"), paused ? "pause" : "resume");
     repo.audit(c.req.param("id"), "operator", paused ? "pause" : "resume");
     return c.json({ ok: true });
+  });
+
+  // The Guard's send brake tripped; an operator looked (cleaned the list, fixed the sender name) and lets sending resume.
+  op.post("/businesses/:id/health/clear", async (c) => {
+    if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
+    await clearSendBrake(d, c.req.param("id"), "operator");
+    repo.audit(c.req.param("id"), "operator", "health.clear");
+    return c.json({ ok: true, health: sendHealth(d.accounts.peek(c.req.param("id"))!.state) });
   });
 
   op.get("/businesses/:id/opportunities", (c) => {
@@ -309,19 +329,36 @@ export function createApp(d: HttpDeps): Hono<Env> {
   });
 
   op.patch("/businesses/:id/touches/:tid", async (c) => {
-    const body = z.object({ subject: z.string().min(1).max(120).optional(), body: z.string().min(20).max(4000).optional(), status: z.enum(["approved", "planned", "cancelled"]).optional() }).parse(await c.req.json());
+    // "sent" only settles a note stuck "sending" (the mail server may have taken it): a person checked the mailbox
+    const body = z.object({ subject: z.string().min(1).max(120).optional(), body: z.string().min(20).max(4000).optional(), status: z.enum(["approved", "planned", "cancelled", "sent"]).optional() }).parse(await c.req.json());
     let ok = false;
+    let flags: string[] = [];
     await d.accounts.withAccount(c.req.param("id"), async (state) => {
       const t = state.touches.find((x) => x.id === c.req.param("tid"));
       if (!t || t.status === "sent") return;
-      const { lint } = await import("@qa/engine");
+      const { lint, markSent, oppById, REQUIRED_FLAG } = await import("@qa/engine");
+      const at = localIso(d.clock(), state.dataset.business.timezone).slice(0, 19);
+      if (t.status === "sending") {
+        if (!body.status || body.status === "planned") return;
+        if (body.status === "sent") markSent(state, t.id, t.claimedAt ?? at);
+        else t.status = body.status;
+        t.claimedAt = undefined;
+        ok = true;
+        return;
+      }
+      if (body.status === "sent") return;
       if (body.subject) t.subject = body.subject;
       if (body.body) t.body = body.body;
       if (body.status) t.status = body.status;
-      t.flags = lint(t.subject ?? "", t.body, { firstName: "", job: "", requireJob: false });
+      // linted as what it is: a follow-up may say "Re:", and every commercial note needs its why-line
+      const commercial = oppById(state.scan?.opportunities, t.opportunityId)?.type !== "unpaid_invoice";
+      t.flags = lint(t.subject ?? "", t.body, { firstName: "", job: "", requireJob: false, step: t.step, commercial });
+      // an edit that broke something the law requires waits for a fix instead of going out
+      if (t.status === "approved" && t.flags.some((f) => REQUIRED_FLAG.test(f))) t.status = "planned";
+      flags = t.flags;
       ok = true;
     });
-    return c.json({ ok });
+    return c.json({ ok, flags });
   });
 
   op.get("/businesses/:id/replies", (c) => {
@@ -435,9 +472,49 @@ export function createApp(d: HttpDeps): Hono<Env> {
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
       for (const m of [...repo.ownerMessages(b.id, { delivery: "review" }), ...repo.ownerMessages(b.id, { delivery: "failed" })])
         items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
+      // the Guard's brake is holding every note until a person looks
+      const health = sendHealth(s);
+      if (health.paused) {
+        const queued = s.touches.filter((t) => t.status === "approved" || t.status === "planned").length;
+        items.push({ kind: "brake", ...biz, at: s.events.find((e) => e.id.startsWith("ev_brake_"))?.at ?? nowLocal, reason: health.reason ?? "", queued });
+      }
+      // a send that may or may not have gone (a timeout after the server took it, or a crash mid-send)
+      for (const t of s.touches.filter((x) => x.status === "sending"))
+        if (t.lastError || !t.claimedAt || Date.parse(nowLocal) - Date.parse(t.claimedAt) > 10 * 60_000)
+          items.push({ kind: "unsure_send", ...biz, at: t.claimedAt ?? t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, subject: t.subject ?? "", error: t.lastError ?? "The server stopped before it could say." });
+      // people the sending platform wouldn't take (last 30 days)
+      const cutoff = localIso(new Date(d.clock().getTime() - 30 * 86_400_000), s.dataset.business.timezone);
+      for (const t of s.touches.filter((x) => x.status === "skipped" && x.step === 1 && x.lastError?.startsWith(`${d.email.name}:`) && x.dueAt >= cutoff.slice(0, 16)).slice(0, 50))
+        items.push({ kind: "not_taken", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", reason: t.lastError!.slice(d.email.name.length + 1).trim() });
     }
+    // replies nobody could place (an address several clients share, or one we never wrote to)
+    const names = new Map(repo.listBusinesses().map((b) => [b.id, b.profile.name]));
+    for (const r of repo.inboundReviews()) {
+      const ev = r.event as { from?: string; subject?: string; text?: string; receivedAt?: string };
+      items.push({ kind: "unmatched_reply", businessId: "", businessName: "", id: r.id, at: ev.receivedAt ?? r.at, from: (ev.from ?? "").toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0] ?? ev.from ?? "", subject: ev.subject ?? "", text: String(ev.text ?? "").slice(0, 1000), reason: r.reason, candidates: r.candidates.filter((x) => names.has(x)).map((x) => ({ businessId: x, businessName: names.get(x)! })) });
+    }
+    // the sending platform can't reach us (webhooks never registered)
+    const hooks = webhookSetup(d);
+    if (hooks && !hooks.ok) items.push({ kind: "platform", businessId: "", businessName: d.email.name === "instantly" ? "Instantly" : d.email.name, at: hooks.at, title: "Webhooks aren't registered — replies, bounces and unsubscribes may not arrive", detail: hooks.error ?? "" });
     items.sort((x, y) => (String(x.at) < String(y.at) ? -1 : 1));
     return c.json({ now: d.clock().toISOString(), slaHours: sla, items });
+  });
+
+  // A reply nobody could place: a person says whose it is (it's then read there, like any reply), or drops it.
+  op.post("/inbound-review/:rid", async (c) => {
+    const body = z.object({ businessId: z.string().optional(), dismiss: z.boolean().optional() }).parse(await c.req.json());
+    const r = repo.inboundReview(c.req.param("rid"));
+    if (!r || r.status !== "open") return c.json({ error: "No such reply waiting" }, 404);
+    if (body.dismiss) {
+      repo.closeInboundReview(r.id, "dismissed");
+      repo.audit(undefined, "operator", "inbound.dismiss", { id: r.id });
+      return c.json({ ok: true });
+    }
+    if (!body.businessId || !repo.exists(body.businessId)) return c.json({ error: "Pick the client it belongs to" }, 400);
+    await handleInbound(d, { ...(r.event as InboundEvent), businessId: body.businessId } as InboundEvent);
+    repo.closeInboundReview(r.id, "assigned", body.businessId);
+    repo.audit(body.businessId, "operator", "inbound.assign", { id: r.id });
+    return c.json({ ok: true });
   });
 
   op.get("/businesses/:id/people", (c) => {
@@ -493,7 +570,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   });
   own.post("/:token/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
-    d.accounts.setPaused(c.get("bid")!, paused);
+    await holdSending(d, c.get("bid")!, paused ? "pause" : "resume");
     repo.audit(c.get("bid"), "owner", paused ? "pause" : "resume");
     return c.json({ ok: true });
   });
@@ -566,7 +643,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const raw = await c.req.text();
     // Instantly retries deliveries; the event's own identity (not the raw bytes) dedupes them.
     const id = instantlyWebhookKey(safeJson(raw)) ?? `instantly:${createHash("sha1").update(raw).digest("hex")}`;
-    if (!repo.logWebhook(id, "instantly", raw, d.clock().toISOString())) return c.json({ ok: true, duplicate: true });
+    // only a delivery that went through is a duplicate; one that failed or died mid-way is taken again
+    const claim = repo.claimWebhook(id, "instantly", raw, d.clock().toISOString());
+    if (claim === "duplicate") return c.json({ ok: true, duplicate: true });
+    if (claim === "busy") return c.json({ ok: false, busy: true }, 503, { "Retry-After": "120" });
     const ev = d.parsers.instantly?.(safeJson(raw));
     if (!ev) {
       repo.finishWebhook(id, "ignored");
@@ -574,14 +654,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
     }
     // One reply, one reading: the reply backstop claims the same key when it reads this email first.
     const emailKey = ev.type === "reply" && ev.replyEmailId ? replyEmailKey("instantly", ev.replyEmailId) : undefined;
-    if (emailKey && !repo.logWebhook(emailKey, "instantly", raw, d.clock().toISOString())) {
+    const mine = emailKey ? repo.claimWebhook(emailKey, "instantly", raw, d.clock().toISOString()) : "new";
+    if (mine === "duplicate" || mine === "busy") {
       repo.finishWebhook(id, "ignored", undefined, "already read by the reply check");
       return c.json({ ok: true, duplicate: true });
     }
     try {
-      const bid = await handleInbound(d, ev);
-      repo.finishWebhook(id, "processed", bid);
-      if (emailKey) repo.finishWebhook(emailKey, "processed", bid);
+      const done = await handleInbound(d, ev);
+      const bids = done.businessIds.join(",") || undefined;
+      repo.finishWebhook(id, "processed", bids, done.review);
+      if (emailKey) repo.finishWebhook(emailKey, "processed", bids, done.review);
     } catch (e) {
       repo.finishWebhook(id, "failed", undefined, (e as Error).message);
       repo.enqueue("inbound.retry", { event: JSON.stringify(ev) }, { runAt: new Date(d.clock().getTime() + 60000).toISOString() });
@@ -600,13 +682,19 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const body = safeJson(raw) as Record<string, unknown> | undefined;
     if (!body) return c.json({ error: "Expected JSON" }, 400);
     const id = `email:${String(body.MessageID ?? body["message-id"] ?? createHash("sha1").update(raw).digest("hex"))}`;
-    if (!repo.logWebhook(id, "email", raw, d.clock().toISOString())) return c.json({ ok: true, duplicate: true });
+    // only a delivery that went through is a duplicate: the provider's retry of a failed one is taken again
+    const claim = repo.claimWebhook(id, "email", raw, d.clock().toISOString());
+    if (claim === "duplicate") return c.json({ ok: true, duplicate: true });
+    if (claim === "busy") return c.json({ ok: false, busy: true }, 503, { "Retry-After": "120" });
     const from = String((body.FromFull as { Email?: string } | undefined)?.Email ?? body.From ?? body.from ?? body.sender ?? "");
     const to = String(body.To ?? body.to ?? body.recipient ?? "");
     const subject = String(body.Subject ?? body.subject ?? "");
     const text = String(body.StrippedTextReply || body.TextBody || body["stripped-text"] || body.text || body["body-plain"] || "");
     const headers = (body.Headers as { Name: string; Value: string }[] | undefined) ?? [];
-    const inReplyTo = headers.find((h) => /^in-reply-to$/i.test(h.Name))?.Value ?? (body["In-Reply-To"] as string | undefined);
+    const header = (name: RegExp) => headers.find((h) => name.test(h.Name))?.Value;
+    // the thread (In-Reply-To, then References) names the note it answers, and so the business
+    const inReplyTo = header(/^in-reply-to$/i) ?? (body["In-Reply-To"] as string | undefined);
+    const references = (header(/^references$/i) ?? (body.References as string | undefined) ?? "").split(/\s+/).filter(Boolean);
     const attachments = ((body.Attachments as { Name: string; Content: string; ContentType?: string }[] | undefined) ?? []).filter((a) => /\.(csv|tsv|txt)$/i.test(a.Name) || /csv/.test(a.ContentType ?? ""));
     const importToken = to.match(/import\+([A-Za-z0-9_.-]+)@/)?.[1];
     if (importToken) {
@@ -622,13 +710,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
       repo.finishWebhook(id, "processed", bid);
       return c.json({ ok: true, imported: res });
     }
+    const messageId = header(/^message-id$/i) ?? (body["Message-ID"] as string | undefined);
+    const ev: InboundEvent = { type: "reply", from, subject, text, receivedAt: new Date(String(body.Date ?? d.clock().toISOString())).toISOString(), inReplyTo, messageId, ...(references.length ? { references } : {}), ...(to ? { to: [to] } : {}) };
     try {
-      const messageId = headers.find((h) => /^message-id$/i.test(h.Name))?.Value ?? (body["Message-ID"] as string | undefined);
-      const bid = await handleInbound(d, { type: "reply", from, subject, text, receivedAt: new Date(String(body.Date ?? d.clock().toISOString())).toISOString(), inReplyTo, messageId });
-      repo.finishWebhook(id, bid ? "processed" : "ignored", bid);
+      const done = await handleInbound(d, ev);
+      repo.finishWebhook(id, done.businessIds.length || done.review ? "processed" : "ignored", done.businessIds.join(",") || undefined, done.review);
     } catch (e) {
+      // a stop or a yes must not be lost to a hiccup: retried from here (reading a reply twice is harmless)
       repo.finishWebhook(id, "failed", undefined, (e as Error).message);
-      throw e;
+      repo.enqueue("inbound.retry", { event: JSON.stringify(ev) }, { runAt: new Date(d.clock().getTime() + 60000).toISOString() });
+      d.log(`[inbound] ${id} failed, retry queued: ${(e as Error).message}`);
     }
     return c.json({ ok: true });
   });

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
   adoptTrade,
@@ -7,9 +7,17 @@ import {
   answerNewRequests,
   answerTime,
   approveAll,
+  clearBrake,
   counted,
+  doNotContact,
+  dropStaleAnswers,
+  extractEmails,
+  HELD_FOR_GOOD,
+  REQUIRED_FLAG,
   sendableEmail,
+  sendHealth,
   setBookedOut,
+  staleAnswer,
   totals,
   customerById,
   daysBetween,
@@ -19,6 +27,7 @@ import {
   importTable,
   ledgerPass,
   leadCode,
+  makeId,
   markContacted,
   markSent,
   mergePulled,
@@ -31,12 +40,14 @@ import {
   renewPlan,
   stopSequence,
   type AccountState,
+  type BusinessProfile,
   type FileIn,
   type Reply,
   type Touch,
 } from "@qa/engine";
 import type { Config } from "../config.ts";
-import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundProvider, OwnerNotifier, SequencedLead, SequencerProvider } from "../contracts.ts";
+import type { Loaded } from "../db/repo.ts";
+import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundProvider, OwnerNotifier, SendResult, SequencedLead, SequencerProvider } from "../contracts.ts";
 import { ProviderError } from "../contracts.ts";
 import type { Llm } from "../agents/llm.ts";
 import type { MailCheck } from "../providers/mailcheck.ts";
@@ -237,15 +248,22 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
   const at0 = nowLocal(d, loaded.state);
   const { due, held: h } = dueTouches(loaded.state, at0);
   held = h.length;
-  // Held because the person replied / unsubscribed: cancel them for good.
-  const cancel = h.filter((x) => /replied|No sendable email/.test(x.why));
+  // Held for good (replied, unsubscribed, do-not-contact, note 1 never went, a stale answer): cancel them.
+  const cancel = h.filter((x) => HELD_FOR_GOOD.test(x.why));
   if (cancel.length)
     await d.accounts.withAccount(bid, (state) => {
+      // a late answer to a request also tells the owner it didn't go
+      dropStaleAnswers(state, at0);
       for (const c of cancel) {
         const t = state.touches.find((x) => x.id === c.touch.id);
-        if (t && t.status === "approved") t.status = "cancelled";
+        if (t && t.status === "approved") {
+          t.status = "cancelled";
+          t.lastError = c.why;
+        }
       }
     });
+  const health = sendHealth(loaded.state);
+  if (health.paused && h.length) await noteBrake(d, bid, health.reason);
   for (const item of due.slice(0, opts.maxPerTick ?? 25)) {
     const state = loaded.state;
     const b = state.dataset.business;
@@ -255,8 +273,19 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
       held++;
       continue;
     }
+    // Claimed before the mail server sees it: an overlapping send skips it, and a crash or a timeout after the
+    // server took it leaves it "sending" for a person to check — never mailed a second time.
+    const claimed = await d.accounts.withAccount(bid, (s) => {
+      const live = s.touches.find((x) => x.id === t.id);
+      if (!live || live.status !== "approved") return false;
+      live.status = "sending";
+      live.claimedAt = nowLocal(d, s);
+      return true;
+    });
+    if (!claimed) continue;
+    let res: SendResult;
     try {
-      const res = await (provider as DirectProvider).send({
+      res = await (provider as DirectProvider).send({
         businessId: bid,
         touchId: t.id,
         customerId: t.customerId,
@@ -270,33 +299,118 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
         references: prev?.providerId ? [prev.providerId] : undefined,
         unsubscribeUrl: unsubscribeUrl(d.cfg, bid, item.to),
       });
-      await d.accounts.withAccount(bid, (s) => {
-        const live = s.touches.find((x) => x.id === t.id);
-        if (live && live.status === "approved") markSent(s, t.id, nowLocal(d, s), res.messageId ?? res.providerId);
-      });
-      sent++;
     } catch (e) {
       failed++;
-      const err = e as ProviderError;
-      await d.accounts.withAccount(bid, (s) => {
+      const how = await settleFailedSend(d, bid, t.id, item, e);
+      d.log(`[send] ${bid} ${t.id} failed (${how}): ${(e as Error).message}`);
+      // the mailbox itself is blocked (quota, policy): the rest of this batch would only fail the same way
+      if (how === "mailbox") break;
+      continue;
+    }
+    // it went: record it (a failed save is tried once more; either way it stays claimed, never re-sent)
+    const record = () =>
+      d.accounts.withAccount(bid, (s) => {
         const live = s.touches.find((x) => x.id === t.id);
-        if (!live) return;
-        live.attempts = (live.attempts ?? 0) + 1;
-        live.lastError = err.message;
-        const permanent = err instanceof ProviderError && !err.retryable;
-        if (permanent || live.attempts >= MAX_SEND_ATTEMPTS) {
-          live.status = "skipped";
-          s.events.push({ id: `ev_sendfail_${t.id}`, at: nowLocal(d, s), agent: "guard", kind: "warning", title: `Couldn't send to ${item.customerName}`, detail: err.message });
-        } else {
-          // retry on the next tick after a short backoff
-          const back = new Date(Date.parse(`${live.dueAt}:00Z`) + 5 * 60000 * live.attempts).toISOString().slice(0, 16);
-          live.dueAt = back;
+        if (live && live.status === "sending") {
+          markSent(s, t.id, nowLocal(d, s), res.messageId ?? res.providerId);
+          live.claimedAt = undefined;
         }
       });
-      d.log(`[send] ${bid} ${t.id} failed: ${err.message}`);
-    }
+    await record().catch(record).catch((e) => d.log(`[send] ${bid} ${t.id} went but couldn't be recorded: ${(e as Error).message}`));
+    sent++;
   }
   return { sent, failed, held };
+}
+
+/** Enhanced status code (RFC 3463) in a server's reply, e.g. "5.1.1". */
+function enhancedCode(message: string): string | undefined {
+  return message.match(/\b([245]\.\d{1,3}\.\d{1,3})\b/)?.[1];
+}
+
+/**
+ * Settle a note whose send failed:
+ *  - "unsure": the server may have it (a timeout after the message was handed over). It stays "sending" for a person.
+ *  - "bounced": the address doesn't exist. Suppressed, counted toward the brake, and its sequence stops.
+ *  - "mailbox": the sending mailbox is blocked (quota, policy). Not the person's fault: the note waits.
+ *  - "retry" / "failed": a temporary error retries with backoff; a permanent one, or too many, ends the sequence.
+ */
+async function settleFailedSend(d: Deps, bid: string, touchId: string, item: { to: string; customerName: string }, e: unknown): Promise<"unsure" | "bounced" | "mailbox" | "retry" | "failed"> {
+  const err = e instanceof ProviderError ? e : undefined;
+  const message = (e as Error).message ?? String(e);
+  const x = enhancedCode(message);
+  const how =
+    !err || err.maybeSent
+      ? "unsure"
+      : !err.retryable && (x ? /^5\.1\.|^5\.2\.1$/.test(x) : [550, 551, 553].includes(err.status ?? 0))
+        ? "bounced"
+        : (x && (/^\d\.7\./.test(x) || /^\d\.4\.5$/.test(x))) || /quota|rate limit|too many (messages|emails)/i.test(message)
+          ? "mailbox"
+          : err.retryable
+            ? "retry"
+            : "failed";
+  await d.accounts.withAccount(bid, (s) => {
+    const live = s.touches.find((t) => t.id === touchId);
+    if (!live || live.status !== "sending") return;
+    const at = nowLocal(d, s);
+    live.lastError = message;
+    if (how === "unsure") {
+      live.attempts = (live.attempts ?? 0) + 1;
+      s.events.push({ id: `ev_unsure_${touchId}`, at, agent: "guard", kind: "warning", title: `Not sure the note to ${item.customerName} went`, detail: `${message} It won't be sent again until someone checks.` });
+      return;
+    }
+    live.claimedAt = undefined;
+    live.attempts = (live.attempts ?? 0) + 1;
+    // a quota or policy block waits it out (about a day, all told) before this note is given up on
+    if (how === "mailbox" && live.attempts < MAX_SEND_ATTEMPTS * 2) {
+      live.status = "approved";
+      live.dueAt = new Date(Date.parse(`${at.slice(0, 16)}:00Z`) + 30 * 60_000 * live.attempts).toISOString().slice(0, 16);
+      const id = `ev_mailbox_${at.slice(0, 10)}`;
+      if (!s.events.some((ev) => ev.id === id)) s.events.push({ id, at, agent: "guard", kind: "warning", title: "The sending mailbox is refusing mail — notes are waiting", detail: message });
+      return;
+    }
+    if (how === "retry" && live.attempts < MAX_SEND_ATTEMPTS) {
+      live.status = "approved";
+      live.dueAt = new Date(Date.parse(`${live.dueAt}:00Z`) + 5 * 60000 * live.attempts).toISOString().slice(0, 16);
+      return;
+    }
+    live.status = how === "bounced" ? "bounced" : "skipped";
+    if (how === "bounced") s.suppressions[item.to] = "bounced";
+    // the rest of the sequence stops: a follow-up must never arrive as someone's first note
+    let stopped = 0;
+    for (const t of s.touches)
+      if (t.opportunityId === live.opportunityId && t.step > live.step && (t.status === "approved" || t.status === "planned")) {
+        t.status = "cancelled";
+        t.lastError = `Note ${live.step} didn't go`;
+        stopped++;
+      }
+    if (how === "bounced") stopped += stopSequence(s, live.customerId);
+    s.events.push({
+      id: `ev_sendfail_${touchId}`,
+      at,
+      agent: "guard",
+      kind: "warning",
+      title: how === "bounced" ? `Bad address for ${item.customerName} — removed` : `Couldn't send to ${item.customerName}`,
+      detail: [message, stopped ? `${stopped} queued ${stopped === 1 ? "note" : "notes"} stopped.` : ""].filter(Boolean).join(" "),
+    });
+  });
+  return how;
+}
+
+/** The Guard's brake is holding notes: say so once, where the operator looks (the review queue shows it too). */
+async function noteBrake(d: Deps, bid: string, reason?: string): Promise<void> {
+  const state = d.accounts.peek(bid)?.state;
+  const id = `ev_brake_${state?.dataset.business.healthBaseline?.at ?? "start"}`;
+  if (!state || state.events.some((e) => e.id === id)) return;
+  await d.accounts.withAccount(bid, (s) => {
+    if (!s.events.some((e) => e.id === id)) s.events.push({ id, at: nowLocal(d, s), agent: "guard", kind: "warning", title: "Send brake on — nothing more goes out until someone looks", detail: reason });
+  });
+}
+
+/** An operator looked at why the brake tripped and lets sending resume (the platform's campaigns too). */
+export async function clearSendBrake(d: Deps, bid: string, by: string): Promise<void> {
+  await d.accounts.withAccount(bid, (s) => clearBrake(s, nowLocal(d, s), by));
+  const l = d.accounts.peek(bid);
+  if (l && !holdReason(l) && l.state.dataset.business.platformPaused) await releasePlatform(d, bid);
 }
 
 /**
@@ -305,8 +419,20 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
  * caps new leads a day and sends on weekdays only, so an evening request could wait days for its "thanks".
  */
 export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider): Promise<{ sent: number; failed: number; held: number }> {
-  const loaded = d.accounts.peek(bid);
+  let loaded = d.accounts.peek(bid);
   if (!loaded) return { sent: 0, failed: 0, held: 0 };
+  // Whatever holds the business (a pause, a cancel, the Guard's brake) holds its campaigns: notes already
+  // pushed would otherwise keep going on the platform's schedule. The hold lifts here too once nothing holds it.
+  const hold = holdReason(loaded);
+  if (hold) {
+    if (!loaded.state.dataset.business.platformPaused) await holdPlatform(d, bid, hold);
+    const h = sendHealth(loaded.state);
+    if (h.paused) await noteBrake(d, bid, h.reason);
+    return { sent: 0, failed: 0, held: 0 };
+  }
+  if (loaded.state.dataset.business.platformPaused) await releasePlatform(d, bid);
+  await tidyPushed(d, bid, seq);
+  loaded = d.accounts.peek(bid)!;
   const state = loaded.state;
   const b = state.dataset.business;
   const at = nowLocal(d, state);
@@ -327,6 +453,8 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     const ts = inFlight ? [] : instant ? all.slice(0, 1) : all;
     if (instant) extra.push(...all.slice(ts.length).map((t) => t.id));
     if (!ts[0] || ts[0].step !== 1 || ts[0].dueAt.slice(0, 10) > horizon) continue;
+    // a note missing what the law requires waits for a fix (it's on the review queue as a flagged note)
+    if (ts.some((t) => t.flags.some((f) => REQUIRED_FLAG.test(f)))) continue;
     const c = customerById(state.dataset, ts[0].customerId);
     const email = c ? sendableEmail(c.emails, state.suppressions) : undefined;
     if (!c || !email) continue;
@@ -343,25 +471,32 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     const gk = instant ? "instant" : String(ts.length);
     (groups.get(gk) ?? groups.set(gk, { instant, steps: ts.length, leads: [] }).get(gk)!).leads.push(lead);
   }
-  if (!groups.size || loaded.paused) return { sent: 0, failed: 0, held: 0 };
+  if (!groups.size) return { sent: 0, failed: 0, held: 0 };
   let pushed = 0;
   let answers = 0;
   let failed = 0;
   const done = new Map<string, string>();
+  const refused: { lead: SequencedLead; why: string }[] = [];
+  let pushError: string | undefined;
   for (const g of groups.values()) {
     try {
       const { campaignId } = await seq.ensureCampaign(b, g.instant ? { maxSteps: 1, instant: true } : { maxSteps: g.steps });
       const res = await seq.upsertLeads(b, campaignId, g.leads);
-      const skipped = new Set(res.skipped.map((s) => s.email));
-      for (const l of g.leads) if (!skipped.has(l.email)) for (const n of l.notes) done.set(n.touchId, `${seq.name}:${campaignId}:${l.email}:${n.step}`);
+      const skipped = new Map(res.skipped.map((s) => [s.email.toLowerCase(), s.why]));
+      for (const l of g.leads) {
+        const why = skipped.get(l.email.toLowerCase());
+        if (why) refused.push({ lead: l, why });
+        else for (const n of l.notes) done.set(n.touchId, `${seq.name}:${campaignId}:${l.email}:${n.step}`);
+      }
       if (g.instant) answers += g.leads.length - skipped.size;
       else pushed += g.leads.length - skipped.size;
     } catch (e) {
       failed += g.leads.length;
-      d.log(`[sequencer] ${bid} push failed: ${(e as Error).message}`);
+      pushError = (e as Error).message;
+      d.log(`[sequencer] ${bid} push failed: ${pushError}`);
     }
   }
-  if (done.size || extra.length)
+  if (done.size || extra.length || refused.length || pushError)
     await d.accounts.withAccount(bid, (s) => {
       for (const t of s.touches) {
         const p = done.get(t.id);
@@ -370,19 +505,268 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
       }
       if (pushed) s.events.push({ id: `ev_push_${at}`, at, agent: "sender", kind: "action", title: `Handed ${pushed} people to the sending platform`, detail: `Their notes go out on your schedule from your warmed-up mailboxes.` });
       if (answers) s.events.push({ id: `ev_push_instant_${at}`, at, agent: "sender", kind: "action", title: `Sent ${answers} ${answers === 1 ? "answer" : "answers"} to new requests to the sending platform`, detail: "They go out within minutes, 7am–8pm any day." });
+      for (const r of refused) refuseLead(s, seq.name, r.lead, r.why, at);
+      const id = `ev_pushfail_${at.slice(0, 10)}`;
+      if (pushError && !s.events.some((e) => e.id === id)) s.events.push({ id, at, agent: "guard", kind: "warning", title: "Couldn't hand notes to the sending platform — retrying every minute", detail: pushError });
     });
   return { sent: pushed + answers, failed, held: 0 };
+}
+
+/** The platform refused no reason given this many times: then it's treated like any other refusal. */
+const MAX_PUSH_TRIES = 3;
+
+/**
+ * The platform wouldn't take a lead (on its blocklist — one workspace serves every client — an invalid address,
+ * a duplicate). Its notes are marked skipped with the reason and shown, so they're never re-uploaded every
+ * minute and don't hold the free round open. A refusal with no reason is retried a few times first.
+ */
+function refuseLead(s: AccountState, platform: string, lead: SequencedLead, why: string, at: string): void {
+  const ts = s.touches.filter((t) => lead.notes.some((n) => n.touchId === t.id) && t.status === "approved" && !t.providerId);
+  const first = ts.find((t) => t.step === 1) ?? ts[0];
+  if (!first) return;
+  const tries = (first.attempts ?? 0) + 1;
+  if (/no reason given/.test(why) && tries < MAX_PUSH_TRIES) {
+    for (const t of ts) (t.attempts = tries), (t.lastError = `${platform}: ${why}`);
+    return;
+  }
+  for (const t of ts) {
+    t.status = "skipped";
+    t.lastError = `${platform}: ${why}`;
+  }
+  // the address can't be reached through the platform at all: keep it out of the next plan too
+  if (/blocklist/.test(why)) s.suppressions[lead.email.toLowerCase()] ??= "unsubscribed";
+  else if (/invalid/.test(why)) s.suppressions[lead.email.toLowerCase()] ??= "bounced";
+  const name = customerById(s.dataset, lead.customerId)?.name ?? lead.email;
+  s.events.push({ id: `ev_refused_${first.id}`, at, agent: "guard", kind: "warning", title: `The sending platform wouldn't take ${name}`, detail: `${why}. Their ${ts.length === 1 ? "note was" : `${ts.length} notes were`} skipped.`, refs: [{ kind: "customer", id: lead.customerId }] });
+}
+
+/* ------------------------- holding and releasing the platform ------------------------- */
+
+/** What stops this business from sending right now, if anything. */
+export function holdReason(l: Loaded): string | undefined {
+  const b = l.state.dataset.business;
+  if (b.plan.stage === "cancelled") return "cancelled";
+  if (l.paused || b.plan.stage === "paused") return "paused";
+  const h = sendHealth(l.state);
+  return h.paused ? `the Guard's brake: ${h.reason}` : undefined;
+}
+
+/** Campaigns this business handed notes to (the platform's campaigns are per business). */
+function campaignsOf(d: Deps, state: AccountState): string[] {
+  const p = `${d.email.name}:`;
+  return [...new Set(state.touches.filter((t) => t.providerId?.startsWith(p)).map((t) => t.providerId!.split(":")[1]!).filter(Boolean))];
+}
+
+/** Pause (or restart) one campaign; a failure is retried by the worker, which re-checks what's wanted then. */
+async function setCampaign(d: Deps, bid: string, b: BusinessProfile, campaignId: string, paused: boolean): Promise<void> {
+  if (d.email.kind !== "sequencer") return;
+  try {
+    await d.email.pauseCampaign(b, campaignId, paused);
+  } catch (e) {
+    d.log(`[sequencer] ${paused ? "pause" : "resume"} ${campaignId} for ${bid} failed: ${(e as Error).message}`);
+    d.accounts.repo.enqueue("sequencer.pause", { bid, campaignId, paused, profile: { id: b.id, name: b.name } }, { runAt: new Date(d.clock().getTime() + 60_000).toISOString() });
+  }
+}
+
+async function holdPlatform(d: Deps, bid: string, why: string): Promise<void> {
+  if (d.email.kind !== "sequencer") return;
+  const state = d.accounts.peek(bid)?.state;
+  if (!state) return;
+  for (const cid of campaignsOf(d, state)) await setCampaign(d, bid, state.dataset.business, cid, true);
+  await d.accounts.withAccount(bid, (s) => {
+    const at = nowLocal(d, s);
+    s.dataset.business.platformPaused = { at, why };
+    s.events.push({ id: `ev_hold_${at}`, at, agent: "guard", kind: "action", title: "Sending platform paused for this client", detail: `Because of ${why}. Nothing already handed over goes out until it lifts.` });
+  });
+}
+
+async function releasePlatform(d: Deps, bid: string): Promise<void> {
+  if (d.email.kind !== "sequencer") return;
+  // answers to requests that sat in a paused campaign are pulled before it restarts: they'd go days late
+  const stale = await d.accounts.withAccount(bid, (s) => {
+    const at = nowLocal(d, s);
+    const out: string[] = [];
+    for (const t of s.touches)
+      if (t.instant && t.status === "approved" && t.providerId?.startsWith(`${d.email.name}:`) && staleAnswer(s, t, at)) {
+        t.status = "cancelled";
+        t.lastError = `Not sent: ${staleAnswer(s, t, at)}`;
+        out.push(t.providerId);
+      }
+    return out;
+  });
+  await withdrawLeads(d, bid, stale, { inline: 25 });
+  const state = d.accounts.peek(bid)?.state;
+  if (!state) return;
+  for (const cid of campaignsOf(d, state)) await setCampaign(d, bid, state.dataset.business, cid, false);
+  await d.accounts.withAccount(bid, (s) => {
+    s.dataset.business.platformPaused = undefined;
+    const at = nowLocal(d, s);
+    s.events.push({ id: `ev_release_${at}`, at, agent: "guard", kind: "action", title: "Sending platform back on for this client" });
+  });
+}
+
+/** Each (campaign, address) with notes still to go, from provider ids "<platform>:<campaign>:<email>:<step>". */
+function leadsFrom(d: Deps, providerIds: string[]): { campaignId: string; email: string }[] {
+  const out = new Map<string, { campaignId: string; email: string }>();
+  for (const p of providerIds) {
+    const [name, campaignId, email] = p.split(":");
+    if (name === d.email.name && campaignId && email) out.set(`${campaignId}|${email}`, { campaignId, email });
+  }
+  return [...out.values()];
+}
+
+/** Take notes back from the platform (never blocklisting): the first few now, the rest by the worker. */
+async function withdrawLeads(d: Deps, bid: string, providerIds: string[], opts: { inline: number }): Promise<void> {
+  if (d.email.kind !== "sequencer" || !providerIds.length) return;
+  const leads = leadsFrom(d, providerIds);
+  const b = d.accounts.peek(bid)?.state.dataset.business;
+  const later: { campaignId: string; email: string }[] = [];
+  for (const [i, l] of leads.entries()) {
+    if (i >= opts.inline || !b) {
+      later.push(l);
+      continue;
+    }
+    try {
+      await d.email.stopLead(b, l.campaignId, l.email, "withdrawn");
+    } catch (e) {
+      d.log(`[sequencer] withdraw ${l.email} failed: ${(e as Error).message}`);
+      later.push(l);
+    }
+  }
+  // no business id on the task: it must outlive a deleted client
+  if (later.length) d.accounts.repo.enqueue("sequencer.withdraw", { bid, profile: { id: bid, name: b?.name ?? bid }, leads: later }, { runAt: d.clock().toISOString() });
+}
+
+/** Unsent notes this business handed the platform. */
+function pushedUnsent(d: Deps, state: AccountState): string[] {
+  const p = `${d.email.name}:`;
+  return state.touches.filter((t) => t.providerId?.startsWith(p) && !t.sentAt && t.status !== "sent" && t.status !== "delivered" && t.status !== "bounced").map((t) => t.providerId!);
+}
+
+/**
+ * Notes still queued for people we can no longer write to leave the platform too: the owner marked them
+ * do-not-contact in their software, or an answer to a request went stale before it was handed over.
+ */
+async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise<void> {
+  const state = d.accounts.peek(bid)!.state;
+  const at = nowLocal(d, state);
+  const dnc = (s: AccountState, t: Touch) => t.status === "approved" && doNotContact(s, t);
+  const stale = (s: AccountState, t: Touch) => t.instant && t.status === "approved" && !t.providerId && t.dueAt <= at.slice(0, 16) && !!staleAnswer(s, t, at);
+  if (!state.touches.some((t) => dnc(state, t) || stale(state, t))) return;
+  const pulled = await d.accounts.withAccount(bid, (s) => {
+    dropStaleAnswers(s, at);
+    const out: string[] = [];
+    for (const t of s.touches)
+      if (dnc(s, t)) {
+        t.status = "cancelled";
+        t.lastError = "Do not contact — the owner's setting in their software";
+        if (t.providerId?.startsWith(`${seq.name}:`)) out.push(t.providerId);
+      }
+    return out;
+  });
+  await withdrawLeads(d, bid, pulled, { inline: 25 });
+}
+
+/**
+ * Stop — or restart — everything a business sends. Pause and resume flip its campaigns on the sending platform
+ * too (a resume never restarts a cancelled or braked business); cancel also cancels what's queued and takes back
+ * every note the platform still holds. Every stop (owner text or link, Settings, delete, the operator) comes here.
+ */
+export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume" | "cancel"): Promise<void> {
+  if (!d.accounts.repo.exists(bid)) return;
+  if (mode === "resume") {
+    d.accounts.setPaused(bid, false);
+    const l = d.accounts.peek(bid);
+    if (l && !holdReason(l) && l.state.dataset.business.platformPaused) await releasePlatform(d, bid);
+    return;
+  }
+  d.accounts.setPaused(bid, true);
+  if (mode === "cancel")
+    await d.accounts.withAccount(bid, (s) => {
+      for (const t of s.touches) if (t.status === "approved" || t.status === "planned") t.status = "cancelled";
+    });
+  const l = d.accounts.peek(bid)!;
+  if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : "a pause");
+  if (mode === "cancel") await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0 });
+}
+
+/** The owner moved queued work (BUSY / OPEN): notes the platform already holds are taken back, and pushed again when due. */
+export async function withdrawMoved(d: Deps, bid: string, providerIds: string[]): Promise<void> {
+  await withdrawLeads(d, bid, providerIds, { inline: 25 });
 }
 
 /* ------------------------------------------------------------------ */
 /* Inbox: inbound events                                               */
 /* ------------------------------------------------------------------ */
 
-/** Which business (and customer) an address belongs to; among several, the one that has written to them. */
-export function whoIs(d: Deps, email: string): { businessId: string; customerId: string } | undefined {
+/**
+ * Which business (and customer) an address belongs to — only when exactly one does (or one within `among`).
+ * A homeowner in two clients' books is never guessed: the note it answers or its campaign has to say.
+ */
+export function whoIs(d: Deps, email: string, among?: string): { businessId: string; customerId: string } | undefined {
   const hits = d.accounts.repo.businessesForEmail(email);
-  if (hits.length <= 1) return hits[0];
-  return hits.find((h) => d.accounts.peek(h.businessId)?.state.touches.some((t) => t.customerId === h.customerId && t.status === "sent")) ?? hits[0];
+  if (among) return hits.find((h) => h.businessId === among);
+  return hits.length === 1 ? hits[0] : undefined;
+}
+
+/** Every spelling a Message-ID arrives in (with and without <>), In-Reply-To first, then References newest first. */
+function threadIds(ev: { inReplyTo?: string; references?: string[] }): string[] {
+  const split = (s?: string) => (s ?? "").split(/[\s,]+/).filter(Boolean);
+  const raw = [...split(ev.inReplyTo), ...(ev.references ?? []).flatMap(split).reverse()];
+  const out: string[] = [];
+  for (const id of raw) {
+    const bare = id.replace(/^<|>$/g, "");
+    for (const v of [id, bare, `<${bare}>`]) if (!out.includes(v)) out.push(v);
+  }
+  return out;
+}
+
+/** A mail system's delivery report (not a person). */
+const MAIL_SYSTEM = /^(mailer-daemon|postmaster|mail-daemon|mailerdaemon|bounce[s]?|mdaemon|noreply-dmarc)@/i;
+
+export interface InboundRoute {
+  /** The one business it belongs to, when anything says so. */
+  businessId?: string;
+  /** Every business it could belong to, when nothing narrows it to one. */
+  candidates: string[];
+  /** Our provider id of the note it answers (as stored), when its thread names one. */
+  answered?: string;
+}
+
+/**
+ * Where an inbound event belongs, most specific first: our own business id (a lead variable or an operator), the
+ * note its thread answers (In-Reply-To / References → the touch we sent), the campaign it came in on, the inbox it
+ * was sent to, and only then the sender's address — and that only when exactly one business knows it. A delivery
+ * report is placed by the note it bounced or the address it names.
+ */
+export function routeInbound(d: Deps, ev: InboundEvent, email?: string, intent?: string): InboundRoute {
+  const repo = d.accounts.repo;
+  const threads = ev.type === "reply" ? threadIds(ev) : [];
+  const answeredIn = (bid?: string) => threads.find((id) => (bid ? repo.businessForTouchProvider(id) === bid : repo.businessForTouchProvider(id)));
+  if (ev.businessId && repo.exists(ev.businessId)) return { businessId: ev.businessId, candidates: [ev.businessId], answered: answeredIn(ev.businessId) };
+  const answered = answeredIn();
+  if (answered) {
+    const bid = repo.businessForTouchProvider(answered)!;
+    return { businessId: bid, candidates: [bid], answered };
+  }
+  if (ev.campaignId) {
+    const bids = repo.businessesForProvider(`${d.email.name}:${ev.campaignId}:`);
+    if (bids.length === 1) return { businessId: bids[0], candidates: bids };
+  }
+  if (ev.type === "reply" && ev.to?.length) {
+    const inboxes = new Set(ev.to.flatMap((x) => extractEmails(x)));
+    const bids = repo.listBusinesses().filter((b) => b.profile.replyTo && inboxes.has(b.profile.replyTo.toLowerCase())).map((b) => b.id);
+    if (bids.length === 1) return { businessId: bids[0], candidates: bids };
+  }
+  const known = email ? [...new Set(repo.businessesForEmail(email).map((h) => h.businessId))] : [];
+  if (known.length === 1) return { businessId: known[0], candidates: known };
+  if (known.length) return { candidates: known };
+  // a delivery report names the dead address in its text
+  if (ev.type === "reply" && (intent === "bounce" || (email && MAIL_SYSTEM.test(email)))) {
+    const named = [...new Set(extractEmails(ev.text).filter((e) => e !== email).flatMap((e) => repo.businessesForEmail(e).map((h) => h.businessId)))];
+    return named.length === 1 ? { businessId: named[0], candidates: named } : { candidates: named };
+  }
+  return { candidates: [] };
 }
 
 /**
@@ -404,125 +788,177 @@ export async function alertOperator(d: Deps, a: { key: string; title: string; de
   return bids;
 }
 
-/** Route a normalized inbound event to the right business and apply it. Returns the business id. */
-export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string | undefined> {
+/** What became of an inbound event: the businesses it was applied to, or why it waits for a person. */
+export interface InboundOutcome {
+  businessIds: string[];
+  review?: string;
+}
+
+/** Route a normalized inbound event to the right business (or businesses) and apply it. */
+export async function handleInbound(d: Deps, ev: InboundEvent): Promise<InboundOutcome> {
   if (ev.type === "account_error") {
     const who = ev.account ?? "a sending mailbox";
-    await alertOperator(d, {
+    const bids = await alertOperator(d, {
       key: `acct_${ev.account ?? "unknown"}`,
       title: `Instantly: ${who} has an error`,
       detail: `${ev.detail ? `${ev.detail} ` : ""}Notes from ${who} may not go out until it's fixed in Instantly.`,
       campaignId: ev.campaignId,
       businessId: ev.businessId,
     });
-    return ev.businessId;
+    return { businessIds: bids };
   }
   const email = (ev.type === "reply" ? ev.from : ev.email).toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0];
-  let bid = ev.businessId;
-  if (!bid && email) bid = whoIs(d, email)?.businessId;
+  if (ev.type === "reply") return handleReply(d, ev, email);
+  const route = routeInbound(d, ev, email);
+  if (ev.type !== "sent") {
+    // bounce / unsubscribe / complaint: where it was meant, else at every business that knows the address
+    const bids = route.businessId ? [route.businessId] : route.candidates;
+    if (!bids.length || !email) d.log(`[inbound] no business for ${email ?? "?"} (${ev.type})`);
+    const reason = ev.type === "bounce" ? "bounced" : ev.type === "unsubscribe" ? "unsubscribed" : "complained";
+    if (email) for (const bid of bids) await suppress(d, bid, email, reason, ev.type === "bounce" ? ev.detail : undefined, { counted: true });
+    return { businessIds: email ? bids : [] };
+  }
+  const bid = route.businessId;
   if (!bid) {
-    d.log(`[inbound] no business for ${email ?? "?"} (${ev.type})`);
-    return undefined;
+    d.log(`[inbound] no single business for ${email ?? "?"} (sent)`);
+    return { businessIds: [] };
   }
-  if (ev.type === "sent") {
-    await d.accounts.withAccount(bid, (state) => {
-      const open = (x: Touch) => x.status === "approved" || x.status === "planned";
-      // The exact note: our qa_touch id, else the campaign + step we pushed it to, else their next queued note.
-      let t = ev.touchId ? state.touches.find((x) => x.id === ev.touchId && open(x)) : undefined;
-      if (!t && ev.campaignId && ev.step) t = state.touches.find((x) => open(x) && x.providerId === `${d.email.name}:${ev.campaignId}:${email}:${ev.step}`);
-      if (!t) {
-        const c = state.dataset.customers.find((x) => x.emails.includes(email!));
-        if (!c) return;
-        t = state.touches
-          .filter((x) => x.customerId === c.id && open(x))
-          .sort((a, b) => a.step - b.step)
-          .find((x) => (ev.step ? x.step === ev.step : true));
-      }
-      if (!t) return;
-      // When it actually went, per the platform, in local time: the weekly "answered within minutes" is measured on it.
-      const at = localIso(new Date(ev.sentAt), state.dataset.business.timezone);
-      // A sequencer's placeholder id names the campaign (pause and stop use it), so it stays.
-      const keep = t.providerId?.startsWith(`${d.email.name}:`);
-      markSent(state, t.id, at, keep ? t.providerId : (ev.providerId ?? t.providerId));
-    });
-    return bid;
-  }
-  if (ev.type === "reply") {
-    // Rules read every reply; Claude gives a second opinion on every human one (the rules are ~83% right on
-    // unseen mail, and a misread "yes" is a lost job). Clear stops, bounces and out-of-offices skip it.
-    const rule = readReply({ text: ev.text, subject: ev.subject, from: ev.from, asOf: ev.receivedAt.slice(0, 10) });
-    let override = undefined;
-    const mechanical = ["stop", "bounce", "auto_reply"].includes(rule.intent) && rule.confidence >= 0.9;
-    if (d.llm && !mechanical) {
-      const b = d.accounts.peek(bid)?.state.dataset.business;
-      override = (await readReplyWithClaude(d.llm, { text: rule.cleaned || ev.text, subject: ev.subject, today: ev.receivedAt.slice(0, 10), businessName: b?.name ?? "" })) ?? undefined;
-      if (override) override = settleReading(rule.intent, override);
+  await d.accounts.withAccount(bid, (state) => {
+    const open = (x: Touch) => x.status === "approved" || x.status === "planned";
+    // The exact note: our qa_touch id, else the campaign + step we pushed it to, else their next queued note.
+    let t = ev.touchId ? state.touches.find((x) => x.id === ev.touchId && open(x)) : undefined;
+    if (!t && ev.campaignId && ev.step) t = state.touches.find((x) => open(x) && x.providerId === `${d.email.name}:${ev.campaignId}:${email}:${ev.step}`);
+    if (!t) {
+      const c = state.dataset.customers.find((x) => x.emails.includes(email!));
+      if (!c) return;
+      t = state.touches
+        .filter((x) => x.customerId === c.id && open(x))
+        .sort((a, b) => a.step - b.step)
+        .find((x) => (ev.step ? x.step === ev.step : true));
     }
-    let reply: Reply | undefined;
-    let note: FsmNote | undefined;
-    await d.accounts.withAccount(bid, (state) => {
-      // the engine reasons in the business's local time ("call you today" depends on it)
-      const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
-      reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: ev.inReplyTo }, override);
-      if (reply) reply.thread = { subject: ev.subject, messageId: ev.messageId, replyEmailId: ev.replyEmailId, toAccount: ev.toAccount };
-      if (reply && !["auto_reply", "bounce"].includes(reply.intent)) {
-        const name = customerById(state.dataset, reply.customerId)?.name ?? reply.from;
-        note = fsmNote(state, reply.customerId, reply.opportunityId, `Quiet Accounts: ${name} replied to our follow-up (${INTENT_WORDS[reply.intent] ?? "replied"}): "${oneLine(reply.text, 400)}"`);
-      }
-    });
-    if (note) queueFsmNote(d, bid, note);
-    const hot = reply as Reply | undefined;
-    // a question gets a specific answer drafted for one-click sending (grounded only in what we know)
-    if (hot && hot.intent === "question" && d.llm) {
-      const st = d.accounts.peek(bid)?.state;
-      const b = st?.dataset.business;
-      const o = st ? oppById(st.scan?.opportunities, hot.opportunityId) : undefined;
-      if (b && st) {
-        const services = [b.trade, ...b.otherTrades].flatMap((t) => playbook(t).services.map((sv) => sv.label.toLowerCase()));
-        const draft = await draftAnswer(d.llm, { question: hot.text, job: o?.jobPhrase ?? "their project", businessName: b.name, signer: b.signerName, services }).catch(() => null);
-        if (draft?.draft && !bannedStatIn(draft.draft))
-          await d.accounts.withAccount(bid, (s) => {
-            const live = s.replies.find((x) => x.id === hot.id);
-            if (live) live.draft = { text: draft.draft, needsOwner: draft.needsOwner, at: nowLocal(d, s) };
-          });
-      }
-    }
-    if (hot?.ack && !hot.ack.sentAt) {
-      const task = { replyId: hot.id, to: email ?? ev.from, subject: ev.subject ?? "", messageId: ev.messageId ?? "", replyEmailId: ev.replyEmailId ?? "", toAccount: ev.toAccount ?? "" };
-      const tz = d.accounts.peek(bid)?.state.dataset.business.timezone ?? "America/New_York";
-      const local = localIso(d.clock(), tz);
-      const at = answerTime(local);
-      if (at === local) await sendAck(d, bid, task);
-      else {
-        // nobody wants a 2am "thanks": it goes at 7:00 local, like the answer to a new request
-        const wait = Date.parse(`${at}Z`) - Date.parse(`${local}Z`);
-        d.accounts.repo.enqueue("reply.ack", task, { businessId: bid, runAt: new Date(d.clock().getTime() + wait).toISOString() });
-      }
-    }
-    if (reply && d.email.kind === "sequencer" && email) {
-      const r = reply as Reply;
-      const reason = r.intent === "stop" ? "unsubscribed" : r.intent === "complaint" ? "complained" : r.intent === "bounce" ? "bounced" : "replied";
-      await stopEverywhere(d, bid, email, reason);
-      // A spouse or a forward answered: Instantly saw no reply from the lead, so their own sequence is stopped too.
-      if (r.intent !== "auto_reply" && r.intent !== "bounce") {
-        const st = d.accounts.peek(bid)?.state;
-        const lead = st ? customerById(st.dataset, r.customerId) : undefined;
-        for (const other of lead?.emails ?? []) if (other !== email) await stopEverywhere(d, bid, other, "replied");
-      }
-    }
-    await deliverOwnerMessages(d, bid);
-    return bid;
-  }
-  // bounce / unsubscribe / complaint
-  const reason = ev.type === "bounce" ? "bounced" : ev.type === "unsubscribe" ? "unsubscribed" : "complained";
-  await suppress(d, bid, email!, reason, ev.type === "bounce" ? ev.detail : undefined);
-  return bid;
+    if (!t) return;
+    // When it actually went, per the platform, in local time: the weekly "answered within minutes" is measured on it.
+    const at = localIso(new Date(ev.sentAt), state.dataset.business.timezone);
+    // A sequencer's placeholder id names the campaign (pause and stop use it), so it stays.
+    const keep = t.providerId?.startsWith(`${d.email.name}:`);
+    markSent(state, t.id, at, keep ? t.providerId : (ev.providerId ?? t.providerId));
+  });
+  return { businessIds: [bid] };
 }
 
-export async function suppress(d: Deps, bid: string, email: string, reason: "unsubscribed" | "bounced" | "complained", detail?: string): Promise<void> {
+type ReplyEvent = Extract<InboundEvent, { type: "reply" }>;
+type Reading = NonNullable<Awaited<ReturnType<typeof readReplyWithClaude>>>;
+
+async function handleReply(d: Deps, ev: ReplyEvent, email: string | undefined): Promise<InboundOutcome> {
+  // Rules read every reply; Claude gives a second opinion on every human one (the rules are ~83% right on
+  // unseen mail, and a misread "yes" is a lost job). Clear stops, bounces and out-of-offices skip it.
+  const rule = readReply({ text: ev.text, subject: ev.subject, from: ev.from, asOf: ev.receivedAt.slice(0, 10) });
+  const route = routeInbound(d, ev, email, rule.intent);
+  let override: Reading | undefined = undefined;
+  const mechanical = ["stop", "bounce", "auto_reply"].includes(rule.intent) && rule.confidence >= 0.9;
+  if (d.llm && !mechanical) {
+    const b = route.businessId ? d.accounts.peek(route.businessId)?.state.dataset.business : undefined;
+    override = (await readReplyWithClaude(d.llm, { text: rule.cleaned || ev.text, subject: ev.subject, today: ev.receivedAt.slice(0, 10), businessName: b?.name ?? "" })) ?? undefined;
+    if (override) override = settleReading(rule.intent, override);
+  }
+  const intent = override?.intent ?? rule.intent;
+  if (route.businessId) {
+    await applyReply(d, route.businessId, ev, email, override, route.answered);
+    return { businessIds: [route.businessId] };
+  }
+  // Nothing says which business it was meant for. A stop, complaint or bounce is honored at every business that
+  // knows the address; anything else (a yes, a question) waits for a person — never a guess, never the wrong owner.
+  if (route.candidates.length && (intent === "stop" || intent === "complaint" || intent === "bounce")) {
+    for (const bid of route.candidates) await applyReply(d, bid, ev, email, override);
+    return { businessIds: route.candidates };
+  }
+  if (intent === "auto_reply") {
+    d.log(`[inbound] out-of-office from ${email ?? ev.from} matched no single business`);
+    return { businessIds: [] };
+  }
+  const review = route.candidates.length
+    ? `${route.candidates.length} clients have ${email ?? "this address"} and the reply doesn't say which note it answers.`
+    : `Nobody we wrote to has ${email ?? "this address"}, and it doesn't answer a note we sent.`;
+  const id = ev.messageId ?? ev.replyEmailId ?? createHash("sha1").update(`${ev.from}|${ev.receivedAt}|${ev.text}`).digest("hex").slice(0, 24);
+  d.accounts.repo.queueInboundReview({ id: `in:${id}`, at: d.clock().toISOString(), reason: review, candidates: route.candidates, event: ev });
+  d.log(`[inbound] ${email ?? ev.from} waits for a person: ${review}`);
+  return { businessIds: [], review };
+}
+
+/** Read a reply into one business and act on it: owner hand-off, instant answer, Jobber note, stop the sequence. */
+async function applyReply(d: Deps, bid: string, ev: ReplyEvent, email: string | undefined, override: Reading | undefined, answered?: string): Promise<void> {
+  let reply: Reply | undefined;
+  let note: FsmNote | undefined;
+  let fresh = false;
+  await d.accounts.withAccount(bid, (state) => {
+    // a retried delivery of a reply we already read changes nothing
+    if (state.replies.some((r) => (ev.messageId && r.thread?.messageId === ev.messageId) || (ev.replyEmailId && r.thread?.replyEmailId === ev.replyEmailId))) return;
+    // the engine reasons in the business's local time ("call you today" depends on it)
+    const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
+    const before = state.replies.length;
+    reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: answered }, override);
+    fresh = state.replies.length > before;
+    if (!fresh) return;
+    reply.thread = { subject: ev.subject, messageId: ev.messageId, replyEmailId: ev.replyEmailId, toAccount: ev.toAccount };
+    if (!["auto_reply", "bounce"].includes(reply.intent)) {
+      const name = customerById(state.dataset, reply.customerId)?.name ?? reply.from;
+      note = fsmNote(state, reply.customerId, reply.opportunityId, `Quiet Accounts: ${name} replied to our follow-up (${INTENT_WORDS[reply.intent] ?? "replied"}): "${oneLine(reply.text, 400)}"`);
+    }
+  });
+  if (!fresh) return;
+  if (note) queueFsmNote(d, bid, note);
+  const hot = reply as Reply | undefined;
+  // a question gets a specific answer drafted for one-click sending (grounded only in what we know)
+  if (hot && hot.intent === "question" && d.llm) {
+    const st = d.accounts.peek(bid)?.state;
+    const b = st?.dataset.business;
+    const o = st ? oppById(st.scan?.opportunities, hot.opportunityId) : undefined;
+    if (b && st) {
+      const services = [b.trade, ...b.otherTrades].flatMap((t) => playbook(t).services.map((sv) => sv.label.toLowerCase()));
+      const draft = await draftAnswer(d.llm, { question: hot.text, job: o?.jobPhrase ?? "their project", businessName: b.name, signer: b.signerName, services }).catch(() => null);
+      if (draft?.draft && !bannedStatIn(draft.draft))
+        await d.accounts.withAccount(bid, (s) => {
+          const live = s.replies.find((x) => x.id === hot.id);
+          if (live) live.draft = { text: draft.draft, needsOwner: draft.needsOwner, at: nowLocal(d, s) };
+        });
+    }
+  }
+  if (hot?.ack && !hot.ack.sentAt) {
+    const task = { replyId: hot.id, to: email ?? ev.from, subject: ev.subject ?? "", messageId: ev.messageId ?? "", replyEmailId: ev.replyEmailId ?? "", toAccount: ev.toAccount ?? "" };
+    const tz = d.accounts.peek(bid)?.state.dataset.business.timezone ?? "America/New_York";
+    const local = localIso(d.clock(), tz);
+    const at = answerTime(local);
+    if (at === local) await sendAck(d, bid, task);
+    else {
+      // nobody wants a 2am "thanks": it goes at 7:00 local, like the answer to a new request
+      const wait = Date.parse(`${at}Z`) - Date.parse(`${local}Z`);
+      d.accounts.repo.enqueue("reply.ack", task, { businessId: bid, runAt: new Date(d.clock().getTime() + wait).toISOString() });
+    }
+  }
+  if (reply && d.email.kind === "sequencer" && email) {
+    const r = reply as Reply;
+    const reason = r.intent === "stop" ? "unsubscribed" : r.intent === "complaint" ? "complained" : r.intent === "bounce" ? "bounced" : "replied";
+    await stopEverywhere(d, bid, email, reason);
+    // A spouse or a forward answered: Instantly saw no reply from the lead, so their own sequence is stopped too.
+    if (r.intent !== "auto_reply" && r.intent !== "bounce") {
+      const st = d.accounts.peek(bid)?.state;
+      const lead = st ? customerById(st.dataset, r.customerId) : undefined;
+      // an address the stop suppressed (an alias said stop in our thread) is blocklisted there too; others just stop
+      for (const other of lead?.emails ?? []) if (other !== email) await stopEverywhere(d, bid, other, st?.suppressions[other] ?? "replied");
+    }
+  }
+  await deliverOwnerMessages(d, bid);
+}
+
+/**
+ * Suppress an address at one business and stop everything queued for it. `counted`: the platform reported it
+ * (a bounce, a spam report), so the Guard's brake counts it like one read from the inbox.
+ */
+export async function suppress(d: Deps, bid: string, email: string, reason: "unsubscribed" | "bounced" | "complained", detail?: string, opts: { counted?: boolean } = {}): Promise<void> {
   await d.accounts.withAccount(bid, (state) => {
     state.suppressions[email] = reason;
     const c = state.dataset.customers.find((x) => x.emails.includes(email));
+    if (c && opts.counted) countAgainstSending(d, state, c.id, email, reason);
     const n = c ? stopSequence(state, c.id) : 0;
     state.events.push({
       id: `ev_sup_${email}_${reason}`,
@@ -536,7 +972,29 @@ export async function suppress(d: Deps, bid: string, email: string, reason: "uns
   if (d.email.kind === "sequencer") await stopEverywhere(d, bid, email, reason);
 }
 
-async function stopEverywhere(d: Deps, bid: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained"): Promise<void> {
+/**
+ * The Guard's brake counts bounced notes and complaint replies. A bounce the platform reports marks the note that
+ * bounced (the last one that went, else the one it was handed); a spam report is kept as a complaint.
+ */
+function countAgainstSending(d: Deps, state: AccountState, customerId: string, email: string, reason: "unsubscribed" | "bounced" | "complained"): void {
+  const at = nowLocal(d, state);
+  if (reason === "bounced") {
+    const mine = state.touches.filter((t) => t.customerId === customerId);
+    const t =
+      mine.filter((x) => x.status === "sent" || x.status === "delivered").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0] ??
+      mine.filter((x) => (x.status === "approved" || x.status === "sending") && x.providerId?.includes(`:${email}:`)).sort((a, b) => a.step - b.step)[0];
+    if (t) {
+      t.sentAt ??= at;
+      t.status = "bounced";
+    }
+  } else if (reason === "complained") {
+    const id = makeId("r", email, "platform-complaint");
+    if (!state.replies.some((r) => r.id === id))
+      state.replies.push({ id, customerId, channel: "email", receivedAt: at, from: email, text: "(Reported as spam through the sending platform.)", intent: "complaint", confidence: 1, extracted: {}, status: "done" });
+  }
+}
+
+async function stopEverywhere(d: Deps, bid: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained" | "withdrawn"): Promise<void> {
   if (d.email.kind !== "sequencer") return;
   const state = d.accounts.peek(bid)?.state;
   if (!state) return;
@@ -596,11 +1054,11 @@ export async function ownerCommand(d: Deps, fromPhone: string, text: string): Pr
   const bid = business.id;
   const t = text.trim().toLowerCase();
   if (/^(pause|stop sending|hold)\b/.test(t)) {
-    d.accounts.setPaused(bid, true);
+    await holdSending(d, bid, "pause");
     return { businessId: bid, reply: "Paused. No notes will go out until you text RESUME." };
   }
   if (/^(resume|start|unpause|go)\b/.test(t)) {
-    d.accounts.setPaused(bid, false);
+    await holdSending(d, bid, "resume");
     return { businessId: bid, reply: "Back on. Notes resume on your next send day." };
   }
   if (/^(status|how|numbers)\b/.test(t)) {
@@ -638,27 +1096,33 @@ export async function ownerCommand(d: Deps, fromPhone: string, text: string): Pr
       for (const x of state.touches) if (x.status === "approved" || x.status === "planned") (x.status = "cancelled"), n++;
       state.events.push({ id: `ev_cancel_${at}`, at, agent: "guard", kind: "warning", title: "Owner cancelled by text", detail: `${n} queued notes stopped. No further charges.` });
     });
-    d.accounts.setPaused(bid, true);
+    await holdSending(d, bid, "cancel");
     d.accounts.repo.audit(bid, "owner-sms", "cancel", {});
     return { businessId: bid, reply: "Done — cancelled. No more notes and no more charges. Your ledger link keeps working, and your data is yours to take. Thanks for giving us a shot." };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(t) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
     let reply = "";
+    let pulled: string[] = [];
     await d.accounts.withAccount(bid, (state) => {
       const today = nowLocal(d, state).slice(0, 10);
       const until = parseBusyUntil(t, today);
       const r = setBookedOut(state, until, nowLocal(d, state));
+      pulled = r.withdrawn;
       reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
     });
+    await withdrawMoved(d, bid, pulled);
     return { businessId: bid, reply };
   }
   if (/^(open|not busy|free|room|slow)\b/.test(t)) {
     let reply = "";
+    let pulled: string[] = [];
     await d.accounts.withAccount(bid, (state) => {
       const r = setBookedOut(state, undefined, nowLocal(d, state));
+      pulled = r.withdrawn;
       reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us on your next send day.` : ""}`;
     });
+    await withdrawMoved(d, bid, pulled);
     return { businessId: bid, reply };
   }
   const code = text.match(/#\s?([A-Z0-9]{3})\b/i)?.[1]?.toUpperCase();
@@ -737,12 +1201,12 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
     if (fresh) d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(fresh)) });
     let newRecoveries = 0;
     let answered = 0;
-    await d.accounts.withAccount(bid, (state) => {
+    await d.accounts.withAccount(bid, (state, ctx) => {
       const at = nowLocal(d, state);
       state.dataset = mergePulled(state.dataset, pulled, kind);
       state.dataset.asOf = at.slice(0, 10);
-      // always-on: a request that just came in gets its answer now, not tomorrow
-      answered = answerNewRequests(state, at);
+      // always-on: a request that just came in gets its answer now, not tomorrow (while paused: the owner calls)
+      answered = answerNewRequests(state, at, { paused: ctx.paused });
       const n = pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length;
       if (n) state.events.push({ id: `ev_sync_${at}`, at, agent: "reader", kind: "action", title: `Synced ${n.toLocaleString("en-US")} records from ${kind === "jobber" ? "Jobber" : kind}`, detail: pulled.warnings.join(" ") || undefined });
       newRecoveries = ledgerPass(state, at).newRecoveries;
@@ -904,8 +1368,23 @@ export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void
   const r = state?.replies.find((x) => x.id === task.replyId);
   if (!state || !r?.ack || r.ack.sentAt) return;
   if (r.ownerContactedAt) return; // the owner already got to them — no need
+  // a queued answer (held overnight) never goes to someone who has since asked us to stop
+  const stopped =
+    state.suppressions[task.to.toLowerCase()] ||
+    state.suppressions[r.from] ||
+    state.replies.some((x) => x.receivedAt > r.receivedAt && (x.from === r.from || (!!x.customerId && x.customerId === r.customerId)) && ["stop", "complaint", "not_interested"].includes(x.intent));
+  if (stopped) {
+    await d.accounts.withAccount(bid, (s) => {
+      const live = s.replies.find((x) => x.id === r.id);
+      if (live?.ack && !live.ack.sentAt) live.ack.error = "Not sent: they asked us to stop before it went";
+    });
+    return;
+  }
   const b = state.dataset.business;
   const subject = /^re:/i.test(task.subject) ? task.subject : `Re: ${task.subject || "your note"}`;
+  // the note they answered stays in the thread, so a reply to this answer still routes to this business
+  const note = state.touches.find((t) => t.id === r.touchId)?.providerId;
+  const refs = [note?.startsWith("<") ? note : undefined, task.messageId || undefined].filter((x): x is string => !!x);
   let error: string | undefined;
   try {
     if (d.email.kind === "direct") {
@@ -921,7 +1400,7 @@ export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void
         subject,
         text: r.ack.text,
         inReplyTo: task.messageId || undefined,
-        references: task.messageId ? [task.messageId] : undefined,
+        references: refs.length ? refs : undefined,
       });
     } else if (d.email.replyTo && task.replyEmailId && task.toAccount) {
       await d.email.replyTo(b, { replyEmailId: task.replyEmailId, account: task.toAccount, to: task.to, subject }, r.ack.text);

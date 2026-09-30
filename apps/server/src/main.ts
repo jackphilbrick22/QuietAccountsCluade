@@ -12,7 +12,8 @@ import { LogEmailProvider, SmtpEmailProvider } from "./providers/email.ts";
 import { LogNotifier, TwilioNotifier } from "./providers/sms.ts";
 import { createMailCheck } from "./providers/mailcheck.ts";
 import { createLlm } from "./agents/llm.ts";
-import { createInstantlyProvider, parseInstantlyWebhook, webhookUrlFor, type InstantlyProvider } from "./integrations/instantly/index.ts";
+import { createInstantlyProvider, parseInstantlyWebhook } from "./integrations/instantly/index.ts";
+import { registerWebhooks } from "./core/backstop.ts";
 import { encrypt } from "./core/crypto.ts";
 import { createJobberConnector } from "./integrations/jobber/index.ts";
 import type { OutboundProvider } from "./contracts.ts";
@@ -72,12 +73,8 @@ export function start(env: Record<string, string | undefined> = process.env) {
   }
   const server = serve({ fetch: app.fetch, port: cfg.PORT }, (i) => log(`[boot] Quiet Accounts listening on :${i.port} · email=${deps.email.name} · owner texts=${deps.notifier.name} · AI=${deps.llm?.model ?? "off"} · Jobber=${deps.fsm.jobber ? "on" : "off"}`));
   const worker = cfg.WORKER_ENABLED === "true" ? startWorker(deps) : undefined;
-  if (cfg.EMAIL_PROVIDER === "instantly") {
-    (deps.email as InstantlyProvider)
-      .ensureWebhooks(webhookUrlFor(cfg.PUBLIC_URL, cfg.WEBHOOK_SECRET))
-      .then((r) => log(`[instantly] webhooks ready (${JSON.stringify(r)})`))
-      .catch((e: Error) => log(`[instantly] couldn't register webhooks: ${e.message}`));
-  }
+  // A failure is recorded where the operator looks (review queue, /api/health) and retried by the worker.
+  if (cfg.EMAIL_PROVIDER === "instantly") void registerWebhooks(deps).catch((e: Error) => log(`[instantly] couldn't register webhooks: ${e.message}`));
   const shutdown = () => {
     log("[boot] shutting down");
     worker?.stop();

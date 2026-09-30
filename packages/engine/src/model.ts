@@ -295,6 +295,10 @@ export interface BusinessProfile {
   /** Plan & guarantee state. */
   plan: PlanState;
   createdOn: ISODate;
+  /** The Guard's counts when a person last cleared its send brake; the brake reads only what came after. */
+  healthBaseline?: { at: ISODateTime; sent: number; bounces: number; complaints: number; confused: number; by: string };
+  /** The sending platform's campaigns are paused by us (pause, cancel, the brake) until the hold lifts. */
+  platformPaused?: { at: ISODateTime; why: string };
 }
 
 export interface PlanState {
@@ -417,7 +421,8 @@ export interface Opportunity {
 /* Outreach                                                            */
 /* ------------------------------------------------------------------ */
 
-export type TouchStatus = "planned" | "approved" | "sent" | "delivered" | "bounced" | "skipped" | "cancelled";
+/** "sending": claimed by a sender and handed to the provider; it never goes again unless a person says so. */
+export type TouchStatus = "planned" | "approved" | "sending" | "sent" | "delivered" | "bounced" | "skipped" | "cancelled";
 
 export type MessageAngle =
   | "check_in" // plain "still want this done?"
@@ -461,6 +466,8 @@ export interface Touch {
   track?: "new_request" | "fresh_quote";
   /** When the request it answers reached us (local), so "answered within minutes" is measured, not assumed. */
   askedAt?: ISODateTime;
+  /** When a sender claimed it (status "sending"), before the provider saw it. */
+  claimedAt?: ISODateTime;
 }
 
 export type ReplyIntent =
@@ -506,6 +513,8 @@ export interface Reply {
   draft?: { text: string; needsOwner: boolean; at: ISODateTime };
   /** What we wrote back in this thread (instant answers, drafts sent, typed replies). */
   answers?: { text: string; at: ISODateTime; by: "auto" | "operator" | "owner" }[];
+  /** More words from someone already handed to the owner: it joins that lead instead of starting another. */
+  followUpOf?: string;
 }
 
 export interface ReplyExtract {

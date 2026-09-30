@@ -156,6 +156,16 @@ function LinksMenu({ id, name }: { id: string; name: string }) {
   );
 }
 
+/** The Guard's brake holds every note until a person has looked at why (and cleaned the list or fixed the sender). */
+export function ClearBrake({ id }: { id: string }) {
+  const { busy, run } = useAction();
+  return (
+    <Btn disabled={!!busy} onClick={() => void run("brake", () => api("POST", `/businesses/${encodeURIComponent(id)}/health/clear`), "Brake cleared — sending resumes")}>
+      I've looked into it — resume sending
+    </Btn>
+  );
+}
+
 /* ------------------------------ Overview ------------------------------ */
 
 function OverviewTab({ id, o }: { id: string; o: Overview }) {
@@ -249,7 +259,12 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
                 <dt className="text-ink-3">Asked to stop</dt>
                 <dd className="num text-right font-semibold">{h.stops}</dd>
               </dl>
-              {h.paused && <p className="text-[12.5px] text-bad">{h.reason}</p>}
+              {h.paused && (
+                <>
+                  <p className="text-[12.5px] text-bad">{h.reason}</p>
+                  <ClearBrake id={id} />
+                </>
+              )}
               <p className="text-[12px] text-ink-3">Auto-pause at 4% bounces or 0.3% complaints.</p>
             </>
           ) : (

@@ -174,6 +174,18 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX tasks_due ON tasks(status, run_at);
   `,
+  /* 2 */ `
+  CREATE TABLE inbound_review (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    candidates TEXT NOT NULL,
+    event TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    business_id TEXT
+  );
+  CREATE INDEX inbound_review_open ON inbound_review(status, at);
+  `,
 ];
 
 export class Db {
