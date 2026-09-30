@@ -148,8 +148,16 @@ Updated every loop iteration. Newest first.
   poll, only our own notes say whose thread it is, so the person we wrote to following up after her spouse
   wrote there is still herself. Engine 1,232, server 259.
 
+- Twelfth adversarial review: 2 confirmed, both about owner texts that mention another company ("the other
+  guy had a lower bid and got the job" was booked for us; "she had another company do it, lower price" read
+  as quoted). The patterns had been chasing these phrasings for several rounds, so the approach changed:
+  an owner's lead text that mentions another company is read by Claude (apps/server/src/agents/ownerText.ts)
+  for what happened to the owner's own company. An amount only counts if it's written in the text, and
+  "unclear", an error or no Claude key sends it to a person. Plain commands still go through the rules.
+  Engine 1,232, server 260.
+
 **Next**
-- A twelfth review pass; stop when a pass finds nothing material.
+- A thirteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

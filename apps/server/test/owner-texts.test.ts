@@ -150,14 +150,44 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
     expect(readLeadText("Called her, someone else already gave her an estimate")?.outcome).not.toBe("lost");
   });
 
+  it("another company in the text: Claude reads whose win it was, a written amount only, and a person when unsure (review 12)", async () => {
+    const h = make();
+    await h.business("ridge");
+    const said: string[] = [];
+    let answer: { outcome: string; amount: number | null } = { outcome: "lost", amount: null };
+    const texts = async (text: string, rid: string) => {
+      await addLead(h, "ridge", rid, "Kim Tran", "2026-09-29T08:00:00");
+      return h.sms(`${text} #${leadCode(rid)}`);
+    };
+    // no Claude: a person reads it, and nothing is marked
+    expect(await texts("Another tree service had a better price and won the job, 1800", "c0")).toMatch(/^Thanks — that one could go either way/);
+    expect(reply(h, "ridge", "c0").status).toBe("handed_off");
+    h.d.llm = { model: "stub", structured: async (_s: unknown, o: { user: string }) => (said.push(o.user), answer) } as never;
+    try {
+      expect(await texts("Another tree service had a better price and won the job, 1800", "c1")).toMatch(/^Got it — Kim Tran marked not a fit\./);
+      expect(await texts("The other guy had a lower bid and got the job", "c2")).toMatch(/^Got it — Kim Tran marked not a fit\./);
+      expect(state(h, "ridge").recoveries).toEqual([]);
+      answer = { outcome: "quoted", amount: null };
+      expect(await texts("Quoted 2400, she has another guy coming out Thursday", "c3")).toMatch(/^Got it — Kim Tran has a price\. We'll count it when it books\./);
+      // a booking's amount has to be written in the text: never a figure Claude made up
+      answer = { outcome: "booked", amount: 3000 };
+      expect(await texts("Beat the other guy's price, she booked us for 2400", "c4")).toMatch(/^Booked: Kim Tran\. What's the job worth\?/);
+      answer = { outcome: "booked", amount: 2400 };
+      expect(await texts("Beat the other guy's price, she booked us for 2400", "c5")).toMatch(/^Booked: Kim Tran, \$2,400\./);
+      answer = { outcome: "unclear", amount: null };
+      expect(await texts("Someone else already quoted her 1800 and she booked them", "c6")).toMatch(/^Thanks — that one could go either way/);
+      expect(said.length).toBe(6);
+    } finally {
+      h.d.llm = null;
+    }
+  });
+
   it("a negated booking, or someone else's, never books the lead or puts a dollar on the ledger (review 7)", async () => {
     const h = make();
     await h.business("ridge");
     const cases: [string, string][] = [
       ["Won't book it unless we come down to 1800", "Thanks — Kim Tran marked as reached."],
       ["Quoted him 2400, hasn't booked yet", "Got it — Kim Tran has a price. We'll count it when it books."],
-      ["They booked someone else", "Got it — Kim Tran marked not a fit."],
-      ["Lost it, they booked someone cheaper", "Got it — Kim Tran marked not a fit."],
       ["He sold the house", "Got it — Kim Tran marked not a fit."],
       ["Didn’t book it", "Got it — Kim Tran marked not a fit."],
     ];

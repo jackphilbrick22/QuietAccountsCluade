@@ -1,5 +1,6 @@
 import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
+import { readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
@@ -134,6 +135,11 @@ const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_W
 const WENT_WITH_OTHER = /\b(went|going|gone|go) (with\b|w\/|w\b) ?(?!(it|us|me|my|mine|our|ours|you|this|that|these|those|the (\S+ ){0,3}(option|package|quote|price|plan|one)|option|plan|package|\$|\d)\b)\S/;
 const WENT_WITH_NAME = /\b(?:went|going|gone|go) (?:with|w\/) ?([A-Z][a-zA-Z'’]+)/;
 const NOT_A_NAME = new Set(["I", "My", "Me", "Our", "Ours", "Us", "The", "That", "This", "Option", "Plan", "Package", "It", "Your", "You"]);
+/** Another company or person in the story: "someone else", "another guy", "the other company", "a competitor". */
+const COMPETITOR_MENTION = /\b((someone|somebody) else|(another|the other|a different|some other|a cheaper|a local) (company|guy|contractor|crew|outfit|service|bidder|roofer|painter|landscaper|cleaner|\w+ (company|service|guy|contractor))|competitors?|the competition|(other|another) (bid|quote|price|estimate))\b/i;
+export function mentionsCompetitor(text: string): boolean {
+  return COMPETITOR_MENTION.test(text.replace(APOSTROPHE, "'"));
+}
 /** "She went with my quote", "went with us": our booking. */
 const WENT_WITH_US = /\bwent with (me|us|mine|ours|(my|our) (quote|price|bid|estimate))\b/;
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
@@ -460,8 +466,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // While a first note waits for the OK, anything that isn't an answer to something else is a change to it.
   if (waitingOk.length && !hasCode && !aboutOther()) return noteChange();
 
-  const lead = readLeadText(text);
-  // it says both ways ("Booked 2400, beat the other guy's price"): a person marks it, never a guess
+  let lead = readLeadText(text);
+  // Another company in it ("the other guy had a lower bid and got the job", "she has another guy coming out"): whose
+  // win it is, or whether she's only shopping, is Claude's read with a person behind it, never the patterns' alone.
+  if (mentionsCompetitor(text) && (lead || hasCode)) lead = await readLeadTextWithClaude(d.llm, text);
+  // it says both ways ("Booked 2400, she won't sign up for the plan"): a person marks it, never a guess
   if (lead?.unclear)
     return { businessId: fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
   if (lead) {
