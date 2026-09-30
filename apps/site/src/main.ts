@@ -14,7 +14,23 @@ const monthYear = (iso?: string) => (iso ? new Date(`${iso}T12:00:00Z`).toLocale
 
 /* ------------------------------ trade ------------------------------ */
 
-let trade: TradeCopy = TRADES[tradeFromHash(location.hash)];
+/**
+ * Personal links from our own outreach: ?t=fence&c=Nelson+Fence+LLC&n=DAVID. The company name is tidied
+ * (no LLC/Inc, no SHOUTING) and dropped into the preview note and the form. Nothing else is read.
+ */
+const params = new URLSearchParams(location.search);
+const tidy = (s: string | null, max: number) =>
+  (s ?? "")
+    .replace(/[<>]/g, "")
+    .replace(/,?\s*\b(llc|l\.l\.c\.|inc\.?|incorporated|co\.?,? ?llc|corp\.?|ltd\.?)$/i, "")
+    .trim()
+    .slice(0, max)
+    // ALL CAPS from a lead list becomes Title Case; anything already mixed-case is left alone (keeps "ABC Tree")
+    .replace(/^[^a-z]*$/, (all) => all.replace(/\b([A-Z])([A-Z']+)\b/g, (_, a: string, b: string) => a + b.toLowerCase()));
+const who = { company: tidy(params.get("c"), 60), first: tidy(params.get("n"), 30).split(/\s+/)[0] ?? "" };
+const tParam = params.get("t");
+
+let trade: TradeCopy = TRADES[tParam && tParam in TRADES ? (tParam as SiteTrade) : tradeFromHash(location.hash)];
 
 function setT(key: string, html: string) {
   document.querySelectorAll<HTMLElement>(`[data-t="${key}"]`).forEach((el) => (el.innerHTML = html));
@@ -74,6 +90,14 @@ window.addEventListener("hashchange", () => {
   }
 });
 applyTrade(trade);
+if (who.company) {
+  $<HTMLInputElement>("#pCompany").value = who.company;
+  $<HTMLInputElement>("#company").value = who.company;
+}
+if (who.first) {
+  $<HTMLInputElement>("#first").value = who.first;
+  setT("h1", esc(`${who.first}, ${trade.h1.charAt(0).toLowerCase()}${trade.h1.slice(1)}`));
+}
 
 /* ------------------------------ the audit ------------------------------ */
 
