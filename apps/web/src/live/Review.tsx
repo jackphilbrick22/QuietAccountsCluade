@@ -5,17 +5,31 @@ import { cx, Pill } from "../components/ui";
 import { Box, Btn, Chip, PageHead } from "../components/table";
 import { api, type ReviewItem, type ReviewQueue } from "./api";
 import { copy, useAction, useLive, type ClientTab, type Query } from "./store";
-import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, OutcomeForm, when } from "./parts";
+import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, OutcomeForm, ReplyActions, when } from "./parts";
 
 type Kind = ReviewItem["kind"];
 
 const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accent" }> = {
   late_lead: { label: "Owner hasn't called", tone: "bad" },
-  unclear: { label: "Unclear reply", tone: "warn" },
+  alert: { label: "Alert", tone: "bad" },
+  owner_text: { label: "Owner texted", tone: "accent" },
   owner_message: { label: "Text waiting for you", tone: "accent" },
+  unclear: { label: "Unclear reply", tone: "warn" },
+  draft: { label: "Answer drafted", tone: "info" },
+  ready: { label: "Ready to start", tone: "info" },
   flagged_note: { label: "Flagged note", tone: "warn" },
 };
-const ORDER: Kind[] = ["late_lead", "owner_message", "unclear", "flagged_note"];
+const ORDER: Kind[] = ["late_lead", "alert", "owner_text", "owner_message", "unclear", "draft", "ready", "flagged_note"];
+
+const itemKey = (it: ReviewItem) => `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "seq" in it ? it.seq : ""}`;
+
+/** What we did with an owner's text, in the operator's words. */
+const HANDLED: Record<string, string> = {
+  accepted_close: "said yes to keep going: send the payment link, then set them to Paying in Settings",
+  unrecognized: "wrote something we couldn't act on",
+  texts_off: "turned our texts off (STOP)",
+  resume_cancelled: "wants back in after cancelling",
+};
 
 export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
   const [filter, setFilter] = useState<Kind | "all">("all");
@@ -46,7 +60,7 @@ export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
       </div>
       <div className="flex flex-col gap-2">
         {shown.map((it) => (
-          <Item key={`${it.kind}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : it.messageId}`} it={it} />
+          <Item key={itemKey(it)} it={it} />
         ))}
         {!shown.length && <Box className="px-4 py-10 text-center text-[13.5px] text-ink-3">{queue.loading && !queue.data ? "Loading…" : "Nothing needs a person right now."}</Box>}
       </div>
@@ -89,6 +103,7 @@ function Item({ it }: { it: ReviewItem }) {
             </Btn>
           </div>
           <OutcomeForm bid={bid} reply={{ id: it.replyId, name: it.name }} compact />
+          <ReplyActions bid={bid} reply={{ id: it.replyId, name: it.name }} draft={it.draft} draftNeedsOwner={it.draftNeedsOwner} handedOff />
         </>
       )}
 
@@ -98,8 +113,66 @@ function Item({ it }: { it: ReviewItem }) {
             Couldn't tell what <b>{it.name}</b> meant{it.email ? <span className="text-ink-3"> ({it.email})</span> : null}
           </div>
           <blockquote className="note-body rounded-md bg-bg px-3 py-2 text-[13px]">{it.text}</blockquote>
-          <p className="text-[12.5px] text-ink-3">If they want the work, text the owner. Once the owner has talked to them, log what happened:</p>
-          <OutcomeForm bid={bid} reply={{ id: it.replyId, name: it.name }} compact />
+          <p className="text-[12.5px] text-ink-3">Say what they mean (a yes goes straight to the owner, a stop removes them everywhere), answer them yourself, or hand it to the owner as it is.</p>
+          <ReplyActions bid={bid} reply={{ id: it.replyId, name: it.name }} draft={it.draft} draftNeedsOwner={it.draftNeedsOwner} />
+        </>
+      )}
+
+      {it.kind === "draft" && (
+        <>
+          <div className="flex flex-wrap items-center gap-2 text-[14px]">
+            <b>{it.name}</b> asked something, and an answer is drafted <IntentPill intent={it.intent} />
+          </div>
+          <blockquote className="note-body rounded-md bg-bg px-3 py-2 text-[13px]">“{it.text}”</blockquote>
+          <ReplyActions bid={bid} reply={{ id: it.replyId, name: it.name }} draft={it.draft} draftNeedsOwner={it.draftNeedsOwner} handedOff />
+        </>
+      )}
+
+      {it.kind === "owner_text" && (
+        <>
+          <div className="text-[14px]">
+            The owner {HANDLED[it.handled] ?? "texted us"}:
+          </div>
+          <blockquote className="note-body rounded-md bg-bg px-3 py-2 text-[13px]">“{it.text}”</blockquote>
+          <p className="text-[12.5px] text-ink-3">We texted back: {it.reply}</p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
+              Mark handled
+            </Btn>
+            {it.handled === "accepted_close" && <Btn onClick={() => open("settings")}>Open settings</Btn>}
+            <Btn variant="ghost" onClick={() => open("texts")}>
+              All their texts
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "alert" && (
+        <>
+          <div className="text-[14px] font-semibold">{it.title}</div>
+          {it.detail && <p className="text-[13px] text-ink-2">{it.detail}</p>}
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
+              Mark handled
+            </Btn>
+            <Btn variant="ghost" onClick={() => open("activity")}>
+              Open activity
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "ready" && (
+        <>
+          <div className="text-[14px]">
+            Jobber is connected and read: {it.quotes.toLocaleString("en-US")} quotes, {it.customers.toLocaleString("en-US")} clients. Nothing is planned yet.
+          </div>
+          <p className="text-[12.5px] text-ink-3">{it.headline}</p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" onClick={() => open("overview")}>
+              Look it over and start
+            </Btn>
+          </div>
         </>
       )}
 

@@ -382,15 +382,21 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
   }
 }
 
-/** Nudge the owner about hot leads nobody has called. */
+/** Past this, a lead nobody called is the operator's to chase (it sits in "Needs a person"), not another text. */
+export const NUDGE_MAX_AGE_HOURS = 7 * 24;
+
+/** Nudge the owner about hot leads nobody has called: at most two reminders per lead, never for a week-old one. */
 export function chase(state: AccountState, now: ISODateTime, afterHours = 4): OwnerMessage[] {
   const out: OwnerMessage[] = [];
   for (const r of state.replies) {
     if (r.status !== "handed_off" || r.ownerContactedAt) continue;
     const hrs = (Date.parse(now) - Date.parse(r.handedOffAt ?? r.receivedAt)) / 3600000;
-    const already = state.ownerMessages.filter((m) => m.kind === "sla_nudge" && m.refs?.some((x) => x.id === r.id)).length;
+    // The count lives on the reply; the messages are a fallback for replies nudged before it did.
+    const already = Math.max(r.nudges ?? 0, state.ownerMessages.filter((m) => m.kind === "sla_nudge" && m.refs?.some((x) => x.id === r.id)).length);
     const next = already === 0 ? afterHours : already === 1 ? 24 : Infinity;
-    if (hrs >= next) {
+    if (hrs >= next && hrs < NUDGE_MAX_AGE_HOURS) {
+      r.nudges = already + 1;
+      r.lastNudgeAt = now;
       out.push(ownerMsg(state, now, "sla_nudge", slaNudge(state, r, hrs), [{ kind: "reply", id: r.id }]));
       event(state, now, "dispatcher", "warning", `Reminded you about ${state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from}`, `${Math.round(hrs)}h without a call.`);
     }

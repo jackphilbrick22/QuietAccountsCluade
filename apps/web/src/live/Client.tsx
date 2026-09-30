@@ -72,7 +72,7 @@ export function LiveClient({ id }: { id: string }) {
             <Btn disabled={!!busy} onClick={() => void run("scan", () => api<{ summary?: { totalValue: number } }>("POST", `${path}/scan`), (r) => (r.summary ? `Scanned: ${fmtMoney(r.summary.totalValue)} found` : "Scanned"))}>
               <RefreshCw size={15} className={cx(busy === "scan" && "animate-spin")} /> Re-scan
             </Btn>
-            <Btn variant={started ? "secondary" : "primary"} disabled={!!busy || !o.summary || !o.readiness?.ready} title={!o.readiness?.ready ? "Get the missing files first" : undefined} onClick={() => void doPlan()}>
+            <Btn variant={started ? "secondary" : "primary"} disabled={!!busy || !o.summary || !o.readiness?.ready} title={!o.readiness?.ready ? `First: ${o.readiness?.gaps.find((g) => g.level === "blocker")?.ask ?? "the missing files"}` : undefined} onClick={() => void doPlan()}>
               <Send size={15} /> {trial ? (started ? "Top up free round" : "Start free round") : "Plan next 4 weeks"}
             </Btn>
             {waitingApproval > 0 && (
@@ -145,6 +145,12 @@ function LinksMenu({ id, name }: { id: string; name: string }) {
         { label: "Copy owner link", onClick: () => void getLinks().then((l) => copy(l.owner, "Owner link copied")) },
         { label: "Copy Jobber connect link", onClick: () => void getLinks().then((l) => copy(l.connectJobber, "Jobber connect link copied — send it to the owner")) },
         { label: "Copy file-forwarding token", onClick: () => void getLinks().then((l) => copy(l.importToken, "Import token copied")) },
+        {
+          label: "Replace all links",
+          danger: true,
+          confirm: `New owner, Jobber-connect and file-forwarding links for ${name}. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new one.`,
+          onClick: () => void run("rotate", () => api<Links>("POST", `/businesses/${encodeURIComponent(id)}/links/rotate`), "New links made — the old ones no longer work"),
+        },
         {
           label: "Delete client",
           danger: true,

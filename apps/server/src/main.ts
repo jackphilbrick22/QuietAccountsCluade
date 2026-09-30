@@ -34,8 +34,9 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
   else if (cfg.EMAIL_PROVIDER === "instantly")
     email = createInstantlyProvider({ apiKey: cfg.INSTANTLY_API_KEY!, sendingAccounts: cfg.INSTANTLY_SENDING_ACCOUNTS?.split(",").map((s) => s.trim()).filter(Boolean), dailyLimit: cfg.INSTANTLY_DAILY_LIMIT });
   else email = new LogEmailProvider();
-  const logNotifier = new LogNotifier();
-  const notifier = cfg.SMS_PROVIDER === "twilio" ? new TwilioNotifier({ accountSid: cfg.TWILIO_ACCOUNT_SID!, authToken: cfg.TWILIO_AUTH_TOKEN!, from: cfg.TWILIO_FROM! }, fetch, logNotifier) : logNotifier;
+  // No log fallback behind Twilio: an owner without a cell is emailed or lands in review (deliverOwnerMessages),
+  // never quietly "sent" to stdout.
+  const notifier = cfg.SMS_PROVIDER === "twilio" ? new TwilioNotifier({ accountSid: cfg.TWILIO_ACCOUNT_SID!, authToken: cfg.TWILIO_AUTH_TOKEN!, from: cfg.TWILIO_FROM! }) : new LogNotifier();
   const llm = createLlm({ apiKey: cfg.ANTHROPIC_API_KEY, model: cfg.CLAUDE_MODEL, log });
   const fsm =
     cfg.JOBBER_CLIENT_ID && cfg.JOBBER_CLIENT_SECRET

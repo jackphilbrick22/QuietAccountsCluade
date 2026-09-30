@@ -77,6 +77,13 @@ function Console() {
               <div>Email: {health.email}</div>
               <div>Owner texts: {health.sms}</div>
               <div>AI reader: {health.ai ?? "off"}</div>
+              {health.worker && health.worker.ticks > 0 && (
+                <div className={health.worker.stalled || health.worker.behind ? "font-semibold text-bad" : undefined}>
+                  {health.worker.stalled
+                    ? `Worker stalled: no tick for ${Math.round((health.worker.secondsSinceLastTick ?? 0) / 60)} min`
+                    : `Worker: ${((health.worker.lastTickMs ?? 0) / 1000).toFixed(1)}s a tick${health.worker.behind ? `, ${health.worker.behind} client${health.worker.behind === 1 ? "" : "s"} behind` : ""}`}
+                </div>
+              )}
             </div>
           )}
           <button type="button" className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13.5px] font-semibold text-ink-3 hover:bg-surface-2 hover:text-ink" onClick={() => go({ area: "welcome", tab: "today" })}>

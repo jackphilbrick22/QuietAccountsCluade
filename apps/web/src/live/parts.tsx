@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { AlertOctagon, Copy, PlusCircle, Sparkles } from "lucide-react";
 import { fmtMoney, type Readiness, type Reply } from "@qa/engine";
 import { cx, Pill } from "../components/ui";
-import { Box, Btn, smallInputCls } from "../components/table";
+import { Box, Btn, selectCls, smallInputCls } from "../components/table";
 import { api, type Person } from "./api";
 import { copy, useAction, useApi } from "./store";
 
@@ -132,6 +132,112 @@ export function OutcomeForm({ bid, reply, suggested, compact }: { bid: string; r
       <Btn disabled={!!busy} onClick={() => void post("lost")}>
         Not a fit
       </Btn>
+    </div>
+  );
+}
+
+/* ------------------------------ act on a reply ------------------------------ */
+
+const RELABEL: { value: string; label: string; done: string }[] = [
+  { value: "wants_it", label: "Wants it done", done: "Marked a yes — texted to the owner" },
+  { value: "wants_price", label: "Wants a price", done: "Marked wants a price — texted to the owner" },
+  { value: "question", label: "Has a question", done: "Marked a question — texted to the owner" },
+  { value: "later", label: "Later", done: "Marked later" },
+  { value: "already_done", label: "Already had it done", done: "Marked already done" },
+  { value: "not_interested", label: "No thanks", done: "Marked no thanks" },
+  { value: "moved", label: "Moved", done: "Marked moved" },
+  { value: "wrong_person", label: "Wrong person", done: "Marked wrong person" },
+  { value: "stop", label: "Stop: remove everywhere", done: "Removed everywhere" },
+  { value: "auto_reply", label: "Auto-reply (keep going)", done: "Marked an auto-reply" },
+];
+
+/**
+ * What a person can do with a reply the agents couldn't finish: send the drafted answer (or their own) in the
+ * homeowner's thread, say what the reply means (a yes goes to the owner, a stop removes them everywhere), or
+ * hand it to the owner as it is.
+ */
+export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: { bid: string; reply: { id: string; name?: string }; draft?: string; draftNeedsOwner?: boolean; handedOff?: boolean }) {
+  const { busy, run } = useAction();
+  const [text, setText] = useState("");
+  const [writing, setWriting] = useState(false);
+  const [intent, setIntent] = useState("");
+  const base = `/businesses/${encodeURIComponent(bid)}/replies/${encodeURIComponent(reply.id)}`;
+  const who = reply.name ?? "them";
+  return (
+    <div className="flex flex-col gap-2.5">
+      {draft && !writing && (
+        <div className="flex flex-col gap-1.5 rounded-md border border-line bg-bg px-3 py-2.5">
+          <span className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-ink-3">
+            <Sparkles size={13} /> Drafted answer, not sent {draftNeedsOwner && <Pill tone="warn">Check with the owner first</Pill>}
+          </span>
+          <p className="note-body text-[13px]">{draft}</p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("draft", () => api("POST", `${base}/answer`, { useDraft: true }), `Sent to ${who} in their thread`)}>
+              Send as-is
+            </Btn>
+            <Btn
+              disabled={!!busy}
+              onClick={() => {
+                setText(draft);
+                setWriting(true);
+              }}
+            >
+              Edit, then send
+            </Btn>
+            <Btn variant="ghost" disabled={!!busy} onClick={() => void run("discard", () => api("DELETE", `${base}/draft`), "Draft dropped")}>
+              Drop it
+            </Btn>
+          </div>
+        </div>
+      )}
+      {writing ? (
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor={`ans-${reply.id}`} className="text-[12px] font-semibold text-ink-3">
+            Your answer to {who} (goes in their email thread)
+          </label>
+          <textarea id={`ans-${reply.id}`} rows={4} className={cx(smallInputCls, "py-2 leading-relaxed")} value={text} onChange={(e) => setText(e.target.value)} />
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!text.trim() || !!busy} onClick={() => void run("answer", () => api("POST", `${base}/answer`, { text }), `Sent to ${who} in their thread`).then((r) => r && setWriting(false))}>
+              Send
+            </Btn>
+            <Btn variant="ghost" onClick={() => setWriting(false)}>
+              Cancel
+            </Btn>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-end gap-2">
+          <Btn
+            onClick={() => {
+              setText("");
+              setWriting(true);
+            }}
+          >
+            Write an answer
+          </Btn>
+          <Btn disabled={!!busy} onClick={() => void run("handoff", () => api("POST", `${base}/handoff`), handedOff ? "Texted to the owner again" : "Texted to the owner")}>
+            {handedOff ? "Text it to the owner again" : "Hand it to the owner"}
+          </Btn>
+          <div className="flex items-end gap-1.5">
+            <div className="flex flex-col gap-1">
+              <label htmlFor={`int-${reply.id}`} className="text-[12px] font-semibold text-ink-3">
+                What they mean
+              </label>
+              <select id={`int-${reply.id}`} className={selectCls} value={intent} onChange={(e) => setIntent(e.target.value)}>
+                <option value="">Choose…</option>
+                {RELABEL.map((x) => (
+                  <option key={x.value} value={x.value}>
+                    {x.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <Btn disabled={!intent || !!busy} onClick={() => void run("intent", () => api("POST", `${base}/intent`, { intent }), RELABEL.find((x) => x.value === intent)?.done)}>
+              Save
+            </Btn>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

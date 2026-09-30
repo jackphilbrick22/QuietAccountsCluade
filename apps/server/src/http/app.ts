@@ -1,9 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import {
   BREAKAGE_LABEL,
   closeMessage,
   guaranteeCheck,
+  handoffText,
   lift,
   sendHealth,
   totals,
@@ -30,7 +32,27 @@ import { encrypt } from "../core/crypto.ts";
 import { NotFound } from "../core/accounts.ts";
 import { replyEmailKey } from "../core/backstop.ts";
 import { localIso } from "../core/clock.ts";
-import { answerInThread, approve, deliverOwnerMessages, handleInbound, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
+import {
+  answerInThread,
+  approve,
+  connectJobberLink,
+  deliverOwnerMessages,
+  handleInbound,
+  importFiles,
+  linkToken,
+  ownerLink,
+  plan,
+  raiseAlert,
+  readLinkToken,
+  rescan,
+  rotateLinks,
+  setBusinessPaused,
+  syncFsm,
+  unsubscribeByToken,
+  type Deps,
+} from "../core/ops.ts";
+import { ownerCommand, shortNames } from "../core/owner.ts";
+import { workerHealth } from "../core/worker.ts";
 import { verifyTwilioSignature } from "../providers/sms.ts";
 
 export interface HttpDeps extends Deps {
@@ -59,6 +81,9 @@ const CreateBusiness = z.object({
   state: z.string().length(2).optional(),
   timezone: z.string().default("America/New_York"),
   replyTo: z.string().email().optional(),
+  /** This client's own sending address and name (direct mail). Left out: the server's sender, "<signer> at <business>". */
+  fromEmail: z.string().email().optional(),
+  fromName: z.string().min(2).max(80).optional(),
   businessPhone: z.string().optional(),
   avgJobValue: z.number().positive().optional(),
   annualRevenue: z.number().positive().optional(),
@@ -106,6 +131,8 @@ function defaultProfile(input: z.infer<typeof CreateBusiness>, id: string, today
     signerName: input.signerName,
     signerRole: input.signerRole,
     replyTo: input.replyTo,
+    fromEmail: input.fromEmail,
+    fromName: input.fromName,
     businessPhone: input.businessPhone,
     mailingAddress: input.mailingAddress,
     city: input.city,
@@ -171,22 +198,38 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ error: "Something went wrong on our side." }, 500);
   });
 
-  app.get("/api/health", (c) => c.json({ ok: true, businesses: repo.listBusinesses().length, email: d.email.name, sms: d.notifier.name, ai: d.llm ? d.llm.model : null, time: d.clock().toISOString() }));
+  // The Jobber webhook has no secret in its path: an unsigned request is turned away before a byte of its body is read.
+  app.use("/webhooks/jobber", async (c, next) => {
+    if (c.req.method === "POST" && d.fsm.jobber && !c.req.header("x-jobber-hmac-sha256")) return c.json({ error: "bad signature" }, 401);
+    await next();
+  });
+  // Every body is capped before anyone reads it: the one process runs every client, so an unbounded POST
+  // must never be buffered whole. Imports get room for real exports.
+  app.use("*", (c, next) => bodyLimit({ maxSize: bodyCap(c.req.path), onError: (cc) => cc.json({ error: "That's too big for us to take." }, 413) })(c, next));
+
+  const isOperator = (c: Context<Env>) => {
+    const token = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    const a = Buffer.from(token);
+    const b = Buffer.from(d.cfg.OPERATOR_TOKEN);
+    return a.length === b.length && a.equals(b);
+  };
+
+  // Is the worker ticking, how long does a tick take, how far behind is each client? Per-client detail needs the operator token.
+  app.get("/api/health", (c) => {
+    const worker = workerHealth(d, { detail: isOperator(c) });
+    return c.json({ ok: !worker.stalled, businesses: repo.listBusinesses().length, email: d.email.name, sms: d.notifier.name, ai: d.llm ? d.llm.model : null, time: d.clock().toISOString(), worker });
+  });
 
   /* ----------------------------- auth ----------------------------- */
   const operator: MiddlewareHandler<Env> = async (c, next) => {
-    const auth = c.req.header("authorization") ?? "";
-    const token = auth.replace(/^Bearer\s+/i, "");
-    const a = Buffer.from(token);
-    const b = Buffer.from(d.cfg.OPERATOR_TOKEN);
-    if (a.length !== b.length || !a.equals(b)) return c.json({ error: "Operator token required" }, 401);
+    if (!isOperator(c)) return c.json({ error: "Operator token required" }, 401);
     c.set("actor", "operator");
     await next();
   };
   const owner: MiddlewareHandler<Env> = async (c, next) => {
-    const payload = verifySigned(d.cfg.APP_SECRET, c.req.param("token") ?? "");
-    if (!payload?.startsWith("owner|")) return c.json({ error: "This link isn't valid anymore." }, 401);
-    c.set("bid", payload.slice("owner|".length));
+    const bid = readLinkToken(d, "owner", c.req.param("token") ?? "");
+    if (!bid) return c.json({ error: "This link isn't valid anymore." }, 401);
+    c.set("bid", bid);
     c.set("actor", "owner");
     await next();
   };
@@ -211,8 +254,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const id = input.id ?? `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32)}-${createHash("sha1").update(input.name + d.clock().toISOString()).digest("hex").slice(0, 5)}`;
     const today = localIso(d.clock(), input.timezone).slice(0, 10);
     await d.accounts.create(defaultProfile({ ...input, ownerPhone: cell }, id, today), today);
+    // A fresh link key: a reused id never inherits an old client's links.
+    rotateLinks(d, id);
     repo.audit(id, "operator", "business.create", { name: input.name });
-    return c.json({ id, ownerLink: `${d.cfg.PUBLIC_URL}/o/${sign(d.cfg.APP_SECRET, `owner|${id}`)}`, importAddressToken: sign(d.cfg.APP_SECRET, `import|${id}`) }, 201);
+    return c.json({ id, ownerLink: ownerLink(d, id), importAddressToken: linkToken(d, "import", id), warnings: sharedCell(id, cell) }, 201);
   });
 
   op.get("/businesses/:id", (c) => {
@@ -239,8 +284,19 @@ export function createApp(d: HttpDeps): Hono<Env> {
       if (planPatch) b.plan = { ...b.plan, ...planPatch };
     });
     repo.audit(id, "operator", "business.update", patch);
-    return c.json({ ok: true });
+    return c.json({ ok: true, warnings: patch.ownerPhone ? sharedCell(id, patch.ownerPhone) : [] });
   });
+
+  /** One owner may run two brands from one cell; that works, but texts that don't say which one get a question back. */
+  function sharedCell(id: string, cell: string | undefined): string[] {
+    const digits = (cell ?? "").replace(/\D/g, "").slice(-10);
+    if (digits.length < 10) return [];
+    const all = repo.listBusinesses().filter((b) => (b.profile.ownerPhone ?? "").replace(/\D/g, "").slice(-10) === digits);
+    const others = all.filter((b) => b.id !== id);
+    if (!others.length) return [];
+    const tags = shortNames(all);
+    return [`${others.map((b) => b.profile.name).join(", ")} ${others.length === 1 ? "uses" : "use"} the same cell. That's fine for one owner with two businesses: a text that doesn't say which one (by its #code or its name, like "PAUSE ${tags.get(id)}") gets a question back instead of a guess.`];
+  }
 
   op.delete("/businesses/:id", (c) => {
     const id = c.req.param("id");
@@ -271,12 +327,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses/:id/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
-    d.accounts.setPaused(c.req.param("id"), paused);
-    if (d.email.kind === "sequencer") {
-      const state = d.accounts.peek(c.req.param("id"))?.state;
-      const campaigns = new Set((state?.touches ?? []).map((t) => t.providerId?.split(":")[1]).filter(Boolean) as string[]);
-      for (const cid of campaigns) await d.email.pauseCampaign(state!.dataset.business, cid, paused);
-    }
+    await setBusinessPaused(d, c.req.param("id"), paused);
     repo.audit(c.req.param("id"), "operator", paused ? "pause" : "resume");
     return c.json({ ok: true });
   });
@@ -366,6 +417,36 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
+  // Hand a reply to the owner: a hot one is texted again; anything else is handed off as a question for them.
+  op.post("/businesses/:id/replies/:rid/handoff", async (c) => {
+    const bid = c.req.param("id");
+    const rid = c.req.param("rid");
+    let found = false;
+    await d.accounts.withAccount(bid, (state) => {
+      const r = state.replies.find((x) => x.id === rid);
+      if (!r) return;
+      found = true;
+      const now = localIso(d.clock(), state.dataset.business.timezone).slice(0, 19);
+      if (r.status === "handed_off" && !r.ownerContactedAt)
+        state.ownerMessages.push({ id: `om_again_${r.id}_${now}`, at: now, kind: "handoff", text: handoffText(state, r), refs: r.customerId ? [{ kind: "customer", id: r.customerId }] : undefined });
+      else relabelReply(state, rid, r.intent === "wants_it" || r.intent === "wants_price" ? r.intent : "question", now);
+    });
+    if (!found) return c.json({ error: "No such reply" }, 404);
+    repo.audit(bid, c.get("actor") ?? "operator", "reply.handoff", { rid });
+    await deliverOwnerMessages(d, bid);
+    return c.json({ ok: true });
+  });
+
+  // Drop an AI draft the operator won't send.
+  op.delete("/businesses/:id/replies/:rid/draft", async (c) => {
+    let found = false;
+    await d.accounts.withAccount(c.req.param("id"), (state) => {
+      const r = state.replies.find((x) => x.id === c.req.param("rid"));
+      if (r?.draft) (r.draft = undefined), (found = true);
+    });
+    return found ? c.json({ ok: true }) : c.json({ error: "No draft on that reply" }, 404);
+  });
+
   const Dispute = z.object({ reason: z.string().max(200).optional() });
 
   op.get("/businesses/:id/events", (c) => {
@@ -393,13 +474,32 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses/:id/sync", async (c) => c.json((await syncFsm(d, c.req.param("id"), "jobber")) ?? { error: "Not connected" }));
 
+  const links = (id: string) => ({ owner: ownerLink(d, id), connectJobber: connectJobberLink(d, id), importToken: linkToken(d, "import", id) });
   op.get("/businesses/:id/links", (c) => {
+    if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
+    return c.json(links(c.req.param("id")));
+  });
+  // New owner, import and connect links for one client (a departed office manager, a forwarded text): every old one stops working.
+  op.post("/businesses/:id/links/rotate", (c) => {
     const id = c.req.param("id");
-    return c.json({
-      owner: `${d.cfg.PUBLIC_URL}/o/${sign(d.cfg.APP_SECRET, `owner|${id}`)}`,
-      connectJobber: `${d.cfg.PUBLIC_URL}/oauth/jobber/start?state=${encodeURIComponent(sign(d.cfg.APP_SECRET, `oauth|jobber|${id}`))}`,
-      importToken: sign(d.cfg.APP_SECRET, `import|${id}`),
-    });
+    if (!repo.exists(id)) throw new NotFound("No such business");
+    rotateLinks(d, id);
+    repo.audit(id, "operator", "links.rotate");
+    return c.json(links(id));
+  });
+
+  // Every text the owner sent us, newest first, with what we did about it.
+  op.get("/businesses/:id/owner-texts", (c) => c.json(repo.ownerTexts(c.req.param("id"), { limit: Math.min(500, Number(c.req.query("limit") ?? 100)) })));
+  op.post("/businesses/:id/owner-texts/:seq/done", (c) => c.json({ ok: repo.finishOwnerText(c.req.param("id"), Number(c.req.param("seq")), d.clock().toISOString()) }));
+  op.post("/businesses/:id/alerts/:seq/done", (c) => c.json({ ok: repo.finishAlert(c.req.param("id"), Number(c.req.param("seq")), d.clock().toISOString()) }));
+
+  // Forget a Jobber connection (to connect a different account on purpose; the connect link won't switch accounts by itself).
+  op.delete("/businesses/:id/integrations/jobber", (c) => {
+    const id = c.req.param("id");
+    if (!repo.exists(id)) throw new NotFound("No such business");
+    repo.deleteIntegration(id, "jobber");
+    repo.audit(id, "operator", "jobber.disconnect");
+    return c.json({ ok: true });
   });
 
   /* ----------------------------- operator console reads -----------------------------
@@ -423,13 +523,24 @@ export function createApp(d: HttpDeps): Hono<Env> {
       for (const r of s.replies) {
         const who = r.customerId ? people.get(r.customerId) : undefined;
         const person = { customerId: r.customerId, name: who?.name ?? r.from, phone: r.extracted.phone ?? who?.phones[0], email: who?.emails[0] ?? r.from };
+        // An AI-drafted answer nobody has sent yet rides along, so it can go out in one click.
+        const draft = r.draft ? { draft: r.draft.text, draftNeedsOwner: r.draft.needsOwner } : {};
         if (r.intent === "unclear" && r.status === "new") {
-          items.push({ kind: "unclear", ...biz, at: r.receivedAt, replyId: r.id, ...person, text: r.text.slice(0, 1000) });
+          items.push({ kind: "unclear", ...biz, at: r.receivedAt, replyId: r.id, ...person, text: r.text.slice(0, 1000), ...draft });
         } else if ((r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt) {
           const hours = (Date.parse(nowLocal) - Date.parse(r.handedOffAt ?? r.receivedAt)) / 3_600_000;
-          if (hours >= sla) items.push({ kind: "late_lead", ...biz, at: r.handedOffAt ?? r.receivedAt, replyId: r.id, ...person, intent: r.intent, hours: Math.round(hours), text: r.text.slice(0, 1000) });
+          if (hours >= sla) items.push({ kind: "late_lead", ...biz, at: r.handedOffAt ?? r.receivedAt, replyId: r.id, ...person, intent: r.intent, hours: Math.round(hours), text: r.text.slice(0, 1000), ...draft });
+          else if (r.draft) items.push({ kind: "draft", ...biz, at: r.draft.at, replyId: r.id, ...person, intent: r.intent, text: r.text.slice(0, 1000), ...draft });
         }
       }
+      // Texts from the owner we couldn't act on (and a yes to the paid plan), and alerts that need a person.
+      for (const t of repo.ownerTexts(b.id, { open: true }))
+        items.push({ kind: "owner_text", ...biz, at: t.at, seq: t.seq, text: t.body, reply: t.reply, handled: t.handled });
+      for (const a of repo.openAlerts(b.id)) items.push({ kind: "alert", ...biz, at: a.at, seq: a.seq, alertKind: a.kind, title: a.title, detail: a.detail ?? "" });
+      // Jobber connected and read, nothing planned yet: ready for the operator to look and start the free round.
+      const j = repo.getIntegration(b.id, "jobber");
+      if (j?.status === "connected" && j.last_sync_at && !s.touches.length && s.dataset.business.plan.stage === "trial")
+        items.push({ kind: "ready", ...biz, at: j.last_sync_at, quotes: s.dataset.quotes.length, customers: s.dataset.customers.length, headline: readiness(s.dataset).headline });
       const flagged = s.touches.filter((t) => t.flags.length && (t.status === "planned" || t.status === "approved")).slice(0, 100);
       for (const t of flagged)
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
@@ -610,12 +721,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const attachments = ((body.Attachments as { Name: string; Content: string; ContentType?: string }[] | undefined) ?? []).filter((a) => /\.(csv|tsv|txt)$/i.test(a.Name) || /csv/.test(a.ContentType ?? ""));
     const importToken = to.match(/import\+([A-Za-z0-9_.-]+)@/)?.[1];
     if (importToken) {
-      const payload = verifySigned(d.cfg.APP_SECRET, importToken);
-      if (!payload?.startsWith("import|") || !attachments.length) {
+      const bid = readLinkToken(d, "import", importToken);
+      if (!bid || !attachments.length) {
         repo.finishWebhook(id, "ignored", undefined, "bad import token or no CSV attachment");
         return c.json({ ok: true, ignored: true });
       }
-      const bid = payload.slice("import|".length);
       // Excel's classic CSV is Windows-1252, not UTF-8
       const files = attachments.map((a) => ({ name: a.Name, text: decodeText(Buffer.from(a.Content, "base64")) }));
       const res = await importFiles(d, bid, files);
@@ -660,29 +770,55 @@ export function createApp(d: HttpDeps): Hono<Env> {
   });
 
   /* ----------------------------- OAuth: Jobber ----------------------------- */
+  // The connect link (texted to the owner) is long-lived; each trip to Jobber gets its own single-use state that
+  // expires in 30 minutes, so a copied authorize URL or browser history can't be replayed.
+  const OAUTH_STATE_MS = 30 * 60000;
   app.get("/oauth/jobber/start", (c) => {
     const conn = d.fsm.jobber;
-    const state = c.req.query("state") ?? "";
     if (!conn) return c.text("Jobber isn't configured on this server.", 404);
-    if (!verifySigned(d.cfg.APP_SECRET, state)?.startsWith("oauth|jobber|")) return c.text("This connect link isn't valid.", 400);
-    return c.redirect(conn.authorizeUrl(state, `${d.cfg.PUBLIC_URL}/oauth/jobber/callback`));
+    const bid = readLinkToken(d, "oauth|jobber", c.req.query("state") ?? "");
+    if (!bid) return c.text("This connect link isn't valid anymore. Ask us for a new one.", 400);
+    const nonce = randomBytes(18).toString("base64url");
+    repo.putOAuthState(nonce, bid, "jobber", new Date(d.clock().getTime() + OAUTH_STATE_MS).toISOString());
+    return c.redirect(conn.authorizeUrl(nonce, `${d.cfg.PUBLIC_URL}/oauth/jobber/callback`));
   });
 
   app.get("/oauth/jobber/callback", async (c) => {
     const conn = d.fsm.jobber;
     if (!conn) return c.text("Jobber isn't configured on this server.", 404);
-    const payload = verifySigned(d.cfg.APP_SECRET, c.req.query("state") ?? "");
     const code = c.req.query("code");
-    if (!payload?.startsWith("oauth|jobber|") || !code) return c.text("Connection failed: the link expired or was changed. Ask us for a new one.", 400);
-    const bid = payload.slice("oauth|jobber|".length);
-    const tokens = await conn.exchangeCode(code, `${d.cfg.PUBLIC_URL}/oauth/jobber/callback`);
+    const bid = code ? repo.takeOAuthState(c.req.query("state") ?? "", "jobber", d.clock().toISOString()) : undefined;
+    if (!bid || !repo.exists(bid)) return c.text("Connection failed: that link expired or was already used. Open the connect link we sent you again.", 400);
+    const tokens = await conn.exchangeCode(code!, `${d.cfg.PUBLIC_URL}/oauth/jobber/callback`);
+    // A connect link never moves a client to a different Jobber account: that would pour someone else's clients
+    // and quotes into this contractor's notes. The operator is told, and can disconnect on purpose to switch.
+    const cur = repo.getIntegration(bid, "jobber");
+    if (cur?.account_id && tokens.accountId && cur.account_id !== tokens.accountId) {
+      repo.audit(bid, "owner", "jobber.rebind_refused", { current: cur.account_id, attempted: tokens.accountId });
+      await raiseAlert(d, bid, {
+        kind: "jobber_rebind",
+        title: "Someone tried to connect a different Jobber account",
+        detail: `This client is connected to Jobber account ${cur.account_id}; the connect link was used with ${tokens.accountId}${tokens.accountName ? ` (${tokens.accountName})` : ""}. Nothing changed. If the owner really switched accounts, disconnect Jobber for them first, then send the connect link again.`,
+      });
+      return c.html(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Not connected</title><body style="font:16px/1.5 system-ui;padding:40px;max-width:520px;margin:auto"><h2>That's a different Jobber account.</h2><p>This business is already connected to another Jobber account, so we didn't switch it. We've let Jack know; he'll sort it out with you.</p></body>`, 409);
+    }
     repo.putIntegration(bid, "jobber", { accountId: tokens.accountId ?? null, secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(tokens)), status: "connected", cursor: null, lastError: null });
-    repo.enqueue("jobber.sync", { initial: true }, { businessId: bid, dedupeKey: `jobber.sync:${bid}` });
+    repo.enqueue("jobber.sync", { initial: true }, { businessId: bid, runAt: d.clock().toISOString(), dedupeKey: `jobber.sync:${bid}` });
     repo.audit(bid, "owner", "jobber.connected", { accountId: tokens.accountId });
     return c.html(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connected</title><body style="font:16px/1.5 system-ui;padding:40px;max-width:520px;margin:auto"><h2>Jobber is connected.</h2><p>We're reading your quotes now. You'll get a text when your drawer scan is ready. You can close this page.</p></body>`);
   });
 
   return app;
+}
+
+const MB = 1024 * 1024;
+
+/** The largest body each route takes: webhooks are small; imports (and exports forwarded by email) are files. */
+export function bodyCap(path: string): number {
+  if (path.startsWith("/webhooks/inbound-email/")) return 25 * MB;
+  if (path.startsWith("/webhooks/")) return 256 * 1024;
+  if (/^\/api\/businesses\/[^/]+\/imports$/.test(path)) return 25 * MB;
+  return 2 * MB;
 }
 
 /** The owner's cell is Twilio's To, so it is stored as E.164. Undefined: none given; null: not a number we can text. */

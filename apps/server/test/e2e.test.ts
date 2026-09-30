@@ -44,6 +44,7 @@ function makeDeps(): HttpDeps & { email: LogEmailProvider; notifier: LogNotifier
 let d: ReturnType<typeof makeDeps>;
 let app: ReturnType<typeof createApp>;
 let bid = "";
+let ownerToken = "";
 const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
 
 async function api(method: string, path: string, body?: unknown) {
@@ -99,6 +100,7 @@ describe("end to end", () => {
     bid = r.json.id as string;
     expect(bid).toBe("ridgeline-tree");
     expect(String(r.json.ownerLink)).toContain("https://qa.test/o/");
+    ownerToken = String(r.json.ownerLink).split("/o/")[1]!;
   });
 
   it("reads three years of Jobber exports and finds the breakage", async () => {
@@ -223,15 +225,17 @@ describe("end to end", () => {
   });
 
   it("owner links are scoped to one business", async () => {
-    const token = sign("test-app-secret-0123456789", `owner|${bid}`);
+    const token = ownerToken;
     const ok = await app.request(`/api/owner/${token}/overview`);
     expect(ok.status).toBe(200);
     const forged = await app.request(`/api/owner/${token.slice(0, -2)}xx/overview`);
     expect(forged.status).toBe(401);
+    // a link without this client's link key (the old unversioned kind) doesn't open it
+    expect((await app.request(`/api/owner/${sign("test-app-secret-0123456789", `owner|${bid}`)}/overview`)).status).toBe(401);
   });
 
   it("shows the owner a ledger they can check, and 'not ours' takes a win out of every number", async () => {
-    const token = sign("test-app-secret-0123456789", `owner|${bid}`);
+    const token = ownerToken;
     const res = await app.request(`/api/owner/${token}/ledger`);
     const ledger = (await res.json()) as { rules: string[]; rows: { id: string; value: number; counts: boolean; match: string; theyWrote?: string }[] };
     expect(ledger.rules.join(" ")).toMatch(/180 days/);

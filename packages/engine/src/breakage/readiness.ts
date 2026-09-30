@@ -143,6 +143,16 @@ export function readiness(ds: Dataset): Readiness {
     });
   }
 
+  // Hot leads, reminders and the Friday report are texted: without a cell they'd only reach an inbox or the review queue.
+  if (!ds.business.ownerPhone) {
+    gaps.push({
+      id: "no_owner_cell",
+      level: "blocker",
+      ask: "The owner's cell number.",
+      unlocks: `Every hot lead is texted to them the minute it comes in. Without a cell, leads ${ds.business.ownerEmail ? "only go to their email" : "wait in your review queue"} until someone passes them on.`,
+    });
+  }
+
   const ready = !gaps.some((g) => g.level === "blocker");
   const unlocks = gaps.filter((g) => g.level === "unlocks").length;
   const headline = !ready

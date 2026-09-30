@@ -40,7 +40,8 @@ export class TwilioNotifier implements OwnerNotifier {
       body,
     });
     const json = (await res.json().catch(() => ({}))) as { sid?: string; message?: string; code?: number };
-    if (!res.ok) throw new ProviderError(`Twilio ${res.status}: ${json.message ?? "send failed"}`, "twilio", res.status, res.status === 429 || res.status >= 500);
+    // The error code stays in the message: 21610 means the owner opted out at the carrier (STOP).
+    if (!res.ok) throw new ProviderError(`Twilio ${res.status}${json.code ? ` (${json.code})` : ""}: ${json.message ?? "send failed"}`, "twilio", res.status, res.status === 429 || res.status >= 500);
     return { id: json.sid ?? `twilio-${randomUUID()}`, channel: "sms" as const };
   }
 }
