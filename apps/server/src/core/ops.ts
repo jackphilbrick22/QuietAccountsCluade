@@ -55,7 +55,7 @@ import type { MailCheck } from "../providers/mailcheck.ts";
 import { draftAnswer, readReplyWithClaude } from "../agents/replies.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
-import type { Accounts } from "./accounts.ts";
+import { NotReady, type Accounts } from "./accounts.ts";
 import { localIso } from "./clock.ts";
 import { decrypt, encrypt } from "./crypto.ts";
 
@@ -216,6 +216,9 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
   let planned: Touch[] = [];
   let firstRound = false;
   let approved = true;
+  // Every note carries the business's postal address (CAN-SPAM); a sign-up from the site doesn't have one yet.
+  const known = d.accounts.peek(bid);
+  if (known && (known.state.dataset.business.mailingAddress?.trim() ?? "").length < 8) throw new NotReady("Add the business's mailing address first. It goes at the bottom of every note, and the law requires it.");
   const result = await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     const b = state.dataset.business;

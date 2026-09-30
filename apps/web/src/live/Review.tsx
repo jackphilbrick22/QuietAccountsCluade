@@ -243,9 +243,10 @@ function Item({ it }: { it: ReviewItem }) {
       {it.kind === "ready" && (
         <>
           <div className="text-[14px]">
-            Jobber is connected and read: {it.quotes.toLocaleString("en-US")} quotes, {it.customers.toLocaleString("en-US")} clients. Nothing is planned yet.
+            {it.from === "file" ? "Their file is in" : "Jobber is connected and read"}: {it.quotes.toLocaleString("en-US")} quotes, {it.customers.toLocaleString("en-US")} clients. Nothing is planned yet.
           </div>
           <p className="text-[12.5px] text-ink-3">{it.headline}</p>
+          {it.needsAddress && <p className="text-[12.5px] font-semibold text-warn">Add their mailing address before you plan: it goes at the bottom of every note.</p>}
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" onClick={() => open("overview")}>
               Look it over and start

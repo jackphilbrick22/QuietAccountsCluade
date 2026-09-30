@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 import {
   BREAKAGE_LABEL,
   closeMessage,
@@ -24,13 +25,15 @@ import {
   type FileIn,
   type Reply,
   type TradeId,
+  type SourceSystem,
+  fmtMoney,
   quietRates,
 } from "@qa/engine";
 import { z } from "zod";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
 import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
-import { NotFound } from "../core/accounts.ts";
+import { NotFound, NotReady } from "../core/accounts.ts";
 import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { localIso } from "../core/clock.ts";
 import {
@@ -200,6 +203,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   app.onError((err, c) => {
     if (err instanceof NotFound) return c.json({ error: err.message }, 404);
+    if (err instanceof NotReady) return c.json({ error: err.message }, 409);
     if (err instanceof z.ZodError) return c.json({ error: "Invalid input", issues: err.issues }, 400);
     d.log(`[http] ${c.req.method} ${c.req.path} failed: ${err.stack ?? err}`);
     return c.json({ error: "Something went wrong on our side." }, 500);
@@ -585,9 +589,12 @@ export function createApp(d: HttpDeps): Hono<Env> {
         items.push({ kind: "owner_text", ...biz, at: t.at, seq: t.seq, text: t.body, reply: t.reply, handled: t.handled });
       for (const a of repo.openAlerts(b.id)) items.push({ kind: "alert", ...biz, at: a.at, seq: a.seq, alertKind: a.kind, title: a.title, detail: a.detail ?? "" });
       // Jobber connected and read, nothing planned yet: ready for the operator to look and start the free round.
+      // Or their file came in (a sign-up from the site, or an import): same thing, from a file.
       const j = repo.getIntegration(b.id, "jobber");
-      if (j?.status === "connected" && j.last_sync_at && !s.touches.length && s.dataset.business.plan.stage === "trial")
-        items.push({ kind: "ready", ...biz, at: j.last_sync_at, quotes: s.dataset.quotes.length, customers: s.dataset.customers.length, headline: readiness(s.dataset).headline });
+      const synced = j?.status === "connected" && !!j.last_sync_at;
+      const lastFile = s.dataset.imports.at(-1)?.importedAt;
+      if ((synced || lastFile) && !s.touches.length && s.dataset.business.plan.stage === "trial")
+        items.push({ kind: "ready", ...biz, at: (synced ? j!.last_sync_at : lastFile)!, from: synced ? "jobber" : "file", quotes: s.dataset.quotes.length, customers: s.dataset.customers.length, headline: readiness(s.dataset).headline, needsAddress: (s.dataset.business.mailingAddress?.trim() ?? "").length < 8 });
       const flagged = s.touches.filter((t) => t.flags.length && (t.status === "planned" || t.status === "approved")).slice(0, 100);
       for (const t of flagged)
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
@@ -741,6 +748,77 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const { markContacted } = await import("@qa/engine");
     await d.accounts.withAccount(bid, (state) => markContacted(state, rid, localIso(d.clock(), state.dataset.business.timezone), outcome, value));
   }
+
+  /* ------------------------ sign-up from the site ------------------------ */
+  // The site's Start button: the owner's own file (read in their browser first), company, first name, cell and
+  // consent. We make the account, read the file and put it in the operator's queue with the Money Map ready.
+  // Nothing goes to anyone from here: the operator adds the mailing address, looks at the first note and plans,
+  // and only then does the owner get a text (the first note, word for word, waiting for their OK).
+  const origins = d.cfg.SIGNUP_ORIGINS.split(",").map((x) => x.trim()).filter(Boolean);
+  app.use("/start", cors({ origin: origins.length ? origins : "*", allowMethods: ["POST", "OPTIONS"], allowHeaders: ["content-type"], maxAge: 86400 }));
+  const signupHits = new Map<string, number[]>();
+  const Signup = z.object({
+    company: z.string().trim().min(2).max(120),
+    first: z.string().trim().min(1).max(60),
+    cell: z.string().max(40),
+    signer: z.string().trim().max(60).optional(),
+    trade: z.string().max(40).optional(),
+    software: z.string().max(40).optional(),
+    consent: z.literal(true),
+    files: z.array(z.object({ name: z.string().min(1).max(200), text: z.string().min(1) })).max(5).optional(),
+    audit: z.object({ quotes: z.number(), silent: z.object({ count: z.number(), value: z.number() }), perMonth: z.number() }).partial().passthrough().optional(),
+    ref: z.string().max(200).optional(),
+    /** A field people can't see; anything in it is a bot. */
+    website: z.string().max(500).optional(),
+  });
+  app.post("/start", async (c) => {
+    if (d.cfg.SIGNUPS !== "on") return c.json({ error: "Sign-ups are closed right now. Text Jack instead." }, 503);
+    // five tries an hour from one address; enough for a typo, not for a script
+    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0]!.trim() || c.req.header("x-real-ip") || "local";
+    const hour = Date.now() - 3_600_000;
+    const hits = (signupHits.get(ip) ?? []).filter((t) => t > hour);
+    if (hits.length >= 5) return c.json({ error: "Too many tries. Text Jack instead." }, 429);
+    signupHits.set(ip, [...hits, Date.now()]);
+    if (signupHits.size > 5000) signupHits.clear();
+    const parsed = Signup.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: parsed.error.issues.some((i) => i.path[0] === "consent") ? "Tick the box so we can follow up on your behalf." : "Something's missing. Check the company, your name and your cell." }, 400);
+    const f = parsed.data;
+    if (f.website) return c.json({ ok: true, id: "thanks" }, 201);
+    const cell = ownerCell(f.cell);
+    if (!cell) return c.json({ error: "That doesn't look like a cell we can text." }, 400);
+    if ((f.files ?? []).reduce((a, x) => a + x.text.length, 0) > 9 * MB) return c.json({ error: "That file's too big to send here. Jack will ask for it by text." }, 413);
+    const trade = (TRADES as readonly string[]).includes(f.trade ?? "") ? (f.trade as TradeId) : "general";
+    const software: SourceSystem = /jobber/i.test(f.software ?? "") ? "jobber" : /housecall/i.test(f.software ?? "") ? "housecall_pro" : "unknown";
+    // The same owner pressing Start twice (or coming back with the file) lands on the same account.
+    const again = repo.listBusinesses().find((b) => b.profile.ownerPhone === cell && b.profile.name.toLowerCase() === f.company.toLowerCase());
+    let id = again?.id;
+    if (!id) {
+      id = `${f.company.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "shop"}-${randomBytes(3).toString("hex")}`;
+      const today = localIso(d.clock(), "America/New_York").slice(0, 10);
+      const signer = f.signer?.trim() || f.first;
+      const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: "America/New_York" }, id, today);
+      profile.software = software;
+      await d.accounts.create(profile, today);
+      rotateLinks(d, id);
+    }
+    let read = "";
+    if (f.files?.length) {
+      try {
+        const res = await importFiles(d, id, f.files as FileIn[]);
+        const s = d.accounts.peek(id)!.state;
+        read = `Their file is in (${res.map((r) => `${r.accepted} ${r.kind}s`).join(", ")}): ${s.summary?.audit?.silent.count ?? 0} quotes never answered, ${fmtMoney(s.summary?.audit?.silent.value ?? 0, { compact: true })}.`;
+      } catch (e) {
+        read = `Their file didn't read (${(e as Error).message.slice(0, 120)}). Ask them for the export by text.`;
+      }
+    } else read = "No file yet. Ask for their export by text (or send the Connect Jobber link).";
+    await raiseAlert(d, id, {
+      kind: "signup",
+      title: `New sign-up: ${f.company}`,
+      detail: `${f.first}, ${cell}${f.software ? `, uses ${f.software}` : ""}. ${read} Next: add their mailing address, read the first note, then Plan — they get the first note by text and it waits for their OK.`,
+    });
+    repo.audit(id, "public", again ? "signup.again" : "signup", { ref: f.ref, software: f.software, audit: f.audit, files: f.files?.map((x) => x.name) });
+    return c.json({ ok: true, id }, 201);
+  });
 
   /* ----------------------------- unsubscribe ----------------------------- */
   const unsub = async (c: Context<Env>) => {
@@ -917,6 +995,7 @@ const MB = 1024 * 1024;
 /** The largest body each route takes: webhooks are small; imports (and exports forwarded by email) are files. */
 export function bodyCap(path: string): number {
   if (path.startsWith("/webhooks/inbound-email/")) return 25 * MB;
+  if (path === "/start") return 10 * MB;
   if (path.startsWith("/webhooks/")) return 256 * 1024;
   if (/^\/api\/businesses\/[^/]+\/imports$/.test(path)) return 25 * MB;
   return 2 * MB;

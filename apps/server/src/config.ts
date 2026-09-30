@@ -57,6 +57,9 @@ const schema = z.object({
   WORKER_BUSINESS_BUDGET_MS: z.coerce.number().default(20_000),
   /** Texts about money (the close, pre-charge, free month) wait for an operator by default. */
   AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
+  /** The site's Start form posts here (POST /start). Comma-separated origins allowed to call it; empty = any. */
+  SIGNUP_ORIGINS: z.string().default(""),
+  SIGNUPS: z.enum(["on", "off"]).default("on"),
   /** Pre-send check that each address's domain accepts mail (DNS MX). "off" skips it. */
   MAIL_CHECK: z.enum(["on", "off"]).default("on"),
   /** Owner-waiting threshold before the first nudge. */

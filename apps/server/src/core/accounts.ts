@@ -90,3 +90,5 @@ export class Accounts {
 }
 
 export class NotFound extends Error {}
+/** Something has to be filled in before this can run (a 409 with the message, for the operator). */
+export class NotReady extends Error {}
