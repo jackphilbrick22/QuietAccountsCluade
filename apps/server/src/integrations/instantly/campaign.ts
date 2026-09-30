@@ -31,6 +31,12 @@
  *    https://help.instantly.ai/en/articles/6759494-how-to-prioritize-new-leads-over-follow-ups
  *  - stop_for_company stops the whole domain when one lead replies. It must stay off: our people are homeowners on
  *    gmail.com / yahoo.com.
+ *  - Instantly also caps emails per company (domain) per day unless `limit_emails_per_company_override` is
+ *    `{ mode: "disabled" }`. Every homeowner on gmail.com is "one company" to it, so every campaign disables it.
+ *  - A campaign sends step 1 to new leads only after follow-ups (prioritize_new_leads=false), under
+ *    daily_max_leads, email_gap minutes apart plus a random wait, inside its schedule. That is right for a
+ *    nurture sequence and wrong for the answer to a new request, so each business has a second, 1-step
+ *    "instant" campaign: new leads first, no new-lead cap, minimal gaps, every day 7:00–20:00 local.
  *
  * ASSUMED
  *  - The API accepts "" as a follow-up subject, as the UI does. (The spec requires the field and sets no minLength.)
@@ -40,8 +46,10 @@
  *  - daily_limit caps the whole campaign (the spec says "The daily limit for sending emails"; the MCP tool says
  *    per account). We pass the configured number through unchanged.
  *  - A daily_max_leads of 0 might read as "unlimited" (the help article says blank means unlimited), so it is never sent as 0.
+ *    The instant campaign leaves it out (blank = unlimited).
+ *  - email_gap / random_wait_max are minutes. 0 might read as "use the default", so the instant campaign sends 1.
  */
-import type { BusinessProfile } from "@qa/engine";
+import { ANSWER_HOURS, type BusinessProfile } from "@qa/engine";
 import type { SequencedLead } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import { toInstantlyTimezone, type InstantlyTimezone } from "./timezones.ts";
@@ -92,9 +100,13 @@ export interface CreateCampaignBody {
   email_list?: string[];
   daily_limit?: number;
   daily_max_leads?: number;
+  /** Minutes between emails, and the most extra random minutes on top. */
+  email_gap?: number;
+  random_wait_max?: number;
   stop_on_reply: boolean;
   stop_on_auto_reply: boolean;
   stop_for_company: boolean;
+  limit_emails_per_company_override: { mode: "disabled" };
   text_only: boolean;
   first_email_text_only: boolean;
   link_tracking: boolean;
@@ -115,6 +127,11 @@ export interface InstantlyLeadInput {
 
 export function campaignName(business: Pick<BusinessProfile, "name">, steps: number): string {
   return `QA · ${business.name.replace(/\s+/g, " ").trim()} · ${steps}-step`;
+}
+
+/** The business's always-open campaign for answers to new requests. */
+export function instantCampaignName(business: Pick<BusinessProfile, "name">): string {
+  return `QA · ${business.name.replace(/\s+/g, " ").trim()} · instant`;
 }
 
 export function checkSteps(maxSteps: number): number {
@@ -172,15 +189,18 @@ export function dailyNewLeads(business: Pick<BusinessProfile, "weeklyNewContacts
   return n;
 }
 
-export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
+/** What every Quiet Accounts campaign shares: plain text, no tracking, stop on a human reply, no per-company caps. */
+function baseBody(name: string, schedule: InstantlySchedule, steps: InstantlyStep[], settings: CampaignSettings): CreateCampaignBody {
   const body: CreateCampaignBody = {
-    name: campaignName(business, steps),
-    campaign_schedule: buildSchedule(business, ref),
-    sequences: [{ steps: buildSteps(steps, settings.threadFollowUps ?? true) }],
+    name,
+    campaign_schedule: schedule,
+    sequences: [{ steps }],
     stop_on_reply: true,
     // An out-of-office shouldn't end the sequence. The reply still reaches us and the Inbox agent reads it.
     stop_on_auto_reply: false,
+    // Homeowners share gmail.com: a "company" is not a household.
     stop_for_company: false,
+    limit_emails_per_company_override: { mode: "disabled" },
     text_only: true,
     first_email_text_only: true,
     link_tracking: false,
@@ -193,9 +213,29 @@ export function buildCampaignBody(business: BusinessProfile, steps: number, sett
   const accounts = (settings.sendingAccounts ?? []).map((a) => a.trim()).filter(Boolean);
   if (accounts.length) body.email_list = accounts;
   if (settings.dailyLimit && settings.dailyLimit > 0) body.daily_limit = settings.dailyLimit;
+  return body;
+}
+
+export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
+  const body = baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), settings);
   const perDay = dailyNewLeads(business, settings.dailyLimit);
   if (perDay !== undefined) body.daily_max_leads = perDay;
   return body;
+}
+
+/** Every day, ANSWER_HOURS (7:00–20:00) local: a request that lands at night is answered at 7:00. */
+export function buildInstantSchedule(business: Pick<BusinessProfile, "timezone">, ref?: Date): InstantlySchedule {
+  return buildSchedule({ timezone: business.timezone, sendDays: [0, 1, 2, 3, 4, 5, 6], sendWindow: [ANSWER_HOURS[0], ANSWER_HOURS[1]] }, ref);
+}
+
+/** The 1-step campaign that answers a new request within minutes: new leads first, no new-lead cap, minimal gaps. */
+export function buildInstantCampaignBody(business: BusinessProfile, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
+  return {
+    ...baseBody(instantCampaignName(business), buildInstantSchedule(business, ref), buildSteps(1), settings),
+    prioritize_new_leads: true,
+    email_gap: 1,
+    random_wait_max: 1,
+  };
 }
 
 const escapeHtml = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -211,6 +251,11 @@ export function toInstantlyHtml(text: string): string {
       return t === "" ? "<div><br /></div>" : `<div>${escapeHtml(t)}</div>`;
     })
     .join("");
+}
+
+/** A POST /emails/reply body: HTML-escaped text with `<br/>` line breaks (only html carries them). */
+export function toReplyHtml(text: string): string {
+  return escapeHtml(text.replace(/\r\n?/g, "\n").trim()).replace(/\n/g, "<br/>");
 }
 
 /** Subjects are one line of plain text. */

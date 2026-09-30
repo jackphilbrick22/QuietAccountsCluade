@@ -26,6 +26,7 @@
  *    https://developer.instantly.ai/api-reference/lead/delete-lead , .../lead/delete-leads-in-bulk
  *  - POST /api/v2/block-lists-entries { bl_value } (email or domain) → entry. GET ?search= lists entries.
  *    https://developer.instantly.ai/api-reference/blocklistentry/create-block-list-entry
+ *  - POST /api/v2/emails/reply has no `to`: the recipient check before answering is ours (see emails.ts).
  *  - A deleted lead that gets re-uploaded restarts at step 1, and Instantly recommends not deleting leads that
  *    replied. https://help.instantly.ai/en/articles/13886841-why-follow-ups-are-still-sending-to-leads-who-replied
  *    So stopLead keeps leads Instantly has already stopped, which keeps reply tracking and the workspace skip intact.
@@ -41,23 +42,27 @@
  *  - After a lead replies, Instantly (stop_on_reply) stops it: it moves to Completed and/or email_reply_count > 0.
  */
 import type { BusinessProfile } from "@qa/engine";
-import type { Fetch, SequencerProvider } from "../../contracts.ts";
+import type { Fetch, PlatformEmail, SequencerProvider } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import {
-  toInstantlyHtml,
   MAX_LEADS_PER_REQUEST,
   buildCampaignBody,
+  buildInstantCampaignBody,
   campaignName,
   checkSteps,
+  instantCampaignName,
   leadProblem,
   looksLikeEmail,
   normalizeEmail,
   toInstantlyLead,
+  toReplyHtml,
   type CampaignSettings,
+  type CreateCampaignBody,
   type InstantlyLeadInput,
 } from "./campaign.ts";
-import { InstantlyClient, INSTANTLY, type Sleep } from "./client.ts";
-import { ensureWebhooks, type EnsureWebhooksResult } from "./webhooks.ts";
+import { InstantlyClient, INSTANTLY, type Page, type Sleep } from "./client.ts";
+import { addressesIn, recipientsOf, toPlatformEmail, type InstantlyEmail } from "./emails.ts";
+import { ensureWebhooks, resumeDisabledWebhooks, type EnsureWebhooksResult } from "./webhooks.ts";
 
 export interface InstantlyProviderOptions {
   apiKey: string;
@@ -125,7 +130,7 @@ interface AddLeadsResponse {
 }
 
 const CAMPAIGN = { draft: 0, active: 1, paused: 2, completed: 3 } as const;
-const LEAD = { active: 1, paused: 2 } as const;
+const LEAD = { active: 1, paused: 2, completed: 3 } as const;
 const BLOCKLIST_REASONS: ReadonlySet<StopReason> = new Set(["unsubscribed", "bounced", "complained"]);
 
 export function createInstantlyProvider(opts: InstantlyProviderOptions): InstantlyProvider {
@@ -165,11 +170,10 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     return matches[0];
   }
 
-  async function resolveCampaign(business: BusinessProfile, steps: number): Promise<string> {
-    const name = campaignName(business, steps);
+  async function resolveCampaign(name: string, build: () => CreateCampaignBody): Promise<string> {
     const found = await findCampaignByName(name);
     if (found) return found.id;
-    const body = buildCampaignBody(business, steps, settings, now());
+    const body = build();
     try {
       const created = await client.post<InstantlyCampaign>("/campaigns", body, { idempotent: false });
       if (!created?.id) throw new ProviderError(`Instantly created "${name}" but returned no id`, INSTANTLY);
@@ -214,6 +218,27 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     return found;
   }
 
+  const isInstant = (campaignId: string) => [...campaignIds].some(([key, id]) => id === campaignId && key.endsWith(":instant"));
+
+  /**
+   * The instant campaign answers the same homeowner again the next time they ask. Instantly never re-adds an email
+   * to a campaign and a re-uploaded lead starts at step 1, so a lead whose earlier answer went (Completed) is
+   * removed first. Bounced, unsubscribed and still-sending leads are left alone.
+   */
+  async function replaceCompleted(campaignId: string, emails: string[]): Promise<void> {
+    for (let i = 0; i < emails.length; i += 100) {
+      const res = await client.post<{ items?: InstantlyLead[] }>("/leads/list", { campaign: campaignId, contacts: emails.slice(i, i + 100), limit: 100 }, { idempotent: true });
+      for (const lead of res?.items ?? []) {
+        if (!lead.id || lead.status !== LEAD.completed || (lead.campaign && lead.campaign !== campaignId)) continue;
+        try {
+          await client.delete(`/leads/${encodeURIComponent(lead.id)}`);
+        } catch (e) {
+          if (!(e instanceof ProviderError && e.status === 404)) throw e;
+        }
+      }
+    }
+  }
+
   function skipReason(res: AddLeadsResponse, missing: number): string {
     const parts: [number, string][] = [
       [res.in_blocklist ?? 0, "on the Instantly blocklist"],
@@ -245,14 +270,19 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     client,
     campaignName,
 
-    async ensureCampaign(business, { maxSteps }) {
+    async ensureCampaign(business, { maxSteps, instant }) {
       const steps = checkSteps(maxSteps);
-      const key = `${business.id}:${steps}`;
+      if (instant && steps !== 1) throw new ProviderError(`The instant campaign sends one note (got ${steps})`, INSTANTLY);
+      const key = `${business.id}:${instant ? "instant" : steps}`;
       const cached = campaignIds.get(key);
       if (cached) return { campaignId: cached };
       let pending = inflight.get(key);
       if (!pending) {
-        pending = resolveCampaign(business, steps).finally(() => inflight.delete(key));
+        pending = (
+          instant
+            ? resolveCampaign(instantCampaignName(business), () => buildInstantCampaignBody(business, settings, now()))
+            : resolveCampaign(campaignName(business, steps), () => buildCampaignBody(business, steps, settings, now()))
+        ).finally(() => inflight.delete(key));
         inflight.set(key, pending);
       }
       const campaignId = await pending;
@@ -285,6 +315,8 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
         }
         ready.push(toInstantlyLead(business, lead));
       }
+
+      if (isInstant(campaignId) && ready.length) await replaceCompleted(campaignId, ready.map((l) => l.email));
 
       let added = 0;
       for (let i = 0; i < ready.length; i += chunkSize) {
@@ -344,16 +376,40 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
       }
     },
 
-    // POST /emails/reply: answer in the same thread from the mailbox that received it. `to` makes Instantly
-    // check the thread's recipient before sending, so a wrong id can never mail the wrong person.
+    // POST /emails/reply: answer in the same thread from the mailbox that received it. The endpoint takes no `to`
+    // and checks no recipient, so (like Instantly's CLI) we read the email first: a wrong id never mails the wrong person.
     async replyTo(_business, thread, text) {
+      const want = addressesIn(thread.to)[0];
+      const original = await client.get<InstantlyEmail>(`/emails/${encodeURIComponent(thread.replyEmailId)}`);
+      const recipients = recipientsOf(original ?? {});
+      if (!want || !recipients.has(want)) {
+        throw new ProviderError(`Not replying: email ${thread.replyEmailId} is between ${[...recipients].join(", ") || "nobody we can see"}, not ${thread.to}`, INSTANTLY, undefined, false);
+      }
       await client.post("/emails/reply", {
         reply_to_uuid: thread.replyEmailId,
         eaccount: thread.account,
         subject: thread.subject,
-        to: thread.to,
-        body: { text, html: toInstantlyHtml(text) },
+        body: { text, html: toReplyHtml(text) },
       });
+    },
+
+    async receivedSince(since, { folder }) {
+      const out: PlatformEmail[] = [];
+      const query = { email_type: "received", min_timestamp_created: since, mode: folder === "others" ? "emode_others" : undefined };
+      for await (const e of client.paginate<InstantlyEmail>("/emails", query, { maxPages: 5 })) {
+        const m = toPlatformEmail(e);
+        if (m) out.push(m);
+      }
+      return out;
+    },
+
+    async threadEmails(threadId) {
+      const res = await client.get<Page<InstantlyEmail> | undefined>("/emails", { search: `thread:${threadId}`, limit: 20 });
+      return (res?.items ?? []).filter((e) => e?.thread_id === threadId).flatMap((e) => toPlatformEmail(e) ?? []);
+    },
+
+    resumeWebhooks() {
+      return resumeDisabledWebhooks(client);
     },
 
     async pauseCampaign(_business, campaignId, paused) {

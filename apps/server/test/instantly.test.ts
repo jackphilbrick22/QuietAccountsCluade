@@ -15,69 +15,7 @@ import {
   webhookSecretMatches,
   webhookUrlFor,
 } from "../src/integrations/instantly/index.ts";
-
-/* ------------------------------------------------------------------ */
-/* A fake Instantly API                                                */
-/* ------------------------------------------------------------------ */
-
-interface Call {
-  method: string;
-  path: string;
-  query: Record<string, string>;
-  body: any;
-  headers: Record<string, string>;
-}
-type Reply = { status?: number; body?: unknown; headers?: Record<string, string> };
-type Handler = (call: Call) => Reply | Promise<Reply>;
-
-function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
-  return new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-}
-
-/** Routes are "METHOD /path" with optional ":param" segments. An array answers call 1, 2, 3... in turn (the last repeats). */
-function fakeInstantly(routes: Record<string, Handler | Handler[]>) {
-  const calls: Call[] = [];
-  const seen = new Map<string, number>();
-  const find = (method: string, path: string) => {
-    for (const [key, h] of Object.entries(routes)) {
-      const [m, pattern] = key.split(" ") as [string, string];
-      if (m !== method) continue;
-      const a = pattern.split("/");
-      const b = path.split("/");
-      if (a.length === b.length && a.every((seg, i) => seg.startsWith(":") || seg === b[i])) return { key, h };
-    }
-    return undefined;
-  };
-  const fetch: Fetch = async (input, init) => {
-    const url = new URL(String(input));
-    const path = url.pathname.replace(/^\/api\/v2/, "");
-    const method = init?.method ?? "GET";
-    const call: Call = {
-      method,
-      path,
-      query: Object.fromEntries(url.searchParams),
-      body: init?.body ? JSON.parse(String(init.body)) : undefined,
-      headers: { ...(init?.headers as Record<string, string>) },
-    };
-    calls.push(call);
-    const route = find(method, path);
-    if (!route) return json(404, { statusCode: 404, error: "Not Found", message: `no fake for ${method} ${path}` });
-    let handler = route.h;
-    if (Array.isArray(handler)) {
-      const n = seen.get(route.key) ?? 0;
-      seen.set(route.key, n + 1);
-      handler = handler[Math.min(n, handler.length - 1)]!;
-    }
-    const out = await handler(call);
-    return json(out.status ?? 200, out.body, out.headers);
-  };
-  return { fetch, calls, callsTo: (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path) };
-}
-
-function recordingSleep() {
-  const sleeps: number[] = [];
-  return { sleeps, sleep: async (ms: number) => void sleeps.push(ms) };
-}
+import { fakeInstantly, recordingSleep } from "./fake-instantly.ts";
 
 /* ------------------------------------------------------------------ */
 /* Fixtures                                                            */
@@ -184,6 +122,7 @@ describe("ensureCampaign", () => {
       stop_on_reply: true,
       stop_on_auto_reply: false,
       stop_for_company: false,
+      limit_emails_per_company_override: { mode: "disabled" },
       text_only: true,
       first_email_text_only: true,
       link_tracking: false,
@@ -388,6 +327,227 @@ describe("upsertLeads", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* The instant campaign (answers to new requests)                      */
+/* ------------------------------------------------------------------ */
+
+describe("instant campaign", () => {
+  it("is a separate 1-step campaign: new leads first, no new-lead cap, minimal gaps, every day 7:00–20:00 local", async () => {
+    const api = fakeInstantly({
+      "GET /campaigns": () => ({ body: { items: [] } }),
+      "POST /campaigns": (c) => ({ body: { id: c.body.name.endsWith("instant") ? "camp-now" : "camp-1", status: 0 } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@oaksons-mail.com"], dailyLimit: 40 });
+    expect(await p.ensureCampaign(business({ timezone: "America/Chicago" }), { maxSteps: 1, instant: true })).toEqual({ campaignId: "camp-now" });
+    const [create] = api.callsTo("POST", "/campaigns");
+    expect(api.callsTo("GET", "/campaigns")[0]!.query.search).toBe("QA · Oak & Sons Tree · instant");
+    expect(create!.body).toEqual({
+      name: "QA · Oak & Sons Tree · instant",
+      campaign_schedule: {
+        schedules: [
+          {
+            name: "Quiet Accounts",
+            timing: { from: "07:00", to: "20:00" },
+            days: { "0": true, "1": true, "2": true, "3": true, "4": true, "5": true, "6": true },
+            timezone: "America/Chicago",
+          },
+        ],
+      },
+      sequences: [{ steps: [{ type: "email", delay: 0, delay_unit: "days", variants: [{ subject: "{{s1}}", body: "{{b1}}" }] }] }],
+      email_list: ["sarah@oaksons-mail.com"],
+      daily_limit: 40,
+      email_gap: 1,
+      random_wait_max: 1,
+      stop_on_reply: true,
+      stop_on_auto_reply: false,
+      stop_for_company: false,
+      limit_emails_per_company_override: { mode: "disabled" },
+      text_only: true,
+      first_email_text_only: true,
+      link_tracking: false,
+      open_tracking: false,
+      insert_unsubscribe_header: true,
+      prioritize_new_leads: true,
+      match_lead_esp: false,
+    });
+    expect(create!.body.daily_max_leads).toBeUndefined();
+    // cached apart from the 1-step nurture campaign
+    expect(await p.ensureCampaign(business(), { maxSteps: 1, instant: true })).toEqual({ campaignId: "camp-now" });
+    expect(await p.ensureCampaign(business(), { maxSteps: 1 })).toEqual({ campaignId: "camp-1" });
+    expect(api.callsTo("POST", "/campaigns").map((c) => c.body.name)).toEqual(["QA · Oak & Sons Tree · instant", "QA · Oak & Sons Tree · 1-step"]);
+    await expect(p.ensureCampaign(business(), { maxSteps: 2, instant: true })).rejects.toThrow(/one note/);
+  });
+
+  it("answers a returning homeowner again: a Completed lead is replaced, a still-sending one is left alone", async () => {
+    const api = fakeInstantly({
+      "GET /campaigns": () => ({ body: { items: [{ id: "camp-now", name: "QA · Oak & Sons Tree · instant" }] } }),
+      "GET /campaigns/camp-now": () => ({ body: campaignWithSteps("camp-now", 1, 3) }),
+      "POST /leads/list": () => ({
+        body: {
+          items: [
+            { id: "old", email: "person0@example.com", campaign: "camp-now", status: 3 },
+            { id: "busy", email: "person1@example.com", campaign: "camp-now", status: 1 },
+          ],
+        },
+      }),
+      "DELETE /leads/:id": (c) => ({ body: { id: c.path.split("/").pop() } }),
+      "POST /leads/add": () => ({ body: { leads_uploaded: 1, created_leads: [{ index: 0, id: "new", email: "person0@example.com" }] } }),
+      "POST /campaigns/:id/activate": () => ({ body: { id: "camp-now", status: 1 } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const { campaignId } = await p.ensureCampaign(business(), { maxSteps: 1, instant: true });
+    await p.upsertLeads(business(), campaignId, [lead(0, 1), lead(1, 1)]);
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+      "GET /campaigns",
+      "GET /campaigns/camp-now",
+      "POST /leads/list",
+      "DELETE /leads/old",
+      "POST /leads/add",
+      "POST /leads/list",
+      "POST /campaigns/camp-now/activate",
+    ]);
+  });
+
+  it("never deletes leads from a nurture campaign before adding", async () => {
+    const api = fakeInstantly({
+      "GET /campaigns/camp-2": () => ({ body: campaignWithSteps("camp-2", 2, 1) }),
+      "POST /leads/add": () => ({ body: { leads_uploaded: 1, created_leads: [{ index: 0, id: "l0", email: "person0@example.com" }] } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await p.upsertLeads(business(), "camp-2", [lead(0)]);
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /campaigns/camp-2", "POST /leads/add"]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Answering in a thread                                               */
+/* ------------------------------------------------------------------ */
+
+describe("replyTo", () => {
+  const theirReply = { id: "em-1", thread_id: "th-1", from_address_email: "Pat.Lee@Example.com", to_address_email_list: "sarah@oaksons-mail.com", lead: "pat.lee@example.com", i_sent: false };
+  const thread = { replyEmailId: "em-1", account: "sarah@oaksons-mail.com", to: "pat.lee@example.com", subject: "Re: the oak" };
+
+  it("checks the email's recipients first, then replies without a `to` field and with <br/> line breaks", async () => {
+    const api = fakeInstantly({ "GET /emails/:id": () => ({ body: theirReply }), "POST /emails/reply": () => ({ body: { id: "sent-1" } }) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await p.replyTo!(business(), { ...thread, to: "PAT.LEE@example.com" }, "Thanks Pat!\r\n\r\nDave will call you today.\nSarah <office> & co");
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /emails/em-1", "POST /emails/reply"]);
+    expect(api.calls[1]!.body).toEqual({
+      reply_to_uuid: "em-1",
+      eaccount: "sarah@oaksons-mail.com",
+      subject: "Re: the oak",
+      body: { text: "Thanks Pat!\r\n\r\nDave will call you today.\nSarah <office> & co", html: "Thanks Pat!<br/><br/>Dave will call you today.<br/>Sarah &lt;office&gt; &amp; co" },
+    });
+  });
+
+  it("refuses (not retryable) and sends nothing when the email isn't to or from that person", async () => {
+    const api = fakeInstantly({
+      "GET /emails/:id": () => ({ body: { ...theirReply, from_address_email: "someone@else.com", lead: "someone@else.com" } }),
+      "POST /emails/reply": () => ({ body: { id: "sent-1" } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const err = await p.replyTo!(business(), thread, "Thanks!").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err).toMatchObject({ provider: "instantly", retryable: false });
+    expect((err as Error).message).toMatch(/not pat\.lee@example\.com/);
+    expect(api.callsTo("POST", "/emails/reply")).toHaveLength(0);
+  });
+
+  it("counts the sender only when we didn't send it, and reads comma lists", async () => {
+    const ours = { id: "em-2", from_address_email: "sarah@oaksons-mail.com", to_address_email_list: "pat.lee@example.com, Jo <jo.lee@example.com>", i_sent: true };
+    const api = fakeInstantly({ "GET /emails/:id": () => ({ body: ours }), "POST /emails/reply": () => ({ body: {} }) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await expect(p.replyTo!(business(), { ...thread, replyEmailId: "em-2", to: "sarah@oaksons-mail.com" }, "x")).rejects.toBeInstanceOf(ProviderError);
+    await p.replyTo!(business(), { ...thread, replyEmailId: "em-2", to: "jo.lee@example.com" }, "x");
+    expect(api.callsTo("POST", "/emails/reply")).toHaveLength(1);
+  });
+
+  it("sends nothing when the email can't be read", async () => {
+    const api = fakeInstantly({ "POST /emails/reply": () => ({ body: {} }) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await expect(p.replyTo!(business(), thread, "x")).rejects.toMatchObject({ status: 404 });
+    expect(api.callsTo("POST", "/emails/reply")).toHaveLength(0);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Reply backstop API                                                  */
+/* ------------------------------------------------------------------ */
+
+describe("reply backstop API", () => {
+  it("lists received emails since a time, from the main inbox and the Others folder", async () => {
+    const email = {
+      id: "em-9",
+      thread_id: "th-9",
+      timestamp_created: "2026-10-06T15:00:00.000Z",
+      timestamp_email: "2026-10-06T14:58:00.000Z",
+      subject: "Re: the oak",
+      from_address_email: "Jo Lee <Jo.Lee@Example.com>",
+      to_address_email_list: "sarah@oaksons-mail.com",
+      eaccount: "sarah@oaksons-mail.com",
+      lead: null,
+      body: { html: "<div>Yes please &amp; thanks</div><div>Jo</div>" },
+    };
+    const api = fakeInstantly({ "GET /emails": [() => ({ body: { items: [email, { id: "junk" }], next_starting_after: null } }), () => ({ body: { items: [] } })] });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    expect(await p.receivedSince!("2026-10-06T14:00:00.000Z", { folder: "primary" })).toEqual([
+      {
+        id: "em-9",
+        threadId: "th-9",
+        from: "jo.lee@example.com",
+        lead: undefined,
+        to: ["sarah@oaksons-mail.com"],
+        account: "sarah@oaksons-mail.com",
+        subject: "Re: the oak",
+        text: "Yes please & thanks\nJo",
+        receivedAt: "2026-10-06T14:58:00.000Z",
+        createdAt: "2026-10-06T15:00:00.000Z",
+        campaignId: undefined,
+        sentByUs: false,
+      },
+    ]);
+    await p.receivedSince!("2026-10-06T14:00:00.000Z", { folder: "others" });
+    const [primary, others] = api.callsTo("GET", "/emails");
+    expect(primary!.query).toEqual({ email_type: "received", min_timestamp_created: "2026-10-06T14:00:00.000Z", limit: "100" });
+    expect(others!.query).toEqual({ email_type: "received", min_timestamp_created: "2026-10-06T14:00:00.000Z", mode: "emode_others", limit: "100" });
+  });
+
+  it("finds a thread's emails, keeping only that thread", async () => {
+    const api = fakeInstantly({
+      "GET /emails": () => ({
+        body: {
+          items: [
+            { id: "a", thread_id: "th-9", timestamp_created: "2026-10-05T13:00:00Z", from_address_email: "sarah@oaksons-mail.com", to_address_email_list: "pat.lee@example.com", i_sent: true },
+            { id: "b", thread_id: "th-other", timestamp_created: "2026-10-05T13:00:00Z", from_address_email: "x@y.com" },
+          ],
+        },
+      }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const t = await p.threadEmails!("th-9");
+    expect(t.map((e) => [e.id, e.to, e.sentByUs])).toEqual([["a", ["pat.lee@example.com"], true]]);
+    expect(api.calls[0]!.query).toEqual({ search: "thread:th-9", limit: "20" });
+  });
+
+  it("resumes only webhooks Instantly disabled", async () => {
+    const api = fakeInstantly({
+      "GET /webhooks": () => ({
+        body: {
+          items: [
+            { id: "w1", target_hook_url: "https://qa.example.com/webhooks/instantly/s", event_type: "all_events", status: -1 },
+            { id: "w2", target_hook_url: "https://other.example.com/hook", event_type: "email_sent", status: 1 },
+          ],
+        },
+      }),
+      "POST /webhooks/:id/resume": () => ({ body: { status: 1 } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    expect(await p.resumeWebhooks!()).toEqual([{ id: "w1", url: "https://qa.example.com/webhooks/instantly/s", eventType: "all_events" }]);
+    expect(api.callsTo("POST", "/webhooks/w1/resume")).toHaveLength(1);
+    expect(api.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /* stopLead / pauseCampaign                                            */
 /* ------------------------------------------------------------------ */
 
@@ -580,6 +740,24 @@ describe("parseInstantlyWebhook", () => {
   it("email_sent → sent with step and the Instantly email id", () => {
     const body = { ...base, event_type: "email_sent", step: 2, variant: 1, is_first: false, email_id: "0199b1a2-sent", email_subject: "Re: the oak by the driveway", email_text: "Just floating this back up." };
     expect(parseInstantlyWebhook(body, now)).toEqual({ type: "sent", businessId: "biz_oak", campaignId: "camp-2", email: "pat.lee@example.com", step: 2, providerId: "0199b1a2-sent", sentAt: "2026-10-06T14:03:11.000Z" });
+  });
+
+  it("email_sent names the exact note through our qa_touch_N variable", () => {
+    const body = { ...base, event_type: "email_sent", step: 1, email_id: "0199b1a2-sent", qa_touch_1: "t_req_1", qa_touch_2: "t_other" };
+    expect(parseInstantlyWebhook(body, now)).toMatchObject({ type: "sent", step: 1, touchId: "t_req_1" });
+    expect(parseInstantlyWebhook({ ...body, qa_touch_1: undefined, payload: { qa_touch_1: "t_nested" } }, now)).toMatchObject({ touchId: "t_nested" });
+  });
+
+  it("account_error → an alert about the mailbox (it has no lead)", () => {
+    const { lead_email: _l, ...noLead } = base;
+    expect(parseInstantlyWebhook({ ...noLead, event_type: "account_error", email_account: "Sarah@Oaksons-Mail.com", error: "SMTP authentication failed" }, now)).toEqual({
+      type: "account_error",
+      businessId: "biz_oak",
+      campaignId: "camp-2",
+      account: "sarah@oaksons-mail.com",
+      detail: "SMTP authentication failed",
+      at: "2026-10-06T14:03:11.000Z",
+    });
   });
 
   it("email_bounced → bounce", () => {

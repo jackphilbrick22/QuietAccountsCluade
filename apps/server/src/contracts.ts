@@ -63,15 +63,43 @@ export interface SequencedLead {
 export interface SequencerProvider {
   kind: "sequencer";
   name: string;
-  /** Make sure the business has a campaign ready to receive leads; returns its id. */
-  ensureCampaign(business: BusinessProfile, opts: { maxSteps: number }): Promise<{ campaignId: string }>;
+  /**
+   * Make sure the business has a campaign ready to receive leads; returns its id. `instant` is the business's
+   * separate 1-step campaign for answers to new requests: it sends new leads first, uncapped, every day 7:00–20:00.
+   */
+  ensureCampaign(business: BusinessProfile, opts: { maxSteps: number; instant?: boolean }): Promise<{ campaignId: string }>;
   /** Add or update leads (idempotent by email). */
   upsertLeads(business: BusinessProfile, campaignId: string, leads: SequencedLead[]): Promise<{ added: number; skipped: { email: string; why: string }[] }>;
   /** Stop everything for one address (reply, stop, bounce) and blocklist it where supported. */
   stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained"): Promise<void>;
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
-  /** Answer a reply in its own thread, from the mailbox it came in on. */
+  /** Answer a reply in its own thread, from the mailbox it came in on. Refuses when the thread isn't addressed to `to`. */
   replyTo?(business: BusinessProfile, thread: { replyEmailId: string; account: string; to: string; subject: string }, text: string): Promise<void>;
+  /** Emails the platform received since `since` (ISO): the backstop for replies its webhooks never announced. */
+  receivedSince?(since: string, opts: { folder: "primary" | "others" }): Promise<PlatformEmail[]>;
+  /** The emails in one thread (to tie a reply from an unknown address to the person we wrote to). */
+  threadEmails?(threadId: string): Promise<PlatformEmail[]>;
+  /** Re-enable webhooks the platform disabled after failed deliveries. Returns the ones resumed. */
+  resumeWebhooks?(): Promise<{ id: string; url: string; eventType?: string }[]>;
+}
+
+/** One email in the sending platform's inbox. */
+export interface PlatformEmail {
+  id: string;
+  threadId?: string;
+  from: string;
+  /** The lead the platform filed it under (may differ from `from`: a spouse, a forward). */
+  lead?: string;
+  to: string[];
+  /** Our mailbox it came in on. */
+  account?: string;
+  subject?: string;
+  text: string;
+  receivedAt: string;
+  /** When the platform recorded it (its reply detection can lag the email by hours). */
+  createdAt: string;
+  campaignId?: string;
+  sentByUs: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -95,10 +123,12 @@ export type InboundEvent =
       replyEmailId?: string;
       toAccount?: string;
     }
-  | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string }
+  | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string; touchId?: string }
   | { type: "bounce"; businessId?: string; campaignId?: string; email: string; at: string; detail?: string }
   | { type: "unsubscribe"; businessId?: string; campaignId?: string; email: string; at: string }
-  | { type: "complaint"; businessId?: string; campaignId?: string; email: string; at: string };
+  | { type: "complaint"; businessId?: string; campaignId?: string; email: string; at: string }
+  /** A sending mailbox broke (disconnected, suspended): nothing from it goes out until someone fixes it. */
+  | { type: "account_error"; businessId?: string; campaignId?: string; account?: string; detail?: string; at: string };
 
 /* ------------------------------------------------------------------ */
 /* Owner notifications (texts to the business owner)                   */

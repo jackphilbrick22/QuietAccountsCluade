@@ -1,4 +1,5 @@
 import { billingCheck, chase, closeIfDue, find, isoWeekKey, reportWeek } from "@qa/engine";
+import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { localIso } from "./clock.ts";
 import { deliverOwnerMessages, handleInbound, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
@@ -10,6 +11,7 @@ import { deliverOwnerMessages, handleInbound, plan, sendAck, sendDue, syncFsm, w
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
  *  - Writer: nightly top-up for paying accounts so the list keeps being worked at the weekly pace
  *  - Reader/Ledger: hourly sync from connected software, then match who came back
+ *  - Inbox backstop: replies the sending platform never announced by webhook; its disabled webhooks
  *  - background tasks queue (webhook follow-ups, retries)
  * Each step is isolated: one business failing never stops the others.
  */
@@ -95,6 +97,15 @@ export async function tick(d: Deps): Promise<TickReport> {
         const r = await syncFsm(d, bid, "jobber");
         if (r) report.synced += r.records;
       });
+  }
+  // The sending platform: replies its webhooks missed (every few minutes), webhooks it switched off (every 15).
+  for (const [name, fn] of [["reply check", pollReplies], ["webhook check", checkWebhooks]] as const) {
+    try {
+      await fn(d);
+    } catch (e) {
+      report.errors.push(`${name}: ${(e as Error).message}`);
+      d.log(`[worker] ${name} failed: ${(e as Error).message}`);
+    }
   }
   await runTasks(d, report);
   return report;

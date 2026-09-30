@@ -1,0 +1,139 @@
+import type { InboundEvent, PlatformEmail, SequencerProvider } from "../contracts.ts";
+import { alertOperator, handleInbound, whoIs, type Deps } from "./ops.ts";
+
+/**
+ * The sending platform's webhooks are not enough on their own:
+ *  - Instantly can take minutes to hours to detect a reply, and a reply from another address (a spouse, a forward)
+ *    lands in its "Others" folder without any webhook at all. So the worker also reads what it received.
+ *  - Instantly switches a webhook off after repeated failed deliveries. So the worker turns it back on and says so.
+ * Workspace-wide state (the poll cursor, when webhooks were last checked) lives in one integration record.
+ */
+
+/** The integration record for the sending platform belongs to no one client. */
+export const WORKSPACE = "_workspace";
+/** At most this often: GET /emails allows 20 requests a minute for the whole workspace. */
+export const REPLY_POLL_MS = 3 * 60_000;
+export const WEBHOOK_CHECK_MS = 15 * 60_000;
+/** The first poll looks back this far (webhooks covered the time before). */
+const FIRST_LOOKBACK_MS = 60 * 60_000;
+/** Each poll re-reads a few minutes before the newest email it saw; the dedupe makes the overlap free. */
+const OVERLAP_MS = 5 * 60_000;
+/** Thread lookups per poll (each is one more request against the same limit). */
+const MAX_THREAD_LOOKUPS = 3;
+
+/** One key per platform email, claimed by whichever reads the reply first: the webhook or the poll. */
+export const replyEmailKey = (provider: string, emailId: string) => `${provider}:email:${emailId}`;
+
+/** Emails the poll couldn't tie to anyone (this process): not re-looked-up on every overlapping poll. */
+const unmatched = new Set<string>();
+
+export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Promise<{ checked: number; processed: number; unmatched: number } | undefined> {
+  const seq = d.email;
+  if (seq.kind !== "sequencer" || !seq.receivedSince) return undefined;
+  const repo = d.accounts.repo;
+  const now = d.clock();
+  const rec = repo.getIntegration(WORKSPACE, seq.name);
+  if (!opts.force && rec?.last_sync_at && now.getTime() - Date.parse(rec.last_sync_at) < REPLY_POLL_MS) return undefined;
+  const since = rec?.cursor ?? new Date(now.getTime() - FIRST_LOOKBACK_MS).toISOString();
+  const out = { checked: 0, processed: 0, unmatched: 0 };
+  let newest = since;
+  let lookups = 0;
+  try {
+    for (const folder of ["primary", "others"] as const) {
+      const emails = (await seq.receivedSince(since, { folder })).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      for (const e of emails) {
+        out.checked++;
+        if (e.createdAt > newest) newest = e.createdAt;
+        const key = replyEmailKey(seq.name, e.id);
+        if (e.sentByUs || repo.hasWebhook(key) || unmatched.has(key)) continue;
+        const match = await matchEmail(d, seq, e, () => lookups++ < MAX_THREAD_LOOKUPS);
+        if (!match) {
+          out.unmatched++;
+          if (unmatched.size > 5000) unmatched.clear();
+          unmatched.add(key);
+          continue;
+        }
+        if (!repo.logWebhook(key, `${seq.name}-poll`, JSON.stringify(e), now.toISOString())) continue;
+        // read before this key existed (an older webhook delivery): don't hand it to the owner twice
+        if (d.accounts.peek(match.businessId)?.state.replies.some((r) => r.thread?.replyEmailId === e.id)) {
+          repo.finishWebhook(key, "ignored", match.businessId, "already read");
+          continue;
+        }
+        const ev: InboundEvent = {
+          type: "reply",
+          businessId: match.businessId,
+          from: e.from,
+          subject: e.subject,
+          text: e.text,
+          receivedAt: e.receivedAt,
+          replyEmailId: e.id,
+          toAccount: e.account ?? e.to[0],
+          ...(match.inReplyTo ? { inReplyTo: match.inReplyTo } : {}),
+        };
+        try {
+          await handleInbound(d, ev);
+          repo.finishWebhook(key, "processed", match.businessId);
+          out.processed++;
+        } catch (err) {
+          repo.finishWebhook(key, "failed", match.businessId, (err as Error).message);
+          repo.enqueue("inbound.retry", { event: JSON.stringify(ev) }, { runAt: new Date(now.getTime() + 60_000).toISOString() });
+        }
+      }
+    }
+  } catch (err) {
+    repo.putIntegration(WORKSPACE, seq.name, { lastSyncAt: now.toISOString(), lastError: `Reply check failed: ${(err as Error).message}` });
+    throw err;
+  }
+  const cursor = new Date(Math.max(Date.parse(since), Date.parse(newest) - OVERLAP_MS)).toISOString();
+  repo.putIntegration(WORKSPACE, seq.name, { cursor, lastSyncAt: now.toISOString(), lastError: null });
+  if (out.processed) d.log(`[backstop] read ${out.processed} ${out.processed === 1 ? "reply" : "replies"} no webhook announced`);
+  return out;
+}
+
+/**
+ * Whose reply is this? The sender, if we wrote to them. Otherwise the lead the platform filed it under, or anyone
+ * we wrote to in its thread (a spouse, a forward): then it is tied to the last note we sent that person.
+ */
+async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, mayLookUp: () => boolean): Promise<{ businessId: string; inReplyTo?: string } | undefined> {
+  const sender = whoIs(d, e.from);
+  if (sender) return { businessId: sender.businessId };
+  let lead = e.lead ? whoIs(d, e.lead) : undefined;
+  if (!lead && e.threadId && seq.threadEmails && mayLookUp()) {
+    for (const t of await seq.threadEmails(e.threadId)) {
+      for (const addr of [t.lead, ...(t.sentByUs ? t.to : [t.from])]) {
+        lead = addr ? whoIs(d, addr) : undefined;
+        if (lead) break;
+      }
+      if (lead) break;
+    }
+  }
+  if (!lead) return undefined;
+  const touches = d.accounts.peek(lead.businessId)?.state.touches ?? [];
+  const note = touches
+    .filter((t) => t.customerId === lead.customerId && t.providerId && (t.status === "sent" || t.status === "approved"))
+    .sort((a, b) => ((a.sentAt ?? a.dueAt) < (b.sentAt ?? b.dueAt) ? 1 : -1))[0];
+  return { businessId: lead.businessId, ...(note?.providerId ? { inReplyTo: note.providerId } : {}) };
+}
+
+/** Turn back on any webhook the platform disabled after failed deliveries, and tell the operator. */
+export async function checkWebhooks(d: Deps, opts: { force?: boolean } = {}): Promise<{ resumed: number } | undefined> {
+  const seq = d.email;
+  if (seq.kind !== "sequencer" || !seq.resumeWebhooks) return undefined;
+  const repo = d.accounts.repo;
+  const now = d.clock();
+  const rec = repo.getIntegration(WORKSPACE, seq.name);
+  const settings = JSON.parse(rec?.settings ?? "{}") as { webhooksCheckedAt?: string };
+  if (!opts.force && settings.webhooksCheckedAt && now.getTime() - Date.parse(settings.webhooksCheckedAt) < WEBHOOK_CHECK_MS) return undefined;
+  repo.putIntegration(WORKSPACE, seq.name, { settings: { ...settings, webhooksCheckedAt: now.toISOString() } });
+  const resumed = await seq.resumeWebhooks();
+  if (resumed.length) {
+    const where = [...new Set(resumed.map((w) => w.url))].join(", ");
+    await alertOperator(d, {
+      key: "webhooks_resumed",
+      title: `Instantly had switched off ${resumed.length === 1 ? "a webhook" : `${resumed.length} webhooks`} — turned back on`,
+      detail: `It does that after repeated failed deliveries to ${where}. Replies from the gap are picked up by the reply check; if it keeps happening, check that the server is reachable.`,
+    });
+    repo.putIntegration(WORKSPACE, seq.name, { lastError: `Resumed disabled webhooks: ${where}` });
+  }
+  return { resumed: resumed.length };
+}
