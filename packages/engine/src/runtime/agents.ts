@@ -598,8 +598,20 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
   const r = state.replies.find((x) => x.id === replyId);
   if (!r) return;
   r.ownerContactedAt = r.ownerContactedAt ?? at;
+  // "NO #K7Q" after "BOOKED 2400 #K7Q": the booking they told us about is taken back, and its dollars leave the ledger
+  if (outcome && outcome !== "booked" && r.outcome === "booked") {
+    r.outcomeValue = undefined;
+    for (const rec of state.recoveries) if (rec.match === "owner_reported" && rec.record.id === r.id && !rec.disputed) rec.disputed = { at, reason: `The owner changed it to ${outcome.replace("_", " ")}`, by: "owner" };
+  }
   if (outcome) r.outcome = outcome;
   if (value) r.outcomeValue = value;
+  // and booked again after all: the same record comes back, at the new figure
+  if (outcome === "booked")
+    for (const rec of state.recoveries)
+      if (rec.match === "owner_reported" && rec.record.id === r.id && rec.disputed?.by === "owner") {
+        rec.disputed = undefined;
+        if (value) rec.value = round2(value);
+      }
   r.status = "done";
   const name = state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from;
   const hrs = Math.round((Date.parse(r.ownerContactedAt) - Date.parse(r.receivedAt)) / 3600000);

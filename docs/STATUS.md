@@ -90,8 +90,20 @@ Updated every loop iteration. Newest first.
   a win, and a year is never an amount in a note edit); "Sent - not sold - lost to competitor" is a no.
   Engine 1,101 tests, server 247.
 
+- Sixth adversarial review (with a hunt for anything that only lived in memory): 17 reported, 13 confirmed,
+  all fixed and tested. A skipped person no longer comes back after a deploy (records are replaced, not
+  edited in place); re-planned notes get new ids (two notes with one id stuck, then went out in a burst);
+  the reply poll leaves an email it had no lookups left for to the next poll instead of writing it off;
+  renewal/kickoff/refund texts always load; replies from two records sharing one address go to the one
+  the thread, Instantly's lead variable or the latest note names, a spouse's reply is credited to the
+  person we wrote to, and a reply stops every record at that address. Owner texts: "won't book it",
+  "hasn't booked yet", "booked someone else" and the iPhone apostrophe never book; note edits that mention
+  booked/quoted stay note edits; two businesses both waiting for an OK get "which one?"; a NO after a
+  BOOKED takes its dollars back off the ledger. Statuses: one no-vocabulary for every rule, open words on
+  either side of "not sold", a leading no or "went with someone else" decides. Engine 1,154, server 252.
+
 **Next**
-- A sixth review pass on the fifth review's fixes; stop when a pass finds nothing material.
+- A seventh review pass on the sixth review's fixes; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
 import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
-import { billingCheck, cancelPlan, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
+import { billingCheck, cancelPlan, markContacted, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
+import { counted } from "../src/ledger/attribution.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
 import { ASOF, ago, customer, dataset, job, oneOpp, quote, request } from "./fixtures.ts";
@@ -263,5 +264,20 @@ describe("review 5: the fee ledger across a switch", () => {
     expect(m?.kind).toBe("free_month");
     expect(st.dataset.business.plan.freeMonths).toEqual(["2027-10-01"]);
     expect(guaranteeCheck(st, "2027-10-05")!.chargeOn).toBe("2027-11-01");
+  });
+});
+
+describe("the owner takes a booking back", () => {
+  it("NO after BOOKED takes its dollars off the ledger; booked again puts them back at the new figure", () => {
+    const st = account();
+    const r = reply(st, "c1", "unanswered_quote");
+    st.replies.push(r);
+    markContacted(st, r.id, `${ASOF}T11:00:00`, "booked", 2400);
+    expect(counted(st.recoveries).map((x) => x.value)).toEqual([2400]);
+    markContacted(st, r.id, `${ASOF}T12:00:00`, "lost");
+    expect(counted(st.recoveries)).toEqual([]);
+    expect(st.replies[0]!.outcomeValue).toBeUndefined();
+    markContacted(st, r.id, `${ASOF}T13:00:00`, "booked", 2600);
+    expect(counted(st.recoveries).map((x) => x.value)).toEqual([2600]);
   });
 });
