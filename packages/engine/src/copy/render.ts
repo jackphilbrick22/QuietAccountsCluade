@@ -111,9 +111,19 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     mainJob: "",
     option: "",
     why: "",
+    ask: "",
+    noAsk: "yes",
+    quietSince: "",
+    notRecent: "yes",
   };
   // "we used to take care of the pines for you" is false once the pines are gone: name the service instead
   if (o.type === "lapsed_regular" && svc && svc.kind !== "maintenance" && svc.kind !== "recurring") t.job = svc.phrase;
+  // A regular who just missed their usual visit, in a trade that counts that as quiet (cleaning at three weeks),
+  // isn't someone "we used to" work for: the note names the day of the last visit and asks them back.
+  if (o.type === "lapsed_regular" && doneOn && playbook(findService(o.serviceId)?.trade ?? b.trade).lapseAfterDays?.length && daysBetween(doneOn, rc.sendOn) <= RECENT_LAPSE_DAYS) {
+    t.quietSince = `${monthName(doneOn)} ${Number(doneOn.slice(8))}`;
+    t.notRecent = "";
+  }
   if (o.type === "declined_option") {
     const q = quoteById(rc.ds, o.source.id);
     t.mainJob = q ? jobPhrase(q.title, b.trade, q.lineItems.filter((l) => !l.optional)) : "the job";
@@ -129,7 +139,10 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     t.mainJob = title ? jobPhrase(title, b.trade) : "the work";
     // the homeowner's sentence for it, never the owner-facing reason
     const did = title ? classifyService(title, src?.lineItems ?? [], [b.trade, ...b.otherTrades]).service : undefined;
-    t.why = did?.followOns?.find((f) => f.serviceId === o.serviceId)?.pitch ?? "";
+    const followOn = did?.followOns?.find((f) => f.serviceId === o.serviceId);
+    t.why = followOn?.pitch ?? "";
+    t.ask = followOn?.ask ?? "";
+    t.noAsk = t.ask ? "" : "yes";
   }
   if (o.type === "unpaid_invoice") {
     const inv = rc.ds.invoices.find((x) => x.id === o.source.id);
@@ -138,6 +151,9 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   }
   return t;
 }
+
+/** How long after a regular's last visit a note still reads "we haven't been by since …" rather than "we used to". */
+const RECENT_LAPSE_DAYS = 90;
 
 function playbookTicket(b: BusinessProfile): number {
   return b.avgJobValue ?? playbook(b.trade).ticket.typical;
@@ -291,9 +307,23 @@ export function callbackWhen(localNow: ISODateTime): string {
 }
 
 /**
+ * The trade's intake question for a new request (tree: photos and the address; fence: feet, material, gates, HOA),
+ * or "" when the trade has none. Never asks for an address we already have, and when the request already names the
+ * work ("repaint the living room"), asks only what that doesn't answer.
+ */
+export function intakeAsk(b: BusinessProfile, r: ServiceRequest, c: Customer): string {
+  const pb = playbook(b.trade);
+  const named = !!pb.intakeAskNamed && classifyService(r.title || "", [], [b.trade]).matched;
+  const ask = (named ? pb.intakeAskNamed : pb.intakeAsk) ?? "";
+  const haveAddress = !!(r.property?.street || c.address?.street);
+  return ask.replace(/\{andAddress\}/g, haveAddress ? "" : " and the address").replace(/\s+/g, " ").trim();
+}
+
+/**
  * The answer to a brand-new request, sent within minutes (7am–8pm local). Homeowners ask several companies and
  * most hire whoever answers first; only about 1 in 5 pros answer within the hour. It promises a call-back
- * window only — never a price or a date.
+ * window only — never a price or a date — and asks the trade's two or three intake questions, so the owner
+ * calls back knowing what the job is.
  */
 export function renderRequestAck(ds: Dataset, r: ServiceRequest, c: Customer, localNow: ISODateTime): { subject: string; body: string; promise: string; flags: string[] } {
   const b = ds.business;
@@ -303,11 +333,13 @@ export function renderRequestAck(ds: Dataset, r: ServiceRequest, c: Customer, lo
   const when = callbackWhen(localNow);
   const isOwner = b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase();
   const who = isOwner ? "I'll give you a call" : `${b.ownerFirstName} will give you a call`;
+  const ask = intakeAsk(b, r, c);
   const lines = [
     `Hi ${first},`,
     ``,
     `Thanks for reaching out to ${b.name.replace(/\.$/, "")}${specific ? ` about ${job}` : ""}. ${who} ${when} to set up a time to take a look.`,
     ``,
+    ...(ask ? [ask, ``] : []),
     `If there's a better time or number to reach you, just reply here.`,
     ``,
     b.signerName,

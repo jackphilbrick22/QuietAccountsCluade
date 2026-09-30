@@ -37,6 +37,7 @@ export type Field =
   | "subtotal"
   | "balance"
   | "status"
+  | "outcome"
   | "salesperson"
   | "quoteNumber"
   | "jobNumber"
@@ -122,9 +123,12 @@ export const FIELDS: Record<Field, FieldSpec> = {
   subtotal: { names: ["subtotal", "sub total", "sub-total"], looks: "money" },
   balance: { names: ["balance", "balance due", "amount due", "outstanding", "open balance", "remaining balance", "due"], not: /(date)/i, looks: "money" },
   status: {
-    names: ["status", "quote status", "job status", "invoice status", "estimate status", "outcome", "state", "stage", "pipeline stage", "work status", "estimate outcome", "opportunity status", "approval status"],
+    names: ["status", "quote status", "job status", "invoice status", "estimate status", "state", "stage", "pipeline stage", "deal stage", "work status", "opportunity status", "approval status"],
     not: /(client status|customer status|payment method|marital)/i,
   },
+  // The decision on a quote, kept apart from its status: Housecall Pro's "Status" is the estimate visit
+  // (Scheduled, Completed) while "Outcome" says Open, Won or Lost. When a file has both, the outcome decides.
+  outcome: { names: ["outcome", "estimate outcome", "quote outcome", "won lost", "win loss"] },
   salesperson: { names: ["salesperson", "sales person", "sales rep", "assigned to", "estimator", "created by", "sold by", "rep", "technician", "assigned employee"] },
   quoteNumber: { names: ["quote #", "quote #s", "quote number", "quote no", "quote", "estimate #", "estimate number", "from quote", "originating quote"], looks: "ref" },
   jobNumber: { names: ["job #", "job #s", "job number", "job no", "job", "work order", "work order #"], looks: "ref" },
@@ -150,7 +154,7 @@ export const FIELDS: Record<Field, FieldSpec> = {
 export const KIND_FIELDS: Record<RecordKind, Field[]> = {
   quote: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip", "tags", "leadSource", "marketingOptOut", "smsOptIn",
-    "number", "title", "description", "lineItems", "total", "subtotal", "status", "salesperson", "jobNumber",
+    "number", "title", "description", "lineItems", "total", "subtotal", "status", "outcome", "salesperson", "jobNumber",
     "createdOn", "sentOn", "approvedOn", "convertedOn", "archivedOn", "changesRequestedOn", "viewedOn",
   ],
   job: [
@@ -202,19 +206,46 @@ export const SOURCE_SIGNALS: { source: SourceSystem; patterns: RegExp[] }[] = [
   { source: "zenmaid", patterns: [/zenmaid/i] },
 ];
 
-/** Raw status words -> canonical meaning, per record kind. Checked in order. */
+/** "Not sent", "never viewed", "un-signed": a negation in front of the word that follows. */
+const NOT = String.raw`\b(?:not(?:\s+yet)?[\s-]+|never[\s-]+|un-?)`;
+/** Said yes, and the deposit that books the date hasn't come in: "Awaiting deposit", "Deposit due". */
+const WAITING_ON_DEPOSIT = String.raw`\b(?:awaiting|pending|needs?|waiting (?:on|for)|no) deposit\b|\bdeposit (?:due|requested|needed|pending|sent|invoice sent)\b`;
+
+/**
+ * Raw status words -> canonical meaning, per record kind. Checked in order.
+ *
+ * Covers the vocabularies of the tools fence and painting quotes live in, not just Jobber's: Estimate Rocket
+ * (Pending, Unsigned, Changes, Approved, Cancelled, Expired), QuickBooks estimates (Pending, Accepted, Closed,
+ * Rejected, Converted), PaintScout (Draft, Sent, Viewed, Accepted, Declined, Invoiced, Paid), DripJobs (New Lead,
+ * Appointment Scheduled, Proposal Sent, Won, Lost, Project Complete), Housecall Pro (Open, Won, Lost, Copied to
+ * job), Markate, Fence Cloud and owners' own spreadsheets. A wrong read here decides who gets followed up: an open
+ * quote read as "approved" or "converted" silently drops out of every follow-up, so negations come first.
+ */
 export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
-  [/changes? requested/i, "changes_requested"],
-  // "Sold" and "Won" first: ServiceTitan "Sold", Housecall Pro Outcome "Won" / "Copied to job"
-  [/(converted|job created|copied to job|\bwon\b|\bsold\b|complete|invoiced|scheduled|in progress)/i, "converted"],
-  [/(approved|accepted|signed|booked|client approved|customer approved|pro approved)/i, "approved"],
-  // A real "no" from the customer.
-  [/(declin|reject|not interested|denied|customer said no)/i, "declined"],
-  // Closed by the software or the office — NOT a customer decision (expired, dismissed, lost without a reason, No Go).
+  // Never went out: "Not sent", "Unsent", "Not yet submitted".
+  [new RegExp(`${NOT}(?:sent|emailed|delivered|submitted|issued|presented|finali[sz]ed)\\b`, "i"), "draft"],
+  // Out, but no yes yet: "Unsigned" is Estimate Rocket's open status, not a signature; "Viewed - not signed".
+  [new RegExp(`${NOT}(?:signed|accepted|approved|answered|decided|won)\\b|\\b(?:awaiting|pending|needs?|waiting (?:on|for)) (?:an? )?(?:signature|approval|decision|e-?sign\\w*)\\b|\\bsign(?:ature)? requested\\b|\\bsent for signature\\b`, "i"), "awaiting_response"],
+  [new RegExp(`${NOT}(?:viewed|opened|seen|read)\\b`, "i"), "awaiting_response"],
+  // A yes that isn't on the calendar: "Unscheduled", "Needs scheduling", "Awaiting deposit". Housecall Pro's own
+  // "Unscheduled" is about the estimate visit and is handled in SOURCE_QUOTE_STATUS before this runs.
+  [new RegExp(`${NOT}scheduled\\b|\\bneeds? (?:to be )?schedul\\w*|\\bto be scheduled\\b|\\b(?:ready|waiting|awaiting|pending) (?:to |for )?schedul\\w*|${WAITING_ON_DEPOSIT}`, "i"), "approved"],
+  // A visit to look, or an estimate still being written, is not a price anyone has seen: DripJobs "Appointment
+  // Scheduled", "Needs estimate", "Incomplete".
+  [/\b(?:estimate|appointment|appt|consult\w*|site visit|walk-?through|measure\w*|assessment|bid) (?:is )?(?:scheduled|booked|set|needed|requested)\b|\bneeds? (?:an? )?(?:estimate|quote|bid|measure\w*)\b|\bincomplete\b/i, "draft"],
+  [/changes? requested|\brequest(?:ed)? changes\b|^\s*changes?\s*$|\brevisions? (?:requested|needed)\b|\bneeds? (?:changes|revisions?)\b/i, "changes_requested"],
+  // A real "no" from the customer, including CRM stages: "Rejected", "Lost", "Closed lost", "Went with someone else".
+  [/(declin|reject|disapprov|not interested|denied|customer said no|closed[\s-]*lost|\blost\b|did not win|went (?:with|elsewhere)|hired (?:someone|another)|chose (?:another|someone))/i, "declined"],
+  // Said yes: "Won", "Closed won". A win is a yes, not a job: nobody knows it's on the calendar until a job says so.
+  [/\bclosed[\s-]*won\b|\bwon\b(?!')/i, "approved"],
+  // Work exists: ServiceTitan "Sold", Housecall Pro "Copied to job", QuickBooks "Converted", PaintScout "Invoiced" and "Paid".
+  [/(converted|job created|copied to job|\bsold\b|complete|invoiced|\b(?:un)?paid\b|scheduled|in progress)/i, "converted"],
+  [/(approved|accepted|\bsigned\b|booked|client approved|customer approved|pro approved)/i, "approved"],
+  // Closed by the software or the office — NOT a customer decision (expired, dismissed, cancelled, No Go).
   [/(expir)/i, "expired"],
-  [/(archiv|dismiss|\blost\b|no go|closed|inactive|abandon|stale|cancel)/i, "archived"],
-  [/(awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow ?up|estimated|bidding|approval|delivery|contacted|unreachable)/i, "awaiting_response"],
-  [/(draft|unsent|not sent|new|pre-?bid)/i, "draft"],
+  [/(archiv|dismiss|no go|closed|inactive|abandon|stale|cancel|\bvoid|delet|duplicate|disqualif)/i, "archived"],
+  [/(awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow ?up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented)/i, "awaiting_response"],
+  [/(draft|unsent|not sent|new|pre-?bid|\blead\b)/i, "draft"],
 ];
 
 /** Per-software status words that mean something different there. */
@@ -224,12 +255,14 @@ export const SOURCE_QUOTE_STATUS: Partial<Record<import("../model.ts").SourceSys
   // ServiceTitan opportunity statuses: Open / Contacted / Unreachable / Won / Dismissed.
   servicetitan: [[/^dismissed$/i, "archived"], [/^(open|contacted|unreachable)$/i, "awaiting_response"], [/^won$/i, "converted"]],
   // Housecall Pro "Unscheduled" / "Scheduled" on an estimate means the estimate appointment, not the job.
+  // Its "Lost" stays archived: Housecall Pro closes estimates out itself after its reminders run, so it isn't a no.
   housecall_pro: [[/^copied to job$/i, "converted"], [/^(unscheduled|scheduled)$/i, "awaiting_response"], [/^lost$/i, "archived"], [/^open$/i, "awaiting_response"]],
 };
 
 export const JOB_STATUS_MAP: [RegExp, import("../model.ts").JobStatus][] = [
   [/requires? invoic|needs? invoic|ready to invoice|action required/i, "requires_invoicing"],
-  [/unscheduled|needs? schedul|to be scheduled|not scheduled/i, "unscheduled"],
+  // sold and waiting on a date or a deposit (DripJobs' "Unscheduled", a fence shop's "Awaiting deposit")
+  [new RegExp(`unscheduled|needs? schedul|to be scheduled|not (yet )?scheduled|(ready|waiting|awaiting|pending) (to |for )?schedul|${WAITING_ON_DEPOSIT}`, "i"), "unscheduled"],
   [/(late|overdue)/i, "late"],
   [/(cancel|void)/i, "cancelled"],
   [/(on hold|hold|paused)/i, "on_hold"],
@@ -249,6 +282,9 @@ export const INVOICE_STATUS_MAP: [RegExp, import("../model.ts").InvoiceStatus][]
 ];
 
 export const REQUEST_STATUS_MAP: [RegExp, import("../model.ts").RequestStatus][] = [
+  // "Needs quote" and "Estimate requested" are still waiting on a price; only a quote that exists converts one
+  [/\b(needs?|awaiting|pending|to) (an? )?(quote|estimate|bid|pric\w*)\b|\b(quote|estimate|bid) (needed|requested|pending|to do)\b/i, "new"],
+  [/\b(estimate|quote|bid|appointment|consult\w*) (is )?(scheduled|booked|set)\b/i, "assessment_scheduled"],
   [/(convert|quote|estimate)/i, "converted"],
   [/(assessment|site visit).*(complete|done)|^completed$/i, "assessment_completed"],
   [/(assessment|site visit|scheduled|booked|upcoming|today|overdue|unscheduled|needs approval|needs_approval)/i, "assessment_scheduled"],

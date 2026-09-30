@@ -10,6 +10,8 @@ import type { BreakageType, MessageAngle } from "../model.ts";
  * Season: {inSeason} (the work is in season on the send day), {seasonMonth} (else, the month it's back),
  *         {nearTerm} / {held} (strict-season work out of season never gets a near-term slot), {waitLine},
  *         {dueAsk} (the question for seasonal work that comes back every year; it replaces {interval}).
+ * Next jobs: {ask} (the follow-on's own question, "Want it on a regular schedule?") or {noAsk} (it has none).
+ * Regulars: {quietSince} ("September 5": a regular who just missed their usual visit) or {notRecent}.
  * Lines that end up empty after rendering are dropped.
  */
 export interface NoteTemplate {
@@ -354,7 +356,16 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "g1",
       angle: "check_in",
       subject: "{job}",
+      needs: ["notRecent"],
       body: "Hi {first},\n\n{signer} at {company}. We used to take care of {job} for you, and the last time was {when}. We'd love to have you back on the schedule.\n\nWant me to save you a spot? Just reply and I'll set it up.\n\n{signer}",
+    },
+    {
+      // a regular who just missed their usual visit (cleaning at three weeks): not "we used to", just the ask back
+      id: "g1r",
+      angle: "check_in",
+      subject: "{job}",
+      needs: ["quietSince"],
+      body: "Hi {first},\n\n{signer} at {company}. We haven't been by for {job} since {quietSince}, and I wanted to make sure you're all set.\n\nWant us back on your usual schedule? Reply with a day that works and I'll put you back on.\n\n{signer}",
     },
   ],
   "regular.close_file": [
@@ -438,7 +449,16 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "u1",
       angle: "next_step",
       subject: "{option}",
+      needs: ["noAsk"],
       body: "Hi {first},\n\n{signer} at {company}. When we took care of {mainJob} for you {when}, we never talked about {option}. {why}\n\nWant a price? Reply and I'll put one together.\n\n{signer}",
+    },
+    {
+      // the follow-on asks its own question: a one-time clean becoming a regular one isn't "a price"
+      id: "u1a",
+      angle: "next_step",
+      subject: "{option}",
+      needs: ["ask"],
+      body: "Hi {first},\n\n{signer} at {company}. We did {mainJob} for you {when}. {why}\n\n{ask} Reply with what works and I'll set it up.\n\n{signer}",
     },
   ],
   "upsell.close_file": [
@@ -446,7 +466,15 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "u3",
       angle: "close_file",
       subject: "Re: {option}",
+      needs: ["noAsk"],
       body: "Last note from me on {option}, {first}. If you'd like a price, reply and I'll put one together. If not, no need to reply.\n\n{signer}",
+    },
+    {
+      id: "u3a",
+      angle: "close_file",
+      subject: "Re: {option}",
+      needs: ["ask"],
+      body: "Last note from me on this, {first}. {ask} Just reply and I'll set it up. If not, no need to reply.\n\n{signer}",
     },
   ],
 

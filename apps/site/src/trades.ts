@@ -134,6 +134,10 @@ const CAPITAL: Proof = {
 
 const OWNER_REPORTED = "Owner-reported, no comparison group.";
 const JOBBER_QUOTES = "In Jobber: Reports → Quotes report → All time → Export CSV. Jobber emails it to you.";
+/** Fence and painting quotes mostly live outside Jobber (owner research): name where they really are. */
+const NO_EXPORT = "A spreadsheet works too, or text Jack a photo of your bid book: 603-340-7673.";
+const FENCE_QUOTES = `Export your quotes as a CSV from Fence Cloud, QuickBooks (estimates) or Jobber. ${NO_EXPORT}`;
+const PAINT_ESTIMATES = `Export your estimates as a CSV from PaintScout, DripJobs, QuickBooks (estimates) or Jobber. ${NO_EXPORT}`;
 const QUOTE_ASK = "Can you do {month}?";
 
 export const TRADES: Record<SiteTrade, TradeCopy> = {
@@ -189,7 +193,7 @@ export const TRADES: Record<SiteTrade, TradeCopy> = {
     lede: "We follow up the ones that went quiet, in your company's name, and text you when someone's ready to book.",
     word: "quotes",
     dropH2: "How much is sitting in your quotes?",
-    exportHint: JOBBER_QUOTES,
+    exportHint: FENCE_QUOTES,
     quietH2: "Your software counts quotes sent. Not quotes answered.",
     pain: "You measured, priced it and sent it. Then they waited on the neighbor, the pool, the tax refund, and nobody picked the phone back up.",
     paid: { text: "Angi charges pros for every match, “regardless of whether the Pro ultimately provides the requested service.”", source: "Angi 10-K, FY2025" },
@@ -230,7 +234,7 @@ export const TRADES: Record<SiteTrade, TradeCopy> = {
     lede: "We follow up the estimates that went quiet, in your company's name, and text you when someone's ready to book.",
     word: "estimates",
     dropH2: "How much is sitting in your estimates?",
-    exportHint: JOBBER_QUOTES,
+    exportHint: PAINT_ESTIMATES,
     quietH2: "Your software counts estimates sent. Not estimates answered.",
     pain: "They got three bids and said they'd talk it over. Nobody asked again. Be the one who does.",
     paid: { text: "A painting request from Google search ads costs about $138, win or lose.", source: "LocaliQ search benchmarks, 2024–25" },

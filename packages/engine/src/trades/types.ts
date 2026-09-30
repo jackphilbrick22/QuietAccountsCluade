@@ -30,9 +30,10 @@ export interface ServiceDef {
   kind: "hazard" | "repair" | "maintenance" | "improvement" | "recurring";
   /**
    * Natural next jobs after this one. `why` is for the owner; `pitch` is the one honest sentence a
-   * homeowner reads about it (left out of the note when there isn't one).
+   * homeowner reads about it (left out of the note when there isn't one); `ask` is the question the note
+   * asks in place of "Want a price?" ("Want it on a regular schedule?").
    */
-  followOns?: { serviceId: string; afterDays: [number, number]; why: string; pitch?: string }[];
+  followOns?: { serviceId: string; afterDays: [number, number]; why: string; pitch?: string; ask?: string }[];
   /** A single honest sentence on why waiting doesn't help — used by the "problem grows" angle. */
   worseIfWaiting?: string;
   /**
@@ -79,6 +80,21 @@ export interface TradePlaybook {
    * Off where a visit is a paid service or diagnostic call (HVAC, septic, pest). The owner can override.
    */
   freeLook: boolean;
+  /**
+   * The one short question the first answer to a new request asks, so the owner has what he needs before he
+   * calls back (tree: photos and the address; fence: feet, material, gates, HOA). One sentence, never a price
+   * or a date. "{andAddress}" reads " and the address" only when we don't have one. Without it the answer
+   * asks nothing extra.
+   */
+  intakeAsk?: string;
+  /** The same question when the request already names the work ("repaint the living room"), minus what that answers. */
+  intakeAskNamed?: string;
+  /**
+   * When a regular counts as gone quiet, by how often they came: [usual gap up to this many days, gone quiet
+   * once this many days pass since the last visit]. The first row that fits wins. Trades without rows, and gaps
+   * past the last row, use the default: 1¾ times the usual gap or the gap plus 45 days, whichever is later.
+   */
+  lapseAfterDays?: [number, number][];
 }
 
 export const WARM_STATES = new Set(["FL", "TX", "AZ", "CA", "LA", "MS", "AL", "GA", "SC", "HI", "NV", "NM"]);

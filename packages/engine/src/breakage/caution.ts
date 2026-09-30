@@ -31,6 +31,11 @@ export interface CautionContext {
   typicalJob: number;
   /** Quotes at or over this go to the owner's call list, never email (0 = off). */
   callOver: number;
+  /**
+   * A "yes" from an export that says nothing about jobs (a QuickBooks, PaintScout or DripJobs estimate list with no
+   * jobs file): "Won" or "Accepted" there can mean the job is long done, so it's checked before anyone writes.
+   */
+  noJobsToCheck?: boolean;
 }
 
 /** The caution line for a quote big enough that the owner should call. The call list keys on its prefix. */
@@ -50,6 +55,8 @@ export function cautionReasons(o: Opportunity, c: Customer | undefined, q: Quote
     if (m && q.total >= Math.max(m.p50 * 3, m.p90 * 1.5) && q.total >= cc.typicalJob * 2)
       out.push(`Priced ${Math.round(q.total / m.p50)}x your usual for this work — may have been a "go away" price`);
   }
+  if (q && o.type === "approved_unscheduled" && cc.noJobsToCheck)
+    out.push(`Marked "${q.rawStatus || "approved"}", but there are no jobs on file to check it against — make sure it wasn't already done`);
   const text = [q?.title, ...(q?.lineItems.map((l) => l.name) ?? []), c?.companyName, c?.name, ...(c?.tags ?? [])].filter(Boolean).join(" · ");
   const hit = text.match(NOT_A_REAL_BID);
   if (hit) out.push(`Mentions "${hit[0]}" — may not have been a real buyer`);

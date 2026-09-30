@@ -223,6 +223,10 @@ export function importTable(
     const rawStatus = get("status");
 
     if (kind === "quote") {
+      // Housecall Pro's "Status" is the estimate visit; its "Outcome" (Open / Won / Lost) is the decision
+      const outcome = get("outcome");
+      const read = (raw: string) => (raw ? (mapStatus(raw, SOURCE_QUOTE_STATUS[source] ?? []) ?? mapStatus(raw, QUOTE_STATUS_MAP)) : undefined);
+      const decided = read(outcome);
       const base = {
         id: recId("quote"),
         sourceId: number || undefined,
@@ -231,7 +235,7 @@ export function importTable(
         title,
         lineItems,
         total,
-        rawStatus,
+        rawStatus: [rawStatus, outcome].filter(Boolean).join(" · "),
         createdOn: parseDate(get("createdOn")) ?? parseDate(get("sentOn")),
         sentOn: parseDate(get("sentOn")),
         approvedOn: parseDate(get("approvedOn")),
@@ -243,7 +247,7 @@ export function importTable(
         salesperson: get("salesperson") || undefined,
         jobIds: [] as string[],
       };
-      let status = rawStatus ? (mapStatus(rawStatus, SOURCE_QUOTE_STATUS[source] ?? []) ?? mapStatus(rawStatus, QUOTE_STATUS_MAP)) : undefined;
+      let status = decided ?? read(rawStatus);
       if (!status) status = inferQuoteStatus(base);
       // "Sent" + a converted date means converted, whatever the status column says.
       if (base.convertedOn && status !== "converted") status = "converted";
