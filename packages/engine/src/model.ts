@@ -333,6 +333,8 @@ export interface PlanState {
   priorFees?: Money;
   /** A paid year whose traced jobs didn't cover what was paid: the difference we refunded. */
   yearRefunds?: { yearStart: ISODate; amount: Money; /** Left mid-year: the unused months, refunded when they cancelled. */ early?: boolean }[];
+  /** Paid years already settled against the year floor (whatever the outcome), so a year is never settled twice. */
+  settledYears?: ISODate[];
 }
 
 export interface ImportRecord {

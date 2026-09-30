@@ -427,7 +427,7 @@ export function renewalNotice(state: AccountState, asOf: ISODate): { yearEnds: I
   const won = counted(state.recoveries).filter((r) => inYear(r.cameBackOn));
   const value = sum(won, (r) => r.value);
   const asked = state.replies.filter((r) => WANTS.has(r.intent) && inYear(r.receivedAt)).length;
-  const refunded = b.plan.freeMonths.filter((d) => inYear(d)).length;
+  const refunded = quietInYear(b, started);
   const floor = yearFloor(state, started);
   const text = [
     `${b.ownerFirstName}, your year with us ends ${monthName(yearEnds)} ${Number(yearEnds.slice(8))}. Nothing renews unless you say so.`,
@@ -455,6 +455,21 @@ function someNames(all: string[], total: number, max = 4): string {
 /* ------------------------------------------------------------------ */
 /* Billing & the guarantee                                             */
 /* ------------------------------------------------------------------ */
+
+/**
+ * A quiet month is recorded under its charge date, the END of the period it covers, so a paid year that starts
+ * on yearStart owns the quiet months dated in (yearStart, yearStart + 12 months]. `until` narrows it to the
+ * months used so far.
+ */
+export function quietInYear(b: BusinessProfile, yearStart: ISODate, until: ISODate = addMonths(yearStart, 12)): number {
+  return b.plan.freeMonths.filter((d) => d > yearStart && d <= until).length;
+}
+
+/** The paid year running on `today`, if any, whatever the billing says now (MONTHLY takes effect at the year's end). */
+export function paidYearOn(b: BusinessProfile, today: ISODate): ISODate | undefined {
+  const years = b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : b.plan.billing === "annual" && b.plan.paidOn ? [b.plan.paidOn] : [];
+  return [...years].sort().filter((y) => y <= today && today < addMonths(y, 12)).pop();
+}
 
 /** Twelve months for the price of ten. */
 export function annualPrice(b: BusinessProfile): Money {
@@ -485,18 +500,19 @@ export function grossFees(b: BusinessProfile, asOf: ISODate): { total: Money; mo
  */
 export function earlyLeaveRefund(state: AccountState, today: ISODate): { yearStart: ISODate; monthsUsed: number; quiet: number; asMonthly: Money; paid: Money; traced: Money; refund: Money } | undefined {
   const b = state.dataset.business;
-  if (b.plan.billing !== "annual" || !b.plan.paidOn) return undefined;
-  const yearStart = [...(b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn])].filter((d) => d <= today).sort().pop();
-  if (!yearStart || addMonths(yearStart, 12) <= today) return undefined;
+  const yearStart = paidYearOn(b, today);
+  if (!yearStart) return undefined;
   let monthsUsed = 0;
   while (monthsUsed < 12 && addMonths(yearStart, monthsUsed) <= today) monthsUsed++;
-  const quiet = b.plan.freeMonths.filter((d) => d >= yearStart && d <= today).length;
+  // every quiet month already recorded for this year has been (or will be) refunded; the used ones are free
+  const quiet = quietInYear(b, yearStart);
+  const quietUsed = quietInYear(b, yearStart, addMonths(yearStart, monthsUsed));
   const paid = round2(annualPrice(b) - quiet * annualRefund(b));
-  const asMonthly = round2(Math.max(0, monthsUsed - quiet) * b.plan.monthlyPrice);
+  const asMonthly = round2(Math.max(0, monthsUsed - quietUsed) * b.plan.monthlyPrice);
   // never more than monthly would have cost, and (the year floor, on the months used) never more than the jobs traced in them
   const traced = round2(sum(counted(state.recoveries).filter((r) => r.cameBackOn >= yearStart && r.cameBackOn <= today), (r) => r.value));
   const keep = Math.min(paid, asMonthly, traced);
-  return { yearStart, monthsUsed, quiet, asMonthly, paid, traced, refund: round2(Math.max(0, paid - keep)) };
+  return { yearStart, monthsUsed, quiet: quietUsed, asMonthly, paid, traced, refund: round2(Math.max(0, paid - keep)) };
 }
 
 /**
@@ -506,8 +522,7 @@ export function earlyLeaveRefund(state: AccountState, today: ISODate): { yearSta
 export function yearFloor(state: AccountState, yearStart: ISODate): { paid: Money; traced: Money; refund: Money; yearEnds: ISODate } {
   const b = state.dataset.business;
   const yearEnds = addMonths(yearStart, 12);
-  const quiet = b.plan.freeMonths.filter((d) => d >= yearStart && d < yearEnds).length;
-  const paid = round2(annualPrice(b) - quiet * annualRefund(b));
+  const paid = round2(annualPrice(b) - quietInYear(b, yearStart) * annualRefund(b));
   const traced = round2(sum(counted(state.recoveries).filter((r) => r.cameBackOn >= yearStart && r.cameBackOn < yearEnds), (r) => r.value));
   return { paid, traced, refund: round2(Math.max(0, paid - traced)), yearEnds };
 }

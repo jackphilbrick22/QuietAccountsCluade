@@ -216,10 +216,12 @@ export async function rescan(d: Deps, bid: string): Promise<void> {
 /* Writer + Sender: plan                                               */
 /* ------------------------------------------------------------------ */
 
-export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit?: number; approve?: boolean } = {}): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number; awaitingOk?: boolean }> {
+export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit?: number; approve?: boolean } = {}): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number; awaitingOk?: boolean; textSent?: boolean }> {
   let planned: Touch[] = [];
   let firstRound = false;
   let approved = true;
+  let waiting = false;
+  let textSent = false;
   // Every note carries the business's postal address (CAN-SPAM); a sign-up from the site doesn't have one yet.
   const known = d.accounts.peek(bid);
   if (known && (known.state.dataset.business.mailingAddress?.trim() ?? "").length < 8) throw new NotReady("Add the business's mailing address first. It goes at the bottom of every note, and the law requires it.");
@@ -231,7 +233,9 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
     if (limit === 0) return { people: 0, notes: 0, personalized: 0 };
     // The free round's first batch waits for the owner's OK to the first note (by text); later batches don't.
     firstRound = b.plan.stage === "trial" && !state.touches.some((t) => t.status !== "cancelled");
-    approved = opts.approve ?? !firstRound;
+    // while the owner hasn't said OK to the first note, nothing new is approved either (a top-up waits with it)
+    waiting = !!state.awaitingOwnerOk;
+    approved = opts.approve ?? (!firstRound && !waiting);
     const p = planBatch(state, at, { startOn, limitPeople: limit, approve: approved, kickoff: false });
     planned = state.touches.filter((t) => p.touches.some((x) => x.id === t.id));
     return { people: p.people.length, notes: p.touches.length, firstDay: p.firstDay, lastDay: p.lastDay, personalized: 0 };
@@ -268,11 +272,14 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
     result.personalized = rewrites.size;
   }
   // The welcome text is written last, so the first note in it is exactly the one that goes out.
-  if (firstRound && result.people)
+  // The welcome text with the first note; again when the operator re-plans while the owner's OK is still pending
+  // (they asked for a change). The console says a text went only when one did.
+  if ((firstRound || waiting) && result.people)
     await d.accounts.withAccount(bid, (state) => {
-      kickoff(state, nowLocal(d, state), { awaitOk: !approved });
+      textSent = !!kickoff(state, nowLocal(d, state), { awaitOk: !approved, again: waiting });
     });
-  return { ...result, awaitingOk: firstRound && !approved && result.people > 0 };
+  const pending = !!d.accounts.peek(bid)?.state.awaitingOwnerOk;
+  return { ...result, awaitingOk: pending && result.people > 0, textSent };
 }
 
 function startedPeople(state: AccountState): number {
@@ -1096,7 +1103,8 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
       done("skipped", { error: "Cancelled: nothing more goes to the owner." });
       continue;
     }
-    if (BILLING_KINDS.has(m.kind) && d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" && !opts.allowBilling) {
+    // a refund text waits for a person even with auto-send on: someone has to issue the refund first
+    if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || m.kind === "refund") && !opts.allowBilling) {
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, "review");
       continue;
     }

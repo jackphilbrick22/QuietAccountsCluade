@@ -1,5 +1,6 @@
 import { scan } from "../breakage/detect.ts";
 import { summarize } from "../breakage/forecast.ts";
+import { quietRateOf } from "../breakage/quiet.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
 import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
@@ -141,8 +142,8 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
  * The welcome text for the free round: their quiet rate, the first note word for word, and (when
  * awaitOk) "Reply OK" — nothing goes out until they do. Once only.
  */
-export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: boolean }): OwnerMessage | undefined {
-  if (state.ownerMessages.some((m) => m.kind === "kickoff")) return undefined;
+export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: boolean; again?: boolean }): OwnerMessage | undefined {
+  if (state.ownerMessages.some((m) => m.kind === "kickoff") && !(opts.again && state.awaitingOwnerOk)) return undefined;
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
   if (!firsts.length) return undefined;
   const firstDay = firsts.map((t) => t.dueAt.slice(0, 10)).sort()[0]!;
@@ -154,6 +155,16 @@ export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: 
 /** The owner texted OK to the first note: the batch is approved and goes out on schedule. */
 export function ownerApproves(state: AccountState, now: ISODateTime): { approved: number; firstDay?: string } {
   state.awaitingOwnerOk = undefined;
+  // An OK that comes after the planned first day moves the whole round forward, spacing kept: it never sends
+  // the backlog at once.
+  const planned = state.touches.filter((t) => t.status === "planned");
+  const earliest = planned.map((t) => t.dueAt.slice(0, 10)).sort()[0];
+  const today = now.slice(0, 10);
+  const start = nextAllowed(state.dataset, Number(now.slice(11, 13)) >= state.dataset.business.sendWindow[1] ? addDays(today, 1) : today);
+  if (earliest && earliest < start) {
+    const shift = daysBetween(earliest, start);
+    for (const t of planned) t.dueAt = `${nextAllowed(state.dataset, addDays(t.dueAt.slice(0, 10), shift))}${t.dueAt.slice(10)}`;
+  }
   const approved = approveAll(state, now);
   const firstDay = state.touches.filter((t) => t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort()[0];
   event(state, now, "sender", "action", "The owner said OK by text", approved ? `${plural(approved, "note")} approved; the first go out ${firstDay}.` : "Nothing was waiting.");
@@ -218,6 +229,12 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
   const firsts = new Map<string, Touch>();
   for (const t of state.touches) if (t.step === 1 && (!firsts.has(t.opportunityId) || t.status === "sent" || t.status === "delivered")) firsts.set(t.opportunityId, t);
+  // every step of each sequence, so a follow-up waits for the one before it and the planned gap after it
+  const steps = new Map<string, Touch>();
+  for (const t of state.touches) {
+    const k = `${t.opportunityId}|${t.step}`;
+    if (!steps.has(k) || t.status === "sent" || t.status === "delivered") steps.set(k, t);
+  }
   for (const t of state.touches) {
     if (t.status !== "approved" || t.dueAt > local) continue;
     const c = customerById(state.dataset, t.customerId);
@@ -245,6 +262,19 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
     if (first && first.status !== "sent" && first.status !== "delivered") {
       held.push({ touch: t, why: ["approved", "planned", "sending"].includes(first.status) ? "Waiting for note 1" : "Note 1 never went out — the rest of the sequence stops" });
       continue;
+    }
+    const prev = t.step > 2 && !t.instant ? steps.get(`${t.opportunityId}|${t.step - 1}`) : t.step === 2 ? first : undefined;
+    if (prev && t.step > 2 && prev.status !== "sent" && prev.status !== "delivered") {
+      held.push({ touch: t, why: `Waiting for note ${t.step - 1}` });
+      continue;
+    }
+    // never closer to the note before it than planned (a late start doesn't bunch the sequence up)
+    if (prev?.sentAt) {
+      const gap = daysBetween(prev.dueAt.slice(0, 10), t.dueAt.slice(0, 10));
+      if (daysBetween(prev.sentAt.slice(0, 10), day) < gap) {
+        held.push({ touch: t, why: `Too soon after note ${t.step - 1}` });
+        continue;
+      }
     }
     if (t.instant) {
       const stale = staleAnswer(state, t, now);
@@ -287,6 +317,7 @@ export function markSent(state: AccountState, touchId: string, at: ISODateTime, 
   // record, so a job they book later isn't counted as one we brought back.
   if (t.track === "new_request") return;
   const day = at.slice(0, 10);
+  if (!state.quietBefore) state.quietBefore = { ...quietRateOf(state.dataset, day), on: day };
   const rec = outreachFor(state, t.customerId);
   if (rec) {
     rec.lastTouchOn = day;
@@ -563,7 +594,13 @@ export function reconcile(state: AccountState, files: FileIn[], now: ISODateTime
 /** Match new jobs/invoices/approvals in the current data to the people we contacted. Then re-scan. */
 export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveries: number; lift: LiftReport } {
   state.dataset.asOf = now.slice(0, 10);
-  const replied = new Set(state.replies.filter((r) => r.customerId && !["auto_reply", "bounce"].includes(r.intent)).map((r) => r.customerId!));
+  // a reply to our answer on their own new request isn't a reply to a follow-up (same rule as the guarantee)
+  const newRequestTouch = new Set(state.touches.filter((t) => t.track === "new_request").map((t) => t.id));
+  const replied = new Set(
+    state.replies
+      .filter((r) => r.customerId && !["auto_reply", "bounce"].includes(r.intent) && !r.opportunityId?.startsWith("req:") && !(r.touchId && newRequestTouch.has(r.touchId)))
+      .map((r) => r.customerId!),
+  );
   const found = attribute(state.dataset, state.outreach, { replied });
   // someone who came back quietly and then wrote to us is now traced
   for (const r of state.recoveries) if (r.tier === "after_note" && replied.has(r.customerId)) r.tier = "traced";
@@ -678,14 +715,19 @@ function settleYears(state: AccountState, now: ISODateTime): OwnerMessage | unde
   for (const y of [...years].sort()) {
     const f = yearFloor(state, y);
     if (today < f.yearEnds) continue;
-    if (state.ownerMessages.some((m) => m.refs?.some((r) => r.kind === "year_floor" && r.id === y))) continue;
+    // settled once, on the plan itself (a message about it may no longer be loaded)
+    if (plan.settledYears?.includes(y) || state.ownerMessages.some((m) => m.refs?.some((r) => r.kind === "year_floor" && r.id === y))) continue;
+    plan.settledYears = [...(plan.settledYears ?? []), y];
+    // a year left early was already settled at the cancel
+    if ((plan.yearRefunds ?? []).some((r) => r.yearStart === y && r.early)) continue;
     if (f.refund > 0 && !(plan.yearRefunds ?? []).some((r) => r.yearStart === y)) plan.yearRefunds = [...(plan.yearRefunds ?? []), { yearStart: y, amount: f.refund }];
     event(state, now, "guard", "action", f.refund > 0 ? "The year didn't pay for itself — refunding the difference" : "The year paid for itself", `${fmtMoney(f.traced)} traced vs ${fmtMoney(f.paid)} paid.`);
     const text =
       f.refund > 0
         ? `${b.ownerFirstName}, your year's numbers: ${fmtMoney(f.traced)} in jobs traced to our notes, against ${fmtMoney(f.paid)} you paid. It didn't pay for itself, so ${fmtMoney(f.refund, { cents: true })} goes back to your card, like I promised. Nothing for you to do.`
         : `${b.ownerFirstName}, your year's numbers: ${fmtMoney(f.traced)} in jobs traced to our notes, against ${fmtMoney(f.paid)} you paid.`;
-    return ownerMsg(state, now, f.refund > 0 ? "free_month" : "info", text, [{ kind: "year_floor", id: y }]);
+    // a refund text waits for the operator to issue the refund
+    return ownerMsg(state, now, f.refund > 0 ? "refund" : "info", text, [{ kind: "year_floor", id: y }]);
   }
   return undefined;
 }
@@ -724,20 +766,22 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
  * plan gets back what it didn't use (never more than monthly would have cost; the year floor on the months
  * used). What it stopped is kept for a day so UNDO can put it all back.
  */
-export function cancelPlan(state: AccountState, now: ISODateTime): { stopped: number; refund: number; line: string } {
+export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused?: boolean } = {}): { stopped: number; refund: number; line: string } {
   const plan = state.dataset.business.plan;
   if (plan.stage === "cancelled") return { stopped: 0, refund: 0, line: "" };
   const stageBefore = plan.stage;
   const today = now.slice(0, 10);
-  const touchIds: string[] = [];
+  // any paid year that already ended is settled first, the same as at its end
+  for (let i = 0; i < 5 && settleYears(state, now); i++);
+  const touches: { id: string; status: "planned" | "approved" }[] = [];
   for (const t of state.touches)
     if (t.status === "approved" || t.status === "planned") {
+      touches.push({ id: t.id, status: t.status });
       t.status = "cancelled";
-      touchIds.push(t.id);
     }
   let refund = 0;
   let line = "";
-  const early = stageBefore === "paying" ? earlyLeaveRefund(state, today) : undefined;
+  const early = stageBefore !== "trial" ? earlyLeaveRefund(state, today) : undefined;
   if (early && early.refund > 0) {
     refund = early.refund;
     plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early.yearStart), { yearStart: early.yearStart, amount: refund, early: true }];
@@ -752,30 +796,48 @@ export function cancelPlan(state: AccountState, now: ISODateTime): { stopped: nu
     );
   }
   plan.stage = "cancelled";
-  state.cancelled = { at: now, stageBefore, touchIds, ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}) };
-  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touchIds.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
+  state.cancelled = {
+    at: now,
+    stageBefore,
+    touches,
+    ...(state.awaitingOwnerOk ? { awaitingOwnerOk: state.awaitingOwnerOk } : {}),
+    ...(opts.paused ? { paused: true } : {}),
+    ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}),
+  };
+  // a cancelled account isn't waiting for anyone's OK
+  state.awaitingOwnerOk = undefined;
+  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
   state.updatedAt = now;
-  return { stopped: touchIds.length, refund, line };
+  return { stopped: touches.length, refund, line };
 }
 
-/** UNDO within a day of CANCEL: the same notes back in line, the plan as it was, no refund due. */
-export function undoCancel(state: AccountState, now: ISODateTime): { restored: number } | undefined {
+/**
+ * UNDO within a day of CANCEL: the same notes back exactly as they were (a planned note stays planned, a note
+ * the sending platform had is pushed again), the plan and the wait for the owner's OK as they were. A cancel that
+ * set up a yearly refund is never undone by software: money may already be on its way, so a person does it.
+ */
+export function undoCancel(state: AccountState, now: ISODateTime): { restored: number; paused: boolean } | { refused: "late" | "refund" } | undefined {
   const c = state.cancelled;
   const plan = state.dataset.business.plan;
-  if (!c || plan.stage !== "cancelled" || Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return undefined;
+  if (!c || plan.stage !== "cancelled") return undefined;
+  if (Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return { refused: "late" };
+  if (c.refund) return { refused: "refund" };
   plan.stage = c.stageBefore;
-  const ids = new Set(c.touchIds);
+  const before = new Map(c.touches.map((x) => [x.id, x.status]));
   let restored = 0;
-  for (const t of state.touches)
-    if (ids.has(t.id) && t.status === "cancelled") {
-      t.status = "approved";
-      restored++;
-    }
-  if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
+  for (const t of state.touches) {
+    const was = before.get(t.id);
+    if (!was || t.status !== "cancelled") continue;
+    t.status = was;
+    // the cancel took the platform's copy back; the next sync pushes it again
+    t.providerId = undefined;
+    restored++;
+  }
+  if (c.awaitingOwnerOk) state.awaitingOwnerOk = c.awaitingOwnerOk;
   state.cancelled = undefined;
-  event(state, now, "guard", "action", "Owner undid the cancel", `${plural(restored, "note")} back in line.${c.refund ? " No yearly refund due." : ""}`);
+  event(state, now, "guard", "action", "Owner undid the cancel", `${plural(restored, "note")} back in line.${c.paused ? " Still paused, as before." : ""}`);
   state.updatedAt = now;
-  return { restored };
+  return { restored, paused: !!c.paused };
 }
 
 /**

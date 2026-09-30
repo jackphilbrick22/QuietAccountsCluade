@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
-import { ackFor, closeMessage, earlyLeaveRefund, guaranteeCheck, handoffText } from "../src/reports/owner.ts";
+import { ackFor, closeMessage, earlyLeaveRefund, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
+import { cancelPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
 import { ASOF, ago, customer, dataset, job, oneOpp, quote, request } from "./fixtures.ts";
@@ -139,10 +140,78 @@ describe("leaving a yearly plan early", () => {
     expect(earlyLeaveRefund(yearly(800), "2026-09-15")!.refund).toBe(3755.83);
     expect(earlyLeaveRefund(yearly(0), "2026-09-15")!.refund).toBe(4555.83);
   });
-  it("is only for a yearly plan inside its year", () => {
+  it("is only for a paid year that's still running, whatever the billing says now", () => {
     const st = yearly(0);
     expect(earlyLeaveRefund(st, "2027-06-02")).toBeUndefined();
-    st.dataset.business.plan.billing = "monthly";
+    // they texted MONTHLY (it takes effect at the year's end): the paid year still runs and still refunds
+    st.dataset.business.plan = { ...st.dataset.business.plan, billing: "monthly", paidOn: "2027-06-01" };
+    expect(earlyLeaveRefund(st, "2026-09-15")!.refund).toBe(4555.83);
+    // month to month from the start: nothing paid ahead, nothing to refund
+    st.dataset.business.plan = { ...st.dataset.business.plan, yearsPaidOn: undefined, paidOn: "2026-06-01" };
     expect(earlyLeaveRefund(st, "2026-09-15")).toBeUndefined();
+  });
+  it("counts quiet months by the period they end: last year's last month isn't this year's", () => {
+    const st = yearly(0);
+    st.dataset.business.plan = { ...st.dataset.business.plan, paidOn: "2025-06-01", yearsPaidOn: ["2025-06-01", "2026-06-01"], freeMonths: ["2026-06-01"] };
+    // 2026-06-01 closes the 2025 year's last month, so the 2026 year has no quiet month yet
+    expect(earlyLeaveRefund(st, "2026-09-15")).toMatchObject({ yearStart: "2026-06-01", quiet: 0, paid: 4970 });
+  });
+  it("a quiet month recorded two days ahead of its charge is counted, so it isn't refunded twice", () => {
+    const st = yearly(0);
+    st.dataset.business.plan = { ...st.dataset.business.plan, paidOn: "2025-01-15", yearsPaidOn: ["2025-01-15"], freeMonths: ["2025-03-15"] };
+    const r = earlyLeaveRefund(st, "2025-03-14")!;
+    // $414.17 already comes back for the quiet month; this refund plus that one is exactly what was paid
+    expect(r.refund + 414.17).toBeCloseTo(4970, 2);
+  });
+});
+
+describe("the year floor and settling a year", () => {
+  const paidYear = () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2025-01-15", yearsPaidOn: ["2025-01-15"], freeMonths: ["2026-01-15"] };
+    st.recoveries = [{ id: "rec1", customerId: "c1", record: { kind: "job", id: "j9" }, value: 3000, cameBackOn: "2025-06-10", match: "reply", confidence: 1, tier: "traced" } as unknown as Recovery];
+    return st;
+  };
+  it("the year's last quiet month (charged at the year's end) belongs to that year", () => {
+    const f = yearFloor(paidYear(), "2025-01-15");
+    expect(f).toMatchObject({ paid: 4555.83, traced: 3000, refund: 1555.83 });
+  });
+  it("settles a year once, even after the text about it is no longer loaded, and holds the refund for the operator", () => {
+    const st = paidYear();
+    renewalIfDue(st, "2026-01-16T09:00:00");
+    expect(st.ownerMessages.find((x) => x.kind === "refund")!.text).toContain("$1,555.83 goes back to your card");
+    expect(st.dataset.business.plan.settledYears).toEqual(["2025-01-15"]);
+    st.ownerMessages = [];
+    renewalIfDue(st, "2026-01-17T09:00:00");
+    expect(st.ownerMessages.filter((x) => x.kind === "refund")).toHaveLength(0);
+    expect(st.dataset.business.plan.yearRefunds).toHaveLength(1);
+  });
+});
+
+describe("cancel and undo put back exactly what they changed", () => {
+  it("planned stays planned, the wait for the owner's OK comes back, and a paused owner stays paused", () => {
+    const st = account();
+    st.touches = [
+      { id: "t1", opportunityId: "o1", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: "2026-10-01T09:00", status: "planned", body: "", flags: [] },
+      { id: "t2", opportunityId: "o2", customerId: "c2", channel: "email", step: 1, angle: "check_in", dueAt: "2026-10-01T09:00", status: "approved", body: "", flags: [], providerId: "lead-2" },
+    ] as Touch[];
+    st.awaitingOwnerOk = "2026-09-29T10:00:00";
+    cancelPlan(st, "2026-09-29T11:00:00", { paused: true });
+    expect(st.awaitingOwnerOk).toBeUndefined();
+    const r = undoCancel(st, "2026-09-29T15:00:00") as { restored: number; paused: boolean };
+    expect(r).toEqual({ restored: 2, paused: true });
+    expect(st.touches.map((t) => t.status)).toEqual(["planned", "approved"]);
+    // the platform's copy was taken back at the cancel: pushed again on the next sync
+    expect(st.touches[1]!.providerId).toBeUndefined();
+    expect(st.awaitingOwnerOk).toBe("2026-09-29T10:00:00");
+  });
+  it("never undoes a cancel that set up a yearly refund, and not after a day", () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2026-06-01", yearsPaidOn: ["2026-06-01"], freeMonths: [] };
+    cancelPlan(st, "2026-09-15T10:00:00");
+    expect(undoCancel(st, "2026-09-15T11:00:00")).toEqual({ refused: "refund" });
+    const m = account();
+    cancelPlan(m, "2026-09-15T10:00:00");
+    expect(undoCancel(m, "2026-09-16T10:30:00")).toEqual({ refused: "late" });
   });
 });

@@ -513,10 +513,13 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses/:id/owner-messages/:mid/send", async (c) => {
     // Operator approves a billing text (the close, pre-charge, free month) for delivery.
-    d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND id = ? AND delivery IN ('review','failed')", c.req.param("id"), c.req.param("mid"));
+    const moved = d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND id = ? AND delivery IN ('review','failed')", c.req.param("id"), c.req.param("mid"));
+    // nothing to send (already sent, or withdrawn): say so instead of reporting a send that didn't happen
+    if (!Number(moved.changes)) return c.json({ ok: false, error: "That text isn't waiting to be sent any more (it was sent or withdrawn)." }, 409);
     await deliverOwnerMessages(d, c.req.param("id"), { allowBilling: true });
-    repo.audit(c.req.param("id"), "operator", "owner-message.approve", { id: c.req.param("mid") });
-    return c.json({ ok: true });
+    const after = repo.ownerMessages(c.req.param("id")).find((m) => m.id === c.req.param("mid"));
+    repo.audit(c.req.param("id"), "operator", "owner-message.approve", { id: c.req.param("mid"), delivery: after?.delivery });
+    return c.json({ ok: after?.delivery === "sent", delivery: after?.delivery });
   });
 
   op.get("/businesses/:id/close-preview", (c) => {

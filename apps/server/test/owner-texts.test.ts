@@ -90,6 +90,10 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     expect(await h.sms("CANCEL")).toMatch(/Which one\?.*"CANCEL AAA" or "CANCEL BBB"/);
     expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
     expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: Done — cancelled\..*Text UNDO BBB by .* tomorrow/);
+    // UNDO puts a (non-yearly) cancel back by itself, the same day
+    expect(await h.sms("undo")).toMatch(/^BBB Tree: Back on — nothing was lost\./);
+    expect(state(h, "bbb-tree").dataset.business.plan.stage).toBe("trial");
+    expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: Done — cancelled/);
     expect(state(h, "bbb-tree").dataset.business.plan.stage).toBe("cancelled");
     expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
     expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);

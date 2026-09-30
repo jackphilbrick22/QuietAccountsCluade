@@ -1,6 +1,6 @@
 import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { deliverOwnerMessages, fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { deliverOwnerMessages, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -42,8 +42,15 @@ const OPT_IN = /^(start|unstop)$/;
 const HELP = /^(help|info|commands)$/;
 /** "SKIP Karen Whitfield", "remove the Whitfields", "don't email Karen Whitfield". */
 const SKIP = /^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don t (email|write|contact))\s+(.+)$/;
-/** An OK to the first note in the welcome text. */
-const APPROVE = /^(ok|okay|k|yes|yep|yeah|yup|go|go ahead|send|send it|send them|start it|looks good|sounds good|good to go|approved?|do it|let'?s go|perfect|great)\b/;
+/**
+ * An OK to the first note in the welcome text: the whole text has to be an approval ("OK", "Looks good, thanks").
+ * "OK but don't email Karen" is a change, not an OK. Matched against the words only (punctuation dropped).
+ */
+const APPROVE_WORD = "(ok|okay|k|kk|yes|yep|yeah|yup|ya|sure|go|go ahead|send|send it|send them|start|start it|looks good|look good|sounds good|good to go|approve|approved|do it|lets go|let s go|perfect|great|fine|all good|thats fine|that s fine|love it|good)";
+const APPROVE_TAIL = "(thanks|thank you|thx|ty|jack|man|please|pls|first note|the first note|go ahead|send it|looks good|sounds good|perfect|great|good|all good|lets go|let s go)";
+const APPROVE = new RegExp(`^${APPROVE_WORD}( ${APPROVE_TAIL})*$`);
+/** CANCEL on its own (or "cancel the service"); "cancel the note to Karen" is not cancelling the service. */
+const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it|all|quiet|accounts|account|yes|confirm|please|now))*$/;
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
 
 const HELP_TEXT =
@@ -155,10 +162,16 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (HELP.test(bare)) return { businessId: fallback().id, reply: HELP_TEXT, handled: "help" };
 
   /* ---- the first note: nothing goes out until the owner says OK ---- */
-  const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk);
-  if (waitingOk.length && APPROVE.test(bare)) {
+  const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk && b.profile.plan.stage !== "cancelled");
+  const hasCode = CODE.test(text);
+  // something else on this phone an "ok" or a "yes" could be answering: a lead waiting on a call, the close, the renewal
+  const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id));
+  if (waitingOk.length && !hasCode && APPROVE.test(bare)) {
     if (waitingOk.length > 1) return askWhich();
     const b = waitingOk[0]!;
+    const explicit = !!named || /\bfirst note\b/.test(bare);
+    if (!explicit && otherOpen(b))
+      return { businessId: b.id, reply: `${tag(b)}Is that OK for the first note? Text "OK first note"${multi ? ` ${tags.get(b.id)}` : ""} to start it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.`, handled: "ask_ok" };
     if (bare === "yes") await setOwnerTexts(d, fromPhone, undefined); // YES is a carrier opt-in word too
     let r: { approved: number; firstDay?: string } = { approved: 0 };
     await d.accounts.withAccount(b.id, (state) => {
@@ -192,6 +205,10 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
   if (/^(renew|yearly|annual|monthly|month to month)\b/.test(bare)) {
     if (!one) return askWhich();
+    if (one.profile.plan.stage === "cancelled") {
+      const c = d.accounts.peek(one.id)!.state.cancelled;
+      return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running.${c ? " Didn't mean to cancel? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "renew_cancelled", needsPerson: !c };
+    }
     const choice = /^(monthly|month to month)/.test(bare) ? "monthly" : "year";
     let reply = "";
     await d.accounts.withAccount(one.id, (state) => {
@@ -201,7 +218,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: one.id, reply: `${tag(one)}${choice === "year" ? `${reply} Jack will text you the payment link.` : reply}`, handled: `renew_${choice}` };
   }
   // Month to month, cancel by text: one text does it (a yearly plan gets back what it didn't use). UNDO within a day puts it all back.
-  if (/^cancel\b/.test(bare)) {
+  if (/^cancel\b/.test(bare) && !CANCEL_ALL.test(bare))
+    return { businessId: fallback().id, reply: `${one ? tag(one) : ""}Did you mean to cancel the whole service? Text CANCEL on its own for that. To take one person off, text SKIP and their name. Jack will read this too.`, handled: "cancel_unclear", needsPerson: true };
+  if (CANCEL_ALL.test(bare)) {
     if (!one) return askWhich();
     const s = d.accounts.peek(one.id)!.state;
     if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled.${s.cancelled ? " Didn't mean it? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "cancel_again" };
@@ -209,7 +228,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     let until = "";
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
-      r = cancelPlan(state, at);
+      r = cancelPlan(state, at, { paused: one.paused });
       until = `${fmtClock(at)} tomorrow`;
     });
     // cancel everywhere: the platform's campaigns pause and leads still waiting are taken back
@@ -229,16 +248,26 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (pool.length > 1) return askWhich();
     const b = pool[0];
     if (!b) return { businessId: fallback().id, reply: "There's nothing to undo. Text HELP for what you can text us.", handled: "undo_nothing" };
-    let r: { restored: number } | undefined;
+    let r: ReturnType<typeof undoCancel>;
     await d.accounts.withAccount(b.id, (state) => {
       r = undoCancel(state, nowLocal(d, state));
     });
-    if (!r) return { businessId: b.id, reply: `${tag(b)}It's been more than a day, so Jack will set you back up himself. He'll text you.`, handled: "undo_late", needsPerson: true };
-    await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
-    // a yearly refund nobody has sent yet isn't owed any more
-    d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'cancelled' WHERE business_id = ? AND kind = 'refund' AND delivery IN ('review','pending')", b.id);
-    d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: r.restored });
-    return { businessId: b.id, reply: `${tag(b)}Back on — nothing was lost. ${r.restored ? `${r.restored} ${r.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}`, handled: "undo_cancel" };
+    const res = r!;
+    if (!res || "refused" in res) {
+      // a yearly refund may already be on its way: a person puts it back, never the software
+      if (res && res.refused === "refund")
+        await raiseAlert(d, b.id, { kind: "undo_refund", title: `${b.profile.name} wants to undo their cancel`, detail: "A yearly refund was set up when they cancelled. If it's already issued, settle that first; then set them back to paying and text them." });
+      return {
+        businessId: b.id,
+        reply: res && res.refused === "refund" ? `${tag(b)}Glad you're staying. A refund was already set up for your year, so Jack will put everything back himself today and text you.` : `${tag(b)}It's been more than a day, so Jack will set you back up himself. He'll text you.`,
+        handled: res && res.refused === "refund" ? "undo_refund" : "undo_late",
+        needsPerson: true,
+      };
+    }
+    // the owner had paused before cancelling: it stays paused
+    if (!res.paused) await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
+    d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: res.restored });
+    return { businessId: b.id, reply: `${tag(b)}Back on — nothing was lost. ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel" };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(bare) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
@@ -273,7 +302,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (skip) {
     // The name is what comes before any reason: "don't email the Johnsons, they're family".
     const said = text.replace(CODE, " ").trim().toLowerCase().replace(/^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don'?t (email|write|contact))\s+/, "");
-    const who = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.trim() || skip[4]!;
+    const short = named ? tags.get(named.id)!.toLowerCase() : "";
+    const who = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.split(/\s+/).filter((w) => !short || w !== short).join(" ").trim() || skip[4]!;
     const pool = one ? [one] : all;
     const hits = pool.flatMap((b) => peopleNamed(d.accounts.peek(b.id)!.state, who).map((c) => ({ b, c })));
     if (!hits.length)
@@ -293,8 +323,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   }
 
   /* ---- a lead ---- */
+  // While one business waits for the OK and nothing else is open, anything else is a change to the first note.
+  if (waitingOk.length === 1 && !hasCode && !otherOpen())
+    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
+
   const lead = readLeadText(text);
-  if (lead) return leadCommand(d, text, lead, named ? [named] : all, multi, tags);
+  // a #code names the lead on its own; a business name mentioned in passing never overrides it
+  if (lead) return leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags);
 
   /* ---- "yes": the answer to the close (or the renewal), never a booking ---- */
   if (AFFIRM.test(t)) {
@@ -410,6 +445,11 @@ async function pause(d: Deps, bid: string, paused: boolean): Promise<void> {
 }
 
 /** A close (free round's results) or renewal question sent in the last three weeks, not yet answered. */
+/** A lead we texted the owner that nobody has called yet. */
+function hasWaitingLead(d: Deps, bid: string): boolean {
+  return !!d.accounts.peek(bid)?.state.replies.some((r) => r.status === "handed_off" && !r.ownerContactedAt);
+}
+
 function outstanding(d: Deps, bid: string, kind: "close" | "renewal"): boolean {
   const s = d.accounts.peek(bid)?.state;
   if (!s) return false;

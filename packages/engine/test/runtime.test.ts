@@ -10,6 +10,7 @@ import {
   ledgerPass,
   markContacted,
   markSent,
+  ownerApproves,
   planBatch,
   readFiles,
   receiveReply,
@@ -638,5 +639,29 @@ describe("comparison group: a staggered start, never a permanent hold", () => {
     expect(s.outreach.find((o) => o.customerId === heldId)!.treatedFrom).toBe(first!.dueAt.slice(0, 10));
     // still exactly one record per person (the store keys outreach by customer)
     expect(s.outreach.filter((o) => o.customerId === heldId)).toHaveLength(1);
+  });
+});
+
+describe("a late start never bunches the notes up", () => {
+  it("an OK that comes after the planned first day moves the whole round forward, spacing kept", () => {
+    const s = fresh();
+    for (const t of s.touches) if (t.status === "approved") t.status = "planned";
+    const before = s.touches.filter((t) => t.status === "planned");
+    const firstBefore = before.map((t) => t.dueAt.slice(0, 10)).sort()[0]!;
+    const late = addDays(firstBefore, 13);
+    const r = ownerApproves(s, `${late}T08:00:00`);
+    expect(r.firstDay! >= late).toBe(true);
+    // nothing is due before the OK arrived
+    expect(s.touches.filter((t) => t.status === "approved").every((t) => t.dueAt.slice(0, 10) >= late)).toBe(true);
+  });
+  it("a follow-up waits the planned gap after the note before it actually went", () => {
+    const s = fresh();
+    const note2 = s.touches.find((t) => t.step === 2 && t.status === "approved")!;
+    const note1 = s.touches.find((t) => t.opportunityId === note2.opportunityId && t.step === 1)!;
+    // note 1 went out a week late; note 2's own date has come, but the gap after note 1 hasn't passed
+    markSent(s, note1.id, `${note2.dueAt.slice(0, 10)}T08:00:00`, "msg-late");
+    const { due, held } = dueTouches(s, `${note2.dueAt.slice(0, 10)}T09:30`);
+    expect(due.some((d) => d.touch.id === note2.id)).toBe(false);
+    expect(held.find((h) => h.touch.id === note2.id)?.why).toBe("Too soon after note 1");
   });
 });

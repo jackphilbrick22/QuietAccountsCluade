@@ -62,9 +62,11 @@ export function quietRateOf(ds: AccountState["dataset"], end: ISODate): QuietRat
 export function quietRates(state: AccountState): QuietRates {
   const ds = state.dataset;
   const cut = addDays(ds.asOf, -WAIT_DAYS);
-  const sent = state.touches.filter((t) => t.status === "sent" || t.status === "delivered");
+  // follow-ups only: answering someone's own new request isn't us starting on their quotes
+  const sent = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && t.track !== "new_request");
   const startedOn = sent.map((t) => (t.sentAt ?? t.dueAt).slice(0, 10)).sort()[0];
-  const before = quietRateOf(ds, startedOn ?? ds.asOf);
+  const snap = state.quietBefore;
+  const before = snap && startedOn && snap.on === startedOn ? { quotes: snap.quotes, answered: snap.answered, quiet: snap.quiet, rate: snap.rate, quietValue: snap.quietValue } : quietRateOf(ds, startedOn ?? ds.asOf);
   if (!startedOn) return { before };
 
   // First real reply per person, so "answered" means they wrote back after the quote went out.

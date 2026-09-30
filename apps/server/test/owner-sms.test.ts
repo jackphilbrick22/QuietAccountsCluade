@@ -106,8 +106,7 @@ describe("owner texts BUSY / OPEN", () => {
     expect((ov.business as { plan: { billing: string } }).plan.billing).toBe("annual");
   });
 
-  it("cancels in one text, refunds the unused year, and UNDO within a day puts it all back", async () => {
-    const queuedBefore = ((await api("GET", "/api/businesses/ridge-tree")).counts as { queued: number }).queued;
+  it("cancels in one text and refunds the unused year; UNDO then goes to a person, never the software", async () => {
     const done = await sms("cancel");
     expect(done).toMatch(/Done — cancelled\. No more notes, no more charges\./);
     // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor)
@@ -120,14 +119,15 @@ describe("owner texts BUSY / OPEN", () => {
     // the refund text is held for the operator (they issue it, then send), even though the client is cancelled
     const held = (await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string; text: string }[];
     expect(held.find((m) => m.kind === "refund")!.text).toMatch(/goes back to your card within 5 business days/);
+    // money may already be on its way, so UNDO is a person's job
     const undo = await sms("undo");
-    expect(undo).toMatch(/Back on — nothing was lost\./);
+    expect(undo).toContain("Jack will put everything back himself");
     ov = await api("GET", "/api/businesses/ridge-tree");
-    expect((ov.business as { plan: { stage: string; yearRefunds?: unknown[] } }).plan.stage).toBe("paying");
-    expect((ov.business as { plan: { yearRefunds?: unknown[] } }).plan.yearRefunds ?? []).toHaveLength(0);
-    expect((ov.counts as { queued: number }).queued).toBe(queuedBefore);
-    expect(((await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string }[]).some((m) => m.kind === "refund")).toBe(false);
-    expect(await sms("undo")).toContain("nothing to undo");
+    expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
+    const review = (await api("GET", "/api/review")).items as { kind: string; alertKind?: string }[];
+    expect(review.some((i) => i.kind === "alert" && i.alertKind === "undo_refund")).toBe(true);
+    // "cancel the note to Karen" is never read as cancelling the service
+    expect(await sms("Cancel the note to Karen, she already booked")).toContain("Text CANCEL on its own");
   });
 });
 
@@ -233,6 +233,14 @@ describe("the owner OKs the first note by text", () => {
     expect(JSON.stringify(inbox)).toContain("first_note_change");
   });
 
+  it("an OK with a change in it is a change, never a start", async () => {
+    for (const text of ["OK but don't email Karen Whitfield, she's my neighbor", "Looks good but change 'free estimate' to 'free quote'", "Send me the full list first", "No, say Hey instead of Hi", "cancel the note to the Smiths"]) {
+      const reply = await sms(text);
+      expect(reply, text).toMatch(/we'll make that change|Text CANCEL on its own/);
+      expect(await approved(), text).toBe(0);
+    }
+  });
+
   it("starts on OK, once", async () => {
     const reply = await sms("Looks good");
     expect(reply).toContain("the first notes go out");
@@ -243,5 +251,21 @@ describe("the owner OKs the first note by text", () => {
     // a second OK is just an OK now, not a second start
     expect(await sms("ok")).not.toContain("the first notes go out");
     expect(await approved()).toBe(n);
+  });
+
+  it("a top-up while the owner's OK is pending waits for it too", async () => {
+    const d2 = d.accounts.peek("ridge-tree")!.state;
+    // put the account back to waiting for the OK, with nothing approved, and plan again
+    await d.accounts.withAccount("ridge-tree", (st) => {
+      for (const t of st.touches) if (t.status === "approved") t.status = "planned";
+      st.awaitingOwnerOk = "2026-09-29T10:00:00";
+    });
+    expect(d2).toBeTruthy();
+    // more room in the round (a fuller export came in): the top-up plans more people, all waiting for the OK
+    await api("PATCH", "/api/businesses/ridge-tree", { plan: { trialSize: 400 } });
+    const p = await api("POST", "/api/businesses/ridge-tree/plan", {});
+    expect(p.people as number).toBeGreaterThan(0);
+    expect(p.awaitingOk).toBe(true);
+    expect(await approved()).toBe(0);
   });
 });

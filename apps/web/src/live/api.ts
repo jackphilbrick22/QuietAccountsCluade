@@ -177,6 +177,8 @@ export interface PlanResult {
   personalized: number;
   /** The first batch waits for the owner to reply OK to the first note. */
   awaitingOk?: boolean;
+  /** A welcome text with the first note went to the owner with this plan. */
+  textSent?: boolean;
 }
 
 export interface Health {

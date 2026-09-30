@@ -54,7 +54,7 @@ export function LiveClient({ id }: { id: string }) {
   const doPlan = () =>
     run("plan", () => api<PlanResult>("POST", `${path}/plan`, trial ? {} : { limit: b.weeklyNewContacts * 4 }), (r) =>
       r.people
-        ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}${r.awaitingOk ? ". The owner gets the first note by text; it starts when they reply OK." : ""}`
+        ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}${r.awaitingOk ? (r.textSent ? ". The owner gets the first note by text; it starts when they reply OK." : ". Still waiting for the owner's OK; no new text went out.") : ""}`
         : trial
           ? "Nothing to plan: the free round is already full."
           : "Nobody new to plan right now.",
