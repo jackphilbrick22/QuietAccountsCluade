@@ -38,14 +38,30 @@ Updated every loop iteration. Newest first.
 - The sign-up keeps a person in the loop before the first text: it stops a spammer's number getting
   texted, and Jack reads the first note before the owner does.
 
-**In flight**
-- Site v3 agent: the judged copy deck (loss-first), the audit pieces (guess chips, lead cost, "how many
-  would you take back", price against his number), the five named parts, one-tap Start with the file.
-- Trade-complaints research (tree, fence, painting, cleaning owners on their software): final critic pass.
+**Later in iteration 3**
+- Site v3 merged and republished (same link): the judged loss-first copy, the full audit (guess chips,
+  lead cost from his own number only, "how many would you take back" priced at the lower of his guess
+  and our shops' rate), the five named parts, one-tap Start that sends his file. Lint clean on all
+  four trades; the Friday example shows only the "before" rate.
+- Blueprint v3 republished; Call card published.
+- Two new trades: holiday / permanent lighting (a yearly rebook clock) and decks (a 24–36 month stain
+  clock after a wood build). 20 trades.
+- Second adversarial review: 38 findings, 36 confirmed, all fixed and tested. Money windows (quiet
+  months belong to the period they end), exact cancel/undo, whole-text OKs, top-ups wait for the OK,
+  forwarded requests read from the innermost message only, one answer per person, sign-up can never
+  touch a live account, rate limit on the socket peer.
+- Research saved in docs/research: owner complaints by trade, loss evidence, the call guide, the site
+  v3 copy deck, adjacent industries.
+
+**Deploy notes**
+- Behind a load balancer set `TRUSTED_PROXY_HOPS` (e.g. 1), or every sign-up shares one rate limit.
+- `SIGNUP_ORIGINS`, `INBOUND_DOMAIN`, `SIGNUPS_PER_HOUR` (default 30).
+- Twilio: remove CANCEL from the Messaging Service opt-out keywords.
 
 **Next**
-- Merge site v3, republish the site; name the parts in console and texts; adversarial re-review of
-  everything since iteration 2; the plain-language breakdown and the Blueprint republish.
+- Merge the trade-depth agent (non-Jobber statuses, painting playbook, cleaning lapse timing, intake
+  questions in the new-request answer, fence/painting upload hints); republish the site.
+- A third review pass on everything since the second; the plain-language breakdown for Jack.
 
 ## 2026-09-30 — iteration 2
 
