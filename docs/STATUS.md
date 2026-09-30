@@ -113,8 +113,18 @@ Updated every loop iteration. Newest first.
   revision requests stay open, price reasons after "not sold" are a no, postponements stay open.
   Engine 1,190, server 255.
 
+- Eighth adversarial review: 18 reported, 11 confirmed, all fixed and tested. Two ledger double counts that
+  predate this round (a quote approved online and the job it became, landing in different syncs; a quiet
+  comeback promoted next to the owner's BOOKED) now fold into one win. The reply poll takes the answered
+  note from the email's own campaign, or passes only the person. Owner texts: "she's getting another
+  quote" is still our lead; "They found someone else", "went with another roofer", "Someone else already
+  did it" are losses. Statuses: an answer after a revision wins ("Requoted - sold"), "Went with ABC Fence"
+  is a no unless it starts with a yes, our own lower price is not a no, waiting words after "not sold"
+  stay open. New safety net: a status that says two things at once ("Approved - said no to the gate") is
+  held for a person instead of being written to on a guess. Engine 1,219, server 256.
+
 **Next**
-- An eighth review pass on the seventh review's fixes; stop when a pass finds nothing material.
+- A ninth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

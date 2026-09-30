@@ -387,6 +387,36 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["Not moving forward until spring", "awaiting_response"],
     ["Not proceeding yet", "awaiting_response"],
     ["Lost contact - following up", "awaiting_response"],
+    // an answer written after a revision is the later word; a leading yes keeps it
+    ["Requoted - sold", "converted"],
+    ["Revised quote sent - accepted", "approved"],
+    ["Sent revised quote - signed", "approved"],
+    ["Sent revised quote - declined", "declined"],
+    ["Requoted - went with another company", "declined"],
+    ["Requoted - lost to competitor", "declined"],
+    ["Sold - requoted gate", "converted"],
+    ["Changes requested - went with another company", "declined"],
+    ["Revision requested - hired someone else", "declined"],
+    ["Changes requested - closed lost", "declined"],
+    // gone to someone else, however it's named, when it doesn't start with a yes
+    ["Went with ABC Fence", "declined"],
+    ["Went w/ Home Depot", "declined"],
+    ["Went with lower bid", "declined"],
+    ["Went with a different fence company", "declined"],
+    ["Sent - went with Bob's Fence", "declined"],
+    ["Viewed - went with lower bid", "declined"],
+    ["Sold - went with the other option", "converted"],
+    ["Won - went with another color - needs scheduling", "approved"],
+    // our own lower price is not a no
+    ["Quoted lower - sold", "converted"],
+    ["Priced lower - accepted", "approved"],
+    ["Quoted lower price - awaiting response", "awaiting_response"],
+    ["Following up - quoted lower price", "awaiting_response"],
+    // still open, written after the "not sold"
+    ["Not sold - still considering", "awaiting_response"],
+    ["Not sold - estimate sent", "awaiting_response"],
+    ["Not sold - unreachable", "awaiting_response"],
+    ["Not sold - outstanding", "awaiting_response"],
     // a yes that turned down an add-on is still a yes
     ["Approved - said no to the gate", "approved"],
     ["Accepted - no thanks on sealer", "approved"],
@@ -485,5 +515,15 @@ describe("status words from the tools fence and painting quotes live in", () => 
     const reqs = `Request #,Client name,Client email,Request title,Status,Requested on date\n${["Needs quote", "Estimate requested", "Estimate scheduled", "Converted", "New"].map((s, i) => `${800 + i},Pat Doe,pat@doe.com,Fence,${s},2026-09-01`).join("\n")}\n`;
     const { dataset: dr } = ingestFile(emptyDataset(biz, "2026-09-29"), reqs, "Requests Report.csv", "2026-09-29T12:00:00Z", { kind: "request" });
     expect(dr.requests.map((r) => r.status)).toEqual(["new", "new", "assessment_scheduled", "converted", "new"]);
+  });
+});
+
+describe("a status that says two things at once is held for a person", () => {
+  it("flags mixed statuses and leaves plain ones alone", async () => {
+    const { statusReadsTwoWays } = await import("../src/ingest/fields.ts");
+    for (const mixed of ["Requoted - sold", "Approved - said no to the gate", "Declined - changes requested", "Too expensive - revision requested", "Sold - went w/ black vinyl", "Viewed - not signed - went with competitor"])
+      expect(statusReadsTwoWays(mixed), mixed).toBe(true);
+    for (const plain of ["Approved", "Awaiting response", "Changes requested", "Converted", "Draft", "Archived", "Unsigned", "Not sold", "Not sold yet", "Pending - not sold", "Approved - awaiting deposit", "Won - needs scheduling", "Sent", "Lost", "Went with ABC Fence", "Completed · Won", "Lost contact - following up"])
+      expect(statusReadsTwoWays(plain), plain).toBe(false);
   });
 });

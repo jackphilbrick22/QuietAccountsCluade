@@ -103,13 +103,18 @@ const NOT_BOOKED_ALL = new RegExp(NOT_BOOKED.source, "g");
 /** ...but not over: "hasn't booked yet", "not sold yet", "won't book unless we come down to 1800". Never a loss either. */
 const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|have not)\b/;
 /**
- * Someone else got the job, or there's no job to get: "booked someone else", "went with another company", "lost it",
- * "sold the house". Another company only counts when someone was hired: "getting a price from another company too"
- * is still our lead. (Global: it's cut out of the text before BOOKED looks.)
+ * Someone else got the job, or there's no job to get: "booked someone else", "They found someone cheaper", "went with
+ * another roofer", "Someone else already did it", "sold the house". Shopping around is not that: "she's getting
+ * another quote" and "getting a price from another company too" are still our lead. (Global: it's cut out of the
+ * text before BOOKED looks.)
  */
-const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|went|going|go|gone|signed|getting|gave it|gave the job)";
-const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|fence company|cleaner|bid|quote)|a competitor|the competition)";
-const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
+const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|signed|found|got|has|had|contracted|gave it|gave the job)";
+const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other|a local) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|roofer|fence company|cleaner|\\w+ (company|service|guy|contractor))|a competitor|the competition)";
+/** "went with Davey", "going w/ another roofer": anyone but us or one of our own options ("went with the 2400 option"). */
+const WENT_WITH = "\\b(went|going|gone|go) (with\\b|w/|w\\b) ?(?!(it|us|me|our|you|the (\\w+ )?(option|package|quote|price|plan|one))\\b)\\S";
+/** Someone else as the subject: "Someone else already did it", "another company got it". */
+const ELSEWHERE_DID = "\\b(someone|somebody) else (is|did|does|already|will|got|has|had)\\b|\\banother (company|guy|contractor|crew|outfit) (did|is doing|got|has|had|already)\\b";
+const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|${WENT_WITH}|${ELSEWHERE_DID}|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
 const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|no go|not interested|no thanks|too expensive|chose someone)\b/;

@@ -1,5 +1,6 @@
 import type { Customer, Opportunity, Quote } from "../model.ts";
 import { fmtMoney } from "../util.ts";
+import { statusReadsTwoWays } from "../ingest/fields.ts";
 
 /**
  * Quotes an owner may NOT want chased — and customers they never want contacted.
@@ -55,6 +56,7 @@ export function cautionReasons(o: Opportunity, c: Customer | undefined, q: Quote
     if (m && q.total >= Math.max(m.p50 * 3, m.p90 * 1.5) && q.total >= cc.typicalJob * 2)
       out.push(`Priced ${Math.round(q.total / m.p50)}x your usual for this work — may have been a "go away" price`);
   }
+  if (q?.rawStatus && statusReadsTwoWays(q.rawStatus)) out.push(`Marked "${q.rawStatus.slice(0, 80)}", which reads two ways — check it before anyone writes`);
   if (q && o.type === "approved_unscheduled" && cc.noJobsToCheck)
     out.push(`Marked "${q.rawStatus || "approved"}", but there are no jobs on file to check it against — make sure it wasn't already done`);
   const text = [q?.title, ...(q?.lineItems.map((l) => l.name) ?? []), c?.companyName, c?.name, ...(c?.tags ?? [])].filter(Boolean).join(" · ");

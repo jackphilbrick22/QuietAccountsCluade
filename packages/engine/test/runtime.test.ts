@@ -30,7 +30,7 @@ import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
 import type { Touch } from "../src/model.ts";
 import { addDays, mondayOf, weekday } from "../src/util.ts";
-import { ASOF } from "./fixtures.ts";
+import { ASOF, job, quote } from "./fixtures.ts";
 
 const NOW = `${ASOF}T12:00:00Z`;
 const START = "2026-10-06"; // Tuesday; the sample sends Tue-Thu, 7-10am
@@ -415,6 +415,33 @@ describe("Ledger and Reporter", () => {
     expect(s.dataset.asOf).toBe("2026-10-23");
     // a second pass over the same data finds nothing new
     expect(ledgerPass(s, "2026-10-24T12:00:00Z").newRecoveries).toBe(0);
+  });
+
+  it("a quote they approved and the job it became, in different syncs, are one win", () => {
+    const { s, sent } = week1();
+    const e = sent[6]!;
+    const cid = e.touch.customerId;
+    receiveReply(s, { from: from(e), text: "Yes, let's do it.", receivedAt: `${START}T16:00:00` });
+    s.dataset.quotes = [...s.dataset.quotes, quote("q-new", cid, { title: "Pine removal", status: "approved", rawStatus: "Approved", total: 2000, createdOn: "2026-10-10", sentOn: "2026-10-10", approvedOn: "2026-10-12" })];
+    ledgerPass(s, "2026-10-12T12:00:00Z");
+    s.dataset.jobs = [...s.dataset.jobs, job("j-new", cid, { title: "Pine removal", status: "scheduled", rawStatus: "Upcoming", total: 2150, createdOn: "2026-10-14", quoteId: "q-new" })];
+    ledgerPass(s, "2026-10-14T12:00:00Z");
+    const mine = s.recoveries.filter((r) => r.customerId === cid && !r.disputed);
+    expect(mine.map((r) => [r.record.kind, r.value])).toEqual([["job", 2150]]);
+  });
+
+  it("a quiet comeback that turns into a reply, after the owner already texted BOOKED: counted once", () => {
+    const { s, sent } = week1();
+    const e = sent[5]!;
+    const cid = e.touch.customerId;
+    s.dataset.jobs = [...s.dataset.jobs, job("j-call", cid, { title: "Stump grinding", status: "scheduled", rawStatus: "Upcoming", total: 650, createdOn: "2026-10-20" })];
+    ledgerPass(s, "2026-10-20T12:00:00Z");
+    expect(s.recoveries.find((r) => r.customerId === cid)!.tier).toBe("after_note");
+    const yes = receiveReply(s, { from: from(e), text: "Yes please, when can you come?", receivedAt: "2026-10-21T10:00:00" });
+    markContacted(s, yes.id, "2026-10-21T12:00:00", "booked", 650);
+    ledgerPass(s, "2026-10-21T13:00:00Z");
+    const counted = s.recoveries.filter((r) => r.customerId === cid && !r.disputed && r.tier === "traced");
+    expect(counted.map((r) => r.value)).toEqual([650]);
   });
 
   it("the weekly report leads with what came back, then the counts", () => {

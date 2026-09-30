@@ -679,13 +679,30 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
       .map((r) => r.customerId!),
   );
   const found = attribute(state.dataset, state.outreach, { replied });
-  // someone who came back quietly and then wrote to us is now traced
-  for (const r of state.recoveries) if (r.tier === "after_note" && replied.has(r.customerId)) r.tier = "traced";
+  // someone who came back quietly and then wrote to us is now traced; if the owner already told us about that same
+  // job (BOOKED), their figure gives way to the one in their records, so it counts once
+  for (const r of state.recoveries) {
+    if (r.tier !== "after_note" || !replied.has(r.customerId)) continue;
+    r.tier = "traced";
+    const told = state.recoveries.find((x) => x !== r && x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30);
+    if (told) told.disputed = { at: now, reason: `Same job as ${r.record.kind} ${r.record.id} in their records`, by: "ledger" };
+  }
   // One credit per record (job, quote, invoice), not per person.
   const known = new Set(state.recoveries.map((r) => `${r.record.kind}:${r.record.id}`));
   let added = 0;
+  const jobQuote = new Map(state.dataset.jobs.filter((j) => j.quoteId).map((j) => [j.id, j.quoteId!]));
   for (const r of found) {
     if (known.has(`${r.record.kind}:${r.record.id}`)) continue;
+    // The quote they approved last sync became this job: one win, now at the job's figure. And a quote whose job
+    // is already on the ledger is that job.
+    const fromQuote = r.record.kind === "job" && jobQuote.get(r.record.id);
+    const asQuote = fromQuote ? state.recoveries.find((x) => x.record.kind === "quote" && x.record.id === fromQuote && !x.disputed) : undefined;
+    if (asQuote) {
+      Object.assign(asQuote, { record: r.record, value: r.value, match: r.match, confidence: r.confidence, cameBackOn: r.cameBackOn });
+      known.add(`${r.record.kind}:${r.record.id}`);
+      continue;
+    }
+    if (r.record.kind === "quote" && state.dataset.jobs.some((j) => j.quoteId === r.record.id && known.has(`job:${j.id}`))) continue;
     // The export now shows the job the owner told us about: the invoiced figure replaces the owner's.
     const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30) : undefined;
     if (told) {

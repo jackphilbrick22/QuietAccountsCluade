@@ -90,6 +90,24 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["Quoted 2400, she's getting a price from another company too", { outcome: "quoted", amount: 0 }],
       ["Talked to her, she's getting quotes from another company", open],
       ["Called her, the other guy never showed up", open],
+      // shopping around is still our lead
+      ["Quoted her 2400, she's getting another quote", { outcome: "quoted", amount: 0 }],
+      ["talked to her, she's getting another bid", open],
+      // someone else got it, however it's said
+      ["They found someone else", lost],
+      ["Found someone cheaper", lost],
+      ["got someone else to do it", lost],
+      ["Someone else already did it", lost],
+      ["another company did it", lost],
+      ["she's got another guy", lost],
+      ["went with another tree company", lost],
+      ["they went with another roofer", lost],
+      ["went with a local guy", lost],
+      ["She went with Davey", lost],
+      ["went w/someone else", lost],
+      ["Going w someone else", lost],
+      // one of our own options is not someone else
+      ["She went with the 2400 option", undefined],
       // busy, not a booking
       ["We're booked solid till spring", undefined],
       ["Sold out till spring", undefined],

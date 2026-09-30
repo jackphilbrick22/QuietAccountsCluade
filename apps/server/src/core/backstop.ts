@@ -77,6 +77,7 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
           replyEmailId: e.id,
           toAccount: e.account ?? e.to[0],
           ...(match.inReplyTo ? { inReplyTo: match.inReplyTo } : {}),
+          ...(match.customerId ? { customerId: match.customerId } : {}),
         };
         try {
           const done = await handleInbound(d, ev);
@@ -106,7 +107,7 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
  * named ({}): the inbound router honors a stop everywhere and leaves anything else to a person. Undefined: nobody
  * we know at all (a newsletter in the shared inbox).
  */
-async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, mayLookUp: () => boolean): Promise<{ businessId?: string; inReplyTo?: string } | "later" | undefined> {
+async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, mayLookUp: () => boolean): Promise<{ businessId?: string; customerId?: string; inReplyTo?: string } | "later" | undefined> {
   const repo = d.accounts.repo;
   const inCampaign = e.campaignId ? repo.businessesForProvider(`${seq.name}:${e.campaignId}:`) : [];
   const among = inCampaign.length === 1 ? inCampaign[0] : undefined;
@@ -135,11 +136,15 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
     }
   }
   if (!lead) return ambiguous ? {} : undefined;
+  // The note it answers is one in the email's own campaign (sent before queued, newest first); with no campaign to go
+  // by, only the person is passed on and the engine picks their note by its own rules, never a guess across campaigns.
   const touches = d.accounts.peek(lead.businessId)?.state.touches ?? [];
-  const note = touches
-    .filter((t) => t.customerId === lead.customerId && t.providerId && (t.status === "sent" || t.status === "approved"))
-    .sort((a, b) => ((a.sentAt ?? a.dueAt) < (b.sentAt ?? b.dueAt) ? 1 : -1))[0];
-  return { businessId: lead.businessId, ...(note?.providerId ? { inReplyTo: note.providerId } : {}) };
+  const note = e.campaignId
+    ? touches
+        .filter((t) => t.customerId === lead.customerId && t.providerId?.startsWith(`${seq.name}:${e.campaignId}:`) && (t.status === "sent" || t.status === "approved"))
+        .sort((a, b) => Number(b.status === "sent") - Number(a.status === "sent") || ((a.sentAt ?? a.dueAt) < (b.sentAt ?? b.dueAt) ? 1 : -1))[0]
+    : undefined;
+  return { businessId: lead.businessId, customerId: lead.customerId, ...(note?.providerId ? { inReplyTo: note.providerId } : {}) };
 }
 
 /** Where the sending platform's webhook registration stands: "unknown" until the first try. */

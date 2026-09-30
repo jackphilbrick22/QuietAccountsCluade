@@ -232,6 +232,18 @@ describe("the reply backstop", () => {
     expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r6")).toMatchObject({ from: "jo.lee@gmail.com", customerId: "c1", intent: "stop" });
     expect(state().suppressions[PAT]).toBe("unsubscribed");
   });
+
+  it("the note a reply answers comes from its own campaign, never the newest note in another", async () => {
+    now = new Date("2026-10-01T03:40:00Z");
+    const jo = email("em-r7", { from_address_email: "jo.lee@gmail.com", lead: KIM, thread_id: "th-kim", campaign_id: "camp-2", timestamp_created: "2026-10-01T03:36:00.000Z", body: { text: "Hi, Kim's neighbour Jo here on her account. She'd like the maples done, please call." } });
+    inbox.primary = [];
+    inbox.others = [jo];
+    inbox.byId["em-r7"] = jo;
+    expect(await pollReplies(d, { force: true })).toMatchObject({ processed: 1 });
+    const r = state().replies.find((x) => x.thread?.replyEmailId === "em-r7")!;
+    expect(r.customerId).toBe("c2");
+    expect(state().touches.find((t) => t.id === r.touchId)!.providerId).toMatch(/^instantly:camp-2:/);
+  });
 });
 
 describe("keeping Instantly's side healthy", () => {

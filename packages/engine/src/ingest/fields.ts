@@ -218,13 +218,13 @@ const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|close
  * Gone to someone else: "Went with another company", "Hired a competitor", "Lost to ABC Fence", "Closed lost". Only
  * when the other side is a someone: "Went w/ black vinyl" and "Chose another color" are the option they bought.
  */
-const COMPETITOR = String.raw`(?:went (?:with|w/)\s+(?:an?\s+|the\s+)?(?:other|another|someone|somebody|competitor|competition|different (?:company|contractor|guy|bid|quote))\b|went elsewhere|(?:hired|chose|used|picked) (?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different) (?:company|contractor|guy|bid|quote|crew))\b|\blost to\b|closed[\s-]*lost)`;
+const COMPETITOR = String.raw`(?:went (?:with|w/)\s*(?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different|cheaper|lower|local) (?:company|contractor|guy|bid|quote|crew|price))\b|went elsewhere|(?:hired|chose|used|picked) (?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different) (?:company|contractor|guy|bid|quote|crew))\b|\blost to\b|closed[\s-]*lost)`;
 /**
  * A no from the customer, including the reasons owners type for one: "Declined", "Closed lost", "HOA denied", "Wife
  * said no", "Went w/ competitor", "Price too high", "Not moving forward". One list for every rule that listens for a
  * no, so a no that one rule hears can't slip past another.
  */
-const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|(?:quoted|priced|bid|estimated)\s+(?:\w+\s+)?(?:lower|less|cheaper|too high)|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
+const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|\bwent (?:with|w/)|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|(?:competitor|they|other (?:company|guy)|someone|somebody)\s+(?:quoted|priced|bid)\s+(?:\w+\s+)?(?:lower|less|cheaper)|(?:quoted|priced|bid|estimated) too high|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
 /** Closed out by the software or the office, not answered by the customer: "Expired", "Cancelled", "No go". */
 const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|abandon|stale|cancel|\bvoid|delet|duplicate|disqualif)`;
 /**
@@ -233,7 +233,7 @@ const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|aban
  */
 const STILL_OPEN = String.raw`(?:awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow(?:ing|ed)?[\s-]*up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented|emailed|not (?:moving forward|proceeding) (?:yet|until|till|til|for now|before|this))`;
 /** Waiting on the customer, as a reason written after a "not sold": "Not sold - pending", "Not sold (no response)". */
-const WAITING = String.raw`(?:pending|awaiting|waiting|on hold|follow(?:ing|ed)?[\s-]*up|no (?:response|answer|reply)|thinking|undecided|call ?back|postponed|deferred|nurtur)`;
+const WAITING = String.raw`\b(?:pending|awaiting|waiting|on hold|follow(?:ing|ed)?[\s-]*up|no (?:response|answer|reply)|thinking|consider(?:ing)?|deciding|undecided|open|outstanding|unreachable|needs? (?:response|approval|hoa)|viewed|(?:estimate|proposal|quote) sent|resent|call ?back|postponed|deferred|nurtur\w*)\b`;
 /** "Not sold", "unsold", "no sale": a sale that hasn't happened, yet or at all. */
 const NOT_SOLD = String.raw`(?:${NOT}sold\b|\bno[\s-]+sale\b)`;
 /** "Not booked", "not yet scheduled", "unconverted": the work isn't on the calendar. Says nothing about the answer. */
@@ -253,8 +253,10 @@ const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed
 export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // Asked for a new price, or got one: "Too expensive - revision requested", "Price too high - sent revised quote".
   // Still open, whatever objection came first; the answer they gave was "not at that price".
-  [/changes? requested|\brequest(?:ed)? changes\b|\brevisions? (?:requested|needed)\b|\bneeds? (?:changes|revisions?)\b/i, "changes_requested"],
-  [/\b(?:sent|emailed) (?:a |the )?revised\b|\brevised (?:quote|estimate|price|proposal|bid) sent\b|\bre-?quoted\b/i, "awaiting_response"],
+  // An answer written after it ("Requoted - sold", "Changes requested - went with another company") is the later word,
+  // and a status that starts with a yes keeps it ("Sold - requoted gate"): those fall through to the rules below.
+  [new RegExp(`^(?!${LEADS_WITH}${SAID_YES})(?=.*(?:changes? requested|\\brequest(?:ed)? changes\\b|\\brevisions? (?:requested|needed)\\b|\\bneeds? (?:changes|revisions?)\\b)(?!.*(?:${SAID_YES}|${SAID_NO})))`, "i"), "changes_requested"],
+  [new RegExp(`^(?!${LEADS_WITH}${SAID_YES})(?=.*(?:\\b(?:sent|emailed) (?:a |the )?revised\\b|\\brevised (?:quote|estimate|price|proposal|bid) sent\\b|\\bre-?quoted\\b)(?!.*(?:${SAID_YES}|${SAID_NO})))`, "i"), "awaiting_response"],
   // When the status starts with a no, the no decides, whatever follows it: "Lost - not signed", "Declined - never
   // opened", "Rejected - not booked". The negations below would otherwise read those as still open.
   [new RegExp(`${LEADS_WITH}${SAID_NO}`, "i"), "declined"],
@@ -301,6 +303,20 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [new RegExp(STILL_OPEN, "i"), "awaiting_response"],
   [/(draft|unsent|not sent|new|pre-?bid|\blead\b)/i, "draft"],
 ];
+
+/**
+ * A status that says two things at once ("Requoted - sold", "Approved - said no to the gate", "Declined - changes
+ * requested"): the map above still makes its best reading, but nobody should be written to on a guess, so the
+ * opportunity is held for a person to look at. Negated words don't count ("Unsigned" is not a yes).
+ */
+export function statusReadsTwoWays(raw: string): boolean {
+  const t = raw.replace(new RegExp(`${NOT}\\w+`, "gi"), " ");
+  const yes = new RegExp(SAID_YES, "i").test(t);
+  const no = new RegExp(SAID_NO, "i").test(raw);
+  const revision = /changes? requested|\brequest(?:ed)? changes\b|\brevisions? (?:requested|needed)\b|\brevised\b|\bre-?quoted\b/i.test(raw);
+  const waiting = new RegExp(WAITING, "i").test(raw);
+  return (yes && no) || (yes && revision) || (no && (revision || waiting));
+}
 
 /** Per-software status words that mean something different there. */
 export const SOURCE_QUOTE_STATUS: Partial<Record<import("../model.ts").SourceSystem, [RegExp, import("../model.ts").QuoteStatus][]>> = {
