@@ -362,11 +362,13 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
     if (outcome === "booked" && amount > 0) for (const rec of state.recoveries) if (rec.match === "owner_reported" && rec.record.id === r.id && !rec.disputed) rec.value = round2(amount);
     const name = target.name;
     if (outcome === "booked" || outcome === "quoted")
-      note = fsmNote(state, r.customerId, r.opportunityId, `Quiet Accounts: owner marked ${name} ${outcome === "booked" ? `booked${amount > 0 ? ` ($${amount.toLocaleString("en-US")})` : ""}` : "quoted"} after they answered our follow-up.`);
+      note = fsmNote(state, r.customerId, r.opportunityId, `Quiet Accounts: owner marked ${name} ${outcome === "booked" ? `booked${amount > 0 ? ` ($${amount.toLocaleString("en-US")})` : ""}` : "quoted"} after they answered ${r.opportunityId?.startsWith("req:") ? "our reply to their request" : "our follow-up"}.`);
     reply =
       outcome === "booked"
         ? amount > 0
-          ? `Booked: ${name}, $${amount.toLocaleString("en-US")}. Added to your results.`
+          ? r.opportunityId?.startsWith("req:")
+            ? `Booked: ${name}, $${amount.toLocaleString("en-US")}. Nice. They came in as a new request, so that one's all yours: we don't count it on our ledger.`
+            : `Booked: ${name}, $${amount.toLocaleString("en-US")}. Added to your results.`
           : `Booked: ${name}. What's the job worth? Text "booked 2400 #${leadCode(r.id)}".`
         : outcome === "quoted"
           ? `Got it — ${name} has a price. We'll count it when it books.`

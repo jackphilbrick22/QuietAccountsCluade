@@ -107,3 +107,20 @@ describe("a forwarded request goes on the always-on track", () => {
     expect(st.dataset.customers).toHaveLength(1);
   });
 });
+
+describe("the ledger counts comebacks, not new requests", () => {
+  it("a job booked after we answered someone's own request is theirs, not ours", async () => {
+    const { markSent, markContacted, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } });
+    const st = emptyState(dataset({ business: paying, customers: [] }), `${ASOF}T10:00:00`);
+    takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`);
+    const note = st.touches.find((t) => t.track === "new_request")!;
+    markSent(st, note.id, `${ASOF}T10:06:00`, "msg-1");
+    expect(st.outreach).toHaveLength(0);
+    const r = receiveReply(st, { from: "Karen Whitfield <karen.whitfield@gmail.com>", text: "Yes please, can you come Tuesday?", inReplyTo: "msg-1", receivedAt: `${ASOF}T11:00:00` });
+    expect(r.opportunityId).toMatch(/^req:/);
+    markContacted(st, r.id, `${ASOF}T12:00:00`, "booked", 2400);
+    expect(st.recoveries).toHaveLength(0);
+  });
+});

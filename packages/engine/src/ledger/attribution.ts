@@ -174,7 +174,8 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
     return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
   };
   return replies
-    .filter((r) => r.customerId && r.outcome === "booked" && (r.outcomeValue ?? 0) > 0 && !have.has(makeId("rec", r.customerId, "reply", r.id)) && !already(r))
+    // a booking from someone answering our reply to their own new request is theirs, not a comeback
+    .filter((r) => r.customerId && r.outcome === "booked" && (r.outcomeValue ?? 0) > 0 && !r.opportunityId?.startsWith("req:") && !have.has(makeId("rec", r.customerId, "reply", r.id)) && !already(r))
     .map((r) => ({
       id: makeId("rec", r.customerId!, "reply", r.id),
       customerId: r.customerId!,

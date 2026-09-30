@@ -283,6 +283,9 @@ export function markSent(state: AccountState, touchId: string, at: ISODateTime, 
   t.status = "sent";
   t.sentAt = at;
   if (providerId) t.providerId = providerId;
+  // Answering someone's own new request isn't a follow-up: they were asking anyway. It never opens a ledger
+  // record, so a job they book later isn't counted as one we brought back.
+  if (t.track === "new_request") return;
   const day = at.slice(0, 10);
   const rec = outreachFor(state, t.customerId);
   if (rec) {
