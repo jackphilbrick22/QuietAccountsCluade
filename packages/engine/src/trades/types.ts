@@ -87,6 +87,8 @@ export interface TradePlaybook {
    * asks nothing extra.
    */
   intakeAsk?: string;
+  /** The request already carries what intakeAsk would ask for (a form with "3 bed 2 bath", "about 150 ft"): skip it. */
+  intakeKnown?: RegExp;
   /** The same question when the request already names the work ("repaint the living room"), minus what that answers. */
   intakeAskNamed?: string;
   /**

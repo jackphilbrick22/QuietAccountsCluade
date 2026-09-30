@@ -313,6 +313,8 @@ export function callbackWhen(localNow: ISODateTime): string {
  */
 export function intakeAsk(b: BusinessProfile, r: ServiceRequest, c: Customer): string {
   const pb = playbook(b.trade);
+  // a form that already says it ("3 bed 2 bath, we have a dog") isn't asked again
+  if (pb.intakeKnown?.test(r.title || "")) return "";
   const named = !!pb.intakeAskNamed && classifyService(r.title || "", [], [b.trade]).matched;
   const ask = (named ? pb.intakeAskNamed : pb.intakeAsk) ?? "";
   const haveAddress = !!(r.property?.street || c.address?.street);

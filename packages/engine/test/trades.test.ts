@@ -229,6 +229,15 @@ describe("painting", () => {
 });
 
 describe("the first answer asks what the owner needs", () => {
+  it("never asks what the request already says", async () => {
+    const { intakeAsk } = await import("../src/copy/render.ts");
+    const req = (title: string) => ({ id: "r1", customerId: "c1", title, status: "new" as const, rawStatus: "new" });
+    const who = { id: "c1", sourceIds: [], name: "Megan Ortiz", firstName: "Megan", lastName: "Ortiz", emails: [], phones: [], properties: [], tags: [] };
+    expect(intakeAsk(business({ trade: "cleaning" }), req("Deep clean, 3 bed 2 bath, we have a dog"), who)).toBe("");
+    expect(intakeAsk(business({ trade: "cleaning" }), req("Need a house cleaning"), who)).toContain("bedrooms");
+    expect(intakeAsk(business({ trade: "fence" }), req("About 160 ft of cedar privacy fence"), who)).toBe("");
+    expect(intakeAsk(business({ trade: "fence" }), req("New fence for the back yard"), who)).toContain("how many feet");
+  });
   it("each main trade has one short intake question; everything else asks nothing extra", () => {
     expect(playbook("tree").intakeAsk).toBe("If it's easy, reply with a photo or two{andAddress}.");
     expect(playbook("fence").intakeAsk).toBe("If you can, reply with roughly how many feet, the material you're thinking of, any gates, and whether there's an HOA.");

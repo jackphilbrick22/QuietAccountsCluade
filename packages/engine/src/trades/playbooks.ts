@@ -573,6 +573,7 @@ const fence: TradePlaybook = {
   freeLook: true,
   // the four things a fence price turns on
   intakeAsk: "If you can, reply with roughly how many feet, the material you're thinking of, any gates, and whether there's an HOA.",
+  intakeKnown: /\b\d{2,4}\s*(ft|feet|foot|linear|lf|')(?![a-z])/i,
 };
 
 /* ================================================================== */
@@ -1329,6 +1330,7 @@ const cleaning: TradePlaybook = {
     "We have a team in your neighborhood with an opening this week.", 100,
   ),
   intakeAsk: "How many bedrooms and bathrooms, is it a one-time clean or regular, and any pets?",
+  intakeKnown: /\b\d\s*(bed|bedroom|br|bd)s?\b[\s\S]*\b\d(\.\d)?\s*(bath|bathroom|ba)s?\b/i,
   // A weekly or every-other-week client three weeks out has missed a visit; a monthly one at about six weeks.
   // (ZenMaid only calls a client "Former" at six weeks; MaidCentral puts recurring churn near 7% a month.)
   lapseAfterDays: [[16, 21], [35, 45]],
