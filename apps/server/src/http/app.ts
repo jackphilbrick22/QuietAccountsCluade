@@ -22,6 +22,7 @@ import {
   type FileIn,
   type Reply,
   type TradeId,
+  quietRates,
 } from "@qa/engine";
 import { z } from "zod";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
@@ -143,6 +144,7 @@ export function overview(state: AccountState, paused: boolean) {
     totals: t,
     week: weekNumbers(state, mondayOf(state.dataset.asOf)),
     lift: lift(state.outreach, state.recoveries),
+    quiet: quietRates(state),
     health: sendHealth(state),
     guarantee: b.plan.paidOn ? guaranteeCheck(state, state.dataset.asOf) : undefined,
     counts: {

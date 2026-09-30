@@ -22,6 +22,9 @@ const TABS: { id: ClientTab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
+/** "47%": the share of quotes that never got a yes or a no. */
+const quietPct = (rate: number) => `${Math.round(rate * 100)}%`;
+
 export function LiveClient({ id }: { id: string }) {
   const tab = useLive((s) => s.clientTab);
   const setTab = useLive((s) => s.setClientTab);
@@ -172,6 +175,11 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         <Kpi label="Notes sent" value={(o.counts?.sent ?? 0).toLocaleString("en-US")} sub={`${(o.counts?.queued ?? 0).toLocaleString("en-US")} queued`} />
         <Kpi label="Replies" value={(o.totals?.replied ?? 0).toLocaleString("en-US")} sub={`${o.totals?.wants ?? 0} want a price or date`} />
         <Kpi label="Booked" value={fmtMoney(o.recoveredValue ?? 0)} tone="ok" sub={plural(o.totals?.booked ?? 0, "job")} />
+        <Kpi
+          label="Quiet rate"
+          value={o.quiet?.since && o.quiet.since.quotes >= 5 ? quietPct(o.quiet.since.rate) : o.quiet ? quietPct(o.quiet.before.rate) : "—"}
+          sub={o.quiet?.since && o.quiet.since.quotes >= 5 ? `was ${quietPct(o.quiet.before.rate)} before us` : o.quiet?.backlog ? `${o.quiet.backlog.answered} of ${o.quiet.backlog.followed} old quotes answered` : "quotes with no yes or no"}
+        />
       </Kpis>
 
       <Section title={`Waiting on the owner (${o.waitingOnOwner?.length ?? 0})`} sub="Hot leads we texted the owner that haven't been called. Log what happened when the owner tells you.">

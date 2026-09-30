@@ -9,6 +9,7 @@ import type {
   DrawerSummary,
   GuaranteeCheck,
   LiftReport,
+  QuietRates,
   Opportunity,
   Readiness,
   RecordKind,
@@ -96,6 +97,7 @@ export interface Overview {
   totals?: { booked: number; bookedValue: number; contacted: number; replied: number; wants: number; remaining: number };
   week?: WeekNumbers;
   lift?: LiftReport;
+  quiet?: QuietRates;
   health?: SendHealth;
   guarantee?: GuaranteeCheck;
   counts?: { customers: number; quotes: number; jobs: number; invoices: number; requests: number; queued: number; sent: number };
