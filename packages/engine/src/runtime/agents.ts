@@ -613,6 +613,8 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
     r.outcomeValue = undefined;
     for (const rec of state.recoveries) if (rec.match === "owner_reported" && rec.record.id === r.id && !rec.disputed) rec.disputed = { at, reason: `The owner changed it to ${outcome.replace("_", " ")}`, by: "owner" };
   }
+  // the day it booked, not the day they first talked: "QUOTED" in October, "BOOKED" in November books in November
+  if (outcome === "booked" && r.outcome !== "booked") r.bookedAt = at;
   if (outcome) r.outcome = outcome;
   if (value) r.outcomeValue = value;
   // and booked again after all: the same record comes back, at the new figure
@@ -620,9 +622,11 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
     for (const rec of state.recoveries)
       if (rec.match === "owner_reported" && rec.record.id === r.id && rec.disputed?.by === "owner") {
         // unless the job itself reached the ledger meanwhile (their export shows it): that one counts, and only once
-        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, rec.cameBackOn)) <= 30);
+        const on = at.slice(0, 10);
+        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
         if (shown) continue;
         rec.disputed = undefined;
+        rec.cameBackOn = on;
         if (value) rec.value = round2(value);
       }
   r.status = "done";
@@ -696,9 +700,11 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
     // The quote they approved last sync became this job: one win, now at the job's figure. And a quote whose job
     // is already on the ledger is that job.
     const fromQuote = r.record.kind === "job" && jobQuote.get(r.record.id);
-    const asQuote = fromQuote ? state.recoveries.find((x) => x.record.kind === "quote" && x.record.id === fromQuote && !x.disputed) : undefined;
+    const asQuote = fromQuote ? state.recoveries.find((x) => x.record.kind === "quote" && x.record.id === fromQuote) : undefined;
     if (asQuote) {
-      Object.assign(asQuote, { record: r.record, value: r.value, match: r.match, confidence: r.confidence, cameBackOn: r.cameBackOn });
+      // still the day they came back (the approval), so no weekly report announces it twice; a quote marked "not
+      // ours" stays out as its job
+      if (!asQuote.disputed) Object.assign(asQuote, { record: r.record, value: r.value, match: r.match, confidence: r.confidence });
       known.add(`${r.record.kind}:${r.record.id}`);
       continue;
     }
@@ -706,7 +712,7 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
     // The export now shows the job the owner told us about: the invoiced figure replaces the owner's.
     const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30) : undefined;
     if (told) {
-      Object.assign(told, { record: r.record, value: r.value, match: r.match, confidence: r.confidence, cameBackOn: r.cameBackOn });
+      Object.assign(told, { record: r.record, value: r.value, match: r.match, confidence: r.confidence });
       known.add(`${r.record.kind}:${r.record.id}`);
       continue;
     }

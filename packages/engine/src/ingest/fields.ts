@@ -220,11 +220,18 @@ const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|close
  */
 const COMPETITOR = String.raw`(?:went (?:with|w/)\s*(?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different|cheaper|lower|local) (?:company|contractor|guy|bid|quote|crew|price))\b|went elsewhere|(?:hired|chose|used|picked) (?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different) (?:company|contractor|guy|bid|quote|crew))\b|\blost to\b|closed[\s-]*lost)`;
 /**
+ * Someone else's price was lower: "Someone else quoted lower", "Other bid was lower", "Competitor's bid came in less",
+ * "Got quoted lower elsewhere". Never our own lower price ("Quoted lower - sold"): the lower price has to be someone
+ * else's.
+ */
+const OTHERS = String.raw`(?:(?:someone|somebody)(?:\s+else)?|(?:the\s+)?(?:other|another|different)\s+(?:company|guy|contractor|crew|outfit|bidder)s?(?:['’]s)?|competitors?(?:['’]s?)?|they|their)`;
+const UNDERCUT = String.raw`(?:${OTHERS}\s+(?:quoted|priced|bid)\s+(?:\w+\s+)?(?:lower|less|cheaper)|(?:${OTHERS}|(?:the\s+)?other)\s+(?:bid|quote|price|estimate)\s+(?:was|came in|is)\s+(?:\w+\s+)?(?:lower|less|cheaper)|(?:quoted|priced|bid|found it)\s+(?:\w+\s+)?(?:lower|less|cheaper)\s+elsewhere|cheaper elsewhere)`;
+/**
  * A no from the customer, including the reasons owners type for one: "Declined", "Closed lost", "HOA denied", "Wife
  * said no", "Went w/ competitor", "Price too high", "Not moving forward". One list for every rule that listens for a
  * no, so a no that one rule hears can't slip past another.
  */
-const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|\bwent (?:with|w/)|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|(?:competitor|they|other (?:company|guy)|someone|somebody)\s+(?:quoted|priced|bid)\s+(?:\w+\s+)?(?:lower|less|cheaper)|(?:quoted|priced|bid|estimated) too high|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
+const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|\bwent (?:with|w/)|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|${UNDERCUT}|(?:quoted|priced|bid|estimated) too high|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
 /** Closed out by the software or the office, not answered by the customer: "Expired", "Cancelled", "No go". */
 const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|abandon|stale|cancel|\bvoid|delet|duplicate|disqualif)`;
 /**

@@ -105,16 +105,29 @@ const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|hav
 /**
  * Someone else got the job, or there's no job to get: "booked someone else", "They found someone cheaper", "went with
  * another roofer", "Someone else already did it", "sold the house". Shopping around is not that: "she's getting
- * another quote" and "getting a price from another company too" are still our lead. (Global: it's cut out of the
- * text before BOOKED looks.)
+ * another quote", "she has another guy coming out Thursday" are still our lead. (Global: it's cut out of the text
+ * before BOOKED looks.)
  */
-const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|signed|found|got|has|had|contracted|gave it|gave the job)";
+const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|signed|found|contracted|gave it|gave the job)";
 const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other|a local) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|roofer|fence company|cleaner|\\w+ (company|service|guy|contractor))|a competitor|the competition)";
-/** "went with Davey", "going w/ another roofer": anyone but us or one of our own options ("went with the 2400 option"). */
-const WENT_WITH = "\\b(went|going|gone|go) (with\\b|w/|w\\b) ?(?!(it|us|me|our|you|the (\\w+ )?(option|package|quote|price|plan|one))\\b)\\S";
+/** Shopping around, not hired: "she has another guy coming out Thursday", "someone else is coming to bid". */
+const SHOPPING = "(?!.{0,40}\\b(coming|come out|looking|look at|quot|bid|price|estimate))";
+/** "she's got another guy", "had someone else": hired, unless what follows says they're only shopping. */
+const ELSEWHERE_HAS = `\\b(has|got|had)( with| to)? ${ELSEWHERE_WHO}\\b${SHOPPING}`;
+/** "went with another roofer", "going w/ someone else". */
+const WENT_WITH_WHO = `\\b(went|going|gone|go) (with\\b|w/|w\\b) ?(${ELSEWHERE_WHO}|someone|somebody)\\b`;
 /** Someone else as the subject: "Someone else already did it", "another company got it". */
-const ELSEWHERE_DID = "\\b(someone|somebody) else (is|did|does|already|will|got|has|had)\\b|\\banother (company|guy|contractor|crew|outfit) (did|is doing|got|has|had|already)\\b";
-const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|${WENT_WITH}|${ELSEWHERE_DID}|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
+const ELSEWHERE_DID = `\\b(someone|somebody) else (did|does|already|got|is doing|will do|has|had)\\b${SHOPPING}|\\banother (company|guy|contractor|crew|outfit) (did|is doing|got|has|had|already)\\b${SHOPPING}`;
+const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|${ELSEWHERE_HAS}|${WENT_WITH_WHO}|${ELSEWHERE_DID}|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
+/**
+ * "went with …" naming neither someone else nor us: "She went with the 2 tree option", "went with Plan B". Maybe ours,
+ * maybe not: a person reads it. A capitalized name ("She went with Davey") is someone else.
+ */
+const WENT_WITH_OTHER = /\b(went|going|gone|go) (with\b|w\/|w\b) ?(?!(it|us|me|my|mine|our|ours|you|this|that|these|those|the (\S+ ){0,3}(option|package|quote|price|plan|one)|option|plan|package|\$|\d)\b)\S/;
+const WENT_WITH_NAME = /\b(?:went|going|gone|go) (?:with|w\/) ?([A-Z][a-zA-Z'’]+)/;
+const NOT_A_NAME = new Set(["I", "My", "Me", "Our", "Ours", "Us", "The", "That", "This", "Option", "Plan", "Package", "It", "Your", "You"]);
+/** "She went with my quote", "went with us": our booking. */
+const WENT_WITH_US = /\bwent with (me|us|mine|ours|(my|our) (quote|price|bid|estimate))\b/;
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
 const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|no go|not interested|no thanks|too expensive|chose someone)\b/;
@@ -150,13 +163,18 @@ export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount
   const elsewhere = ours !== t;
   const positive = ours.replace(NOT_BOOKED_ALL, " ");
   const negated = positive !== ours;
-  const booked = BOOKED.test(positive) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
+  const name = body.match(WENT_WITH_NAME)?.[1];
+  const named = !!name && !NOT_A_NAME.has(name);
+  const other = !named && WENT_WITH_OTHER.test(positive) && !WENT_WITH_US.test(positive);
+  const booked = BOOKED.test(positive) || WENT_WITH_US.test(positive) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
   // "Booked 2400, she won't sign up for the maintenance plan": a booking and a no in one text is a person's call
-  if (booked && (elsewhere || negated)) return { amount: 0, unclear: true };
+  if (booked && (elsewhere || negated || named || other)) return { amount: 0, unclear: true };
   if (booked) return { outcome: "booked", amount };
   // not booked yet is still open: they were reached, with a price if the owner gave one
   if (negated) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };
-  if (elsewhere) return { outcome: "lost", amount: 0 };
+  if (elsewhere || named) return { outcome: "lost", amount: 0 };
+  // "went with the 2 tree option": ours or not, a person reads it
+  if (other) return { amount: 0, unclear: true };
   if (QUOTED.test(t)) return { outcome: "quoted", amount: 0 };
   if (LOST.test(t)) return { outcome: "lost", amount: 0 };
   if (REACHED.test(t)) return { outcome: undefined, amount: 0 };

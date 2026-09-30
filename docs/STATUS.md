@@ -123,8 +123,18 @@ Updated every loop iteration. Newest first.
   stay open. New safety net: a status that says two things at once ("Approved - said no to the gate") is
   held for a person instead of being written to on a guess. Engine 1,219, server 256.
 
+- Ninth adversarial review: 15 reported, 7 confirmed (13 → 11 → 7 over the last three passes), all fixed and
+  tested. A BOOKED that follows an earlier QUOTED is dated when it booked, so the job in their records
+  folds into it instead of counting twice; a quote marked "not ours" stays out when it becomes a job; a
+  folded win keeps the day it came back, so no weekly report announces it twice. Owner texts: "went with"
+  is a loss only when it names someone else (a capitalized name counts), "went with my quote" is a
+  booking, an option or plan we can't place goes to a person, and shopping around ("has another guy
+  coming out") stays open. The reply poll takes the campaign from our own note in the thread when the
+  reply carries none. Statuses: someone else's lower price is a no however it's written. Engine 1,231,
+  server 257.
+
 **Next**
-- A ninth review pass; stop when a pass finds nothing material.
+- A tenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

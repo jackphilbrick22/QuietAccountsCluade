@@ -233,6 +233,20 @@ describe("the reply backstop", () => {
     expect(state().suppressions[PAT]).toBe("unsubscribed");
   });
 
+  it("a spouse's reply in the request answer's thread stays with the request, even with a fence note sent lately", async () => {
+    await d.accounts.withAccount(BID, (st) => {
+      st.touches.push({ id: "t_pat_fence", opportunityId: "opp_fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: "2026-09-29T09:00", status: "sent", sentAt: "2026-09-29T09:00:00", providerId: `instantly:camp-1:${PAT}:1`, subject: "the fence", body: "About the fence.", flags: [] });
+    });
+    now = new Date("2026-10-01T03:50:00Z");
+    inbox.threads["th-pat"] = [email("em-ours", { from_address_email: MAILBOX, to_address_email_list: PAT, i_sent: true, lead: null, campaign_id: "camp-now" })];
+    const wife = email("em-r8", { from_address_email: "Jo Park <jo.park@gmail.com>", lead: null, thread_id: "th-pat", timestamp_created: "2026-10-01T03:46:00.000Z", body: { text: "Hi, this is Pat's wife. Yes please come look at the oak, call 603-224-1234." } });
+    inbox.primary = [];
+    inbox.others = [wife];
+    inbox.byId["em-r8"] = wife;
+    expect(await pollReplies(d, { force: true })).toMatchObject({ processed: 1 });
+    expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r8")!.followUpOf).toBe("req:r1");
+  });
+
   it("the note a reply answers comes from its own campaign, never the newest note in another", async () => {
     now = new Date("2026-10-01T03:40:00Z");
     const jo = email("em-r7", { from_address_email: "jo.lee@gmail.com", lead: KIM, thread_id: "th-kim", campaign_id: "camp-2", timestamp_created: "2026-10-01T03:36:00.000Z", body: { text: "Hi, Kim's neighbour Jo here on her account. She'd like the maples done, please call." } });

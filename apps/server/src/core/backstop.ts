@@ -123,6 +123,8 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
     lead = other;
   }
   let ambiguous = !lead && known(e.lead);
+  // the campaign the thread belongs to: the email's own, or our note in the same thread
+  let campaignId = e.campaignId;
   if (!lead && !ambiguous && e.threadId && seq.threadEmails) {
     // out of lookups for this poll: "later", never "nobody", so a spouse's reply isn't written off for good
     if (!mayLookUp()) return "later";
@@ -132,16 +134,19 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
         ambiguous ||= !lead && known(addr);
         if (lead) break;
       }
-      if (lead) break;
+      if (lead) {
+        campaignId ??= t.campaignId;
+        break;
+      }
     }
   }
   if (!lead) return ambiguous ? {} : undefined;
   // The note it answers is one in the email's own campaign (sent before queued, newest first); with no campaign to go
   // by, only the person is passed on and the engine picks their note by its own rules, never a guess across campaigns.
   const touches = d.accounts.peek(lead.businessId)?.state.touches ?? [];
-  const note = e.campaignId
+  const note = campaignId
     ? touches
-        .filter((t) => t.customerId === lead.customerId && t.providerId?.startsWith(`${seq.name}:${e.campaignId}:`) && (t.status === "sent" || t.status === "approved"))
+        .filter((t) => t.customerId === lead.customerId && t.providerId?.startsWith(`${seq.name}:${campaignId}:`) && (t.status === "sent" || t.status === "approved"))
         .sort((a, b) => Number(b.status === "sent") - Number(a.status === "sent") || ((a.sentAt ?? a.dueAt) < (b.sentAt ?? b.dueAt) ? 1 : -1))[0]
     : undefined;
   return { businessId: lead.businessId, customerId: lead.customerId, ...(note?.providerId ? { inReplyTo: note.providerId } : {}) };

@@ -106,8 +106,21 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["She went with Davey", lost],
       ["went w/someone else", lost],
       ["Going w someone else", lost],
-      // one of our own options is not someone else
+      // one of our own options is not someone else; an option or plan we can't place goes to a person
       ["She went with the 2400 option", undefined],
+      ["She went with my quote, 2400", { outcome: "booked", amount: 2400 }],
+      ["Went with my price", { outcome: "booked", amount: 0 }],
+      ["She's going with option 2, 3200", undefined],
+      ["Decided to go with the $2,400 option", undefined],
+      ["She went with the 2 tree option, 1800", undefined],
+      ["Going with plan B", undefined],
+      ["She went with the cheaper guy from town", { amount: 0, unclear: true }],
+      // shopping around, not hired
+      ["Quoted 2400, she has another guy coming out Thursday", { outcome: "quoted", amount: 0 }],
+      ["Quoted her 2400, someone else is coming out tomorrow to bid", { outcome: "quoted", amount: 0 }],
+      ["Quoted 1800. She's got another company coming out Friday", { outcome: "quoted", amount: 0 }],
+      ["Quoted 2400, she has the other guy's quote at 3000", { outcome: "quoted", amount: 0 }],
+      ["Talked to her, someone else is looking at it Friday", open],
       // busy, not a booking
       ["We're booked solid till spring", undefined],
       ["Sold out till spring", undefined],

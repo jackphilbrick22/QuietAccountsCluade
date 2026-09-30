@@ -170,7 +170,7 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
   // on the ledger as a counted job within a month of it; an older or uncounted comeback never blocks it.
   const have = new Set(existing.map((r) => r.id));
   const already = (r: Reply) => {
-    const on = (r.ownerContactedAt ?? r.receivedAt).slice(0, 10);
+    const on = (r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt).slice(0, 10);
     return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
   };
   return replies
@@ -182,7 +182,7 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
       opportunityId: r.opportunityId,
       record: { kind: "job" as const, id: r.id },
       value: round2(r.outcomeValue ?? 0),
-      cameBackOn: (r.ownerContactedAt ?? r.receivedAt).slice(0, 10),
+      cameBackOn: (r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt).slice(0, 10),
       match: "owner_reported" as const,
       confidence: 0.75,
       tier: "traced" as const,

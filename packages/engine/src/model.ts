@@ -523,6 +523,8 @@ export interface Reply {
   status: "new" | "handed_off" | "done";
   handedOffAt?: ISODateTime;
   ownerContactedAt?: ISODateTime;
+  /** When the owner reported it booked (BOOKED): what the ledger dates their figure by, not the first call. */
+  bookedAt?: ISODateTime;
   outcome?: "booked" | "quoted" | "lost" | "no_answer";
   outcomeValue?: Money;
   /**

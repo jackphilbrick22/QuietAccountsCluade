@@ -444,6 +444,38 @@ describe("Ledger and Reporter", () => {
     expect(counted.map((r) => r.value)).toEqual([650]);
   });
 
+  it("QUOTED in October, BOOKED six weeks later: the booking is dated when it booked and the job counts once", () => {
+    const { s, yes } = week1();
+    markContacted(s, yes.id, "2026-10-07T10:00:00", "quoted");
+    markContacted(s, yes.id, "2026-11-18T10:00:00", "booked", 4800);
+    const mine = () => s.recoveries.filter((r) => r.customerId === yes.customerId && !r.disputed && r.tier !== "after_note");
+    expect(mine().map((r) => r.cameBackOn)).toEqual(["2026-11-18"]);
+    s.dataset.jobs = [...s.dataset.jobs, job("j-oak", yes.customerId!, { status: "scheduled", rawStatus: "Upcoming", total: 4800, createdOn: "2026-11-18" })];
+    ledgerPass(s, "2026-11-19T12:00:00Z");
+    expect(mine().map((r) => r.value)).toEqual([4800]);
+  });
+
+  it("a quote marked not ours stays out when it becomes a job, and a folded win keeps the day it came back", async () => {
+    const { disputeRecovery } = await import("../src/runtime/agents.ts");
+    const { s, sent } = week1();
+    const e = sent[6]!;
+    const cid = e.touch.customerId;
+    receiveReply(s, { from: from(e), text: "Yes, let's do it.", receivedAt: `${START}T16:00:00` });
+    s.dataset.quotes = [...s.dataset.quotes, quote("q-a", cid, { status: "approved", rawStatus: "Approved", total: 2000, createdOn: "2026-10-08", sentOn: "2026-10-08", approvedOn: "2026-10-09" })];
+    ledgerPass(s, "2026-10-09T12:00:00Z");
+    const rec = s.recoveries.find((r) => r.customerId === cid && r.record.id === "q-a")!;
+    // the other way first: folded, still dated the approval
+    const t = structuredClone(s);
+    t.dataset.jobs = [...t.dataset.jobs, job("j-a", cid, { status: "scheduled", rawStatus: "Upcoming", total: 2150, createdOn: "2026-10-13", quoteId: "q-a" })];
+    ledgerPass(t, "2026-10-13T12:00:00Z");
+    expect(t.recoveries.filter((r) => r.customerId === cid && !r.disputed).map((r) => [r.record.id, r.value, r.cameBackOn])).toEqual([["j-a", 2150, "2026-10-09"]]);
+    // marked not ours: its job doesn't come back as a win
+    expect(disputeRecovery(s, rec.id, "Booked through the website", "owner", "2026-10-10T09:00:00")).toBe(true);
+    s.dataset.jobs = [...s.dataset.jobs, job("j-a", cid, { status: "scheduled", rawStatus: "Upcoming", total: 2150, createdOn: "2026-10-13", quoteId: "q-a" })];
+    ledgerPass(s, "2026-10-13T12:00:00Z");
+    expect(s.recoveries.filter((r) => r.customerId === cid && !r.disputed)).toEqual([]);
+  });
+
   it("the weekly report leads with what came back, then the counts", () => {
     const { s, sent, yes } = week1();
     markContacted(s, yes.id, `${START}T17:30:00`, "booked", 2400);

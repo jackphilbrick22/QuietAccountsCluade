@@ -407,6 +407,17 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["Viewed - went with lower bid", "declined"],
     ["Sold - went with the other option", "converted"],
     ["Won - went with another color - needs scheduling", "approved"],
+    // someone else's lower price is a no, however it's written
+    ["Someone else quoted lower", "declined"],
+    ["Other contractor quoted lower", "declined"],
+    ["Another contractor quoted lower", "declined"],
+    ["Competitors quoted lower", "declined"],
+    ["Quoted lower elsewhere", "declined"],
+    ["Got quoted lower elsewhere", "declined"],
+    ["Other bid was lower", "declined"],
+    ["Their bid was lower", "declined"],
+    ["Someone else bid lower", "declined"],
+    ["Competitor's bid was lower", "declined"],
     // our own lower price is not a no
     ["Quoted lower - sold", "converted"],
     ["Priced lower - accepted", "approved"],
