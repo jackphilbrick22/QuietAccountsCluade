@@ -272,6 +272,25 @@ describe("'Needs a person' can finish the job (n52)", () => {
     expect((await h.api("DELETE", "/api/businesses/ridge/replies/rq/draft")).status).toBe(404); // already sent and cleared
     expect((await h.api("POST", "/api/businesses/ridge/replies/nope/handoff")).status).toBe(404);
   });
+
+  it("an unclear reply the operator answered leaves the queue (typed, or the draft as-is)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "ru1", "Dan Ruiz", "2026-09-29T09:00:00", { intent: "unclear", status: "new", handedOffAt: undefined, text: "Might be interested, what would it cost?" });
+    await addLead(h, "ridge", "ru2", "Kim Tran", "2026-09-29T09:10:00", { intent: "unclear", status: "new", handedOffAt: undefined, text: "Is this the tree people?", draft: { text: "Yes, this is Ridgeline Tree. Dave will call you about the oak.", needsOwner: false, at: "2026-09-29T09:11:00" } });
+    expect((await items(h)).filter((i) => i.kind === "unclear").map((i) => i.replyId)).toEqual(["ru1", "ru2"]);
+    expect((await h.api("POST", "/api/businesses/ridge/replies/ru1/answer", { text: "It depends on the tree. Dave can come look for free this week." })).status).toBe(200);
+    expect((await h.api("POST", "/api/businesses/ridge/replies/ru2/answer", { useDraft: true })).status).toBe(200);
+    expect((await items(h)).filter((i) => i.kind === "unclear")).toEqual([]);
+    const st = h.d.accounts.peek("ridge")!.state;
+    expect(st.replies.find((r) => r.id === "ru1")).toMatchObject({ status: "done", intent: "unclear" });
+    expect(st.events.at(-1)!.title).toBe("Answered Kim Tran by hand");
+    // a reply read before this rule (answered, still "new") doesn't come back either
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.replies.find((r) => r.id === "ru1")!.status = "new";
+    });
+    expect((await items(h)).filter((i) => i.kind === "unclear")).toEqual([]);
+  });
 });
 
 describe("the worker at fifty clients (n54, n11)", () => {

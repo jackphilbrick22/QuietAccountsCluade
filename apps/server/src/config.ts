@@ -62,6 +62,13 @@ const schema = z.object({
   /** The site's Start form posts here (POST /start). Comma-separated origins allowed to call it; empty = any. */
   SIGNUP_ORIGINS: z.string().default(""),
   SIGNUPS: z.enum(["on", "off"]).default("on"),
+  /** New sign-ups the whole server takes in an hour (on top of five tries an hour per address); past it, "text Jack". */
+  SIGNUPS_PER_HOUR: z.coerce.number().int().min(1).default(30),
+  /**
+   * Proxies in front of the server that each append the caller's address to X-Forwarded-For (a load balancer = 1).
+   * 0: the header is ignored (anyone can write it) and the socket's peer address is the caller.
+   */
+  TRUSTED_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
   /** Pre-send check that each address's domain accepts mail (DNS MX). "off" skips it. */
   MAIL_CHECK: z.enum(["on", "off"]).default("on"),
   /** Owner-waiting threshold before the first nudge. */

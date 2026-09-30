@@ -521,6 +521,18 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
       state.updatedAt = now;
       return r;
     }
+    // An answer to our answer to their NEW request ("Sounds good, thanks"): the owner already has that lead (the NEW
+    // REQUEST text) and they've been told he'll call. Their words join it; no second answer, no second hand-off.
+    const request = touch && c && touch.customerId === c.id && (touch.track === "new_request" || touch.opportunityId.startsWith("req:")) && lately(touch.sentAt ?? touch.dueAt) ? touch : undefined;
+    if (request) {
+      r.followUpOf = request.opportunityId;
+      r.status = "done";
+      const phone = r.extracted.phone && !c!.phones.some((p) => p.replace(/\D/g, "").slice(-10) === r.extracted.phone!.replace(/\D/g, "").slice(-10)) ? ` New number: ${fmtPhone(r.extracted.phone) || r.extracted.phone}.` : "";
+      ownerMsg(state, now, "info", `${name} wrote back about their request: “${r.text.replace(/\s+/g, " ").slice(0, 200)}”${phone} Still yours to call — no need to text us.`, [{ kind: "customer", id: c!.id }, { kind: "request", id: request.opportunityId.slice(4) }]);
+      event(state, now, "dispatcher", "info", `${name} wrote back about their request — added to it`, reading.summary, [{ kind: "customer", id: c!.id }]);
+      state.updatedAt = now;
+      return r;
+    }
     const ack = ackFor(state, r);
     if (ack) r.ack = ack;
     const text = handoffText(state, r);
@@ -988,6 +1000,26 @@ export function disputeRecovery(state: AccountState, recoveryId: string, reason:
   return true;
 }
 
+/** One answer to a new request covers the person this long: another request from them inside it isn't answered again. */
+export const ONE_ANSWER_DAYS = 3;
+
+/**
+ * Our answer to a new request that this person (or anyone at this address) already has, sent or on its way, in the
+ * last ONE_ANSWER_DAYS. `sentOnly` counts only answers that went or are going right now (the Sender's check).
+ */
+export function answeredLately(state: AccountState, customerId: string, to: string | undefined, now: ISODateTime, opts: { exceptId?: string; sentOnly?: boolean } = {}): Touch | undefined {
+  const nowMs = Date.parse(`${now.slice(0, 16)}:00Z`);
+  const live: Touch["status"][] = opts.sentOnly ? ["sending", "sent", "delivered"] : ["planned", "approved", "sending", "sent", "delivered"];
+  const addr = to?.toLowerCase();
+  return state.touches.find((t) => {
+    if (t.id === opts.exceptId || t.track !== "new_request" || !live.includes(t.status)) return false;
+    const when = t.sentAt ?? t.claimedAt ?? t.askedAt ?? t.dueAt;
+    if (!((nowMs - Date.parse(`${when.slice(0, 16)}:00Z`)) / 86_400_000 <= ONE_ANSWER_DAYS)) return false;
+    if (t.customerId === customerId) return true;
+    return !!addr && !!customerById(state.dataset, t.customerId)?.emails.some((e) => e.toLowerCase() === addr);
+  });
+}
+
 /**
  * Always-on: every request that came in during the last day gets an answer within minutes (7am–8pm; one that
  * lands at night is answered at 7am) — "Thanks for reaching out, Dave will call you today" — and the owner gets the
@@ -1021,7 +1053,10 @@ export function answerNewRequests(state: AccountState, now: ISODateTime, opts: {
     const at = answerTime(now);
     const waits = at !== now.slice(0, 19);
     const ack = renderRequestAck(ds, r, c, at);
-    const answering = !!to && !held && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f));
+    // One person, one "thanks for reaching out": the same form forwarded again the next morning, or a Jobber request
+    // that also arrived as a forwarded notification, is told to the owner but not answered a second time.
+    const already = to ? answeredLately(state, c.id, to, now) : undefined;
+    const answering = !!to && !held && !already && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f));
     if (answering)
       state.touches.push({ id, opportunityId: `req:${r.id}`, customerId: c.id, channel: "email", step: 1, angle: "check_in", dueAt: at.slice(0, 16), status: "approved", subject: ack.subject, body: ack.body, flags: ack.flags, instant: true, track: "new_request", askedAt: now.slice(0, 16) });
     const street = c.address?.street ? `, ${c.address.street}` : "";
@@ -1035,7 +1070,11 @@ export function answerNewRequests(state: AccountState, now: ISODateTime, opts: {
         ? `No email on file, so we couldn't answer them — call soon.`
         : held
           ? `Sending is on hold, so we didn't answer them — call them soon.`
-          : `We couldn't answer them automatically — call them soon.`;
+          : already
+            ? already.sentAt
+              ? `They already got our answer to an earlier request, so no second note went — call them soon.`
+              : `Our answer to their earlier request is already on its way, so no second note went — call them soon.`
+            : `We couldn't answer them automatically — call them soon.`;
     ownerMsg(
       state,
       now,
@@ -1043,7 +1082,7 @@ export function answerNewRequests(state: AccountState, now: ISODateTime, opts: {
       [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, answer, r.rawStatus === "forwarded" ? `${r.source && r.source !== "a forwarded email" ? `Came in through ${r.source}; you forwarded it` : "You forwarded it"} — no need to text us about this one.` : `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
       [{ kind: "customer", id: c.id }, { kind: "request", id: r.id }],
     );
-    event(state, now, "inbox", "action", `New request from ${c.name} — ${answering ? (waits ? "answer goes at 7am" : "answered in minutes") : !to ? "answered (no email: owner texted)" : held ? "not answered (sending on hold): owner texted" : "not answered: owner texted"}`, r.title, [{ kind: "customer", id: c.id }]);
+    event(state, now, "inbox", "action", `New request from ${c.name} — ${answering ? (waits ? "answer goes at 7am" : "answered in minutes") : !to ? "answered (no email: owner texted)" : held ? "not answered (sending on hold): owner texted" : already ? "already answered lately (no second note): owner texted" : "not answered: owner texted"}`, r.title, [{ kind: "customer", id: c.id }]);
     n++;
   }
   if (n) state.updatedAt = now;
@@ -1059,7 +1098,11 @@ export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt:
   const ds = state.dataset;
   const email = lead.email?.toLowerCase();
   const digits = (p: string) => p.replace(/\D/g, "").slice(-10);
-  let c = (email ? customerByEmail(ds, email) : undefined) ?? (lead.phone ? ds.customers.find((x) => x.phones.some((p) => digits(p) === digits(lead.phone!))) : undefined);
+  const byPhone = lead.phone ? ds.customers.find((x) => x.phones.some((p) => digits(p) === digits(lead.phone!))) : undefined;
+  // Someone on file with that number but a different email is someone else (a shared line, a stray number in the
+  // email): they get their own record, so our answer goes to the person who asked, never to the one on file.
+  const samePerson = byPhone && (!email || !byPhone.emails.length || byPhone.emails.some((e) => e.toLowerCase() === email));
+  let c = (email ? customerByEmail(ds, email) : undefined) ?? (samePerson ? byPhone : undefined);
   if (!c) {
     const parts = (lead.name ?? "").trim().split(/\s+/).filter(Boolean);
     const street = lead.address?.split(",")[0]?.trim();

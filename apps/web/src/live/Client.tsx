@@ -156,7 +156,7 @@ function LinksMenu({ id, name }: { id: string; name: string }) {
         {
           label: "Replace all links",
           danger: true,
-          confirm: `New owner, Jobber-connect and file-forwarding links for ${name}. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new one.`,
+          confirm: `New owner, Jobber-connect and file-forwarding links for ${name}, and a new requests address. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new owner link, and the new requests address (Files tab) for their request forwarding: until they change it, each request forwarded to the old one lands in Needs a person instead of being answered.`,
           onClick: () => void run("rotate", () => api<Links>("POST", `/businesses/${encodeURIComponent(id)}/links/rotate`), "New links made — the old ones no longer work"),
         },
         {

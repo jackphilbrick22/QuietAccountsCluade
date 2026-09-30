@@ -99,4 +99,53 @@ describe("new requests the owner forwards", () => {
   it("a forged address is ignored", async () => {
     expect(await forward("requests+not-a-real-token@in.qa.test", "Fwd: hi", WEB_FORM)).toMatchObject({ ignored: true });
   });
+
+  it("the owner's signature, the shop's inbox and its phone are never taken for the homeowner's", async () => {
+    await api("POST", "/businesses", { id: "ridge-sig", name: "Ridgeline Tree Co.", trade: "tree", ownerName: "Dave Ridge", ownerPhone: "+16035550199", ownerEmail: "dave@ridgelinetree.com", businessPhone: "603-224-8811", signerName: "Sarah", mailingAddress: "14 Mill Rd, Concord, NH 03301", timezone: "America/New_York" });
+    await api("PATCH", "/businesses/ridge-sig", { plan: { stage: "paying", paidOn: "2026-09-01" } });
+    const l = (await api("GET", "/businesses/ridge-sig/links")) as { requestsAddress: string };
+    const phoneOnly = `Can you get back to this one?\n\nDave Ridge\nRidgeline Tree Co. | (603) 224-8811\noffice@ridgelinetree.com\n\n---------- Forwarded message ---------\nFrom: Wix Forms <no-reply@wix.com>\nDate: Tue, Sep 29, 2026 at 6:12 PM\nSubject: New form submission\nTo: <office@ridgelinetree.com>\n\nName: Karen Whitfield\nPhone: (603) 555-0142\nMessage: Big oak leaning toward the garage.\n\nSent from ridgelinetree.com. Questions? sales@ridgelinetree.com or (603) 224-8811`;
+    const r = await forward(l.requestsAddress, "Fwd: New form submission", phoneOnly);
+    expect(r).toMatchObject({ taken: true, answered: 1 });
+    const st = d.accounts.peek("ridge-sig")!.state;
+    const karen = st.dataset.customers.find((c) => c.name === "Karen Whitfield")!;
+    expect(karen).toMatchObject({ emails: [], phones: ["+16035550142"] });
+    // nothing was mailed to the shop's own inbox; the owner is told to call
+    expect((d.email as LogEmailProvider).sent.some((m) => /ridgelinetree\.com$/.test(m.to))).toBe(false);
+    expect(st.ownerMessages.at(-1)!.text).toContain("No email on file");
+  });
+
+  it("the same person never gets two answers, even with two already queued (direct sending)", async () => {
+    const { sendDue } = await import("../src/core/ops.ts");
+    await api("POST", "/businesses", { id: "ridge-two", name: "Ridgeline Tree Co.", trade: "tree", ownerName: "Dave Ridge", ownerPhone: "+16035550199", signerName: "Sarah", mailingAddress: "14 Mill Rd, Concord, NH 03301", timezone: "America/New_York" });
+    await d.accounts.withAccount("ridge-two", (s) => {
+      s.dataset.customers.push({ id: "k1", sourceIds: [], name: "Kim Tran", firstName: "Kim", lastName: "Tran", emails: ["kim.tran@gmail.com"], phones: [], properties: [], tags: [] });
+      for (const n of [1, 2])
+        s.touches.push({ id: `t_ans_${n}`, opportunityId: `req:r${n}`, customerId: "k1", channel: "email", step: 1, angle: "check_in", dueAt: "2026-09-29T10:00", status: "approved", subject: `Your request ${n}`, body: `Hi Kim, thanks for reaching out (${n}). Dave will call you today.`, flags: [], instant: true, track: "new_request", askedAt: "2026-09-29T09:59" });
+    });
+    const before = (d.email as LogEmailProvider).sent.filter((m) => m.to === "kim.tran@gmail.com").length;
+    await sendDue(d, "ridge-two");
+    expect((d.email as LogEmailProvider).sent.filter((m) => m.to === "kim.tran@gmail.com").length).toBe(before + 1);
+    const ts = d.accounts.peek("ridge-two")!.state.touches;
+    expect(ts.map((t) => t.status).sort()).toEqual(["cancelled", "sent"]);
+    expect(ts.find((t) => t.status === "cancelled")!.lastError).toMatch(/already had our answer/);
+  });
+
+  it("after 'Replace all links', a request sent to the old address reaches a person instead of vanishing", async () => {
+    const old = (await api("GET", "/businesses/ridge/links")) as { requestsAddress: string };
+    const fresh = (await api("POST", "/businesses/ridge/links/rotate")) as { requestsAddress: string };
+    expect(fresh.requestsAddress).not.toBe(old.requestsAddress);
+    const requests = d.accounts.peek("ridge")!.state.dataset.requests.length;
+    const r = await forward(old.requestsAddress, "Fwd: New form submission", WEB_FORM.replace("karen.whitfield@gmail.com", "k.whit@example.org"));
+    expect(r).toMatchObject({ ok: true, taken: false, oldAddress: true });
+    // not answered (the old address was retired on purpose), but the operator has who and what
+    expect(d.accounts.peek("ridge")!.state.dataset.requests).toHaveLength(requests);
+    const items = (await api("GET", "/review")).items as { kind: string; businessId: string; title?: string; detail?: string }[];
+    const alert = items.find((i) => i.businessId === "ridge" && i.title === "A request was forwarded to an old address")!;
+    expect(alert.detail).toContain("Karen Whitfield");
+    expect(alert.detail).toContain("k.whit@example.org");
+    // the new address works; a forged one is still ignored
+    expect(await forward(fresh.requestsAddress, "Fwd: New form submission", WEB_FORM.replace("karen.whitfield@gmail.com", "k.whit@example.org"))).toMatchObject({ taken: true });
+    expect(await forward("requests+not-a-real-token@in.qa.test", "Fwd: hi", WEB_FORM)).toMatchObject({ ignored: true });
+  });
 });

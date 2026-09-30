@@ -6,6 +6,8 @@ import {
   playbook,
   answerNewRequests,
   alwaysOnFor,
+  answeredLately,
+  isBusinessAddress,
   readRequestEmail,
   takeRequest,
   answerTime,
@@ -15,6 +17,7 @@ import {
   doNotContact,
   dropStaleAnswers,
   extractEmails,
+  fmtPhone,
   HELD_FOR_GOOD,
   REQUIRED_FLAG,
   sendableEmail,
@@ -131,6 +134,19 @@ export function readLinkToken(d: Deps, kind: LinkKind, token: string): string | 
   const [bid, key, ...rest] = payload.slice(kind.length + 1).split("|");
   if (!bid || rest.length || !d.accounts.repo.exists(bid)) return undefined;
   return (key ?? undefined) === d.accounts.repo.linkKey(bid) ? bid : undefined;
+}
+
+/**
+ * A link we really gave out whose key has since been replaced ("Replace all links"): the business it was for, so
+ * whatever still arrives at an old address can go to a person instead of vanishing. Undefined when it's forged,
+ * current, or its business is gone.
+ */
+export function staleLinkToken(d: Deps, kind: LinkKind, token: string): string | undefined {
+  const payload = verifySigned(d.cfg.APP_SECRET, token);
+  if (!payload?.startsWith(`${kind}|`)) return undefined;
+  const [bid, key, ...rest] = payload.slice(kind.length + 1).split("|");
+  if (!bid || rest.length || !d.accounts.repo.exists(bid)) return undefined;
+  return (key ?? undefined) !== d.accounts.repo.linkKey(bid) ? bid : undefined;
 }
 
 /** New links for one client; every link given out before stops working. */
@@ -344,6 +360,12 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
     const claimed = await d.accounts.withAccount(bid, (s) => {
       const live = s.touches.find((x) => x.id === t.id);
       if (!live || live.status !== "approved") return false;
+      // one "thanks for reaching out" per person: a second answer queued before that rule (or in the same batch) stays home
+      if (live.track === "new_request" && answeredLately(s, live.customerId, item.to, nowLocal(d, s), { exceptId: live.id, sentOnly: true })) {
+        live.status = "cancelled";
+        live.lastError = "Not sent: they already had our answer to a request in the last few days";
+        return false;
+      }
       live.status = "sending";
       live.claimedAt = nowLocal(d, s);
       return true;
@@ -1283,6 +1305,20 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
 }
 
 /**
+ * The business's own addresses, domains and numbers (and the forwarder's address): whatever a forwarded request
+ * says, none of them is the person asking. A free mailbox domain (gmail.com) is never taken as the business's.
+ */
+function ownContact(b: BusinessProfile, forwarder: string): { ignore: string[]; ignoreDomains: string[]; ignorePhones: string[] } {
+  const emails = [b.ownerEmail, b.replyTo, b.fromEmail].filter((x): x is string => !!x?.trim()).map((x) => x.trim().toLowerCase());
+  const site = b.website?.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").split(/[/?#:]/)[0]?.replace(/^www\./, "");
+  return {
+    ignore: [...emails, ...extractEmails(forwarder)],
+    ignoreDomains: [...emails.map((e) => e.split("@")[1] ?? ""), site ?? ""].filter((x) => x.includes(".")),
+    ignorePhones: [b.ownerPhone, b.businessPhone].filter((x): x is string => !!x?.trim()),
+  };
+}
+
+/**
  * The owner forwarded a new request (a website form, an Angi or Thumbtack alert, a homeowner's email) to their
  * requests address. It goes on the same always-on track as a Jobber request: answered from the office, and
  * the owner texted who it is. What we can't read goes to a person, never a guess.
@@ -1291,11 +1327,14 @@ export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: s
   const l = d.accounts.peek(bid);
   if (!l) return { taken: false, answered: 0, why: "no such business" };
   const b = l.state.dataset.business;
-  const ignore = [b.ownerEmail, b.replyTo, b.fromEmail, ...extractEmails(m.from)].filter((x): x is string => !!x);
-  let read = readRequestEmail({ subject: m.subject, text: m.text, from: m.from, ignore });
+  const own = ownContact(b, m.from);
+  let read = readRequestEmail({ subject: m.subject, text: m.text, from: m.from, ...own });
   if (!read.lead && d.llm) {
     const ai = await readRequestWithClaude(d.llm, { subject: m.subject, text: m.text, businessName: b.name }).catch(() => null);
-    if (ai && !ignore.some((e) => e.toLowerCase() === ai.email)) read = { lead: ai };
+    // the second read gets the same rule: the business's own addresses and numbers are never the person asking
+    const email = ai?.email && !isBusinessAddress(ai.email, own) ? ai.email : undefined;
+    const phone = ai?.phone && !own.ignorePhones.some((p) => p.replace(/\D/g, "").slice(-10) === ai.phone!.replace(/\D/g, "").slice(-10)) ? ai.phone : undefined;
+    if (ai && (email || phone)) read = { lead: { ...ai, email, phone } };
   }
   if (!read.lead) {
     await raiseAlert(d, bid, { kind: "request_unread", title: "A forwarded request we couldn't read", detail: `${read.why ?? "No details we could use."} Subject: “${m.subject.slice(0, 120)}”. Call or answer them by hand.` });
@@ -1319,6 +1358,23 @@ export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: s
   if (answered) await sendDue(d, bid);
   d.accounts.repo.audit(bid, "inbound", "request.forwarded", { source: lead.source, read: lead.read, duplicate, answered });
   return { taken: true, answered, duplicate };
+}
+
+/**
+ * A request forwarded to a requests address from before "Replace all links". That address was retired on purpose,
+ * so nobody is written to; but it's someone asking for work, so the operator is told who and what, never silence.
+ */
+export async function requestToOldAddress(d: Deps, bid: string, m: { subject: string; text: string; from: string }): Promise<void> {
+  const b = d.accounts.peek(bid)?.state.dataset.business;
+  if (!b) return;
+  const lead = readRequestEmail({ subject: m.subject, text: m.text, from: m.from, ...ownContact(b, m.from) }).lead;
+  const who = lead ? [lead.name, lead.email, lead.phone ? fmtPhone(lead.phone) : undefined].filter(Boolean).join(", ") : "";
+  const what = who ? `${who}${lead?.job ? `: “${lead.job.slice(0, 140)}”` : ""}` : `Subject: “${m.subject.slice(0, 120)}”`;
+  await raiseAlert(d, bid, {
+    kind: "request_old_address",
+    title: "A request was forwarded to an old address",
+    detail: `${what} (forwarded by ${m.from || "someone"}). Nobody wrote back: this client's links were replaced, so the requests address it went to no longer answers. Pass this one to the owner, and send them the new requests address (Files tab) for their forwarding.`,
+  });
 }
 
 /**
@@ -1560,6 +1616,12 @@ export async function answerInThread(d: Deps, bid: string, replyId: string, text
     const at = nowLocal(d, s);
     live.answers = [...(live.answers ?? []), { text: clean, at, by }];
     if (live.draft && by !== "auto") live.draft = undefined;
+    // a person read it and answered it themselves: an unclear reply is settled (a hot lead still waits on the owner's call)
+    if (by !== "auto" && live.status === "new") {
+      live.status = "done";
+      const name = customerById(s.dataset, live.customerId)?.name ?? live.from;
+      s.events.push({ id: `ev_answered_${live.id}_${live.answers.length}`, at, agent: "inbox", kind: "action", title: `Answered ${name} by hand`, detail: oneLine(clean, 200), refs: live.customerId ? [{ kind: "customer", id: live.customerId }] : undefined });
+    }
   });
   return { ok: true };
 }

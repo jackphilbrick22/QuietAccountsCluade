@@ -162,9 +162,11 @@ describe("the reply backstop", () => {
     // the spouse's reply is Pat's lead, tied to the note we sent Pat
     expect(replies.find((x) => x.thread?.replyEmailId === "em-r2")).toMatchObject({ from: "jo.lee@gmail.com", customerId: "c1", intent: "wants_it", extracted: { phone: "+16032241234" } });
     expect(d.notifier.sent.length).toBeGreaterThan(before);
-    // and answered in their own thread, each to the person who wrote
-    const answers = posts("/emails/reply").map((c) => c.body.reply_to_uuid);
-    expect(answers).toEqual(expect.arrayContaining(["em-r1", "em-r2"]));
+    // Both wrote back to our answer to Pat's request: their words (and the new number) join that lead for the owner,
+    // who's already calling. No second "thanks" goes out and no second hand-off is made.
+    expect(posts("/emails/reply")).toHaveLength(0);
+    expect(replies.filter((x) => x.followUpOf === "req:r1")).toHaveLength(2);
+    expect(d.notifier.sent.slice(before).map((m) => m.text).join("\n")).toContain("(603) 224-1234");
     // the cursor sits in the workspace's integration record, a few minutes before the newest email seen
     expect(d.accounts.repo.getIntegration(WORKSPACE, "instantly")).toMatchObject({ cursor: "2026-09-30T14:50:00.000Z", last_error: null });
   });
