@@ -170,8 +170,15 @@ Updated every loop iteration. Newest first.
   2.4k"); any other text that reads as a booking goes to Claude, or to Jack with no key. An unclear text
   stops a lead's reminders only when its #code names that lead. Engine 1,232, server 261.
 
+- Fifteenth adversarial review: 2 confirmed in the new plain-booking rule, fixed. It let someone else in as
+  the thing booked ("She booked the cheaper guy, 1500"), took she/he/they as the winner ("They got the job,
+  1800", "He won it") and read an appointment time as the price ("Booked her for 10 tomorrow, 2400" was
+  $10). Now it's plain only with the owner (or no one) as the subject and a job, not a person or bid, as
+  the object; she/he/they only when they booked "us/me/it"; one amount, last, and at least $50. Anything
+  else goes to Claude or Jack. Engine 1,232, server 261.
+
 **Next**
-- A fifteenth review pass; stop when a pass finds nothing material.
+- A sixteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

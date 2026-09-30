@@ -199,14 +199,16 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       return { out: await h.sms(`${text} #${leadCode(rid)}`), rid };
     };
     // plain bookings, no Claude key needed
-    for (const [t, amount] of [["booked 2400", 2400], ["Booked the dead oak, 1800", 1800], ["She booked us for 2400", 2400], ["SOLD 2.4k", 2400], ["2400", 2400], ["Won it, 3200", 3200]] as const) {
+    for (const [t, amount] of [["booked 2400", 2400], ["Booked the dead oak, 1800", 1800], ["She booked us for 2400", 2400], ["SOLD 2.4k", 2400], ["2400", 2400], ["Won it, 3200", 3200], ["We booked him for 1500", 1500], ["Booked tomorrow for 2400", 2400]] as const) {
       const { out, rid } = await texts(t);
       expect(out, t).toMatch(/^Booked: Kim Tran, \$/);
       expect(reply(h, "ridge", rid).outcomeValue, t).toBe(amount);
     }
     const before = state(h, "ridge").recoveries.length;
     // someone else's win, however it's said: with no key a person reads it, nothing is booked
-    const others = ["Davey got the job, 1800", "A cheaper guy won the bid, 1500", "She booked with Davey for 1800", "Davey was cheaper, she booked them for 1800", "Her tree guy got the job, 1500", "Bartlett got the job for 1800", "SavATree got the job, 1900", "Lowballer won it, 1200", "Booked with Davey, 1800"];
+    const others = ["Davey got the job, 1800", "A cheaper guy won the bid, 1500", "She booked with Davey for 1800", "Davey was cheaper, she booked them for 1800", "Her tree guy got the job, 1500", "Bartlett got the job for 1800", "SavATree got the job, 1900", "Lowballer won it, 1200", "Booked with Davey, 1800",
+      // review 15: someone else in the object, she/he/they as the winner, a time read as the price
+      "She booked the cheaper guy, 1500", "She booked her guy, 1800", "She booked her tree guy for 1800", "They booked the first guy, 1500", "She booked the lowest bid, 1500", "She booked him for 1500", "They got the job, 1800", "He won it, 1500", "They won the bid, 1500", "Booked her for 10 tomorrow, 2400", "Booked at 10 today, 950", "Booked for 11"];
     for (const t of others) expect((await texts(t)).out, t).toMatch(/^Thanks — that one could go either way/);
     expect(state(h, "ridge").recoveries.length).toBe(before);
     // with Claude, it reads them

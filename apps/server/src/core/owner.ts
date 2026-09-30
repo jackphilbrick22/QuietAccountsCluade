@@ -152,18 +152,29 @@ function plainWords(text: string, shortName?: string): string {
   return t.split(/\s+/).filter((w) => w && (!shortName || w !== shortName.toLowerCase())).join(" ");
 }
 const AMT = "\\$?\\d+(\\.\\d+)?k?";
-const BOOKED_WHAT = "(it|her|him|them|us|the job|the work|(the|her|his|their) [a-z]+( [a-z]+)?)";
+/** Words for a person, a company or a bid: never the thing the owner booked ("the cheaper guy", "the lowest bid"). */
+const PERSONISH = "(guy|guys|gal|company|companies|crew|one|bid|bids|quote|contractor|contractors|competitor|competition|outfit|service|person|people|team|other|others|lowest|cheapest)";
+const BOOKED_WHAT = `(it|her|him|them|us|the job|the work|(the|her|his|their) (?!${PERSONISH}\\b)[a-z]+( (?!${PERSONISH}\\b)[a-z]+)?)`;
 const BOOKED_WHEN = "(today|tonight|tomorrow|this week|next week|this month|next month)";
 /**
- * A booking that is plainly the owner's: the word first ("Booked 2400", "Sold it 5k", "Booked the dead oak, 1800"),
- * the amount alone, or the homeowner booking us ("She booked us for 2400"). Anything else read as a booking goes to
- * Claude, or to a person.
+ * A booking that is plainly the owner's: the owner (or no one) as the subject ("Booked 2400", "Sold it 5k", "Booked
+ * the dead oak, 1800", "We booked him for 1500"), the amount alone, or the homeowner booking us ("She booked us for
+ * 2400"). She/he/they with anything else ("They got the job", "She booked the cheaper guy") is someone else's win as
+ * often as ours. The amount comes last, alone: "for 10 tomorrow" is a time.
  */
 const PLAIN_BOOKING = new RegExp(
-  `^((she|he|they|we|i) )?(just )?(booked|book it|sold|won|closed|closed it|got the job|got it|landed it|signed)( ${BOOKED_WHAT})?( (for|at))?( ${AMT})?( ${BOOKED_WHEN})?( ${AMT})?$` +
+  `^((we|i) )?(just )?(booked|book it|sold|closed|closed it|got the job|got it|landed it|signed|won)( ${BOOKED_WHAT})?( ${BOOKED_WHEN})?( (for|at))?( ${AMT})?$` +
     `|^${AMT}( (booked|sold))?$` +
-    `|^(she|he|they) (booked|hired|signed with|went with|picked|chose) (us|me)( (for|at))?( ${AMT})?$`,
+    `|^(she|he|they) (just )?(booked|hired|signed with|went with|picked|chose|signed) (us|me|it)( ${BOOKED_WHEN})?( (for|at))?( ${AMT})?$`,
 );
+/** At most one number, and a real job's worth if any: "Booked for 11" is an appointment, not an $11 job. */
+function plainAmount(words: string): boolean {
+  const nums = words.match(/\$?\d+(\.\d+)?k?/g) ?? [];
+  if (nums.length > 1) return false;
+  if (!nums.length) return true;
+  const n = nums[0]!.replace("$", "");
+  return Number(n.replace(/k$/, "")) * (n.endsWith("k") ? 1000 : 1) >= 50;
+}
 /** "She went with my quote", "went with us": our booking. */
 const WENT_WITH_US = /\bwent with (me|us|mine|ours|(my|our) (quote|price|bid|estimate))\b/;
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
@@ -495,7 +506,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // win it is, or whether she's only shopping, is Claude's read with a person behind it, never the patterns' alone.
   // And a booking puts money on the ledger: the patterns record one only when it's plainly the owner's ("booked
   // 2400", "she booked us for 2400"); "Davey got the job, 1800" is Claude's, or a person's, to read.
-  const plainBooking = lead?.outcome === "booked" && PLAIN_BOOKING.test(plainWords(text, named ? tags.get(named.id) : undefined));
+  const plainText = plainWords(text, named ? tags.get(named.id) : undefined);
+  const plainBooking = lead?.outcome === "booked" && PLAIN_BOOKING.test(plainText) && plainAmount(plainText);
   if ((mentionsCompetitor(text) && (lead || hasCode)) || (lead?.outcome === "booked" && !plainBooking)) lead = await readLeadTextWithClaude(d.llm, text);
   // it says both ways ("Booked 2400, she won't sign up for the plan"): a person marks it, never a guess. The lead it's
   // about stops getting "still waiting" nudges meanwhile: the owner just told us something happened.
