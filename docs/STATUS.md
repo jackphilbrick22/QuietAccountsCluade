@@ -58,10 +58,20 @@ Updated every loop iteration. Newest first.
 - `SIGNUP_ORIGINS`, `INBOUND_DOMAIN`, `SIGNUPS_PER_HOUR` (default 30).
 - Twilio: remove CANCEL from the Messaging Service opt-out keywords.
 
+- Trade depth from owner research merged: non-Jobber quote statuses read right (Unsigned, Not sent,
+  Unscheduled, Not sold...), a full painting playbook (repaint clocks, exterior in late winter,
+  interiors sold in the fall), cleaning lapses at ~21 days for weekly/biweekly clients, new-request
+  answers ask each trade's intake questions (and skip what the form already says).
+- Third adversarial review: 30 reported, 21 confirmed, all fixed: platform-safe UNDO (the cancel's
+  withdrawals run first; sequences under way stay stopped and the owner is told), a Restore plan action
+  for the operator, pulled notes stop the rest of a sequence, the paid year keeps its guarantee after
+  MONTHLY, stricter texts while the first note waits for OK, holiday-lights clocks only in season,
+  one-time cleaning asks only to people not on a schedule, recreated ids never get old links.
+- Plain-language breakdown for Jack: https://claude.ai/artifact/G2cLRQe3SJt53PWhrMNFZt (a doc he can edit
+  and comment on). Engine 1,057 tests, server 242.
+
 **Next**
-- Merge the trade-depth agent (non-Jobber statuses, painting playbook, cleaning lapse timing, intake
-  questions in the new-request answer, fence/painting upload hints); republish the site.
-- A third review pass on everything since the second; the plain-language breakdown for Jack.
+- A fourth review pass on the third review's fixes; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 
