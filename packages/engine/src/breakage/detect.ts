@@ -139,7 +139,13 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
     caution: { medianByService: new Map(), typicalJob: 0, callOver: 0 },
     alwaysOn: alwaysOnFor(ds.business),
   };
-  ctx.caution = { medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id), typicalJob: ctx.avgJob, callOver: ds.business.callOverAmount ?? CALL_OVER_AMOUNT };
+  ctx.caution = {
+    medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id),
+    typicalJob: ctx.avgJob,
+    callOver: ds.business.callOverAmount ?? CALL_OVER_AMOUNT,
+    // Jobber's "Approved" means no job yet; anyone else's "Won" can't be checked without a jobs file
+    noJobsToCheck: !ds.jobs.length && ds.business.software !== "jobber",
+  };
 
   const opps: Opportunity[] = [];
   for (const q of ds.quotes) {
@@ -217,9 +223,10 @@ function base(
   evidence: string[],
   serviceOverride?: ServiceDef,
   maxDays?: number,
+  minDaysOverride?: number,
 ): Opportunity | undefined {
   const w = WINDOW[type];
-  const minDays = ctx.alwaysOn ? (ALWAYS_ON_MIN_DAYS[type] ?? w.minDays) : w.minDays;
+  const minDays = minDaysOverride ?? (ctx.alwaysOn ? (ALWAYS_ON_MIN_DAYS[type] ?? w.minDays) : w.minDays);
   const age = anchor ? daysBetween(anchor, ctx.asOf) : NaN;
   if (Number.isNaN(age)) {
     // no date: keep only types that don't depend on age, and mark them old-ish
@@ -415,6 +422,8 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       if (!next) continue;
       const already =
         work.some((x) => x.date >= w.date && next.match.test(x.title)) ||
+        // a regular schedule they're already on, whatever its visits are called ("Cleaning - Smith", marked recurring)
+        (next.kind === "recurring" && work.some((x) => x.date > w.date && x.recurring)) ||
         (ctx.quotesBy.get(c.id) ?? []).some((q) => next.match.test(q.title) || q.lineItems.some((l) => next.match.test(l.name)));
       // the original job itself may have included the follow-on ("removal + stump")
       if (already || next.match.test(w.title) || w.lineItems.some((l) => next.match.test(l.name))) continue;
@@ -450,7 +459,9 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
     const recurring = work.some((w) => w.recurring) || (median > 0 && median <= 120 && work.length >= 3);
     regular = recurring || (routine?.n ?? 0) >= 2;
     const expected = recurring ? Math.max(median, 7) : median;
-    if (regular && expected > 0 && sinceLast > Math.max(expected * 1.75, expected + 45) && !dueFound) {
+    // a cleaning client every other week is gone at three weeks, not two months: the trade says when
+    const lapse = lapseAfter(routine ? (findService(routine.svc.id)?.trade ?? ctx.ds.business.trade) : ctx.ds.business.trade, expected);
+    if (regular && expected > 0 && sinceLast >= lapse.days && !dueFound) {
       const perYear = Math.min(52, Math.max(1, Math.round(365 / Math.max(expected, 7))));
       const avg = work.reduce((s, w) => s + w.total, 0) / work.length;
       const annual = recurring ? avg * perYear : avg;
@@ -458,7 +469,8 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       const w = routine?.last ?? last;
       const o = base(ctx, "lapsed_regular", c.id, { kind: w.kind, id: w.id }, annual, w.date, w.title, w.lineItems,
         `Used you ${work.length} times${recurring ? ` (about every ${humanAge(expected).replace(/^a /, "")})` : ""}. Last visit ${spokenWhen(last.date, ctx.asOf)} — then nothing.`,
-        [evWork(last), `${work.length} visits on file`, recurring ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`], routine?.svc);
+        [evWork(last), `${work.length} visits on file`, recurring ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`], routine?.svc,
+        undefined, lapse.byTrade ? lapse.days : undefined);
       if (o) out.push(o);
     }
   }
@@ -476,6 +488,17 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
 
 function capitalize(s: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : s;
+}
+
+/**
+ * How many days after the last visit a regular counts as gone quiet, given their usual gap between visits. The trade
+ * sets its own rows (cleaning: every week or two -> 21 days, about monthly -> 45); otherwise it's 1¾ times the usual
+ * gap or the gap plus 45 days, whichever is later. A trade row never lands less than a week past the usual gap.
+ */
+export function lapseAfter(trade: TradeId, usualGap: number): { days: number; byTrade: boolean } {
+  const row = playbook(trade).lapseAfterDays?.find(([upTo]) => usualGap <= upTo);
+  if (row) return { days: Math.max(row[1], Math.ceil(usualGap) + 7), byTrade: true };
+  return { days: Math.floor(Math.max(usualGap * 1.75, usualGap + 45)) + 1, byTrade: false };
 }
 
 /**

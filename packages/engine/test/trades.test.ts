@@ -147,6 +147,104 @@ describe("decks", () => {
   });
 });
 
+describe("painting", () => {
+  const pb = playbook("painting");
+  const svc = (title: string) => classifyService(title, [], ["painting"]).service.id;
+  const byId = (id: string) => pb.services.find((s) => s.id === id)!;
+
+  it.each([
+    ["Exterior house painting", "paint.exterior"],
+    ["Exterior repaint - 2 story colonial", "paint.exterior"],
+    ["Siding + soffits", "paint.exterior"],
+    ["Interior - 3 rooms", "paint.interior"],
+    ["Living room, hallway + ceilings", "paint.interior"],
+    ["Kitchen walls", "paint.interior"],
+    ["Kitchen cabinet painting", "paint.cabinets"],
+    ["Bathroom vanity", "paint.cabinets"],
+    ["Deck stain", "paint.deck"],
+    ["Fence stain & seal", "paint.deck"],
+    ["Front door + trim", "paint.trim"],
+    ["Baseboards and doors", "paint.trim"],
+    ["Exterior trim + shutters", "paint.exterior"],
+    ["Drywall patch + paint", "paint.drywall"],
+    ["Water damage ceiling repair", "paint.drywall"],
+    ["Power wash prep", "paint.wash"],
+    ["Exterior repaint - power wash, scrape, prime, 2 coats", "paint.exterior"],
+  ])("%s is %s", (title, id) => {
+    expect(svc(title)).toBe(id);
+  });
+
+  it("names the job the way a homeowner would", () => {
+    expect(jobPhrase("Exterior house painting", "painting")).toBe("the exterior painting");
+    expect(jobPhrase("Kitchen cabinet painting", "painting")).toBe("the cabinets");
+    expect(jobPhrase("Interior - 3 rooms", "painting")).toBe("the interior painting");
+    expect(jobPhrase("Paint 3 bedrooms", "painting")).toBe("the bedrooms");
+    expect(jobPhrase("Front door + trim", "painting")).toBe("the front door");
+    expect(jobPhrase("House power wash", "painting")).toBe("the power washing");
+    expect(jobPhrase("Deck stain", "painting")).toBe("the deck");
+  });
+
+  it("repaints come around on honest clocks; cabinets, trim and repairs have none", () => {
+    expect([byId("paint.exterior").reserviceMonths, byId("paint.interior").reserviceMonths, byId("paint.deck").reserviceMonths]).toEqual([72, 60, 30]);
+    for (const id of ["paint.cabinets", "paint.trim", "paint.drywall"]) expect(byId(id).reserviceMonths).toBeUndefined();
+    expect(byId("paint.cabinets").kind).toBe("improvement");
+    expect(byId("paint.drywall").kind).toBe("repair");
+  });
+
+  it("exterior season runs May to October in cold climates; inside work any time", () => {
+    const ext = byId("paint.exterior");
+    expect(ext.season.cold).toEqual([5, 6, 7, 8, 9, 10]);
+    expect(seasonFit(ext, "cold", 2)).toBe("off");
+    expect(seasonFit(ext, "cold", 7)).toBe("now");
+    expect(seasonFit(byId("paint.interior"), "cold", 1)).toBe("now");
+    expect(seasonFit(byId("paint.interior"), "cold", 7)).toBe("now");
+  });
+
+  it("timing lines are plain and only go out in the months they're true", () => {
+    const ext = byId("paint.exterior");
+    expect(ext.timingLine?.cold).toBe("Spring exterior dates usually book up by April.");
+    // a spring line is only true while spring is still ahead
+    expect(ext.timingMonths?.cold).toEqual([1, 2, 3]);
+    const int = byId("paint.interior");
+    expect(int.timingLine?.cold).toBe("Winter is a good time for inside work: no weather delays.");
+    expect(int.timingMonths?.cold).toEqual([11, 12, 1, 2, 3]);
+  });
+
+  it("offers exterior clients the inside, and a stain after the house; a patch leads to the room", () => {
+    const next = (id: string) => byId(id).followOns?.map((f) => f.serviceId) ?? [];
+    expect(next("paint.exterior")).toEqual(["paint.interior", "paint.deck"]);
+    expect(byId("paint.exterior").followOns![0]!.pitch).toBe("We paint inside too, if there are any rooms you've been meaning to get to.");
+    expect(next("paint.drywall")).toEqual(["paint.interior"]);
+    expect(next("paint.cabinets")).toEqual([]);
+  });
+
+  it("knows why painting quotes die and works them without a price cut", () => {
+    const why = pb.whyQuotesDie.join(" | ");
+    expect(why).toMatch(/three or more bids/);
+    expect(why).toMatch(/budget/);
+    expect(why).toMatch(/spring/);
+    expect(why).toMatch(/spouse/);
+    expect(pb.quoteAngles).toEqual(["check_in", "timing", "revise", "crew_nearby", "close_file"]);
+  });
+});
+
+describe("the first answer asks what the owner needs", () => {
+  it("each main trade has one short intake question; everything else asks nothing extra", () => {
+    expect(playbook("tree").intakeAsk).toBe("If it's easy, reply with a photo or two{andAddress}.");
+    expect(playbook("fence").intakeAsk).toBe("If you can, reply with roughly how many feet, the material you're thinking of, any gates, and whether there's an HOA.");
+    expect(playbook("painting").intakeAsk).toBe("Is it inside or outside, and when are you hoping to have it done?");
+    expect(playbook("cleaning").intakeAsk).toBe("How many bedrooms and bathrooms, is it a one-time clean or regular, and any pets?");
+    expect(playbook("septic").intakeAsk).toBeUndefined();
+    for (const t of ALL_TRADES) {
+      for (const ask of [playbook(t).intakeAsk, playbook(t).intakeAskNamed].filter((x): x is string => !!x)) {
+        // one sentence, and never a price or a date
+        expect(ask.match(/[.?](\s|$)/g)?.length).toBe(1);
+        expect(ask).not.toMatch(/\$|\d|price|cost|quote|today|tomorrow|this week|next week|monday|tuesday|wednesday|thursday|friday/i);
+      }
+    }
+  });
+});
+
 describe("reading the trade from their own titles", () => {
   it("every trade reads as itself from its sample titles, with no second trade", () => {
     for (const trade of ALL_TRADES) {
@@ -215,9 +313,11 @@ describe("reading the trade from their own titles", () => {
 describe("what every trade says to a homeowner", () => {
   /** Every line a playbook can put in a note: timing, why waiting hurts, why it waits, the due question, follow-on pitches. */
   const lines = (t: TradeId) =>
-    playbook(t)
-      .services.flatMap((s) => [...Object.values(s.timingLine ?? {}), s.worseIfWaiting, s.waitLine, s.dueAsk, ...(s.followOns ?? []).map((f) => f.pitch)])
-      .filter((x): x is string => !!x);
+    [
+      ...playbook(t).services.flatMap((s) => [...Object.values(s.timingLine ?? {}), s.worseIfWaiting, s.waitLine, s.dueAsk, ...(s.followOns ?? []).flatMap((f) => [f.pitch, f.ask])]),
+      playbook(t).intakeAsk?.replace("{andAddress}", " and the address"),
+      playbook(t).intakeAskNamed,
+    ].filter((x): x is string => !!x);
   const SCARCITY = /\b(only \d+|spots? left|slots? left|last chance|hurry|act fast|book (now|today|by)|before (it'?s|they'?re) gone|deadline|expires?|while (they|supplies) last|risk[- ]free)\b/i;
 
   it.each(ALL_TRADES)("%s: plain lines, with no stats, no scarcity and nothing a spam filter flags", (trade) => {

@@ -180,6 +180,8 @@ const tree: TradePlaybook = {
   crewLine: "We've got a crew working nearby with a couple of open days.",
   minQuote: 400,
   freeLook: true,
+  // what an arborist needs before he calls: what the tree looks like and where it is
+  intakeAsk: "If it's easy, reply with a photo or two{andAddress}.",
 };
 
 /* ================================================================== */
@@ -569,6 +571,8 @@ const fence: TradePlaybook = {
   crewLine: "We've got a crew installing nearby and an open slot on the calendar.",
   minQuote: 800,
   freeLook: true,
+  // the four things a fence price turns on
+  intakeAsk: "If you can, reply with roughly how many feet, the material you're thinking of, any gates, and whether there's an HOA.",
 };
 
 /* ================================================================== */
@@ -1126,17 +1130,151 @@ const junk = simple(
   "We've got a truck in your area with room on it.", 150, true,
 );
 
-const painting = simple(
-  "painting", "Painting", "painting company", [400, 4500, 25000], 0.35, { cold: [4, 5, 6, 7, 8, 9], warm: [2, 3, 4, 10, 11] },
-  [
-    { id: "paint.exterior", label: "Exterior painting", match: /\b(exterior|siding|trim|house paint|outside|shutters|door)/i, phrase: "the exterior painting", season: { cold: [5, 6, 7, 8, 9], warm: [1, 2, 3, 4, 10, 11, 12] }, reserviceMonths: 84, kind: "improvement" },
-    { id: "paint.interior", label: "Interior painting", match: /\b(interior|room|walls|ceiling|cabinet|kitchen|bath|inside)/i, phrase: "the interior painting", season: { cold: [1, 2, 3, 11, 12], warm: [6, 7, 8] }, kind: "improvement", timingLine: { cold: "Winter is the best time to get interior work scheduled quickly." }, timingMonths: { cold: [10, 11, 12, 1, 2] } },
-    { id: "paint.deck", label: "Deck & fence staining", match: /\b(deck|fence|stain)/i, phrase: "the staining", season: { cold: [5, 6, 7, 8, 9], warm: [3, 4, 5, 10, 11] }, reserviceMonths: 30, kind: "maintenance" },
+/* ================================================================== */
+/* PAINTING                                                            */
+/* ================================================================== */
+// Owner research (r/paint and r/Paintingbusiness, 2023-26): homeowners get three or more bids and never tell the
+// losers no; the number lands over what they'd budgeted ("a 20k job… budgeted 10 to 15k"); exterior bids pushed
+// "to spring" are never picked back up; and exterior clients are "surprised that we do interior painting". In cold
+// climates the exterior season runs about May to October and is sold in late winter and spring, with winter
+// interiors sold August to October for November to March. Repaint clocks (Fixr, HomeAdvisor): exterior 5-10 years,
+// interior rooms 3-10, wood decks and fences 2-3. Cabinets are an improvement with no clock.
+const PAINT_STAIN_WORSE = "Once the old stain wears through, water soaks into the boards and they start to gray and crack.";
+const painting: TradePlaybook = {
+  id: "painting",
+  workPhrase: "the painting",
+  label: "Painting",
+  noun: "painting company",
+  // Angi: exterior averages about $3,178; Fixr puts a full exterior repaint at $6,242-11,617. Own invoices always win.
+  ticket: { low: 400, typical: 4500, high: 25000 },
+  // owners report 25-50% on non-referral estimates
+  typicalCloseRate: 0.35,
+  peakMonths: { cold: [4, 5, 6, 7, 8, 9], warm: [2, 3, 4, 10, 11] },
+  services: [
+    {
+      id: "paint.exterior",
+      label: "Exterior repaint",
+      match: /\b(exterior|siding|clapboard|stucco|soffits?|fascia|eaves|outside|house paint\w*|paint\w* (the )?house)/i,
+      phrase: "the exterior painting",
+      season: { cold: [5, 6, 7, 8, 9, 10], warm: [1, 2, 3, 4, 10, 11, 12] },
+      reserviceMonths: 72,
+      kind: "improvement",
+      followOns: [
+        { serviceId: "paint.interior", afterDays: [45, 540], why: "exterior clients often don't know the same crew paints inside", pitch: "We paint inside too, if there are any rooms you've been meaning to get to." },
+        { serviceId: "paint.deck", afterDays: [14, 540], why: "a weathered deck or fence stands out next to fresh paint", pitch: "If there's a deck or fence that could use a fresh coat of stain, we do that too." },
+      ],
+      timingLine: {
+        cold: "Spring exterior dates usually book up by April.",
+        warm: "The cooler, drier months are the best time for exterior paint here.",
+      },
+      // a spring line is only true while spring is still ahead: January to March
+      timingMonths: { cold: [1, 2, 3], warm: [10, 11, 12, 1, 2, 3] },
+    },
+    {
+      id: "paint.interior",
+      label: "Interior rooms",
+      // "kitchen cabinets" and a "bathroom vanity" are the cabinets, not the walls
+      match: /\b(interior|inside|rooms?|bedrooms?|bathrooms?(?! vanit)|hallways?|stairwells?|foyer|ceilings?|walls|accent wall|basement|kitchen(?! cabinet))\b/i,
+      phrase: "the interior painting",
+      season: { cold: ALL, warm: ALL },
+      reserviceMonths: 60,
+      kind: "improvement",
+      timingLine: {
+        cold: "Winter is a good time for inside work: no weather delays.",
+        warm: "Summer is a good time for inside work, when it's too hot for painting outside.",
+      },
+      timingMonths: { cold: [11, 12, 1, 2, 3], warm: [6, 7, 8, 9] },
+    },
+    {
+      id: "paint.deck",
+      label: "Deck & fence stain",
+      match: /\b(deck|fence|pergola|stain\w*)/i,
+      phrase: "the staining",
+      season: { cold: [5, 6, 7, 8, 9], warm: [3, 4, 5, 10, 11] },
+      reserviceMonths: 30,
+      kind: "maintenance",
+      worseIfWaiting: PAINT_STAIN_WORSE,
+      timingLine: {
+        cold: "Stain needs a few dry days in a row with warm nights, so late spring through early fall is when it goes on.",
+        warm: "Stain goes on best when it isn't too hot, so spring and fall are the times to do it.",
+      },
+      timingMonths: { cold: [3, 4, 5, 6, 7, 8], warm: [2, 3, 4, 9, 10] },
+    },
+    {
+      id: "paint.cabinets",
+      label: "Cabinets",
+      match: /\b(cabinets?|vanit(y|ies)|built-?ins?)\b/i,
+      phrase: "the cabinets",
+      season: { cold: ALL, warm: ALL },
+      kind: "improvement",
+    },
+    {
+      id: "paint.trim",
+      label: "Trim & doors",
+      match: /\b(trim|doors?|shutters|baseboards?|crown mo(u)?lding|window frames?|railings?|spindles?)\b/i,
+      phrase: "the trim",
+      season: { cold: ALL, warm: ALL },
+      kind: "improvement",
+    },
+    {
+      id: "paint.drywall",
+      label: "Drywall repair",
+      match: /\b(drywall|sheet ?rock|plaster|nail pops?|water (damage|stains?)|patch(es|ing)?)\b/i,
+      phrase: "the drywall repair",
+      season: { cold: ALL, warm: ALL },
+      kind: "repair",
+      followOns: [
+        { serviceId: "paint.interior", afterDays: [7, 180], why: "a patched wall often means the whole room gets repainted", pitch: "A painted patch can look a shade off from the wall around it, so if you'd like the whole room done to match, we can do that too." },
+      ],
+    },
+    {
+      id: "paint.wash",
+      label: "Power wash prep",
+      match: /\b(power ?wash\w*|pressure ?wash\w*|soft ?wash\w*|house wash)/i,
+      phrase: "the power washing",
+      season: { cold: [4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "maintenance",
+    },
   ],
-  [[/cabinet/i, "the cabinets"], [/deck/i, "the deck"], [/trim/i, "the trim"], [/(exterior|house|siding)/i, "the house painting"]],
-  ["Large ticket — they wanted to wait", "Color decisions stalled", "They meant to do it before selling"],
-  "We're finishing a job near you and have a gap in the schedule.", 500, true,
-);
+  objects: [
+    [/\bcabinets?\b/i, "the cabinets"],
+    [/\bexterior trim\b/i, "the exterior trim"],
+    [/\b(exterior|siding|outside)\b/i, "the exterior painting"],
+    [/\b(power|pressure|soft) ?wash/i, "the power washing"],
+    [/\bhouse\b(?! ?wash)/i, "the house painting"],
+    [/\bdeck\b/i, "the deck"],
+    [/\bfence\b/i, "the fence"],
+    [/\bfront door\b/i, "the front door"],
+    [/\bgarage doors?\b/i, "the garage door"],
+    [/\bshutters\b/i, "the shutters"],
+    [/\btrim\b/i, "the trim"],
+    [/\bkitchen\b/i, "the kitchen"],
+    [/\bliving room\b/i, "the living room"],
+    [/\bdining room\b/i, "the dining room"],
+    [/\bfamily room\b/i, "the family room"],
+    [/\bbedrooms?\b/i, "the bedroom"],
+    [/\bbathrooms?\b/i, "the bathroom"],
+    [/\bhallways?\b/i, "the hallway"],
+    [/\bstairwells?\b/i, "the stairwell"],
+    [/\bbasement\b/i, "the basement"],
+    [/\bceilings?\b/i, "the ceiling"],
+  ],
+  places: [],
+  whyQuotesDie: [
+    "They got three or more bids and never told the others no",
+    "The number came in over what they'd budgeted, and nobody offered to do the worst of it first",
+    "Exterior work got pushed to 'spring' and nobody picked it back up",
+    "They wanted to talk it over with a spouse first",
+    "Another painter offered a start date sooner",
+  ],
+  // make sure it landed, then the season, then a smaller first phase; never a price cut
+  quoteAngles: ["check_in", "timing", "revise", "crew_nearby", "close_file"],
+  crewLine: "We're finishing a job near you and have a gap in the schedule.",
+  minQuote: 500,
+  freeLook: true,
+  intakeAsk: "Is it inside or outside, and when are you hoping to have it done?",
+  intakeAskNamed: "When are you hoping to have it done?",
+};
 
 const roofing = simple(
   "roofing", "Roofing", "roofing company", [300, 12000, 40000], 0.3, { cold: [4, 5, 6, 7, 8, 9, 10], warm: [2, 3, 4, 5, 9, 10, 11] },
@@ -1174,17 +1312,27 @@ const chimney = simple(
   "We've got a sweep crew nearby with an open slot.", 150,
 );
 
-const cleaning = simple(
-  "cleaning", "House cleaning", "cleaning company", [120, 220, 900], 0.5, { cold: [1, 3, 4, 11, 12], warm: [1, 3, 4, 11, 12] },
-  [
-    { id: "clean.recurring", label: "Recurring cleaning", match: /\b(weekly|bi-?weekly|every other|monthly|recurring|regular|maint)/i, phrase: "the regular cleaning", season: { cold: ALL, warm: ALL }, reserviceMonths: 1, kind: "recurring" },
-    { id: "clean.deep", label: "Deep clean", match: /\b(deep|spring clean|first clean|initial|top to bottom)/i, phrase: "the deep clean", season: { cold: [3, 4, 5, 11, 12], warm: [3, 4, 11, 12] }, reserviceMonths: 6, kind: "maintenance" },
-    { id: "clean.move", label: "Move in / out", match: /\b(move|vacat|rental|turnover|airbnb)/i, phrase: "the move-out clean", season: { cold: ALL, warm: ALL }, kind: "improvement" },
-  ],
-  [[/kitchen/i, "the kitchen"], [/(house|home)/i, "the house cleaning"]],
-  ["Price compared to a solo cleaner", "They started 'next month' and never did", "Recurring clients drop quietly after a holiday"],
-  "We have a team in your neighborhood with an opening this week.", 100,
-);
+// A one-time, deep or move clean is the easiest client to put on a schedule, so the ask goes out within about ten
+// days of the job (owner research; BookingKoala's own "One-Time to Recurring" funnel is just a list to phone).
+const TO_RECURRING = { serviceId: "clean.recurring", afterDays: [2, 10] as [number, number], why: "one-time and deep cleans are the easiest clients to put on a regular schedule", pitch: "If you'd like the house to stay that way, we can come back every week, every other week or once a month.", ask: "Want it on a regular schedule?" };
+const cleaning: TradePlaybook = {
+  ...simple(
+    "cleaning", "House cleaning", "cleaning company", [120, 220, 900], 0.5, { cold: [1, 3, 4, 11, 12], warm: [1, 3, 4, 11, 12] },
+    [
+      { id: "clean.recurring", label: "Recurring cleaning", match: /\b(weekly|bi-?weekly|every other|monthly|recurring|regular|maint)/i, phrase: "the regular cleaning", season: { cold: ALL, warm: ALL }, reserviceMonths: 1, kind: "recurring" },
+      { id: "clean.deep", label: "Deep clean", match: /\b(deep|spring clean|first clean|initial|top to bottom)/i, phrase: "the deep clean", season: { cold: [3, 4, 5, 11, 12], warm: [3, 4, 11, 12] }, reserviceMonths: 6, kind: "maintenance", followOns: [TO_RECURRING] },
+      { id: "clean.move", label: "Move in / out", match: /\b(move|vacat|rental|turnover|airbnb)/i, phrase: "the move-out clean", season: { cold: ALL, warm: ALL }, kind: "improvement", followOns: [{ ...TO_RECURRING, pitch: "If you'd like a hand once you're settled in, we can come every week, every other week or once a month.", ask: "Want us on a regular schedule?" }] },
+      { id: "clean.once", label: "One-time clean", match: /\b(one[- ]?time|one[- ]?off|single (visit|clean\w*)|just once)\b/i, phrase: "the cleaning", season: { cold: ALL, warm: ALL }, kind: "improvement", followOns: [TO_RECURRING] },
+    ],
+    [[/kitchen/i, "the kitchen"], [/(house|home)/i, "the house cleaning"]],
+    ["Price compared to a solo cleaner", "They started 'next month' and never did", "Recurring clients drop quietly after a holiday", "Had to ask a spouse first, and nobody asked again"],
+    "We have a team in your neighborhood with an opening this week.", 100,
+  ),
+  intakeAsk: "How many bedrooms and bathrooms, is it a one-time clean or regular, and any pets?",
+  // A weekly or every-other-week client three weeks out has missed a visit; a monthly one at about six weeks.
+  // (ZenMaid only calls a client "Former" at six weeks; MaidCentral puts recurring churn near 7% a month.)
+  lapseAfterDays: [[16, 21], [35, 45]],
+};
 
 const general = simple(
   "general", "Home services", "company", [200, 1500, 20000], 0.4, { cold: [4, 5, 6, 9, 10], warm: [3, 4, 5, 10, 11] },

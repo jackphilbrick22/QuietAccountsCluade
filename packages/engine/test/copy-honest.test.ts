@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
-import { renderNote, type RenderedNote } from "../src/copy/render.ts";
+import { renderNote, renderRequestAck, type RenderedNote } from "../src/copy/render.ts";
 import { lint } from "../src/copy/lint.ts";
 import { SEQUENCES } from "../src/copy/templates.ts";
 import { planOutreach } from "../src/cadence/plan.ts";
@@ -327,5 +327,154 @@ describe("the right job, in plain words", () => {
     expect(house.jobPhrase).toBe("the house wash");
     expect(roof.jobPhrase).toBe("the roof cleaning");
     expect(main(renderNote(roof, ds.customers[1]!, { ds, sendOn: ASOF }, 1)!)).toContain("We took care of the roof cleaning for you");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Painting: the season decides the second note                         */
+/* ------------------------------------------------------------------ */
+
+describe("painting notes follow the painting year", () => {
+  const painter = (asOf: string, title: string, sentOn: string) =>
+    dataset({
+      asOf,
+      business: { trade: "painting", name: "Brushline Painting" },
+      customers: [customer("c1", { firstName: "Rachel", address: undefined })],
+      quotes: [quote("q1", "c1", { title, total: 6800, sentOn })],
+    });
+
+  it("an exterior quote gone quiet over the winter: in February the second note books spring, honestly", () => {
+    const ds = painter("2027-02-09", "Exterior repaint - 2 story colonial", "2026-10-14");
+    const o = oneOpp(scan(ds), "c1", "unanswered_quote");
+    expect(o.serviceId).toBe("paint.exterior");
+    const [n1, n2, n3] = notes(ds, o, ds.customers[0]!, "2027-02-09");
+    expect(main(n1!)).toMatch(/the exterior painting/);
+    expect(n2!.templateId).toBe("q2tp");
+    expect(main(n2!)).toBe("Rachel, spring exterior dates usually book up by April.\n\nIf you'd still like the exterior painting done, want me to put you down for the first open week in May?\n\nSarah");
+    expect(main(n2!)).not.toMatch(NEAR_TERM);
+    for (const n of [n1!, n2!, n3!]) expect(n.flags).toEqual([]);
+  });
+
+  it("the spring line never goes out once spring is here or gone", () => {
+    for (const sendOn of ["2027-05-11", "2027-08-10", "2026-11-10"]) {
+      const ds = painter(sendOn, "Exterior repaint - 2 story colonial", "2026-03-02");
+      const o = oneOpp(scan(ds), "c1", "unanswered_quote");
+      for (const n of notes(ds, o, ds.customers[0]!, sendOn)) {
+        expect(main(n), sendOn).not.toMatch(/book up by April/);
+        expect(n.flags).toEqual([]);
+      }
+    }
+  });
+
+  it("inside work gets the winter line in winter, and not in July", () => {
+    const dec = painter("2026-12-08", "Interior - living room, hallway + ceilings", "2026-10-01");
+    const o = oneOpp(scan(dec), "c1", "unanswered_quote");
+    expect(o.serviceId).toBe("paint.interior");
+    const n2 = notes(dec, o, dec.customers[0]!, "2026-12-08")[1]!;
+    expect(main(n2)).toContain("winter is a good time for inside work: no weather delays.");
+    expect(n2.flags).toEqual([]);
+    const jul = painter("2027-07-13", "Interior - living room, hallway + ceilings", "2027-05-01");
+    for (const n of notes(jul, oneOpp(scan(jul), "c1", "unanswered_quote"), jul.customers[0]!, "2027-07-13")) expect(main(n)).not.toMatch(/winter/i);
+  });
+
+  it("an exterior client is told the same crew paints inside", () => {
+    const ds = dataset({ asOf: "2026-12-08", business: { trade: "painting", name: "Brushline Painting" }, customers: [customer("c1", { firstName: "Ann" })], jobs: [job("j1", "c1", { title: "Exterior house painting", total: 7200, completedOn: "2026-08-20" })] });
+    const up = scan(ds).opportunities.filter((o) => o.type === "missed_upsell").map((o) => o.serviceId);
+    expect(up.sort()).toEqual(["paint.deck", "paint.interior"]);
+    const o = scan(ds).opportunities.find((x) => x.type === "missed_upsell" && x.serviceId === "paint.interior")!;
+    const n = renderNote(o, ds.customers[0]!, { ds, sendOn: "2026-12-08" }, 1)!;
+    expect(main(n)).toContain("When we took care of the exterior painting for you back in August, we never talked about the interior painting. We paint inside too, if there are any rooms you've been meaning to get to.");
+    expect(n.flags).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Cleaning: a missed visit, and the one-time client                    */
+/* ------------------------------------------------------------------ */
+
+describe("cleaning notes", () => {
+  const biz = { trade: "cleaning" as const, name: "Tidewell Home Cleaning", avgJobValue: 180, minQuoteValue: 100 };
+  const regular = (lastDaysAgo: number) =>
+    dataset({
+      business: biz,
+      customers: [customer("c1", { firstName: "Megan" })],
+      jobs: Array.from({ length: 10 }, (_, i) => job(`j${i}`, "c1", { title: "Bi-weekly cleaning", recurring: true, total: 180, completedOn: ago(lastDaysAgo + (9 - i) * 14) })),
+    });
+
+  it("a biweekly client three weeks out is asked back by the date of the last visit, not 'we used to'", () => {
+    const ds = regular(28);
+    const o = oneOpp(scan(ds), "c1", "lapsed_regular");
+    const [n1, n2] = notes(ds, o, ds.customers[0]!, ASOF);
+    expect(n1!.templateId).toBe("g1r");
+    expect(main(n1!)).toBe(
+      "Hi Megan,\n\nSarah at Tidewell Home Cleaning. We haven't been by for the regular cleaning since September 1, and I wanted to make sure you're all set.\n\nWant us back on your usual schedule? Reply with a day that works and I'll put you back on.\n\nSarah",
+    );
+    expect(main(n2!)).toContain("If you'd like us back for the regular cleaning, just reply and I'll hold you a spot.");
+    for (const n of [n1!, n2!]) expect(n.flags).toEqual([]);
+  });
+
+  it("months later it's the plain 'we used to' note again, and other trades never get the short one", () => {
+    const ds = regular(150);
+    expect(notes(ds, oneOpp(scan(ds), "c1", "lapsed_regular"), ds.customers[0]!, ASOF)[0]!.templateId).toBe("g1");
+    const lawn = dataset({ business: { trade: "lawn", avgJobValue: 55, minQuoteValue: 150 }, customers: [customer("c1")], jobs: Array.from({ length: 8 }, (_, i) => job(`j${i}`, "c1", { title: "Mowing visit", recurring: true, total: 55, completedOn: ago(62 + (7 - i) * 14) })) });
+    expect(notes(lawn, oneOpp(scan(lawn), "c1", "lapsed_regular"), lawn.customers[0]!, ASOF)[0]!.templateId).toBe("g1");
+  });
+
+  it("a deep clean is asked about a regular schedule, never 'want a price'", () => {
+    const ds = dataset({ business: biz, customers: [customer("c1", { firstName: "Megan" })], jobs: [job("j1", "c1", { title: "Deep clean - 3 bed 2 bath", total: 380, completedOn: ago(4) })] });
+    const o = scan(ds).opportunities.find((x) => x.type === "missed_upsell" && x.serviceId === "clean.recurring")!;
+    const [n1, n2] = notes(ds, o, ds.customers[0]!, ASOF);
+    expect([n1!.templateId, n2!.templateId]).toEqual(["u1a", "u3a"]);
+    expect(main(n1!)).toContain("We did the deep clean for you last week. If you'd like the house to stay that way, we can come back every week, every other week or once a month.\n\nWant it on a regular schedule? Reply with what works and I'll set it up.");
+    expect(main(n2!)).toContain("Want it on a regular schedule? Just reply and I'll set it up.");
+    for (const n of [n1!, n2!]) {
+      expect(main(n)).not.toMatch(/want a price|never talked about/i);
+      expect(n.flags).toEqual([]);
+    }
+    // every other trade's next-job note still asks for a price
+    const tree = dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Oak removal", completedOn: ago(40), total: 2000 })] });
+    const stump = scan(tree).opportunities.find((x) => x.type === "missed_upsell" && x.serviceId === "tree.stump")!;
+    expect(notes(tree, stump, tree.customers[0]!, ASOF).map((n) => n.templateId)).toEqual(["u1", "u3"]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* The first answer to a new request asks what the owner needs          */
+/* ------------------------------------------------------------------ */
+
+describe("the first answer asks the trade's intake questions", () => {
+  const ack = (trade: TradeId, name: string, title: string, address = true) => {
+    const ds = dataset({ business: { trade, name } });
+    const c = customer("c1", { firstName: "Karen", address: address ? { street: "14 Oak Ln", city: "Concord", state: "NH", zip: "03301" } : undefined });
+    return renderRequestAck(ds, request("r1", "c1", { title }), c, "2026-09-29T10:15:00");
+  };
+  const paragraphs = (body: string) => body.split(/\n\n[^\n]*·[^\n]*\n/)[0]!.split("\n\n");
+
+  it.each([
+    ["tree", "Ridgeline Tree Co.", "Two pines by the garage need to come down", false, "If it's easy, reply with a photo or two and the address."],
+    ["tree", "Ridgeline Tree Co.", "Oak over the garage", true, "If it's easy, reply with a photo or two."],
+    ["fence", "Stonewall Fence Co.", "Privacy fence along the back line", true, "If you can, reply with roughly how many feet, the material you're thinking of, any gates, and whether there's an HOA."],
+    ["painting", "Brushline Painting", "Need a painter", true, "Is it inside or outside, and when are you hoping to have it done?"],
+    ["painting", "Brushline Painting", "Repaint the living room and hallway", true, "When are you hoping to have it done?"],
+    ["cleaning", "Tidewell Home Cleaning", "Looking for a house cleaner", true, "How many bedrooms and bathrooms, is it a one-time clean or regular, and any pets?"],
+  ] as const)("%s (%s): %s", (trade, name, title, address, line) => {
+    const a = ack(trade, name, title, address);
+    const p = paragraphs(a.body);
+    // the call-back promise first, then the one question, then the usual last line
+    expect(p[1]).toMatch(/will give you a call today to set up a time to take a look\.$/);
+    expect(p[2]).toBe(line);
+    expect(p[3]).toBe("If there's a better time or number to reach you, just reply here.");
+    expect(a.flags).toEqual([]);
+    expect(a.body).not.toMatch(/\$\d/);
+  });
+
+  it("a trade without an intake question keeps today's answer, word for word", () => {
+    const a = ack("septic", "Granite State Septic", "Septic pump-out");
+    expect(paragraphs(a.body)).toEqual([
+      "Hi Karen,",
+      "Thanks for reaching out to Granite State Septic about the pump-out. Dave will give you a call today to set up a time to take a look.",
+      "If there's a better time or number to reach you, just reply here.",
+      "Sarah",
+    ]);
   });
 });

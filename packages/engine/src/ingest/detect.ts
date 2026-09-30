@@ -244,7 +244,7 @@ export function detect(table: Table, fileName = "", forceKind?: RecordKind): Det
   if (f.name === undefined && f.firstName === undefined && f.company === undefined) warnings.push("No customer name column found.");
   if (kind === "quote" || kind === "job" || kind === "invoice") {
     if (f.total === undefined && f.subtotal === undefined) warnings.push("No dollar amount column found — values will be estimated from your average job.");
-    if (f.status === undefined) warnings.push("No status column found — we'll infer what happened from the dates and your other files.");
+    if (f.status === undefined && f.outcome === undefined) warnings.push("No status column found — we'll infer what happened from the dates and your other files.");
   }
   if (!["createdOn", "sentOn", "issuedOn", "scheduledOn", "completedOn", "clientCreatedOn"].some((x) => f[x as Field] !== undefined))
     warnings.push("No date column found — we can't tell how old these records are.");

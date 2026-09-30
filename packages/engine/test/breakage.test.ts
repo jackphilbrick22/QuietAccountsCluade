@@ -112,6 +112,14 @@ describe("detectors", () => {
       const r = scan(dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "approved", sentOn: ago(8), approvedOn: ago(5) })] }));
       expect(oppsFor(r, "c1", "approved_unscheduled")).toEqual([]);
     });
+    it("a 'Won' from an estimate list with no jobs file is held for a look: the job may be long done", () => {
+      const won = (software: "jobber" | "spreadsheet", jobs: Job[] = []) =>
+        oneOpp(scan(dataset({ business: { software }, customers: [customer("c1"), customer("c2")], quotes: [quote("q1", "c1", { status: "approved", rawStatus: "Won", sentOn: ago(40), approvedOn: ago(30) })], jobs })), "c1", "approved_unscheduled");
+      expect(won("spreadsheet").caution).toEqual(['Marked "Won", but there are no jobs on file to check it against — make sure it wasn\'t already done']);
+      // Jobber's "Approved" means no job yet, and a jobs file lets the scan check for itself
+      expect(won("jobber").caution).toBeUndefined();
+      expect(won("spreadsheet", [job("j9", "c2", { completedOn: ago(100) })]).caution).toBeUndefined();
+    });
   });
 
   describe("unquoted_request", () => {
@@ -257,6 +265,67 @@ describe("detectors", () => {
       // the last note implies nothing went wrong
       expect(g3!.body).not.toMatch(/done better|make it right/);
       expect(g3!.body).toContain("If you'd like us back for the pruning, just reply");
+    });
+  });
+
+  describe("cleaning regulars go quiet in weeks, not months", () => {
+    /** A cleaning client on a `every`-day rhythm whose last visit was `lastDaysAgo` days ago. */
+    const client = (every: number, lastDaysAgo: number, title = every <= 7 ? "Weekly cleaning" : every <= 14 ? "Bi-weekly cleaning" : "Monthly cleaning"): Dataset => {
+      const jobs: Job[] = [];
+      for (let i = 0; i < 8; i++) jobs.push(job(`j${i}`, "c1", { title, recurring: true, total: 180, completedOn: ago(lastDaysAgo + (7 - i) * every) }));
+      return dataset({ business: { trade: "cleaning", name: "Tidewell Home Cleaning", avgJobValue: 180, minQuoteValue: 100 }, customers: [customer("c1")], jobs });
+    };
+    const lapsed = (ds: Dataset) => oppsFor(scan(ds), "c1", "lapsed_regular");
+
+    it.each([
+      [14, 20, false],
+      [14, 21, true],
+      [7, 20, false],
+      [7, 21, true],
+      [30, 44, false],
+      [30, 45, true],
+    ])("every %i days, last visit %i days ago: gone quiet = %s", (every, last, gone) => {
+      const found = lapsed(client(every, last));
+      expect(found).toHaveLength(gone ? 1 : 0);
+      if (gone) expect([found[0]!.serviceId, found[0]!.suppressed]).toEqual(["clean.recurring", undefined]);
+    });
+
+    it("a next visit on the calendar means they haven't gone anywhere", () => {
+      const ds = client(14, 25);
+      ds.jobs.push(job("next", "c1", { title: "Bi-weekly cleaning", status: "scheduled", scheduledOn: addDays(ASOF, 3), completedOn: undefined, recurring: true }));
+      expect(lapsed(ds).map((o) => o.suppressed)).toEqual(["active_work"]);
+    });
+
+    it("every other trade keeps the old clock: a biweekly mowing client isn't quiet at three weeks", async () => {
+      const { lapseAfter } = await import("../src/breakage/detect.ts");
+      expect(lapseAfter("cleaning", 14)).toEqual({ days: 21, byTrade: true });
+      expect(lapseAfter("cleaning", 7)).toEqual({ days: 21, byTrade: true });
+      expect(lapseAfter("cleaning", 30)).toEqual({ days: 45, byTrade: true });
+      // a row is never less than a week past their usual gap, and long gaps fall back to the default
+      expect(lapseAfter("cleaning", 35)).toEqual({ days: 45, byTrade: true });
+      expect(lapseAfter("cleaning", 90)).toEqual({ days: Math.floor(90 * 1.75) + 1, byTrade: false });
+      for (const trade of ["lawn", "pool", "pest", "tree"] as const) expect(lapseAfter(trade, 14)).toEqual({ days: 60, byTrade: false });
+      const mow = (last: number) => {
+        const jobs = Array.from({ length: 8 }, (_, i) => job(`j${i}`, "c1", { title: "Mowing visit", recurring: true, total: 55, completedOn: ago(last + (7 - i) * 14) }));
+        return oppsFor(scan(dataset({ business: { trade: "lawn", avgJobValue: 55, minQuoteValue: 150 }, customers: [customer("c1")], jobs })), "c1", "lapsed_regular");
+      };
+      expect(mow(30)).toEqual([]);
+      expect(mow(59)).toEqual([]);
+      expect(mow(60)).toHaveLength(1);
+    });
+
+    it("one-time, deep and move-out cleans get the 'regular schedule?' ask within about ten days", () => {
+      for (const title of ["Deep clean - 3 bed 2 bath", "Move-out clean", "One-time clean"]) {
+        const ds = (daysAgo: number, more: Job[] = []) =>
+          dataset({ business: { trade: "cleaning", name: "Tidewell Home Cleaning", avgJobValue: 180 }, customers: [customer("c1")], jobs: [job("j1", "c1", { title, total: 380, completedOn: ago(daysAgo) }), ...more] });
+        const ask = (d: Dataset) => oppsFor(scan(d), "c1", "missed_upsell").filter((o) => o.serviceId === "clean.recurring" && !o.suppressed);
+        expect(ask(ds(1)), title).toEqual([]);
+        expect(ask(ds(3)), title).toHaveLength(1);
+        expect(ask(ds(10)), title).toHaveLength(1);
+        // already on a schedule, whatever the visits are called
+        expect(ask(ds(10, [job("j2", "c1", { title: "Cleaning - Smith", recurring: true, total: 180, completedOn: ago(4) })])), title).toEqual([]);
+        expect(ask(ds(10, [job("j2", "c1", { title: "Bi-weekly cleaning", total: 180, completedOn: ago(4) })])), title).toEqual([]);
+      }
     });
   });
 

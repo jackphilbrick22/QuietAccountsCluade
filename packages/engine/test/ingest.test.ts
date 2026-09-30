@@ -3,7 +3,7 @@ import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
 import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones } from "../src/util.ts";
-import type { BusinessProfile } from "../src/model.ts";
+import type { BusinessProfile, QuoteStatus } from "../src/model.ts";
 
 const biz: BusinessProfile = {
   id: "b1", name: "Ridgeline Tree Co", trade: "tree", otherTrades: [], software: "unknown", ownerName: "Dave Ridge", ownerFirstName: "Dave",
@@ -211,5 +211,120 @@ bob jones\tbob@jones.com\t603.555.0111\t12 River Rd\tstump grinding x3\t$450\t3/
     expect(dataset.quotes[0]!.total).toBe(450);
     expect(dataset.quotes[0]!.title).toBe("stump grinding x3");
     expect(dataset.customers[0]!.name).toBe("Bob Jones");
+  });
+});
+
+/**
+ * Fence and painting quotes mostly don't live in Jobber: Estimate Rocket, QuickBooks estimates, PaintScout, DripJobs,
+ * Fence Cloud, Housecall Pro, Markate and owners' own sheets. A misread status decides who gets followed up — an open
+ * quote read as "approved" or "converted" silently drops out — so each tool's words are pinned here.
+ */
+describe("status words from the tools fence and painting quotes live in", () => {
+  const read = (csv: string, fileName = "estimates.csv") => {
+    const { dataset, detection } = ingestFile(emptyDataset(biz, "2026-09-29"), csv, fileName, "2026-09-29T12:00:00Z", { kind: "quote" });
+    return { status: dataset.quotes[0]!.status, source: detection.source };
+  };
+
+  // An owner's sheet, or an export from a tool with no reader of its own: taken as a spreadsheet.
+  const sheet = (status: string) => `Name,Email,Work,Status,Sent,Price\nPat Doe,pat@doe.com,Exterior repaint,${status},2026-03-02,4200\n`;
+  it.each<[string, QuoteStatus]>([
+    // sent, no decision
+    ["Unsigned", "awaiting_response"], // Estimate Rocket's open status is not a signature
+    ["Pending", "awaiting_response"],
+    ["Open", "awaiting_response"],
+    ["Sent", "awaiting_response"],
+    ["Viewed", "awaiting_response"],
+    ["Proposal Sent", "awaiting_response"], // DripJobs
+    ["Not viewed", "awaiting_response"],
+    ["Viewed - not signed", "awaiting_response"],
+    ["Pending approval", "awaiting_response"],
+    ["Signature requested", "awaiting_response"],
+    ["No response", "awaiting_response"],
+    ["On hold", "awaiting_response"],
+    ["Waiting on HOA", "awaiting_response"],
+    ["Assigned", "awaiting_response"], // no word we know: read from the sent date, never as "signed"
+    // never went out
+    ["Not sent", "draft"],
+    ["Unsent", "draft"],
+    ["Draft", "draft"],
+    ["Incomplete", "draft"],
+    ["New Lead", "draft"], // DripJobs
+    ["Appointment Scheduled", "draft"], // DripJobs: the visit to look, not the job
+    ["Estimate scheduled", "draft"],
+    // said yes, and nothing says it's on the calendar
+    ["Accepted", "approved"],
+    ["Approved", "approved"],
+    ["Signed", "approved"],
+    ["Won", "approved"],
+    ["Closed won", "approved"],
+    ["Closed - Won", "approved"],
+    ["Unscheduled", "approved"],
+    ["Needs scheduling", "approved"],
+    ["Awaiting deposit", "approved"],
+    ["Deposit due", "approved"],
+    // a no
+    ["Rejected", "declined"],
+    ["Declined", "declined"],
+    ["Lost", "declined"],
+    ["Closed lost", "declined"],
+    ["Expired", "expired"],
+    // the work exists
+    ["Converted", "converted"],
+    ["Invoiced", "converted"],
+    ["Scheduled", "converted"],
+    ["Paid", "converted"],
+    ["Deposit paid - scheduled", "converted"],
+    ["Project Complete", "converted"],
+    ["Sold", "converted"],
+    ["Changes", "changes_requested"], // Estimate Rocket
+    ["Changes requested", "changes_requested"],
+    ["Cancelled", "archived"],
+    ["Archived", "archived"],
+    ["Void", "archived"],
+  ])("a sheet's %s reads as %s", (status, want) => {
+    expect(read(sheet(status))).toEqual({ status: want, source: "spreadsheet" });
+  });
+
+  const quickbooks = (status: string) =>
+    `Date,Transaction type,Num,Customer,Email,Memo/Description,Amount,Estimate status,Expiration date\n03/02/2026,Estimate,1045,Pat Doe,pat@doe.com,160 ft cedar privacy,7850.00,${status},04/01/2026\n`;
+  it.each<[string, QuoteStatus]>([
+    ["Pending", "awaiting_response"],
+    ["Accepted", "approved"],
+    // a QuickBooks estimate is Closed once it's been turned into an invoice
+    ["Closed", "converted"],
+    ["Converted", "converted"],
+    ["Rejected", "declined"],
+    ["Expired", "expired"],
+  ])("a QuickBooks estimate marked %s reads as %s", (status, want) => {
+    expect(read(quickbooks(status))).toEqual({ status: want, source: "quickbooks" });
+  });
+
+  const hcp = (status: string, outcome: string) =>
+    `Estimate #,Customer,Email,Description,Status,Outcome,Created date,Total\n3310,Pat Doe,pat@doe.com,Interior - 3 rooms,${status},${outcome},2026-03-02,2400\n`;
+  it.each<[string, string, QuoteStatus]>([
+    // Housecall Pro's Status is the estimate visit; Outcome is the decision, and it wins
+    ["Completed", "Open", "awaiting_response"],
+    ["Completed", "Won", "approved"],
+    ["Completed", "Copied to job", "converted"],
+    // Housecall Pro closes estimates out itself after its reminders: not a customer's no
+    ["Completed", "Lost", "archived"],
+    ["Scheduled", "", "awaiting_response"],
+    ["Unscheduled", "", "awaiting_response"],
+  ])("a Housecall Pro estimate with status %s and outcome %s reads as %s", (status, outcome, want) => {
+    expect(read(hcp(status, outcome))).toEqual({ status: want, source: "housecall_pro" });
+  });
+
+  it("keeps both words for the evidence line when a file has a status and an outcome", () => {
+    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), hcp("Completed", "Won"), "estimates.csv", "2026-09-29T12:00:00Z", { kind: "quote" });
+    expect(dataset.quotes[0]!.rawStatus).toBe("Completed · Won");
+  });
+
+  it("a job waiting on a date or a deposit is unscheduled work, and a request waiting on a price is not converted", () => {
+    const jobs = `Job #,Client name,Client email,Title,Job status,Created date,Total\n${["Unscheduled", "Needs scheduling", "Awaiting deposit", "Deposit due", "Scheduled"].map((s, i) => `${700 + i},Pat Doe,pat@doe.com,Cedar privacy,${s},2026-08-01,7850`).join("\n")}\n`;
+    const { dataset: dj } = ingestFile(emptyDataset(biz, "2026-09-29"), jobs, "Jobs Report.csv", "2026-09-29T12:00:00Z", { kind: "job" });
+    expect(dj.jobs.map((j) => j.status)).toEqual(["unscheduled", "unscheduled", "unscheduled", "unscheduled", "scheduled"]);
+    const reqs = `Request #,Client name,Client email,Request title,Status,Requested on date\n${["Needs quote", "Estimate requested", "Estimate scheduled", "Converted", "New"].map((s, i) => `${800 + i},Pat Doe,pat@doe.com,Fence,${s},2026-09-01`).join("\n")}\n`;
+    const { dataset: dr } = ingestFile(emptyDataset(biz, "2026-09-29"), reqs, "Requests Report.csv", "2026-09-29T12:00:00Z", { kind: "request" });
+    expect(dr.requests.map((r) => r.status)).toEqual(["new", "new", "assessment_scheduled", "converted", "new"]);
   });
 });
