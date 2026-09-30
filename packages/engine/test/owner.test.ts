@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
-import { ackFor, closeMessage, earlyLeaveRefund, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
+import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
 import { billingCheck, cancelPlan, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
@@ -237,5 +237,31 @@ describe("review 4: the paid year and a platform undo", () => {
     expect(r).toMatchObject({ restored: 1, stopped: 1 });
     expect(st.touches.map((t) => t.status)).toEqual(["sent", "cancelled", "approved"]);
     expect(st.touches[2]!.providerId).toBeUndefined();
+  });
+});
+
+describe("review 5: the fee ledger across a switch", () => {
+  const day = (d: string, n: number) => new Date(Date.parse(`${d}T12:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+  it("MONTHLY mid-year: the year's late quiet months come off what they paid, and the first monthly charge is a charge", () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", monthlyPrice: 497, annualPrice: 4970, paidOn: "2026-10-01", yearsPaidOn: ["2026-10-01"], freeMonths: [] };
+    renewPlan(st, "monthly", "2027-07-05T10:00:00");
+    for (let d = "2027-07-05"; d <= "2027-10-02"; d = day(d, 1)) {
+      billingCheck(st, `${d}T09:00:00`);
+      renewalIfDue(st, `${d}T09:00:00`);
+    }
+    expect(st.dataset.business.plan.freeMonths).toEqual(["2027-08-01", "2027-09-01", "2027-10-01"]);
+    // the year: $4,970 less three quiet months, then the floor gives back the rest (nothing traced); Oct 1 is the first $497
+    expect(feesPaid(st.dataset.business, "2027-10-02").total).toBe(497);
+  });
+  it("a renewed year: a check that missed the last two days still judges the old year's last month", () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", monthlyPrice: 497, annualPrice: 4970, paidOn: "2026-10-01", yearsPaidOn: ["2026-10-01"], freeMonths: [] };
+    renewPlan(st, "year", "2027-09-05T10:00:00");
+    expect(guaranteeCheck(st, "2027-10-01")!.chargeOn).toBe("2027-10-01");
+    const m = billingCheck(st, "2027-10-01T09:00:00");
+    expect(m?.kind).toBe("free_month");
+    expect(st.dataset.business.plan.freeMonths).toEqual(["2027-10-01"]);
+    expect(guaranteeCheck(st, "2027-10-05")!.chargeOn).toBe("2027-11-01");
   });
 });

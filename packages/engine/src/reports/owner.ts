@@ -532,7 +532,8 @@ function feesThisArrangement(b: BusinessProfile, asOf: ISODate): { total: Money;
   if (b.plan.billing === "annual") {
     // Only the years of this arrangement; earlier ones are in priorFees.
     const years = (b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn]).filter((d) => d >= b.plan.paidOn! && d <= asOf).length;
-    const free = b.plan.freeMonths.filter((d) => d <= asOf).length;
+    // this arrangement's quiet months only: ones from a monthly stretch before it are already in priorFees
+    const free = b.plan.freeMonths.filter((d) => d > b.plan.paidOn! && d <= asOf).length;
     let months = 0;
     while (months < 240 && addMonths(b.plan.paidOn, months) <= asOf) months++;
     return { total: round2(years * annualPrice(b) - free * annualRefund(b)), months: months - free, freeMonths: free };
@@ -542,7 +543,8 @@ function feesThisArrangement(b: BusinessProfile, asOf: ISODate): { total: Money;
   for (let n = 0; n < 240; n++) {
     const d = addMonths(b.plan.paidOn, n);
     if (d > asOf) break;
-    if (b.plan.freeMonths.includes(d)) free++;
+    // the first charge opens a period, it never closes one: a quiet month dated there belongs to the year before
+    if (n > 0 && b.plan.freeMonths.includes(d)) free++;
     else months++;
   }
   return { total: round2(months * b.plan.monthlyPrice), months, freeMonths: free };
@@ -576,7 +578,8 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const b = state.dataset.business;
   if (!b.plan.paidOn) return undefined;
   // inside a paid year, its months are judged on the year's own dates, even after MONTHLY (which starts at the year's end)
-  const year = paidYearOn(b, asOf);
+  // (the year of the charge being judged: three days into a renewed year, the old year's last month still is)
+  const year = paidYearOn(b, addDays(asOf, -3));
   const { chargeOn, periodStart } = nextCharge(year ?? b.plan.paidOn, asOf);
   const inPeriod = (d: string) => d.slice(0, 10) >= periodStart && d.slice(0, 10) < chargeOn;
   // Only people we followed up with count. Someone answering our reply to their own new request was asking

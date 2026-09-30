@@ -167,6 +167,19 @@ describe("stopping a business reaches Instantly", () => {
     expect(statusOf("cedar")).toEqual([2]);
   });
 
+  it("CANCEL on a sending platform says who UNDO can't bring back: people already part-way through their notes", async () => {
+    const p = await pushed("hemlock", "Hemlock Tree", ["fa.lee@gmail.com", "gu.lee@gmail.com"]);
+    await d.accounts.withAccount("hemlock", (s) => {
+      const first = s.touches.find((t) => t.customerId === "c-fa" && t.step === 1)!;
+      first.status = "sent";
+      first.sentAt = "2026-09-29T09:15:00";
+    });
+    const done = await sms(p.ownerPhone!, "CANCEL");
+    expect(done).toContain("Text UNDO by");
+    expect(done).toContain("the 1 person already part-way through their notes won't get the rest");
+    expect(done).not.toContain("it all picks back up");
+  });
+
   it("Settings: stage Paused or Cancelled stops sending there too; back to paying turns it on", async () => {
     await pushed("spruce", "Spruce Tree", ["ed.lee@gmail.com"]);
     await op("PATCH", "/api/businesses/spruce", { plan: { stage: "paused" } });

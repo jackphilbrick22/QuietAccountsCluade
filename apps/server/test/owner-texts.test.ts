@@ -73,6 +73,38 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     expect(state(h, "ridge").dataset.business.plan.stage).not.toBe("cancelled");
   });
 
+  it("while one business waits for its OK, an old lead in the other never turns a change to the note into a command", async () => {
+    const h = make();
+    await h.business("aaa-tree", { name: "AAA Tree" });
+    await h.business("bbb-tree", { name: "BBB Tree" });
+    await addLead(h, "bbb-tree", "r-bbb-old", "Kim Tran", "2026-09-10T10:00:00");
+    await h.d.accounts.withAccount("aaa-tree", (s) => {
+      s.awaitingOwnerOk = "2026-09-29T09:00:00";
+    });
+    for (const text of ["No, say Hey instead of Hi", "Hold on, can you change the greeting to Hey AAA", "Free quote, not free estimate AAA", "Go with Hey instead of Hi AAA"])
+      expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
+    expect(reply(h, "bbb-tree", "r-bbb-old").status).toBe("handed_off");
+    expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);
+    // a lead that just came in: a booking is about it, not the note
+    await addLead(h, "bbb-tree", "r-bbb-new", "Al Moss", "2026-09-29T09:20:00");
+    expect(await h.sms(`booked 2400 #${leadCode("r-bbb-new")}`)).toContain("Booked: Al Moss, $2,400");
+    expect(await h.sms("booked 1800")).not.toMatch(/make that change/);
+  });
+
+  it("a trial owner texting MONTHLY or YEARLY goes to Jack for the payment link; nothing turns paying on a text", async () => {
+    const h = make();
+    await h.business("aaa-tree", { name: "AAA Tree" });
+    await h.d.accounts.withAccount("aaa-tree", (s) => {
+      s.awaitingOwnerOk = "2026-09-29T09:00:00";
+    });
+    for (const text of ["Monthly", "yearly"]) {
+      expect(await h.sms(text)).toMatch(/it is\. Jack will text you the payment link\./);
+      expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
+      expect(state(h, "aaa-tree").awaitingOwnerOk).toBeTruthy();
+    }
+    expect(h.d.accounts.repo.ownerTexts("aaa-tree").every((t) => t.handled === "accepted_close" && t.needs_person)).toBe(true);
+  });
+
   it("books by the #code in the text, pauses and cancels only the one named, and asks instead of guessing", async () => {
     const h = make();
     await h.business("aaa-tree", { name: "AAA Tree" });

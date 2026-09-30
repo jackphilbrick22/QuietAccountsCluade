@@ -7,11 +7,11 @@ import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
-import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, sendableEmail, weekday } from "../util.ts";
+import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 
@@ -501,10 +501,27 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   }
   if (c) stopSequence(state, c.id);
 
+  const lately = (at?: string) => !!at && daysBetween(at.slice(0, 10), now.slice(0, 10)) <= 14;
+  const isRequestAnswer = (t: Touch) => t.track === "new_request" || t.opportunityId.startsWith("req:");
+  const sentOut = (t: Touch) => t.status === "sent" || t.status === "delivered";
+  // An answer to our answer to their NEW request is about the request. Only when the thread says so, or nothing but
+  // request answers went to them lately: a platform reply with no thread falls back to their newest note, and a "yes"
+  // to the fence quote must not ride on a request answer.
+  const followedUpLately = !!c && state.touches.some((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t) && lately(t.sentAt ?? t.dueAt));
+  const request = touch && c && touch.customerId === c.id && isRequestAnswer(touch) && lately(touch.sentAt ?? touch.dueAt) && (touch === answered || !followedUpLately) ? touch : undefined;
+  if (c && touch && isRequestAnswer(touch) && !request) {
+    // Not about the request: the words answer the follow-up they last got, so the hand-off, the guarantee and the
+    // ledger read them against that note.
+    const note = state.touches.filter((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t)).sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
+    if (note) {
+      r.touchId = note.id;
+      r.opportunityId = note.opportunityId;
+    }
+  }
+
   if (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") {
     // "Great, thanks" to our instant answer reads as another yes: it joins the lead the owner already has,
     // instead of a second answer and a second hand-off (which would invite a third).
-    const lately = (at?: string) => !!at && daysBetween(at.slice(0, 10), now.slice(0, 10)) <= 14;
     const lead = c
       ? state.replies.find((x) => x.id !== r.id && x.customerId === c.id && !x.followUpOf && ((x.status === "handed_off" && !x.ownerContactedAt && lately(x.handedOffAt ?? x.receivedAt)) || lately(x.ack?.sentAt)))
       : undefined;
@@ -524,10 +541,6 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     }
     // An answer to our answer to their NEW request ("Sounds good, thanks"): the owner already has that lead (the NEW
     // REQUEST text) and they've been told he'll call. Their words join it; no second answer, no second hand-off.
-    // Only when the thread says so, or nothing but request answers went to them lately: a platform reply with no
-    // thread falls back to their newest note, and a "yes" to the fence quote must not ride on a request answer.
-    const followedUpLately = !!c && state.touches.some((t) => t.customerId === c.id && t.track !== "new_request" && !t.opportunityId.startsWith("req:") && (t.status === "sent" || t.status === "delivered") && lately(t.sentAt ?? t.dueAt));
-    const request = touch && c && touch.customerId === c.id && (touch.track === "new_request" || touch.opportunityId.startsWith("req:")) && lately(touch.sentAt ?? touch.dueAt) && (touch === answered || !followedUpLately) ? touch : undefined;
     if (request) {
       r.followUpOf = request.opportunityId;
       r.status = "done";
@@ -692,8 +705,13 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
   if (until > 2 || until < -3) return undefined;
   if (state.ownerMessages.some((m) => (m.kind === "precharge" || m.kind === "free_month") && m.refs?.some((r) => r.id === g.chargeOn))) return undefined;
   if (g.free) {
-    const fm = state.dataset.business.plan.freeMonths;
-    if (!fm.includes(g.chargeOn)) fm.push(g.chargeOn);
+    const b = state.dataset.business;
+    const fm = b.plan.freeMonths;
+    if (!fm.includes(g.chargeOn)) {
+      fm.push(g.chargeOn);
+      // A month of a paid year judged after MONTHLY: that year's charges were frozen into priorFees at the switch.
+      if (b.plan.billing !== "annual" && b.plan.paidOn && g.chargeOn <= b.plan.paidOn && paidYearOn(b, g.periodStart)) b.plan.priorFees = round2((b.plan.priorFees ?? 0) - annualRefund(b));
+    }
     event(state, now, "guard", "action", "Guarantee: this month is free", "Nobody asked for a price or a date this period, so you won't be charged.");
   }
   return ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
@@ -832,6 +850,13 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
  * the sending platform had is pushed again), the plan and the wait for the owner's OK as they were. A cancel that
  * set up a yearly refund is never undone by software: money may already be on its way, so a person does it.
  */
+/** Of these notes, the ones in a sequence already under way (its first note out): on a sending platform, the rest of it can't be pushed again. */
+export function underWay(state: AccountState, touchIds: string[]): Touch[] {
+  const ids = new Set(touchIds);
+  const started = new Set(state.touches.filter((t) => t.step === 1 && (t.status === "sent" || t.status === "delivered")).map((t) => t.opportunityId));
+  return state.touches.filter((t) => ids.has(t.id) && !t.instant && started.has(t.opportunityId));
+}
+
 export function undoCancel(state: AccountState, now: ISODateTime, opts: { platform?: boolean; override?: boolean } = {}): { restored: number; stopped: number; paused: boolean } | { refused: "late" | "refund" } | undefined {
   const c = state.cancelled;
   const plan = state.dataset.business.plan;
@@ -844,16 +869,12 @@ export function undoCancel(state: AccountState, now: ISODateTime, opts: { platfo
   const before = new Map(c.touches.map((x) => [x.id, x.status]));
   // On a sending platform the cancel took each person's copy back; a sequence can only be pushed again from its
   // first note, so one already under way stays stopped (and the owner is told), never "back in line" and stuck.
-  const started = new Set(state.touches.filter((t) => t.step === 1 && (t.status === "sent" || t.status === "delivered")).map((t) => t.opportunityId));
+  const stays = new Set(opts.platform ? underWay(state, c.touches.map((x) => x.id)) : []);
+  const stoppedPeople = new Set([...stays].map((t) => t.customerId));
   let restored = 0;
-  const stoppedPeople = new Set<string>();
   for (const t of state.touches) {
     const was = before.get(t.id);
-    if (!was || t.status !== "cancelled") continue;
-    if (opts.platform && !t.instant && started.has(t.opportunityId)) {
-      stoppedPeople.add(t.customerId);
-      continue;
-    }
+    if (!was || t.status !== "cancelled" || stays.has(t)) continue;
     t.status = was;
     // the cancel took the platform's copy back; the next sync pushes it again
     t.providerId = undefined;

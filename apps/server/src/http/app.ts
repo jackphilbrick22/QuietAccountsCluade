@@ -369,7 +369,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
     if (!l) throw new NotFound("No such business");
     const cancelled = l.state.cancelled;
     if (!cancelled) return c.json({ error: "Nothing to restore: they aren't cancelled by text." }, 409);
-    const sent = repo.ownerMessages(id).some((m) => m.kind === "refund" && m.delivery === "sent" && m.at >= cancelled.at.slice(0, 19));
+    // Only the cancel's own refund text: a year-floor refund that's owed stays owed whatever happens to the plan.
+    const theirs = "business_id = ? AND kind = 'refund' AND at >= ? AND EXISTS (SELECT 1 FROM json_each(data, '$.refs') WHERE json_extract(value, '$.kind') = 'year_refund' AND json_extract(value, '$.id') = ?)";
+    const args = [id, cancelled.at.slice(0, 19), cancelled.refund?.yearStart ?? ""] as const;
+    const sent = !!cancelled.refund && !!repo.db.get(`SELECT 1 FROM owner_messages WHERE ${theirs} AND delivery = 'sent'`, ...args);
     if (sent) return c.json({ error: "The refund text already went out. Settle the refund with them first, then set the plan up by hand." }, 409);
     if (!(await finishCancelWithdrawals(d, id))) return c.json({ error: "The sending platform didn't take back the cancelled notes yet. Try again in a few minutes." }, 409);
     let res: ReturnType<typeof undoCancel>;
@@ -378,8 +381,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     });
     const r = res!;
     if (!r || "refused" in r) return c.json({ error: "Couldn't restore it." }, 409);
-    // the refund was never issued: its text is withdrawn
-    repo.db.run("UPDATE owner_messages SET delivery = 'cancelled' WHERE business_id = ? AND kind = 'refund' AND delivery IN ('review','pending','failed')", id);
+    // the cancel's refund was never issued: its text is withdrawn
+    if (cancelled.refund) repo.db.run(`UPDATE owner_messages SET delivery = 'cancelled' WHERE ${theirs} AND delivery IN ('review','pending','failed')`, ...args);
     if (!r.paused) await holdSending(d, id, "resume");
     repo.audit(id, "operator", "restore-plan", r);
     return c.json({ ok: true, ...r });

@@ -25,6 +25,8 @@ export interface RequestEmailResult {
   lead?: RequestEmail;
   /** Why it isn't a request we can act on, for the operator. */
   why?: string;
+  /** Only a person can decide (two people in one forward): no second read guesses either. */
+  final?: boolean;
 }
 
 const SOURCES: [RegExp, string][] = [
@@ -131,7 +133,7 @@ export function readRequestEmail(input: {
   // Two or more people (not the business, not a platform) in the chain: a property manager forwarding a tenant, an
   // office forwarding a customer from a personal address. Which one is asking is a person's call, never a guess.
   const people = [...new Set(blocks.map((b) => extractEmails(b.from)[0]).filter((e): e is string => !!e && !NOT_A_PERSON.test(e) && !isBusinessAddress(e, input) && !(input.ignore ?? []).some((x) => x.toLowerCase() === e)))];
-  if (people.length > 1) return { why: `This forward has more than one person in it (${people.slice(0, 3).join(", ")}). Check who's asking and answer them by hand.` };
+  if (people.length > 1) return { why: `This forward has more than one person in it (${people.slice(0, 3).join(", ")}). Check who's asking and answer them by hand.`, final: true };
   const innermost = blocks.at(-1);
   const inner = innermost?.from;
   const lines = innermost ? all.slice(innermost.end) : all;

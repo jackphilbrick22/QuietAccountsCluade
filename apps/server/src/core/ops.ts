@@ -1374,7 +1374,7 @@ export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: s
   const b = l.state.dataset.business;
   const own = ownContact(b, m.from);
   let read = readRequestEmail({ subject: m.subject, text: m.text, from: m.from, ...own });
-  if (!read.lead && d.llm) {
+  if (!read.lead && !read.final && d.llm) {
     const ai = await readRequestWithClaude(d.llm, { subject: m.subject, text: m.text, businessName: b.name }).catch(() => null);
     // the second read gets the same rule: the business's own addresses and numbers are never the person asking
     const email = ai?.email && !isBusinessAddress(ai.email, own) ? ai.email : undefined;

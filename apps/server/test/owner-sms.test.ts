@@ -122,13 +122,16 @@ describe("owner texts BUSY / OPEN", () => {
     // money may already be on its way, so UNDO is a person's job
     const undo = await sms("undo");
     expect(undo).toContain("Jack will put everything back himself");
+    // a year-floor refund owed from an earlier year is waiting too: restoring the plan never withdraws that one
+    const floor = { id: "om-floor-2024", at: "2026-09-20T09:00:00", kind: "refund", text: "Your year's numbers: $12.00 goes back to your card.", refs: [{ kind: "year_floor", id: "2024-10-20" }] };
+    d.accounts.repo.db.run("INSERT INTO owner_messages (business_id, id, at, kind, text, data, delivery) VALUES ('ridge-tree', ?, ?, 'refund', ?, ?, 'review')", floor.id, floor.at, floor.text, JSON.stringify(floor));
     // the operator restores it (the refund was never issued): plan back, refund withdrawn, the year floor intact
     const restore = await app.request("/api/businesses/ridge-tree/restore-plan", { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } });
     expect(restore.status).toBe(200);
     const after = await api("GET", "/api/businesses/ridge-tree");
     expect((after.business as { plan: { stage: string; yearRefunds?: unknown[] } }).plan.stage).toBe("paying");
     expect((after.business as { plan: { yearRefunds?: unknown[] } }).plan.yearRefunds ?? []).toHaveLength(0);
-    expect(((await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string }[]).some((m) => m.kind === "refund")).toBe(false);
+    expect(((await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { id: string; kind: string }[]).filter((m) => m.kind === "refund").map((m) => m.id)).toEqual([floor.id]);
     // and a second restore finds nothing to do
     expect((await app.request("/api/businesses/ridge-tree/restore-plan", { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(409);
     await sms("cancel");

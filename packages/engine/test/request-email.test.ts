@@ -336,5 +336,11 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     const r = receiveReply(st, { from: "Karen Whitfield <karen.whitfield@gmail.com>", text: "Yes, let's go ahead with the fence quote. When can you start?", receivedAt: `${ASOF}T11:00:00` });
     expect(r.followUpOf).toBeUndefined();
     expect(r.status).toBe("handed_off");
+    // it's recorded against the fence note, so the guarantee and the ledger count it as ours
+    expect(r.touchId).toBe("fq1");
+    expect(r.opportunityId).toBe("o-fence");
+    expect(st.ownerMessages.filter((m) => m.kind === "handoff").at(-1)!.text).not.toMatch(/NEW REQUEST/i);
+    const { guaranteeCheck } = await import("../src/reports/owner.ts");
+    expect(guaranteeCheck(st, ASOF)!.asked.map((x) => x.id)).toContain(r.id);
   });
 });

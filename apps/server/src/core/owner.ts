@@ -1,4 +1,4 @@
-import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
@@ -167,7 +167,19 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk && b.profile.plan.stage !== "cancelled");
   const hasCode = CODE.test(text);
   // something else on this phone an "ok" or a "yes" could be answering: a lead waiting on a call, the close, the renewal
-  const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id));
+  // (a lead handed off more than a week ago is the operator's to chase, not something a text is likely answering)
+  const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id, true) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id, true));
+  // While a first note waits, a text is about something else only when it reads like an answer to it: a lead outcome
+  // ("booked 2400", "no answer") with a lead waiting, a short "no" or "done" with one handed over this week, or a yes
+  // with the close or renewal out.
+  // "No, say Hey instead of Hi" is a change to the note, whatever else is open on the phone.
+  const aboutOther = () => {
+    const scope = named ? [named] : all;
+    const lead = readLeadText(text);
+    const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted");
+    const short = !!lead && bare.split(" ").length <= 3;
+    return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (short && scope.some((x) => hasWaitingLead(d, x.id, true))) || (AFFIRM.test(t) && scope.some((x) => outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal")));
+  };
   if (waitingOk.length && !hasCode && APPROVE.test(bare)) {
     if (waitingOk.length > 1) return askWhich();
     const b = waitingOk[0]!;
@@ -185,7 +197,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
 
   // While one business waits for the OK and nothing else is open, only exact commands act; anything else
   // ("Hold on, change the greeting", "How many people is this going to?") is about the first note.
-  if (waitingOk.length === 1 && !hasCode && !otherOpen() && !WHILE_WAITING.test(bare))
+  if (waitingOk.length === 1 && !hasCode && !WHILE_WAITING.test(bare) && !aboutOther())
     return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
 
   /* ---- the service (one client at a time) ---- */
@@ -217,6 +229,15 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running.${c ? " Didn't mean to cancel? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "renew_cancelled", needsPerson: !c };
     }
     const choice = /^(monthly|month to month)/.test(bare) ? "monthly" : "year";
+    // A trial owner picking a plan is a yes to the close: Jack sends the payment link and marks them paying. Nothing
+    // turns paying on a text alone.
+    if (one.profile.plan.stage === "trial") {
+      await d.accounts.withAccount(one.id, (state) => {
+        const at = nowLocal(d, state);
+        state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} picked ${choice === "year" ? "the year" : "month to month"}`, detail: `“${text.trim().slice(0, 160)}” — send the payment link, then mark them paying.` });
+      });
+      return { businessId: one.id, reply: `${tag(one)}Great — ${choice === "year" ? "the year" : "month to month"} it is. Jack will text you the payment link.`, handled: "accepted_close", needsPerson: true };
+    }
     let reply = "";
     await d.accounts.withAccount(one.id, (state) => {
       reply = renewPlan(state, choice, nowLocal(d, state));
@@ -235,10 +256,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled.${s.cancelled ? " Didn't mean it? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "cancel_again" };
     let r = { stopped: 0, refund: 0, line: "" };
     let until = "";
+    let partWay = 0;
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
       r = cancelPlan(state, at, { paused: one.paused });
       until = `${fmtClock(at)} tomorrow`;
+      // a sending platform can't take someone back mid-sequence: UNDO won't give them the rest of their notes
+      if (d.email.kind === "sequencer") partWay = new Set(underWay(state, (state.cancelled?.touches ?? []).map((x) => x.id)).map((x) => x.customerId)).size;
     });
     // cancel everywhere: the platform's campaigns pause and leads still waiting are taken back
     await holdSending(d, one.id, "cancel").catch((e) => d.log(`[owner] ${one.id} cancel on the sending platform failed: ${(e as Error).message}`));
@@ -248,7 +272,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const tt = totals(d.accounts.peek(one.id)!.state);
     return {
       businessId: one.id,
-      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours. Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} and it all picks back up.`,
+      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours. Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} ${partWay ? `to pick back up; the ${partWay === 1 ? "1 person" : `${partWay} people`} already part-way through their notes won't get the rest.` : "and it all picks back up."}`,
       handled: "cancel",
     };
   }
@@ -346,8 +370,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   }
 
   /* ---- a lead ---- */
-  // While one business waits for the OK and nothing else is open, anything else is a change to the first note.
-  if (waitingOk.length === 1 && !hasCode && !otherOpen())
+  // While one business waits for the OK, anything that isn't an answer to something else is a change to the first note.
+  if (waitingOk.length === 1 && !hasCode && !aboutOther())
     return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
 
   const lead = readLeadText(text);
@@ -473,8 +497,11 @@ async function pause(d: Deps, bid: string, paused: boolean): Promise<void> {
 
 /** A close (free round's results) or renewal question sent in the last three weeks, not yet answered. */
 /** A lead we texted the owner that nobody has called yet. */
-function hasWaitingLead(d: Deps, bid: string): boolean {
-  return !!d.accounts.peek(bid)?.state.replies.some((r) => r.status === "handed_off" && !r.ownerContactedAt);
+function hasWaitingLead(d: Deps, bid: string, fresh = false): boolean {
+  const s = d.accounts.peek(bid)?.state;
+  if (!s) return false;
+  const now = nowLocal(d, s);
+  return s.replies.some((r) => r.status === "handed_off" && !r.ownerContactedAt && (!fresh || Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${(r.handedOffAt ?? r.receivedAt).slice(0, 19)}Z`) < NUDGE_MAX_AGE_HOURS * 3_600_000));
 }
 
 function outstanding(d: Deps, bid: string, kind: "close" | "renewal"): boolean {

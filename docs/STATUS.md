@@ -70,8 +70,18 @@ Updated every loop iteration. Newest first.
 - Plain-language breakdown for Jack: https://claude.ai/artifact/G2cLRQe3SJt53PWhrMNFZt (a doc he can edit
   and comment on). Engine 1,057 tests, server 242.
 
+- Fourth adversarial review: 13 confirmed (2 duplicates), all fixed and tested. A "yes" to a follow-up
+  with no thread is recorded against that note, not a request answer (so it counts for the guarantee
+  and the ledger); fees stay right across a mid-year switch to monthly; a renewed year still judges the
+  old year's last month after a missed check; Restore plan withdraws only the cancel's own refund text;
+  a trial owner texting MONTHLY/YEARLY goes to Jack for the payment link (never "paying" on a text);
+  while a first note waits, only a text that reads like an answer to a lead or the close acts on one;
+  CANCEL on a sending platform says who UNDO can't bring back; a two-person forward never gets a
+  Claude guess; quote statuses where the leading yes/no decides ("Accepted - not booked" is a yes,
+  "Not sold yet" is open). Engine 1,085 tests, server 246.
+
 **Next**
-- A fourth review pass on the third review's fixes; stop when a pass finds nothing material.
+- A fifth review pass on the fourth review's fixes; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

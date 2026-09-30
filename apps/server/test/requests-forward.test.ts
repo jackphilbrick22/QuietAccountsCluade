@@ -182,4 +182,36 @@ describe("new requests the owner forwards", () => {
     expect(await forward(keyless, "Fwd: New form submission", WEB_FORM)).toMatchObject({ ignored: true });
     expect(await oldAddressAlerts("elder")).toEqual([]);
   });
+  it("a forward with two people in it goes to a person, and Claude isn't asked to pick one", async () => {
+    const l = await make("harbor", true);
+    let asked = 0;
+    d.llm = { structured: async () => (asked++, { isRequest: true, name: "Pat Morgan", email: "pat@harborprops.com", phone: null, address: null, job: "Leaning tree", source: "a forwarded email" }) } as never;
+    const chain = `Can you look at this one?
+
+---------- Forwarded message ---------
+From: Pat Morgan <pat@harborprops.com>
+Date: Tue, Sep 29, 2026
+Subject: Fwd: Tree on the fence
+To: Dave Ridge <dave@ridgelinetree.com>
+
+Can you get someone out to 14 Harbor St? Bill us as usual.
+Pat Morgan, 603-555-0199
+
+---------- Forwarded message ---------
+From: Jamie Lee <jamie.lee88@gmail.com>
+Date: Mon, Sep 28, 2026
+Subject: Tree on the fence
+To: Pat Morgan <pat@harborprops.com>
+
+Hi Pat, the pine out back of 4B is leaning on the fence again. Jamie 603-555-0142`;
+    try {
+      expect(await forward(l.requestsAddress!, "Fwd: Fwd: Tree on the fence", chain)).toMatchObject({ taken: false });
+    } finally {
+      d.llm = null;
+    }
+    expect(asked).toBe(0);
+    expect(d.accounts.peek("harbor")!.state.dataset.requests).toHaveLength(0);
+    const alerts = d.accounts.repo.db.all<{ detail: string }>("SELECT detail FROM alerts WHERE business_id = 'harbor' AND kind = 'request_unread'");
+    expect(alerts.at(-1)?.detail).toContain("more than one person");
+  });
 });
