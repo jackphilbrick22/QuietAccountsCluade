@@ -6,11 +6,11 @@ import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, guaranteeCheck, handoffText, kickoffText, slaNudge, weeklyReport } from "../reports/owner.ts";
+import { ackFor, closeMessage, feesPaid, guaranteeCheck, handoffText, kickoffText, renewalNotice, slaNudge, weeklyReport } from "../reports/owner.ts";
 import { renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
-import { addDays, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, plural, sendableEmail, weekday } from "../util.ts";
+import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 
@@ -471,6 +471,56 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
     event(state, now, "guard", "action", "Guarantee: this month is free", "Nobody asked for a price or a date this period, so you won't be charged.");
   }
   return ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
+}
+
+/**
+ * Yearly plans: the renewal choice goes out thirty days before the year ends. If the year ends with no
+ * answer, sending pauses and the owner is told how to pick back up. Nothing renews by itself.
+ */
+export function renewalIfDue(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  const b = state.dataset.business;
+  const today = now.slice(0, 10);
+  const r = renewalNotice(state, today);
+  if (r && !state.ownerMessages.some((m) => m.kind === "renewal" && m.refs?.some((x) => x.id === r.yearEnds))) {
+    event(state, now, "reporter", "action", "Asked about renewing the year", `The year ends ${r.yearEnds}; nothing renews without a yes.`);
+    return ownerMsg(state, now, "renewal", r.text, [{ kind: "year_end", id: r.yearEnds }]);
+  }
+  if (b.plan.billing !== "annual" || b.plan.stage !== "paying" || !b.plan.paidOn) return undefined;
+  const started = [...(b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn])].sort().pop()!;
+  const yearEnds = addMonths(started, 12);
+  if (today < yearEnds) return undefined;
+  b.plan.stage = "paused";
+  event(state, now, "guard", "warning", "The year ended without a renewal — sending paused", "Nothing renews without the owner's yes.");
+  return ownerMsg(state, now, "info", `${b.ownerFirstName}, your year's up and nothing renewed, so everything is paused. Text MONTHLY to pick back up at ${fmtMoney(b.plan.monthlyPrice)} a month, or RENEW for another year.`, [{ kind: "year_end", id: yearEnds }]);
+}
+
+/** The owner's answer to the renewal (or a switch any time): another year, or month to month from the year's end. */
+export function renewPlan(state: AccountState, choice: "year" | "monthly", now: ISODateTime): string {
+  const b = state.dataset.business;
+  const today = now.slice(0, 10);
+  const plan = b.plan;
+  const started = plan.paidOn ? [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : [plan.paidOn])].sort().pop()! : today;
+  const yearEnds = plan.billing === "annual" ? addMonths(started, 12) : today;
+  const from = yearEnds > today ? yearEnds : today;
+  if (choice === "year") {
+    if (plan.billing !== "annual") {
+      plan.priorFees = feesPaid(b, today).total;
+      plan.billing = "annual";
+      plan.paidOn = from;
+      plan.yearsPaidOn = [from];
+    } else plan.yearsPaidOn = [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : [started]), from];
+  } else {
+    if (plan.billing === "annual") plan.priorFees = feesPaid(b, from).total;
+    plan.billing = "monthly";
+    plan.paidOn = from;
+    plan.yearsPaidOn = undefined;
+  }
+  plan.stage = "paying";
+  const when = `${monthName(from)} ${Number(from.slice(8))}`;
+  event(state, now, "reporter", "action", choice === "year" ? "Owner chose another year" : "Owner chose month to month", `Starts ${from}.`);
+  return choice === "year"
+    ? `Done — another year from ${when}, same price. The guarantee still runs every month.`
+    : `Done — month to month from ${when}, ${fmtMoney(plan.monthlyPrice)} a month, cancel by text any time.`;
 }
 
 /**

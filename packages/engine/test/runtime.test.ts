@@ -2,6 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   approveAll,
   billingCheck,
+  renewalIfDue,
+  renewPlan,
   closeIfDue,
   dueTouches,
   find,
@@ -18,7 +20,7 @@ import {
   type DueTouch,
 } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
-import { leadCode, lossReasons } from "../src/reports/owner.ts";
+import { feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
 import { emptyDataset, toCSV } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
@@ -412,6 +414,54 @@ describe("Ledger and Reporter", () => {
     it("stays quiet away from the charge date, and on the trial", () => {
       expect(billingCheck(paying(fresh()), "2026-10-15T09:00:00")).toBeUndefined();
       expect(billingCheck(fresh(), "2026-10-31T09:00:00")).toBeUndefined();
+    });
+  });
+
+  describe("the yearly plan", () => {
+    const yearly = (s: AccountState) => {
+      const plan = s.dataset.business.plan;
+      plan.stage = "paying";
+      plan.billing = "annual";
+      plan.paidOn = "2026-10-01";
+      plan.yearsPaidOn = ["2026-10-01"];
+      return s;
+    };
+    it("costs ten months, and a quiet month refunds a twelfth automatically", () => {
+      const s = yearly(fresh());
+      expect(feesPaid(s.dataset.business, "2026-10-15")).toMatchObject({ total: 4970 });
+      const msg = billingCheck(s, "2026-10-31T09:00:00")!;
+      expect(msg.kind).toBe("free_month");
+      expect(msg.text).toContain("$414.17 goes back to your card on November 1");
+      expect(feesPaid(s.dataset.business, "2026-11-15").total).toBe(4555.83);
+    });
+    it("asks thirty days before the year ends, once, and never renews by itself", () => {
+      const s = yearly(fresh());
+      expect(renewalIfDue(s, "2027-08-20T09:00:00")).toBeUndefined();
+      const ask = renewalIfDue(s, "2027-09-05T09:00:00")!;
+      expect(ask.kind).toBe("renewal");
+      expect(ask.text).toMatch(/ends October 1\. Nothing renews unless you say so\./);
+      expect(ask.text).toContain("Reply RENEW");
+      expect(renewalIfDue(s, "2027-09-06T09:00:00")).toBeUndefined();
+      const lapse = renewalIfDue(s, "2027-10-01T09:00:00")!;
+      expect(lapse.text).toMatch(/nothing renewed, so everything is paused/);
+      expect(s.dataset.business.plan.stage).toBe("paused");
+    });
+    it("RENEW adds a year from the year's end; MONTHLY goes month to month and keeps the fee history", () => {
+      const s = yearly(fresh());
+      expect(renewPlan(s, "year", "2027-09-10T09:00:00")).toContain("another year from October 1");
+      expect(s.dataset.business.plan.yearsPaidOn).toEqual(["2026-10-01", "2027-10-01"]);
+      const m = yearly(fresh());
+      expect(renewPlan(m, "monthly", "2027-09-10T09:00:00")).toContain("month to month from October 1");
+      expect(m.dataset.business.plan).toMatchObject({ billing: "monthly", paidOn: "2027-10-01", stage: "paying" });
+      expect(feesPaid(m.dataset.business, "2027-10-15").total).toBe(4970 + 497);
+    });
+    it("the close offers the year only when the owner's own numbers make it an easy yes", () => {
+      const s = fresh();
+      s.summary = { ...s.summary!, yearOne: { conservative: 12000, likely: 20000, strong: 30000 } };
+      expect(offerYear(s, 3000)).toBe(false);
+      expect(offerYear(s, 5200)).toBe(true);
+      s.summary = { ...s.summary!, yearOne: { conservative: 30000, likely: 50000, strong: 70000 } };
+      expect(offerYear(s, 0)).toBe(true);
     });
   });
 

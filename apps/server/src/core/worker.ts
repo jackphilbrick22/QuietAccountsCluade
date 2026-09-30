@@ -1,4 +1,4 @@
-import { billingCheck, chase, closeIfDue, find, isoWeekKey, reportWeek } from "@qa/engine";
+import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { deliverOwnerMessages, handleInbound, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
@@ -57,11 +57,14 @@ export async function tick(d: Deps): Promise<TickReport> {
       });
 
     await step("dispatch", async () => {
+      let lapsed = false;
       await d.accounts.withAccount(bid, (state) => {
         chase(state, local, d.cfg.SLA_FIRST_NUDGE_HOURS);
         if (hour === 9 && minute < 5) {
           closeIfDue(state, local);
           billingCheck(state, local);
+          // A yearly plan never renews by itself: ask a month out, pause at the end if nobody said yes.
+          if (renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;
         }
         // Friday 4pm local: the week in plain English (once per ISO week)
         if (day === 5 && hour === 16) {
@@ -71,6 +74,7 @@ export async function tick(d: Deps): Promise<TickReport> {
           if (!already && active) reportWeek(state, local);
         }
       });
+      if (lapsed) d.accounts.setPaused(bid, true);
       report.ownerMessages += await deliverOwnerMessages(d, bid);
     });
 

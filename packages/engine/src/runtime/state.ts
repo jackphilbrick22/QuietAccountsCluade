@@ -25,7 +25,7 @@ export interface AccountState {
 export interface OwnerMessage {
   id: string;
   at: ISODateTime;
-  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff";
+  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal";
   text: string;
   refs?: { kind: string; id: string }[];
 }

@@ -94,6 +94,18 @@ describe("owner texts BUSY / OPEN", () => {
     expect(reply).not.toContain("new work waits");
   });
 
+  it("a yearly owner texts MONTHLY to go month to month, RENEW for another year", async () => {
+    await api("PATCH", "/api/businesses/ridge-tree", { plan: { stage: "paying", billing: "annual", paidOn: "2025-10-20", yearsPaidOn: ["2025-10-20"] } });
+    const monthly = await sms("monthly");
+    expect(monthly).toContain("month to month from October 20");
+    let ov = await api("GET", "/api/businesses/ridge-tree");
+    expect((ov.business as { plan: { billing: string; paidOn: string } }).plan).toMatchObject({ billing: "monthly", paidOn: "2026-10-20" });
+    const year = await sms("Renew");
+    expect(year).toMatch(/another year from .* Jack will text you the payment link\./);
+    ov = await api("GET", "/api/businesses/ridge-tree");
+    expect((ov.business as { plan: { billing: string } }).plan.billing).toBe("annual");
+  });
+
   it("cancels by text: facts first, then CANCEL YES does it", async () => {
     const first = await sms("cancel");
     expect(first).toContain("CANCEL YES");

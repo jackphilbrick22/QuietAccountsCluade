@@ -27,6 +27,7 @@ import {
   quoteById,
   readReply,
   receiveReply,
+  renewPlan,
   stopSequence,
   type AccountState,
   type FileIn,
@@ -537,6 +538,16 @@ export async function ownerCommand(d: Deps, fromPhone: string, text: string): Pr
     const wants = s.replies.filter((r) => r.intent === "wants_it" || r.intent === "wants_price").length;
     const booked = counted(s.recoveries).reduce((a, r) => a + r.value, 0);
     return { businessId: bid, reply: `So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} asked for a price or a date, $${Math.round(booked).toLocaleString("en-US")} booked.` };
+  }
+  // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
+  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(t)) {
+    const choice = /^(monthly|month to month)/.test(t) ? "monthly" : "year";
+    let reply = "";
+    await d.accounts.withAccount(bid, (state) => {
+      reply = renewPlan(state, choice, nowLocal(d, state));
+    });
+    d.accounts.setPaused(bid, false);
+    return { businessId: bid, reply: choice === "year" ? `${reply} Jack will text you the payment link.` : reply };
   }
   // Month to month, cancel by text. The first CANCEL shows the facts; CANCEL YES does it.
   if (/^cancel\b/.test(t)) {

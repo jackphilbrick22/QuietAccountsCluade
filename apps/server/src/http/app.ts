@@ -72,7 +72,18 @@ const ProfilePatch = CreateBusiness.partial().extend({
   openCrewWeeks: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
   voice: z.object({ mentionPrice: z.boolean(), offerOptions: z.boolean(), wordSwaps: z.array(z.tuple([z.string(), z.string()])) }).partial().optional(),
   persistence: z.object({ seasonalCheckIn: z.boolean(), maxNotesPerYear: z.number().int().min(1).max(12), holdoutPct: z.number().min(0).max(0.3) }).partial().optional(),
-  plan: z.object({ stage: z.enum(["trial", "paying", "paused", "cancelled"]), trialSize: z.number().int().min(10).max(1000), monthlyPrice: z.number().min(0), paidOn: z.string().optional() }).partial().optional(),
+  plan: z
+    .object({
+      stage: z.enum(["trial", "paying", "paused", "cancelled"]),
+      trialSize: z.number().int().min(10).max(1000),
+      monthlyPrice: z.number().min(0),
+      paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      billing: z.enum(["monthly", "annual"]),
+      annualPrice: z.number().min(0),
+      yearsPaidOn: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+    })
+    .partial()
+    .optional(),
 });
 
 const Files = z.object({ files: z.array(z.object({ name: z.string().min(1), text: z.string().min(1), kind: z.enum(["quote", "job", "invoice", "client", "request", "visit"]).optional() })).min(1).max(20) });

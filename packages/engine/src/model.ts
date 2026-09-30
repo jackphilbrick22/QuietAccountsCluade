@@ -306,6 +306,16 @@ export interface PlanState {
   monthlyPrice: Money;
   /** Months where the guarantee made the month free. */
   freeMonths: ISODate[];
+  /**
+   * "annual": a year paid up front at twelve months for the price of ten. The monthly guarantee still runs
+   * (a quiet month refunds a twelfth) and nothing renews without the owner's yes. Default monthly.
+   */
+  billing?: "monthly" | "annual";
+  annualPrice?: Money;
+  /** The day each paid year started. */
+  yearsPaidOn?: ISODate[];
+  /** Fees paid under an earlier billing arrangement (a year before going month to month). */
+  priorFees?: Money;
 }
 
 export interface ImportRecord {

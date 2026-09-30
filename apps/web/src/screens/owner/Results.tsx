@@ -15,6 +15,7 @@ const MSG_KIND: Record<OwnerMessage["kind"], string> = {
   precharge: "Before a charge",
   free_month: "Free month",
   kickoff: "Welcome text",
+  renewal: "Year renewal",
   info: "Heads up",
 };
 

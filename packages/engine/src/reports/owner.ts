@@ -297,11 +297,47 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
     t.remaining ? `There are ${t.remaining.toLocaleString("en-US")} more quiet quotes and past customers behind them.` : "",
     `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list and every new quote you write. Cancel by text, any time.`,
     `And the guarantee: any month nobody asks for a price or a date, you don't pay.`,
+    offerYear(state, t.bookedValue)
+      ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. Your price is locked, a quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), and nothing renews without your yes.`
+      : "",
     opts.sayYesBy ? `Say yes by ${opts.sayYesBy} and the next batch goes out next week.` : "",
     opts.payLink ?? "",
     opts.signature ?? "",
   ];
   return lines.filter(Boolean).join("\n\n");
+}
+
+/**
+ * The yearly plan is offered only when it's an easy yes on the owner's own numbers: the free round alone
+ * brought back more than a year costs, or the careful year-one estimate is at least five times it.
+ */
+export function offerYear(state: AccountState, bookedValue: Money): boolean {
+  const b = state.dataset.business;
+  const year = annualPrice(b);
+  return bookedValue >= year || (state.summary?.yearOne.conservative ?? 0) >= year * 5;
+}
+
+/**
+ * Thirty days before a paid year ends: what the year did, and a plain choice. Nothing renews by itself.
+ */
+export function renewalNotice(state: AccountState, asOf: ISODate): { yearEnds: ISODate; text: string } | undefined {
+  const b = state.dataset.business;
+  if (b.plan.billing !== "annual" || !b.plan.paidOn || b.plan.stage !== "paying") return undefined;
+  const started = [...(b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn])].sort().pop()!;
+  const yearEnds = addMonths(started, 12);
+  const left = daysBetween(asOf, yearEnds);
+  if (left > 30 || left < 0) return undefined;
+  const inYear = (d: string) => d.slice(0, 10) >= started && d.slice(0, 10) < yearEnds;
+  const won = counted(state.recoveries).filter((r) => inYear(r.cameBackOn));
+  const value = sum(won, (r) => r.value);
+  const asked = state.replies.filter((r) => WANTS.has(r.intent) && inYear(r.receivedAt)).length;
+  const refunded = b.plan.freeMonths.filter((d) => inYear(d)).length;
+  const text = [
+    `${b.ownerFirstName}, your year with us ends ${monthName(yearEnds)} ${Number(yearEnds.slice(8))}. Nothing renews unless you say so.`,
+    `This year: ${asked} ${asked === 1 ? "person" : "people"} asked for a price or a date, ${won.length} booked, ${fmtMoney(value)} traced to our notes.${refunded ? ` ${refunded} quiet ${refunded === 1 ? "month" : "months"} refunded.` : ""}`,
+    `Reply RENEW to keep ${fmtMoney(annualPrice(b))} for another year, MONTHLY to go month to month at ${fmtMoney(b.plan.monthlyPrice)}, or nothing and it simply ends.`,
+  ].join("\n\n");
+  return { yearEnds, text };
 }
 
 function joinNames(n: string[]): string {
@@ -313,10 +349,31 @@ function joinNames(n: string[]): string {
 /* Billing & the guarantee                                             */
 /* ------------------------------------------------------------------ */
 
-/** Next monthly charge on or after `asOf - 3 days`, anchored to the first paid day. */
-/** What the owner has actually been charged so far: monthly charges since paidOn, minus guarantee months. */
+/** Twelve months for the price of ten. */
+export function annualPrice(b: BusinessProfile): Money {
+  return b.plan.annualPrice ?? round2(b.plan.monthlyPrice * 10);
+}
+
+/** What a quiet month gives back on a yearly plan: a twelfth of the year. */
+export function annualRefund(b: BusinessProfile): Money {
+  return round2(annualPrice(b) / 12);
+}
+
+/** What the owner has actually been charged so far, net of guarantee months (skipped monthly, refunded yearly). */
 export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
+  const f = feesThisArrangement(b, asOf);
+  return { ...f, total: round2(f.total + (b.plan.priorFees ?? 0)) };
+}
+
+function feesThisArrangement(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
   if (!b.plan.paidOn || b.plan.paidOn > asOf) return { total: 0, months: 0, freeMonths: 0 };
+  if (b.plan.billing === "annual") {
+    const years = (b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn]).filter((d) => d <= asOf).length;
+    const free = b.plan.freeMonths.filter((d) => d <= asOf).length;
+    let months = 0;
+    while (months < 240 && addMonths(b.plan.paidOn, months) <= asOf) months++;
+    return { total: round2(years * annualPrice(b) - free * annualRefund(b)), months: months - free, freeMonths: free };
+  }
   let months = 0;
   let free = 0;
   for (let n = 0; n < 240; n++) {
@@ -360,8 +417,9 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const repliesInPeriod = state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent) && inPeriod(r.receivedAt)).length;
   const t = totals(state);
   const since = spokenWhen(periodStart, asOf).replace(/^back in /, "");
+  const annual = b.plan.billing === "annual";
   const text = free
-    ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
+    ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
     : [
         `${b.ownerFirstName}, here's who came back since ${since}:`,
         ...asked.slice(0, 8).map((r) => {
