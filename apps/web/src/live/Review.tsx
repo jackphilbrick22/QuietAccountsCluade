@@ -2,9 +2,9 @@ import { useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
-import { Box, Btn, Chip, PageHead } from "../components/table";
-import { api, type ReviewItem, type ReviewQueue } from "./api";
-import { copy, useAction, useLive, type ClientTab, type Query } from "./store";
+import { Box, Btn, Chip, PageHead, selectCls } from "../components/table";
+import { api, type Overview, type ReviewItem, type ReviewQueue } from "./api";
+import { copy, useAction, useApi, useLive, type ClientTab, type Query } from "./store";
 import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, OutcomeForm, ReplyActions, when } from "./parts";
 import { ClearBrake } from "./Client";
 
@@ -75,6 +75,38 @@ export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
   );
 }
 
+/**
+ * A reply nobody could place (a spouse's or work address, no thread): any client can be picked, not only the
+ * candidates, from the same clients list the console loads. The server reads it there like any reply.
+ */
+function AssignReply({ id, skip, other }: { id: string; skip: string[]; other: boolean }) {
+  const clients = useApi<Overview[]>("/businesses");
+  const { busy, run } = useAction();
+  const [bid, setBid] = useState("");
+  const options = (clients.data ?? []).map((o) => o.business).filter((b) => !skip.includes(b.id)).sort((a, b) => a.name.localeCompare(b.name));
+  const pick = options.find((b) => b.id === bid);
+  const selectId = `assign-${id}`;
+  if (!options.length) return clients.loading ? null : <p className="text-[12.5px] text-ink-3">No other client to give it to.</p>;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <label htmlFor={selectId} className="text-[12.5px] font-semibold text-ink-3">
+        {other ? "Or another client:" : "Whose is it?"}
+      </label>
+      <select id={selectId} value={bid} onChange={(e) => setBid(e.target.value)} className={cx(selectCls, "min-w-0 max-w-full")}>
+        <option value="">Pick a client…</option>
+        {options.map((b) => (
+          <option key={b.id} value={b.id}>
+            {b.name}
+          </option>
+        ))}
+      </select>
+      <Btn disabled={!pick || !!busy} onClick={() => pick && void run("assign", () => api("POST", `/inbound-review/${encodeURIComponent(id)}`, { businessId: pick.id }), `Sent to ${pick.name}`)}>
+        Read it as theirs
+      </Btn>
+    </div>
+  );
+}
+
 function Item({ it }: { it: ReviewItem }) {
   const go = useApp((s) => s.go);
   const setTab = useLive((s) => s.setClientTab);
@@ -116,6 +148,7 @@ function Item({ it }: { it: ReviewItem }) {
               Not ours — drop it
             </Btn>
           </div>
+          <AssignReply id={it.id} skip={it.candidates.map((c) => c.businessId)} other={it.candidates.length > 0} />
         </>
       )}
 

@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
@@ -52,10 +53,12 @@ import {
   plan,
   raiseAlert,
   readLinkToken,
+  requestToOldAddress,
   rescan,
   rotateLinks,
   setBusinessPaused,
   sign,
+  staleLinkToken,
   syncFsm,
   unsubscribeByToken,
   verifySigned,
@@ -296,6 +299,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
       stageBefore = b.plan.stage;
       const { voice, persistence, plan: planPatch, ...rest } = patch;
       Object.assign(b, rest);
+      // the operator set this owner's cell: a sign-up's unconfirmed one is settled
+      if (rest.ownerPhone && b.signup?.sharedCell) b.signup = { from: b.signup.from };
       if (rest.ownerName) b.ownerFirstName = rest.ownerName.split(/\s+/)[0] ?? b.ownerFirstName;
       if (voice) b.voice = { ...b.voice, ...voice };
       if (persistence) b.persistence = { ...b.persistence, ...persistence };
@@ -587,7 +592,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
         const person = { customerId: r.customerId, name: who?.name ?? r.from, phone: r.extracted.phone ?? who?.phones[0], email: who?.emails[0] ?? r.from };
         // An AI-drafted answer nobody has sent yet rides along, so it can go out in one click.
         const draft = r.draft ? { draft: r.draft.text, draftNeedsOwner: r.draft.needsOwner } : {};
-        if (r.intent === "unclear" && r.status === "new") {
+        // answered by a person (in the console) is settled, even for a reply read before that marked it done
+        if (r.intent === "unclear" && r.status === "new" && !r.answers?.some((a) => a.by !== "auto")) {
           items.push({ kind: "unclear", ...biz, at: r.receivedAt, replyId: r.id, ...person, text: r.text.slice(0, 1000), ...draft });
         } else if ((r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt) {
           const hours = (Date.parse(nowLocal) - Date.parse(r.handedOffAt ?? r.receivedAt)) / 3_600_000;
@@ -767,7 +773,26 @@ export function createApp(d: HttpDeps): Hono<Env> {
   // and only then does the owner get a text (the first note, word for word, waiting for their OK).
   const origins = d.cfg.SIGNUP_ORIGINS.split(",").map((x) => x.trim()).filter(Boolean);
   app.use("/start", cors({ origin: origins.length ? origins : "*", allowMethods: ["POST", "OPTIONS"], allowHeaders: ["content-type"], maxAge: 86400 }));
+  // Five tries an hour per caller, and a ceiling on new sign-ups for the whole server: enough for a typo, not a script.
+  const HOUR = 3_600_000;
   const signupHits = new Map<string, number[]>();
+  let signupsTaken: number[] = [];
+  /**
+   * Who is calling. X-Forwarded-For is whatever the caller wrote unless our own proxies appended to it, so it's read
+   * only when TRUSTED_PROXY_HOPS says how many did (that many entries from the right); otherwise the socket's peer.
+   */
+  const callerOf = (c: Context<Env>): string => {
+    const hops = d.cfg.TRUSTED_PROXY_HOPS;
+    if (hops > 0) {
+      const chain = (c.req.header("x-forwarded-for") ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+      if (chain.length >= hops) return chain[chain.length - hops]!;
+    }
+    try {
+      return getConnInfo(c).remote.address ?? "unknown";
+    } catch {
+      return "unknown"; // no socket (a request made in-process): one shared bucket
+    }
+  };
   const Signup = z.object({
     company: z.string().trim().min(2).max(120),
     first: z.string().trim().min(1).max(60),
@@ -777,20 +802,35 @@ export function createApp(d: HttpDeps): Hono<Env> {
     software: z.string().max(40).optional(),
     consent: z.literal(true),
     files: z.array(z.object({ name: z.string().min(1).max(200), text: z.string().min(1) })).max(5).optional(),
-    audit: z.object({ quotes: z.number(), silent: z.object({ count: z.number(), value: z.number() }), perMonth: z.number() }).partial().passthrough().optional(),
+    // the site's own audit numbers and nothing else: unknown keys are dropped, never stored
+    audit: z.object({ quotes: z.number(), silent: z.object({ count: z.number(), value: z.number() }), perMonth: z.number() }).partial().optional(),
     ref: z.string().max(200).optional(),
     /** A field people can't see; anything in it is a bot. */
     website: z.string().max(500).optional(),
   });
+  /**
+   * A public form never changes an account someone relies on. The file from a second Start is read only into an
+   * account this form made itself that's still an untouched trial (nothing planned or sent, no Jobber connection):
+   * the owner coming back with the file they didn't have the first time.
+   */
+  const untouchedSignup = (bid: string): boolean => {
+    const l = d.accounts.peek(bid);
+    const b = l?.state.dataset.business;
+    return !!b && b.signup?.from === "site" && b.plan.stage === "trial" && !l!.state.touches.length && !repo.getIntegration(bid, "jobber");
+  };
   app.post("/start", async (c) => {
     if (d.cfg.SIGNUPS !== "on") return c.json({ error: "Sign-ups are closed right now. Text Jack instead." }, 503);
-    // five tries an hour from one address; enough for a typo, not for a script
-    const ip = (c.req.header("x-forwarded-for") ?? "").split(",")[0]!.trim() || c.req.header("x-real-ip") || "local";
-    const hour = Date.now() - 3_600_000;
-    const hits = (signupHits.get(ip) ?? []).filter((t) => t > hour);
+    const now = d.clock().getTime();
+    const ip = callerOf(c);
+    const hits = (signupHits.get(ip) ?? []).filter((t) => t > now - HOUR);
     if (hits.length >= 5) return c.json({ error: "Too many tries. Text Jack instead." }, 429);
-    signupHits.set(ip, [...hits, Date.now()]);
-    if (signupHits.size > 5000) signupHits.clear();
+    // re-inserted at the end, so the map runs oldest caller first: old ones are let go, nobody's count is reset
+    signupHits.delete(ip);
+    signupHits.set(ip, [...hits, now]);
+    for (const [k, v] of signupHits) {
+      if (signupHits.size <= 5000 && v.at(-1)! > now - HOUR) break;
+      signupHits.delete(k);
+    }
     const parsed = Signup.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.issues.some((i) => i.path[0] === "consent") ? "Tick the box so we can follow up on your behalf." : "Something's missing. Check the company, your name and your cell." }, 400);
     const f = parsed.data;
@@ -798,22 +838,36 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const cell = ownerCell(f.cell);
     if (!cell) return c.json({ error: "That doesn't look like a cell we can text." }, 400);
     if ((f.files ?? []).reduce((a, x) => a + x.text.length, 0) > 9 * MB) return c.json({ error: "That file's too big to send here. Jack will ask for it by text." }, 413);
+    signupsTaken = signupsTaken.filter((t) => t > now - HOUR);
+    if (signupsTaken.length >= d.cfg.SIGNUPS_PER_HOUR) {
+      d.log(`[signup] ${signupsTaken.length} sign-ups in the last hour; turned one away`);
+      return c.json({ error: "We're taking a lot of sign-ups right now. Text Jack instead." }, 429);
+    }
+    signupsTaken.push(now);
     const trade = (TRADES as readonly string[]).includes(f.trade ?? "") ? (f.trade as TradeId) : "general";
     const software: SourceSystem = /jobber/i.test(f.software ?? "") ? "jobber" : /housecall/i.test(f.software ?? "") ? "housecall_pro" : "unknown";
+    const businesses = repo.listBusinesses();
+    const ten = (p: string | undefined) => (p ?? "").replace(/\D/g, "").slice(-10);
     // The same owner pressing Start twice (or coming back with the file) lands on the same account.
-    const again = repo.listBusinesses().find((b) => b.profile.ownerPhone === cell && b.profile.name.toLowerCase() === f.company.toLowerCase());
+    const again = businesses.find((b) => (b.profile.ownerPhone ?? b.profile.signup?.sharedCell) === cell && b.profile.name.toLowerCase() === f.company.toLowerCase());
+    // A cell that's already another client's owner cell doesn't become a new account's: that owner's texts (PAUSE,
+    // CANCEL) would stop naming one business, and our "which one?" would carry whatever this form called itself.
+    const others = again ? [] : businesses.filter((b) => ten(b.profile.ownerPhone) === ten(cell));
     let id = again?.id;
     if (!id) {
       id = `${f.company.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "shop"}-${randomBytes(3).toString("hex")}`;
       const today = localIso(d.clock(), "America/New_York").slice(0, 10);
       const signer = f.signer?.trim() || f.first;
-      const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: "America/New_York" }, id, today);
+      const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: others.length ? undefined : cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: "America/New_York" }, id, today);
       profile.software = software;
+      profile.signup = others.length ? { from: "site", sharedCell: cell } : { from: "site" };
       await d.accounts.create(profile, today);
       rotateLinks(d, id);
     }
+    const mayRead = !again || untouchedSignup(id);
+    const sent = (f.files ?? []).map((x) => `${x.name} (${Math.max(1, Math.round(x.text.length / 1024)).toLocaleString("en-US")} KB)`).join(", ");
     let read = "";
-    if (f.files?.length) {
+    if (f.files?.length && mayRead) {
       try {
         const res = await importFiles(d, id, f.files as FileIn[]);
         const s = d.accounts.peek(id)!.state;
@@ -821,14 +875,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
       } catch (e) {
         read = `Their file didn't read (${(e as Error).message.slice(0, 120)}). Ask them for the export by text.`;
       }
-    } else read = "No file yet. Ask for their export by text (or send the Connect Jobber link).";
+    } else if (f.files?.length)
+      read = `They sent ${sent}. Nothing was added: a form on the site never changes an account that's already set up or running. If it's really them, ask for the file by text or send them their import address.`;
+    else read = again ? "No file this time; nothing changed." : "No file yet. Ask for their export by text (or send the Connect Jobber link).";
+    const shared = others.length
+      ? ` Careful: ${cell} is already the owner cell for ${others.map((b) => b.profile.name).join(" and ")}, so it isn't set on this account. Texts from that cell still go to ${others.length === 1 ? "that client" : "those clients"} only, and nothing here is texted. If it really is the same owner, set the cell in this client's Settings; if not, delete this sign-up.`
+      : "";
+    const next = mayRead ? ` Next: ${others.length ? "check who this is, " : ""}add their mailing address, read the first note, then Plan — they get the first note by text and it waits for their OK.` : "";
     await raiseAlert(d, id, {
       kind: "signup",
-      title: `New sign-up: ${f.company}`,
-      detail: `${f.first}, ${cell}${f.software ? `, uses ${f.software}` : ""}. ${read} Next: add their mailing address, read the first note, then Plan — they get the first note by text and it waits for their OK.`,
+      title: again ? `${f.company} came back through the site${f.files?.length ? " with a file" : ""}` : `New sign-up: ${f.company}`,
+      detail: `${f.first}, ${cell}${f.software ? `, uses ${f.software}` : ""}. ${read}${shared}${next}`,
     });
-    repo.audit(id, "public", again ? "signup.again" : "signup", { ref: f.ref, software: f.software, audit: f.audit, files: f.files?.map((x) => x.name) });
-    return c.json({ ok: true, id }, 201);
+    repo.audit(id, "public", again ? "signup.again" : "signup", { ref: f.ref, software: f.software, audit: f.audit, files: f.files?.map((x) => ({ name: x.name, chars: x.text.length })), fileRead: !!f.files?.length && mayRead, ...(others.length ? { sharedCell: cell } : {}) });
+    // a second Start says nothing about the account it matched
+    return c.json({ ok: true, id: again ? "thanks" : id }, 201);
   });
 
   /* ----------------------------- unsubscribe ----------------------------- */
@@ -911,12 +972,19 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const requestsToken = to.match(/requests\+([A-Za-z0-9_.-]+)@/)?.[1];
     if (requestsToken) {
       const bid = readLinkToken(d, "requests", requestsToken);
+      const html = String(body.HtmlBody ?? body["body-html"] ?? body.html ?? "");
+      const full = String(body.TextBody || body["body-plain"] || body.text || "") || (html ? htmlToText(html) : "");
       if (!bid) {
+        // One we gave out before "Replace all links": not answered, but a person hears about it (it's someone asking for work).
+        const old = staleLinkToken(d, "requests", requestsToken);
+        if (old) {
+          await requestToOldAddress(d, old, { subject, text: full, from });
+          repo.finishWebhook(id, "processed", old, "requests address from before the links were replaced");
+          return c.json({ ok: true, taken: false, oldAddress: true });
+        }
         repo.finishWebhook(id, "ignored", undefined, "bad requests token");
         return c.json({ ok: true, ignored: true });
       }
-      const html = String(body.HtmlBody ?? body["body-html"] ?? body.html ?? "");
-      const full = String(body.TextBody || body["body-plain"] || body.text || "") || (html ? htmlToText(html) : "");
       const res = await takeForwardedRequest(d, bid, { subject, text: full, from, receivedAt: d.clock().toISOString() });
       repo.finishWebhook(id, res.taken ? "processed" : "ignored", bid, res.why);
       return c.json({ ok: true, ...res });

@@ -65,22 +65,78 @@ function labelOf(raw: string): Field | undefined {
   return LABELS.find(([re]) => re.test(l))?.[1];
 }
 
-/** The forwarded message's own headers ("---------- Forwarded message ---------\nFrom: Angi <leads@angi.com>"). */
-function forwardedFrom(text: string): string | undefined {
-  const m = text.match(/(?:forwarded message|original message|begin forwarded message)[\s\S]{0,200}?\n\s*from:\s*(.+)/i);
-  return m?.[1]?.trim();
+/** Mailbox providers anyone can have an address at: never read as "the business's own domain". */
+const FREE_MAIL = /^(gmail|googlemail|ymail|rocketmail|aol|icloud|me|mac|msn|comcast|verizon|att|sbcglobal|bellsouth|charter|cox|earthlink|frontier|optonline|rr|roadrunner|twc|windstream|centurylink|juno|netzero|protonmail|proton|pm|gmx|mail|zoho|fastmail|hey|myfairpoint|q)\.(com|net|me)$|^(yahoo|hotmail|outlook|live)\.[a-z.]+$/i;
+
+const HEADER_LINE = /^\**\s*(from|date|sent|subject|to|cc|bcc|reply-to)\s*\**\s*:/i;
+
+/**
+ * Each forwarded message's own header block ("From: …", "Date: …", "Subject: …", "To: …"), outermost first.
+ * A "From:" with no other header under it is a form's field, not a message. `end` is the first line after it.
+ */
+function headerBlocks(lines: string[]): { from: string; start: number; end: number; to: string[] }[] {
+  const out: { from: string; start: number; end: number; to: string[] }[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i]!.match(/^\**\s*from\s*\**\s*:\s*\**\s*(.*)$/i);
+    if (!m) continue;
+    let j = i + 1;
+    let others = 0;
+    const to: string[] = [];
+    let field = "";
+    // headers run until a blank line; a wrapped To:/Cc: list carries on without a label
+    for (; j < lines.length && lines[j]!.trim(); j++) {
+      const h = lines[j]!.match(HEADER_LINE);
+      if (h) {
+        others++;
+        field = h[1]!.toLowerCase();
+      } else if (!(/^(to|cc|bcc)$/.test(field) && /@/.test(lines[j]!) && !/[:：]/.test(lines[j]!))) break;
+      if (/^(to|cc|bcc|reply-to)$/.test(field)) to.push(...extractEmails(lines[j]!));
+    }
+    if (!others) continue;
+    out.push({ from: m[1]!.trim(), start: i, end: j, to });
+    i = j - 1;
+  }
+  return out;
 }
 
-export function readRequestEmail(input: { subject?: string; text: string; from?: string; ignore?: string[] }): RequestEmailResult {
+/**
+ * One of the business's own addresses: listed in `ignore`, or at one of `ignoreDomains` exactly (a free mailbox
+ * domain like gmail.com never counts as theirs, whoever's address it came from; a platform's relay subdomain, like
+ * Yelp's messaging one, isn't the business's either).
+ */
+export function isBusinessAddress(email: string, own: { ignore?: string[]; ignoreDomains?: string[] }): boolean {
+  const e = email.toLowerCase().trim();
+  if ((own.ignore ?? []).some((x) => x.toLowerCase().trim() === e)) return true;
+  const domain = e.split("@")[1] ?? "";
+  return (own.ignoreDomains ?? []).map((x) => x.toLowerCase().trim().replace(/^@/, "")).some((dm) => dm === domain && dm.includes(".") && !FREE_MAIL.test(dm));
+}
+
+export function readRequestEmail(input: {
+  subject?: string;
+  text: string;
+  from?: string;
+  /** The business's own addresses (and the forwarder's): never the person asking. */
+  ignore?: string[];
+  /** The business's own domains: nobody at them is the person asking. Free mailbox domains (gmail.com…) are skipped. */
+  ignoreDomains?: string[];
+  /** The business's own numbers (the owner's cell, the shop line): never the person asking. */
+  ignorePhones?: string[];
+}): RequestEmailResult {
   const subject = clean((input.subject ?? "").replace(/^\s*((fwd?|fw|re)\s*:\s*)+/i, ""));
   const text = input.text.replace(/\r/g, "");
-  const inner = forwardedFrom(text);
+  const all = text.split("\n").map((l) => l.replace(/^[>\s]+/, "").trimEnd());
+  // A forward (or a forward of a forward): the person is in the innermost message. The forwarder's own words and
+  // signature above it, and every forwarded header block (To:, Cc:), are the business's, never the lead's.
+  const blocks = headerBlocks(all);
+  const innermost = blocks.at(-1);
+  const inner = innermost?.from;
+  const lines = innermost ? all.slice(innermost.end) : all;
+  const body = lines.join("\n");
   const sender = [inner, input.from, subject].filter(Boolean).join(" ");
-  const source = SOURCES.find(([re]) => re.test(sender))?.[1] ?? SOURCES.find(([re]) => re.test(text.slice(0, 1500)))?.[1] ?? "a forwarded email";
+  const source = SOURCES.find(([re]) => re.test(sender))?.[1] ?? SOURCES.find(([re]) => re.test(body.slice(0, 1500)))?.[1] ?? "a forwarded email";
 
   // Labelled fields: "Name: Karen", "**Phone** 603…", or a label alone on a line with its value on the next.
   const got: Partial<Record<Field, string>> = {};
-  const lines = text.split("\n").map((l) => l.replace(/^[>\s]+/, "").trimEnd());
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const kv = line.match(/^\s*\**\s*([A-Za-z][A-Za-z /?-]{1,40}?)\s*\**\s*[:：]\s*(.*)$/);
@@ -103,14 +159,18 @@ export function readRequestEmail(input: { subject?: string; text: string; from?:
     }
   }
 
-  const skip = new Set((input.ignore ?? []).map((e) => e.toLowerCase()));
-  const usable = (e: string) => !skip.has(e.toLowerCase()) && !NOT_A_PERSON.test(e);
+  const usable = (e: string) => !NOT_A_PERSON.test(e) && !isBusinessAddress(e, input);
+  // who the forwarded messages were addressed to (the business, the next forwarder), wherever they turn up again
+  const addressed = new Set(blocks.flatMap((b) => b.to));
   const labelledEmail = got.email ? extractEmails(got.email).find(usable) : undefined;
-  const looseEmail = extractEmails(text).find(usable);
-  // The homeowner writing to the business directly and the owner forwarding it: the inner From is them.
+  const looseEmail = extractEmails(body).find((e) => usable(e) && !addressed.has(e));
+  // The homeowner writing to the business directly and the owner forwarding it: the innermost From is them.
   const innerEmail = inner ? extractEmails(inner).find(usable) : undefined;
   const email = labelledEmail ?? innerEmail ?? looseEmail;
-  const phone = (got.phone ? phonesInText(got.phone)[0] : undefined) ?? phonesInText(text)[0];
+  const ten = (p: string) => p.replace(/\D/g, "").slice(-10);
+  const ownPhones = new Set((input.ignorePhones ?? []).map(ten).filter((p) => p.length === 10));
+  const theirs = (p: string) => !ownPhones.has(ten(p));
+  const phone = (got.phone ? phonesInText(got.phone).find(theirs) : undefined) ?? phonesInText(body).find(theirs);
 
   let name = got.name ?? ([got.first, got.last].filter(Boolean).join(" ") || undefined);
   if (!name) {
@@ -125,9 +185,9 @@ export function readRequestEmail(input: { subject?: string; text: string; from?:
     job = s?.[1];
   }
   if (!job && innerEmail) {
-    // a homeowner's own email: the first real sentence after the forwarded headers
-    const body = text.split(/\n\s*\n/).slice(1).map(clean).find((p) => p.length > 15 && !/^(from|to|sent|date|subject|cc):/i.test(p));
-    job = body?.slice(0, 280);
+    // a homeowner's own email: the first real sentence after the innermost forwarded headers
+    const first = body.split(/\n\s*\n/).map(clean).find((p) => p.length > 15 && !HEADER_LINE.test(p));
+    job = first?.slice(0, 280);
   }
   const address = [got.address, got.city, got.zip].filter(Boolean).join(", ") || undefined;
   const read: RequestEmail["read"] = got.name || got.first || got.email || got.phone ? "labelled" : "loose";

@@ -238,6 +238,12 @@ export interface BusinessProfile {
   state?: string;
   timezone: string;
   website?: string;
+  /**
+   * Made by the site's Start button, not by the operator. `sharedCell`: the cell it gave was already another
+   * client's, so it isn't this account's ownerPhone (never texted, never read as this owner's texts) until the
+   * operator confirms it and sets the cell.
+   */
+  signup?: { from: "site"; sharedCell?: string };
   /** What a typical job is worth to them; used when a record has no dollar value. */
   avgJobValue?: Money;
   /** Annual revenue for lift %; derived from invoices/jobs when not given. */
@@ -529,7 +535,10 @@ export interface Reply {
   /** SLA reminders the owner has had about this lead (kept on the reply so a restart never re-sends them). */
   nudges?: number;
   lastNudgeAt?: ISODateTime;
-  /** More words from someone already handed to the owner: it joins that lead instead of starting another. */
+  /**
+   * More words from someone already handed to the owner: it joins that lead instead of starting another. The lead's
+   * reply id, or `req:<request id>` when they wrote back to our answer to their new request.
+   */
   followUpOf?: string;
 }
 
