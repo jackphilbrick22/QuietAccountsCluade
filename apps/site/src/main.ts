@@ -1,4 +1,5 @@
 import type { AuditFile, AuditOptions, AuditResult } from "./audit.ts";
+import { fridayExample } from "./friday.ts";
 import { TRADES, isTrade, tradeFromHash, type SiteTrade, type TakeBack, type TradeCopy } from "./trades.ts";
 import AuditWorker from "./worker.ts?worker&inline";
 import logoUrl from "./assets/logo-mark.svg";
@@ -115,23 +116,7 @@ function applyTrade(t: TradeCopy) {
   const won = t.ledger.slice(0, 2);
   const wonValue = won.reduce((s, r) => s + Number(r[4].replace(/[^0-9]/g, "")), 0);
   // Same lines, same order as the real Friday text (engine reports/owner.ts weeklyReport).
-  setT(
-    "friday",
-    esc(
-      [
-        `Dave, 2 jobs came back this week — ${money(wonValue)}.`,
-        "",
-        "Notes out: 61 (to 38 people)",
-        "Always on: answered 4 new requests, followed up 9 new quotes",
-        "Wrote back: 7",
-        "Want a price or a date: 3",
-        `Booked: 2 · ${money(wonValue)}`,
-        // before-only: a before-and-after drop here would read as a typical result
-        "Your quiet rate before we started: 41%. Tracked here every Friday.",
-        "Your average time to call them back: 3h",
-      ].join("\n"),
-    ),
-  );
+  setT("friday", esc(fridayExample("Dave", money(wonValue)).join("\n")));
   const r = t.ready;
   // The hand-off text ends the way the real one does: the exact replies, and the #code.
   $("#feed").innerHTML =

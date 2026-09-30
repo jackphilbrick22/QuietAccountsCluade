@@ -8,6 +8,7 @@ import { FileDrop, KIND_LABEL, SOURCE_LABEL, toFileIns, type StagedFile } from "
 import { hourLabel, WEEKDAYS } from "../lib/labels";
 import { api, type AgentEvent, type FileRow, type ImportResult, type Integrations, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
 import { copy, useAction, useApi } from "./store";
+import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
 import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, ago, usePeople, when } from "./parts";
 import { Field } from "./Clients";
 
@@ -299,7 +300,7 @@ export function OwnerTextsTab({ id }: { id: string }) {
               <p className="note-body text-[13.5px] leading-relaxed">{m.text}</p>
               {(m.delivery === "review" || m.delivery === "failed") && (
                 <div className="flex flex-wrap gap-2">
-                  <Btn variant="primary" disabled={!!busy} onClick={() => void run(m.id, () => api("POST", `/businesses/${encodeURIComponent(id)}/owner-messages/${encodeURIComponent(m.id)}/send`), "Approved and sent to the owner")}>
+                  <Btn variant="primary" disabled={!!busy} onClick={() => void run(m.id, () => api<OwnerSendResult>("POST", `/businesses/${encodeURIComponent(id)}/owner-messages/${encodeURIComponent(m.id)}/send`), ownerSendToast)}>
                     Approve and send
                   </Btn>
                   <Btn onClick={() => void copy(m.text, "Text copied")}>Copy text</Btn>

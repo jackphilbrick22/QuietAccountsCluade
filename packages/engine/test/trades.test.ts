@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { classifyService, detectTrade, jobPhrase, seasonFit, playbook, PLAYBOOKS } from "../src/trades/index.ts";
 import { CATALOG } from "../src/sample/catalog.ts";
 import { lint } from "../src/copy/lint.ts";
-import { footer } from "../src/copy/render.ts";
+import { footer, renderNote } from "../src/copy/render.ts";
 import { bannedStatIn, lintMarketing } from "../src/claims.ts";
 import type { TradeId } from "../src/model.ts";
-import { business } from "./fixtures.ts";
+import { scan } from "../src/breakage/detect.ts";
+import { ago, ASOF, business, customer, dataset, job, oneOpp, oppsFor, quote } from "./fixtures.ts";
 
 const ALL_TRADES = (Object.keys(PLAYBOOKS) as TradeId[]).filter((t) => t !== "general");
 /** A shop's titles, repeated so every title is a real share of the export. */
@@ -92,6 +93,39 @@ describe("holiday lighting", () => {
     expect(jobPhrase("Christmas light takedown & storage", "holiday_lighting")).toBe("the light takedown");
     expect(jobPhrase("Holiday lighting package", "holiday_lighting")).toBe("the holiday lights");
     expect(jobPhrase("Smith residence", "holiday_lighting")).toBe("the lights");
+  });
+
+  it("a new permanent system with an extra-footage or extension line is the system, not an add-on: the title says what the job is", () => {
+    const items = (x: string) => ["Front roofline 120 ft", x];
+    for (const extra of ["Additional footage - garage", "Extension to garage side", "Additional feet"]) {
+      expect(svc("Permanent lighting - front of house", [extra]), extra).toBe("light.permanent");
+      expect(svc("Permanent lighting - front of house", items(extra)), extra).toBe("light.permanent");
+      expect(jobPhrase("Permanent lighting - front of house", "holiday_lighting", [{ name: extra, total: 600 }]), extra).toBe("the permanent lights");
+      expect(jobPhrase("Permanent lighting - roofline", "holiday_lighting", [{ name: extra, total: 600 }]), extra).toBe("the permanent lights");
+    }
+    // extending a system already up is still the add-on, by its title or, under a bare title, by the line naming it
+    expect(svc("Garage extension", ["Permanent lighting 40 ft"])).toBe("light.addon");
+    expect(svc("Smith residence", ["Permanent lighting add-on - garage"])).toBe("light.addon");
+    expect(jobPhrase("Garage extension", "holiday_lighting", [{ name: "Permanent lighting 40 ft", total: 900 }])).toBe("extending the permanent lights");
+    expect(jobPhrase("Smith residence", "holiday_lighting", [{ name: "Permanent lighting add-on - garage", total: 900 }])).toBe("extending the permanent lights");
+  });
+
+  it("the add-on follow-on is offered after a first system with a per-foot overage line, and not after an add-on", () => {
+    const ds = dataset({
+      business: { trade: "holiday_lighting", name: "Bright Nights Holiday Lighting", avgJobValue: 1500, minQuoteValue: 300 },
+      customers: [customer("c1", { firstName: "Karen" }), customer("c2", { firstName: "Paul" }), customer("c3", { firstName: "Dana" })],
+      quotes: [quote("q1", "c1", { title: "Permanent lighting - front of house", total: 4200, sentOn: ago(50), lineItems: [{ name: "Front roofline 120 ft", total: 3600 }, { name: "Additional footage - garage", total: 600 }] })],
+      jobs: [
+        job("j2", "c2", { title: "Permanent lighting - front of house", total: 4200, completedOn: ago(200), lineItems: [{ name: "Front roofline 120 ft", total: 3600 }, { name: "Additional footage - garage", total: 600 }] }),
+        job("j3", "c3", { title: "Permanent lighting add-on - garage", total: 900, completedOn: ago(200) }),
+      ],
+    });
+    const r = scan(ds);
+    const quiet = oneOpp(r, "c1", "unanswered_quote");
+    expect([quiet.serviceId, quiet.jobPhrase]).toEqual(["light.permanent", "the permanent lights"]);
+    expect(renderNote(quiet, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!.body).not.toMatch(/extending/);
+    expect(oppsFor(r, "c2", "missed_upsell").map((o) => o.serviceId)).toEqual(["light.addon"]);
+    expect(oppsFor(r, "c3", "missed_upsell")).toEqual([]);
   });
 
   it("sells August to December on a yearly clock, with a timing line that is plain fact", () => {

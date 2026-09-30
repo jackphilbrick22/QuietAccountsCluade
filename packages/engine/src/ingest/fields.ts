@@ -227,6 +227,10 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // Out, but no yes yet: "Unsigned" is Estimate Rocket's open status, not a signature; "Viewed - not signed".
   [new RegExp(`${NOT}(?:signed|accepted|approved|answered|decided|won)\\b|\\b(?:awaiting|pending|needs?|waiting (?:on|for)) (?:an? )?(?:signature|approval|decision|e-?sign\\w*)\\b|\\bsign(?:ature)? requested\\b|\\bsent for signature\\b`, "i"), "awaiting_response"],
   [new RegExp(`${NOT}(?:viewed|opened|seen|read)\\b`, "i"), "awaiting_response"],
+  // "Sold / Not sold" sheets: a sale that didn't happen is a no. Not yet sold, or not booked, converted, completed or
+  // closed, is still open. Neither is a yes, whatever word follows the "not".
+  [/\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b/i, "declined"],
+  [new RegExp(`${NOT}(?:sold|booked|converted|completed?|closed)\\b`, "i"), "awaiting_response"],
   // A yes that isn't on the calendar: "Unscheduled", "Needs scheduling", "Awaiting deposit". Housecall Pro's own
   // "Unscheduled" is about the estimate visit and is handled in SOURCE_QUOTE_STATUS before this runs.
   [new RegExp(`${NOT}scheduled\\b|\\bneeds? (?:to be )?schedul\\w*|\\bto be scheduled\\b|\\b(?:ready|waiting|awaiting|pending) (?:to |for )?schedul\\w*|${WAITING_ON_DEPOSIT}`, "i"), "approved"],
@@ -237,7 +241,8 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // A real "no" from the customer, including CRM stages: "Rejected", "Lost", "Closed lost", "Went with someone else".
   [/(declin|reject|disapprov|not interested|denied|customer said no|closed[\s-]*lost|\blost\b|did not win|went (?:with|elsewhere)|hired (?:someone|another)|chose (?:another|someone))/i, "declined"],
   // Said yes: "Won", "Closed won". A win is a yes, not a job: nobody knows it's on the calendar until a job says so.
-  [/\bclosed[\s-]*won\b|\bwon\b(?!')/i, "approved"],
+  // "Won't proceed" is not a win, typed on a keyboard or with a phone's curly apostrophe
+  [/\bclosed[\s-]*won\b|\bwon\b(?!['’])/i, "approved"],
   // Work exists: ServiceTitan "Sold", Housecall Pro "Copied to job", QuickBooks "Converted", PaintScout "Invoiced" and "Paid".
   [/(converted|job created|copied to job|\bsold\b|complete|invoiced|\b(?:un)?paid\b|scheduled|in progress)/i, "converted"],
   [/(approved|accepted|\bsigned\b|booked|client approved|customer approved|pro approved)/i, "approved"],

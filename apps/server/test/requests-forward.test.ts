@@ -6,6 +6,7 @@ import { loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
 import { Accounts } from "../src/core/accounts.ts";
+import { sign } from "../src/core/ops.ts";
 import { createApp, type HttpDeps } from "../src/http/app.ts";
 import { LogEmailProvider } from "../src/providers/email.ts";
 import { LogNotifier } from "../src/providers/sms.ts";
@@ -147,5 +148,38 @@ describe("new requests the owner forwards", () => {
     // the new address works; a forged one is still ignored
     expect(await forward(fresh.requestsAddress, "Fwd: New form submission", WEB_FORM.replace("karen.whitfield@gmail.com", "k.whit@example.org"))).toMatchObject({ taken: true });
     expect(await forward("requests+not-a-real-token@in.qa.test", "Fwd: hi", WEB_FORM)).toMatchObject({ ignored: true });
+  });
+
+  const oldAddressAlerts = async (bid: string) =>
+    ((await api("GET", "/review")).items as { businessId: string; title?: string }[]).filter((i) => i.businessId === bid && i.title === "A request was forwarded to an old address");
+
+  it("a deleted client's address never reaches a new client given the same id, not even as an 'old address' alert", async () => {
+    const gone = await make("summit", true);
+    const goneOwner = ((await api("GET", "/businesses/summit/links")) as { owner: string }).owner.split("/o/")[1]!;
+    await api("DELETE", "/businesses/summit");
+    const fresh = await make("summit", true);
+    expect(fresh.requestsAddress).not.toBe(gone.requestsAddress);
+    // the old company's website form still forwards here: their lead is not the new company's
+    expect(await forward(gone.requestsAddress!, "Fwd: New form submission", WEB_FORM)).toMatchObject({ ok: true, ignored: true });
+    expect(d.accounts.peek("summit")!.state.dataset.requests).toHaveLength(0);
+    expect(await oldAddressAlerts("summit")).toEqual([]);
+    expect((await app.request(`/api/owner/${goneOwner}/overview`)).status).toBe(401);
+    // the new client's own replaced address still reaches a person
+    await api("POST", "/businesses/summit/links/rotate");
+    expect(await forward(fresh.requestsAddress!, "Fwd: New form submission", WEB_FORM)).toMatchObject({ taken: false, oldAddress: true });
+    expect(await oldAddressAlerts("summit")).toHaveLength(1);
+  });
+
+  it("a client from before link keys: its keyless address is an old address after the first rotation, and nobody's once the id is reused", async () => {
+    await make("elder", true);
+    d.accounts.repo.db.run("UPDATE businesses SET link_key = NULL WHERE id = 'elder'");
+    const keyless = `requests+${sign(d.cfg.APP_SECRET, "requests|elder")}@in.qa.test`;
+    expect(await forward(keyless, "Fwd: New form submission", WEB_FORM)).toMatchObject({ taken: true });
+    await api("POST", "/businesses/elder/links/rotate");
+    expect(await forward(keyless, "Fwd: New form submission", WEB_FORM.replace("karen.whitfield@gmail.com", "k.w@example.org"))).toMatchObject({ taken: false, oldAddress: true });
+    await api("DELETE", "/businesses/elder");
+    await make("elder", true);
+    expect(await forward(keyless, "Fwd: New form submission", WEB_FORM)).toMatchObject({ ignored: true });
+    expect(await oldAddressAlerts("elder")).toEqual([]);
   });
 });

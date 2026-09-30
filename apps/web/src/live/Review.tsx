@@ -5,6 +5,7 @@ import { cx, Pill } from "../components/ui";
 import { Box, Btn, Chip, PageHead, selectCls } from "../components/table";
 import { api, type Overview, type ReviewItem, type ReviewQueue } from "./api";
 import { copy, useAction, useApi, useLive, type ClientTab, type Query } from "./store";
+import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
 import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, OutcomeForm, ReplyActions, when } from "./parts";
 import { ClearBrake } from "./Client";
 
@@ -313,7 +314,7 @@ function Item({ it }: { it: ReviewItem }) {
           </div>
           <pre className="note-body max-h-72 overflow-auto rounded-md border border-line bg-bg px-3 py-2.5 text-[13px] leading-relaxed">{it.text}</pre>
           <div className="flex flex-wrap gap-2">
-            <Btn variant="primary" disabled={!!busy} onClick={() => void run("send", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-messages/${encodeURIComponent(it.messageId)}/send`), "Approved and sent to the owner")}>
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("send", () => api<OwnerSendResult>("POST", `/businesses/${encodeURIComponent(bid)}/owner-messages/${encodeURIComponent(it.messageId)}/send`), ownerSendToast)}>
               Approve and send
             </Btn>
             <Btn onClick={() => void copy(it.text, "Text copied")}>Copy text</Btn>

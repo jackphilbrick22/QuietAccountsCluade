@@ -10,6 +10,12 @@ export interface ServiceDef {
   match: RegExp;
   /** Titles that use this service's words but are another job: "Christmas lights takedown" is not the install. */
   unless?: RegExp;
+  /**
+   * Read `unless` from the primary line only: the title, or when the title names neither this work nor its exception,
+   * the first line item that does. "Permanent lighting - front of house" with an "Additional footage - garage" line
+   * is a new system; "Garage extension" is extending one.
+   */
+  unlessPrimaryLine?: boolean;
   /** How a person refers to it: "the stump grinding", "your septic pump-out". */
   phrase: string;
   /** Months (1-12) this is normally bought/done, per climate. Empty = year-round. */
@@ -31,9 +37,11 @@ export interface ServiceDef {
   /**
    * Natural next jobs after this one. `why` is for the owner; `pitch` is the one honest sentence a
    * homeowner reads about it (left out of the note when there isn't one); `ask` is the question the note
-   * asks in place of "Want a price?" ("Want it on a regular schedule?").
+   * asks in place of "Want a price?" ("Want it on a regular schedule?"). `byPrimaryLine`: a job or quote already
+   * covers it only when that's what the record is (by its title or first line), not when one of its lines uses the
+   * words: an "Additional footage" line on a new permanent system is not the add-on.
    */
-  followOns?: { serviceId: string; afterDays: [number, number]; why: string; pitch?: string; ask?: string }[];
+  followOns?: { serviceId: string; afterDays: [number, number]; why: string; pitch?: string; ask?: string; byPrimaryLine?: boolean }[];
   /** A single honest sentence on why waiting doesn't help — used by the "problem grows" angle. */
   worseIfWaiting?: string;
   /**
