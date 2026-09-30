@@ -512,9 +512,17 @@ export function FilesTab({ id, o }: { id: string; o: Overview }) {
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
             <span>
-              <b>Forwarding exports by email:</b> the owner can forward Jobber's export emails to <span className="font-mono">import+&lt;token&gt;@</span> your inbound address.
+              <b>Forwarding exports by email:</b> the owner can forward Jobber's export emails to{" "}
+              <span className="font-mono">{links.data?.importAddress ?? "import+<token>@ your inbound address"}</span>.
             </span>
-            {links.data && <Btn onClick={() => void copy(links.data!.importToken, "Import token copied")}>Copy token</Btn>}
+            {links.data && <Btn onClick={() => void copy(links.data!.importAddress ?? links.data!.importToken, links.data!.importAddress ? "Import address copied" : "Import token copied")}>{links.data.importAddress ? "Copy address" : "Copy token"}</Btn>}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+            <span>
+              <b>New requests by email:</b> the owner forwards request emails (website form, Angi, Thumbtack, Google, a homeowner writing in) to{" "}
+              <span className="font-mono">{links.data?.requestsAddress ?? "requests+<token>@ your inbound address"}</span>, or sets one Gmail filter to do it. Each is answered from the office and texted to them.
+            </span>
+            {links.data && <Btn onClick={() => void copy(links.data!.requestsAddress ?? links.data!.requestsToken, links.data!.requestsAddress ? "Requests address copied — send it to the owner" : "Requests token copied")}>{links.data.requestsAddress ? "Copy address" : "Copy token"}</Btn>}
           </div>
         </Box>
       </Section>

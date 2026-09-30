@@ -2,7 +2,7 @@ import { scan } from "../breakage/detect.ts";
 import { summarize } from "../breakage/forecast.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
 import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
-import { readReply } from "../inbox/index.ts";
+import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
@@ -916,7 +916,7 @@ export function answerNewRequests(state: AccountState, now: ISODateTime, opts: {
       state,
       now,
       "handoff",
-      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, answer, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
+      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, answer, r.rawStatus === "forwarded" ? `${r.source && r.source !== "a forwarded email" ? `Came in through ${r.source}; you forwarded it` : "You forwarded it"} — no need to text us about this one.` : `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
       [{ kind: "customer", id: c.id }, { kind: "request", id: r.id }],
     );
     event(state, now, "inbox", "action", `New request from ${c.name} — ${answering ? (waits ? "answer goes at 7am" : "answered in minutes") : !to ? "answered (no email: owner texted)" : held ? "not answered (sending on hold): owner texted" : "not answered: owner texted"}`, r.title, [{ kind: "customer", id: c.id }]);
@@ -924,6 +924,47 @@ export function answerNewRequests(state: AccountState, now: ISODateTime, opts: {
   }
   if (n) state.updatedAt = now;
   return n;
+}
+
+/**
+ * A request the owner forwarded (website form, Angi, Thumbtack, a homeowner's email) becomes a request in
+ * their records, on the same always-on track as a Jobber request: the caller runs answerNewRequests next.
+ * The person is matched by email, then phone; someone new is added. The same request forwarded twice is one.
+ */
+export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt: ISODateTime, now: ISODateTime): { requestId: string; customerId: string; duplicate: boolean } {
+  const ds = state.dataset;
+  const email = lead.email?.toLowerCase();
+  const digits = (p: string) => p.replace(/\D/g, "").slice(-10);
+  let c = (email ? customerByEmail(ds, email) : undefined) ?? (lead.phone ? ds.customers.find((x) => x.phones.some((p) => digits(p) === digits(lead.phone!))) : undefined);
+  if (!c) {
+    const parts = (lead.name ?? "").trim().split(/\s+/).filter(Boolean);
+    const street = lead.address?.split(",")[0]?.trim();
+    c = {
+      id: makeId("c", "fwd", email ?? digits(lead.phone ?? "")),
+      sourceIds: [],
+      name: lead.name?.trim() || email || fmtPhone(lead.phone!) || "New request",
+      firstName: parts.length > 1 || (parts[0] && !/\./.test(parts[0])) ? (parts[0] ?? "") : "",
+      lastName: parts.slice(1).join(" "),
+      emails: email ? [email] : [],
+      phones: lead.phone ? [lead.phone] : [],
+      address: street ? { street, raw: lead.address } : undefined,
+      properties: [],
+      tags: ["forwarded request"],
+      createdOn: receivedAt.slice(0, 10),
+      leadSource: lead.source,
+    };
+    ds.customers.push(c);
+  } else {
+    if (email && !c.emails.includes(email)) c.emails.push(email);
+    if (lead.phone && !c.phones.some((p) => digits(p) === digits(lead.phone!))) c.phones.push(lead.phone);
+  }
+  const title = (lead.job ?? "").replace(/\s+/g, " ").trim().slice(0, 200) || "New request";
+  const requestId = makeId("r", "fwd", c.id, title.toLowerCase(), receivedAt.slice(0, 10));
+  if (ds.requests.some((r) => r.id === requestId)) return { requestId, customerId: c.id, duplicate: true };
+  ds.requests.push({ id: requestId, customerId: c.id, title, status: "new", rawStatus: "forwarded", createdOn: receivedAt.slice(0, 10), createdAt: receivedAt, source: lead.source });
+  event(state, now, "reader", "action", `Request forwarded from ${lead.source}: ${c.name}`, title, [{ kind: "customer", id: c.id }]);
+  state.updatedAt = now;
+  return { requestId, customerId: c.id, duplicate: false };
 }
 
 /** Setup never asks what trade they're in: their own quote and job titles say it. Only fills an unset trade. */

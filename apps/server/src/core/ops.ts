@@ -5,6 +5,9 @@ import {
   bannedStatIn,
   playbook,
   answerNewRequests,
+  alwaysOnFor,
+  readRequestEmail,
+  takeRequest,
   answerTime,
   approveAll,
   clearBrake,
@@ -53,6 +56,7 @@ import { ProviderError } from "../contracts.ts";
 import type { Llm } from "../agents/llm.ts";
 import type { MailCheck } from "../providers/mailcheck.ts";
 import { draftAnswer, readReplyWithClaude } from "../agents/replies.ts";
+import { readRequestWithClaude } from "../agents/requests.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
 import { NotReady, type Accounts } from "./accounts.ts";
@@ -113,7 +117,7 @@ export function unsubscribeUrl(cfg: Config, businessId: string, email: string): 
  * unsubscribe link already sent and the stored Jobber tokens. A deleted-then-recreated business id gets a new key,
  * so the old tenant's links don't carry over. Links made before keys existed keep working until the first rotation.
  */
-export type LinkKind = "owner" | "import" | "oauth|jobber";
+export type LinkKind = "owner" | "import" | "requests" | "oauth|jobber";
 
 export function linkToken(d: Deps, kind: LinkKind, bid: string): string {
   const key = d.accounts.repo.linkKey(bid);
@@ -1267,6 +1271,45 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
   await deliverOwnerMessages(d, bid);
   if (answered) await sendDue(d, bid);
   return { records, newRecoveries };
+}
+
+/**
+ * The owner forwarded a new request (a website form, an Angi or Thumbtack alert, a homeowner's email) to their
+ * requests address. It goes on the same always-on track as a Jobber request: answered from the office, and
+ * the owner texted who it is. What we can't read goes to a person, never a guess.
+ */
+export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: string; text: string; from: string; receivedAt: string }): Promise<{ taken: boolean; answered: number; duplicate?: boolean; why?: string }> {
+  const l = d.accounts.peek(bid);
+  if (!l) return { taken: false, answered: 0, why: "no such business" };
+  const b = l.state.dataset.business;
+  const ignore = [b.ownerEmail, b.replyTo, b.fromEmail, ...extractEmails(m.from)].filter((x): x is string => !!x);
+  let read = readRequestEmail({ subject: m.subject, text: m.text, from: m.from, ignore });
+  if (!read.lead && d.llm) {
+    const ai = await readRequestWithClaude(d.llm, { subject: m.subject, text: m.text, businessName: b.name }).catch(() => null);
+    if (ai && !ignore.some((e) => e.toLowerCase() === ai.email)) read = { lead: ai };
+  }
+  if (!read.lead) {
+    await raiseAlert(d, bid, { kind: "request_unread", title: "A forwarded request we couldn't read", detail: `${read.why ?? "No details we could use."} Subject: “${m.subject.slice(0, 120)}”. Call or answer them by hand.` });
+    return { taken: false, answered: 0, why: read.why };
+  }
+  const lead = read.lead;
+  let answered = 0;
+  let duplicate = false;
+  let on = true;
+  await d.accounts.withAccount(bid, (state) => {
+    const at = nowLocal(d, state);
+    // the time it reached us, not the original email's date: the owner just handed it over, and it still wants an answer
+    const t = takeRequest(state, lead, at, at);
+    duplicate = t.duplicate;
+    on = alwaysOnFor(state.dataset.business) && state.dataset.business.plan.stage !== "cancelled";
+    if (!duplicate && on) answered = answerNewRequests(state, at, { paused: l.paused });
+  });
+  if (!duplicate && !on)
+    await raiseAlert(d, bid, { kind: "request_forwarded", title: `Forwarded request from ${lead.name ?? lead.email ?? lead.phone}`, detail: `Through ${lead.source}: “${(lead.job ?? "").slice(0, 140)}”. Answering new requests starts with the paid plan, so nobody wrote back — pass it to the owner.` });
+  await deliverOwnerMessages(d, bid);
+  if (answered) await sendDue(d, bid);
+  d.accounts.repo.audit(bid, "inbound", "request.forwarded", { source: lead.source, read: lead.read, duplicate, answered });
+  return { taken: true, answered, duplicate };
 }
 
 /**

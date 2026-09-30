@@ -57,6 +57,8 @@ const schema = z.object({
   WORKER_BUSINESS_BUDGET_MS: z.coerce.number().default(20_000),
   /** Texts about money (the close, pre-charge, free month) wait for an operator by default. */
   AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
+  /** The domain your inbound email provider receives on; addresses are import+<token>@ and requests+<token>@ it. */
+  INBOUND_DOMAIN: z.string().optional(),
   /** The site's Start form posts here (POST /start). Comma-separated origins allowed to call it; empty = any. */
   SIGNUP_ORIGINS: z.string().default(""),
   SIGNUPS: z.enum(["on", "off"]).default("on"),

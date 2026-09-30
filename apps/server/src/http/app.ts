@@ -27,6 +27,7 @@ import {
   type TradeId,
   type SourceSystem,
   fmtMoney,
+  htmlToText,
   quietRates,
 } from "@qa/engine";
 import { z } from "zod";
@@ -45,6 +46,7 @@ import {
   handleInbound,
   holdSending,
   importFiles,
+  takeForwardedRequest,
   linkToken,
   ownerLink,
   plan,
@@ -525,7 +527,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses/:id/sync", async (c) => c.json((await syncFsm(d, c.req.param("id"), "jobber")) ?? { error: "Not connected" }));
 
-  const links = (id: string) => ({ owner: ownerLink(d, id), connectJobber: connectJobberLink(d, id), importToken: linkToken(d, "import", id) });
+  const at = (kind: "import" | "requests", id: string) => (d.cfg.INBOUND_DOMAIN ? `${kind}+${linkToken(d, kind, id)}@${d.cfg.INBOUND_DOMAIN}` : undefined);
+  const links = (id: string) => ({
+    owner: ownerLink(d, id),
+    connectJobber: connectJobberLink(d, id),
+    importToken: linkToken(d, "import", id),
+    importAddress: at("import", id),
+    requestsToken: linkToken(d, "requests", id),
+    /** Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email). */
+    requestsAddress: at("requests", id),
+  });
   op.get("/businesses/:id/links", (c) => {
     if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
     return c.json(links(c.req.param("id")));
@@ -872,8 +883,9 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   /**
    * Inbound email (Postmark/Mailgun-style JSON or {from, subject, text}).
-   * Two jobs: replies to our notes, and owners forwarding their Jobber/HCP export emails
-   * to their import address ("import+<token>@...") — the files are read automatically.
+   * Three jobs: replies to our notes; owners forwarding their Jobber/HCP export emails to their import
+   * address ("import+<token>@...") — the files are read automatically; and owners forwarding new requests
+   * to their requests address ("requests+<token>@...") — answered from the office like a Jobber request.
    */
   app.post("/webhooks/inbound-email/:secret", async (c) => {
     if (!secretOk(c)) return c.json({ error: "forbidden" }, 403);
@@ -895,6 +907,20 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const inReplyTo = header(/^in-reply-to$/i) ?? (body["In-Reply-To"] as string | undefined);
     const references = (header(/^references$/i) ?? (body.References as string | undefined) ?? "").split(/\s+/).filter(Boolean);
     const attachments = ((body.Attachments as { Name: string; Content: string; ContentType?: string }[] | undefined) ?? []).filter((a) => /\.(csv|tsv|txt)$/i.test(a.Name) || /csv/.test(a.ContentType ?? ""));
+    // New requests the owner forwards: the whole message (a forward is "quoted" text to a reply parser)
+    const requestsToken = to.match(/requests\+([A-Za-z0-9_.-]+)@/)?.[1];
+    if (requestsToken) {
+      const bid = readLinkToken(d, "requests", requestsToken);
+      if (!bid) {
+        repo.finishWebhook(id, "ignored", undefined, "bad requests token");
+        return c.json({ ok: true, ignored: true });
+      }
+      const html = String(body.HtmlBody ?? body["body-html"] ?? body.html ?? "");
+      const full = String(body.TextBody || body["body-plain"] || body.text || "") || (html ? htmlToText(html) : "");
+      const res = await takeForwardedRequest(d, bid, { subject, text: full, from, receivedAt: d.clock().toISOString() });
+      repo.finishWebhook(id, res.taken ? "processed" : "ignored", bid, res.why);
+      return c.json({ ok: true, ...res });
+    }
     const importToken = to.match(/import\+([A-Za-z0-9_.-]+)@/)?.[1];
     if (importToken) {
       const bid = readLinkToken(d, "import", importToken);

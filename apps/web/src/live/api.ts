@@ -133,6 +133,10 @@ export interface Links {
   owner: string;
   connectJobber: string;
   importToken: string;
+  importAddress?: string;
+  requestsToken: string;
+  /** Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email). */
+  requestsAddress?: string;
 }
 
 export interface Person {
