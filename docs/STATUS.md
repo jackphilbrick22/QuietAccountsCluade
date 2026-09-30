@@ -2,6 +2,51 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-09-30 — iteration 3
+
+**Published (private links)**
+- Call card for Jack (the 15-minute sales call, his numbers in, the script filled in):
+  https://claude.ai/artifact/ScU3nCP4u2RV6oVzJzNb3b
+
+**Done and green** (engine 829 tests, server 219, web + site typecheck clean)
+- One-tap start: the free round's first plan waits for the owner. The welcome text shows their quiet
+  rate and the first note word for word; OK (or "looks good", "send it") starts it, anything else is a
+  change request for the operator and nothing goes out.
+- Sign-up from the site (`POST /start`): company, first name, cell, consent and the file they already
+  read in their browser; the account is made, the file read, and a "New sign-up" alert plus a "ready"
+  item land in the operator's queue. Nothing is sent until the operator adds the mailing address and
+  plans. Planning now refuses without a postal address (every note carries it).
+- New requests by email for every shop: a `requests+<token>@` address per client. Forwarded website
+  forms, Angi / Thumbtack / Google / Yelp alerts and homeowners' own emails are read (rules, then Claude
+  only when the rules can't, keeping only contact details that are in the email word for word), added
+  to the records and answered from the office on the always-on track. Unreadable ones go to a person.
+- Honest money: the quiet month counts only people we followed up with; answers to someone's own new
+  request never open a ledger record or count as a comeback; one quiet-rate definition (two years,
+  14+ days old) shared by the site, the welcome text and the Friday report.
+- Owner texts: SKIP + a name (off every list, asks when a name fits several); CANCEL in one text with
+  UNDO for a day (ROSCA's simple way to stop); leaving a yearly plan early costs no more than monthly
+  would have, nor more than the jobs on the ledger in those months, and the rest is refunded (the
+  refund text goes to the operator to issue).
+- Claims library corrected from the loss research (ServiceTitan's 71% is referrals, not repeat jobs)
+  and extended with sourced lead-cost, Angi, Housecall Pro, Jobber homebuyer, Yelp and Google lines;
+  four more myths banned.
+
+**Decisions (why)**
+- Loss framing uses the owner's own file, never an industry "X% of quotes go quiet": no such figure
+  exists. Outside numbers appear only with their source beside them.
+- The site says "answered from your office, 7am to 8pm", not "in minutes", until the ledger measures it.
+- The sign-up keeps a person in the loop before the first text: it stops a spammer's number getting
+  texted, and Jack reads the first note before the owner does.
+
+**In flight**
+- Site v3 agent: the judged copy deck (loss-first), the audit pieces (guess chips, lead cost, "how many
+  would you take back", price against his number), the five named parts, one-tap Start with the file.
+- Trade-complaints research (tree, fence, painting, cleaning owners on their software): final critic pass.
+
+**Next**
+- Merge site v3, republish the site; name the parts in console and texts; adversarial re-review of
+  everything since iteration 2; the plain-language breakdown and the Blueprint republish.
+
 ## 2026-09-30 — iteration 2
 
 **Published (private links)**
