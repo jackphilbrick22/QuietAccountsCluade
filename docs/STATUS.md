@@ -2,6 +2,50 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-09-30 — iteration 2
+
+**Published (private links)**
+- Site with the in-browser Quote Audit: https://claude.ai/artifact/SwTYKddjdyLiStT5EuJk7P (source `apps/site`).
+- Breakage & Offer Blueprint v2: https://claude.ai/artifact/FfgLR9w8XWTJU3MYr3tfcj (copy in `docs/blueprint.html`).
+- Research: `docs/research/market-brief.md`, `docs/research/conversion-brief.md`.
+
+**Done and green** (engine 724 tests, server 99, web + site typecheck clean)
+- Jobber listing kept: 3 notes max per quote (fresh-quote follow-up cut to 3), quotes >= $10k and
+  phone-only people go to the owner's call list (kickoff text + console), Jobber read-only on clients
+  and quotes by default (`JOBBER_READ`), write-back off unless `JOBBER_WRITE_NOTES=on`; a resource
+  Jobber refuses is skipped with a warning, never a failed sync.
+- Site (`apps/site`): drop a quotes export, the real engine runs in a worker in the browser and shows
+  quotes never answered, the monthly leak, the call list and the first note already written. Tree,
+  fence, painting, cleaning versions; one plan; guarantee said three times; results labelled
+  owner-reported.
+- Offer v2: yearly plan ($4,970 = 12 for 10), quiet months refund a twelfth automatically, never
+  renews by itself (asked 30 days out; paused at year end without a yes), RENEW / MONTHLY by text,
+  offered at the close only when the owner's own numbers make it an easy yes.
+- Forecasts on evidence: research-brief priors (old quotes 2.5%, matching our 4 of 150) with per-type
+  ranges; backlog vs ongoing split; fit tiers A / B / audit-only replace the old 15% rule; complaint
+  brake at 0.1%; one shop's comparison group never "solid".
+- Review fixes (engine): service-due notes use the date the work was done; the guarantee is never
+  judged on the first payment day and cancelled accounts get no billing texts; one credit per job;
+  top-ups count what's already scheduled.
+
+**Decisions (why)**
+- The instant result sells: an owner sees their own quiet-quote dollars in ten seconds before any
+  signup (Explee pattern, without its fake counters or card-first trial).
+- "15–20%" is never a blanket promise: only Tier A shops see a year-one range with the backlog share.
+- AI drafts and sorts; the only automatic send is a fixed acknowledgment. A person approves anything
+  about price, dates or scope, so "a person reads every reply" stays true.
+
+**In flight**
+- Backend hardening agent: Instantly reply recipient check, a real instant campaign for new requests,
+  per-company cap off, reply backstop poller, libphonenumber, CSV encoding, reply cleaning, weekdays.
+- Copy-fix agent: 11 confirmed copy findings (oak-wilt season asks, greetings, free-look, lapsed
+  regulars, never-priced requests, owner-text originals, grammar, Re: threading, AI writer guardrail).
+
+**Next**
+- Server review fixes: route replies by thread (two clients sharing a homeowner), Instantly pause /
+  cancel / BUSY / delete, send-state and bounce handling, owner-text parsing, security defaults.
+- Re-review, then the plain-language breakdown and the ultimate offer for Jack.
+
 ## 2026-09-29 — iteration 1
 
 **Done and green**

@@ -1,0 +1,277 @@
+<title>Breakage &amp; Offer Blueprint</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@600;700&family=Manrope:wght@500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" />
+<style>
+:root {
+  --bg: #ffffff; --paper: #f6f4f0; --card: #ffffff; --ink: #0f2433; --ink-2: #3e4f5c; --ink-3: #5f6e79;
+  --line: #e4e2dd; --cell: #efede8; --accent: #c93e10; --accent-soft: #fff1ea; --ok: #14693b; --ok-soft: #e7f6ee;
+  --warn: #8a5a00; --warn-soft: #fff4d6; --navy: #0f2433; --on-navy: #e3e9ed; --on-navy-2: #8fa3b1;
+  --display: "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sans: "Manrope", -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0b1a25; --paper: #102332; --card: #122838; --ink: #e8eef2; --ink-2: #c3cdd4; --ink-3: #8fa3b1;
+  --line: #22394b; --cell: #16303f; --accent: #ff8a5c; --accent-soft: #3a2016; --ok: #5ad48a; --ok-soft: #133323;
+  --warn: #ffcf66; --warn-soft: #3a2e10; --navy: #0f2433; --on-navy: #e3e9ed; --on-navy-2: #8fa3b1; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0b1a25; --paper: #102332; --card: #122838; --ink: #e8eef2; --ink-2: #c3cdd4; --ink-3: #8fa3b1;
+  --line: #22394b; --cell: #16303f; --accent: #ff8a5c; --accent-soft: #3a2016; --ok: #5ad48a; --ok-soft: #133323;
+  --warn: #ffcf66; --warn-soft: #3a2e10; --navy: #0f2433; --on-navy: #e3e9ed; --on-navy-2: #8fa3b1; color-scheme: dark }
+*, *::before, *::after { box-sizing: border-box }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); font-size: 16.5px; line-height: 1.6; -webkit-font-smoothing: antialiased }
+.page { max-width: 980px; margin: 0 auto; padding-inline: 20px; padding-block: 0 80px }
+h1, h2, h3 { font-family: var(--display); letter-spacing: -0.02em; text-wrap: balance; margin: 0 }
+h1 { font-size: clamp(34px, 7vw, 52px); line-height: 1.05; font-weight: 700 }
+h2 { font-size: clamp(25px, 4.6vw, 34px); line-height: 1.1; font-weight: 700 }
+h3 { font-size: 19px; line-height: 1.25; font-weight: 700 }
+p { margin: 0 }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--accent) }
+.muted { color: var(--ink-3) }
+.lede { font-size: 19px; color: var(--ink-2); max-width: 62ch }
+.num { font-variant-numeric: tabular-nums }
+header.masthead { background: var(--navy); color: #fff; padding-block: 44px 40px; margin-inline: -20px; padding-inline: 20px; border-radius: 0 0 22px 22px; border: 1px solid var(--line); border-top: 0 }
+header.masthead .inner { max-width: 940px; margin: 0 auto; display: grid; gap: 14px }
+header.masthead .eyebrow { color: #ffb59a }
+header.masthead p { color: var(--on-navy); max-width: 64ch; font-size: 17.5px }
+header.masthead .meta { font-family: var(--mono); font-size: 12px; color: var(--on-navy-2); letter-spacing: .04em }
+nav.toc { display: flex; flex-wrap: wrap; gap: 6px 14px; padding-block: 16px; border-bottom: 1px solid var(--line); font-size: 14px; font-weight: 700 }
+nav.toc a { color: var(--ink-2); text-decoration: none }
+nav.toc a:hover { color: var(--accent) }
+section { padding-block: 44px 8px; display: grid; gap: 16px; scroll-margin-top: 12px }
+section > p, section > ul, section > ol { max-width: 70ch }
+ul, ol { margin: 0; padding-left: 20px; display: grid; gap: 6px }
+.cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)) }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: grid; gap: 6px; align-content: start; min-width: 0 }
+.card b.big { font-family: var(--display); font-size: 30px; letter-spacing: -.02em; line-height: 1 }
+.card .k { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3) }
+.callout { background: var(--paper); border-left: 3px solid var(--accent); border-radius: 0 12px 12px 0; padding: 14px 16px; max-width: 72ch }
+.callout.ok { border-left-color: var(--ok) }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--card) }
+table { border-collapse: collapse; width: 100%; font-size: 14px; line-height: 1.45 }
+th, td { text-align: left; vertical-align: top; padding: 10px 12px; border-top: 1px solid var(--line) }
+thead th { border-top: 0; background: var(--paper); font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); font-weight: 500; white-space: nowrap }
+td b { color: var(--ink) }
+td code, p code, li code { font-family: var(--mono); font-size: 12.5px; background: var(--cell); padding: 1px 5px; border-radius: 5px; white-space: nowrap }
+.wide table { min-width: 860px }
+.pill { display: inline-block; font-family: var(--mono); font-size: 11px; padding: 2px 7px; border-radius: 99px; white-space: nowrap }
+.pill.ev-h { background: var(--ok-soft); color: var(--ok) }
+.pill.ev-m { background: var(--warn-soft); color: var(--warn) }
+.pill.ev-u { background: var(--accent-soft); color: var(--accent) }
+.offer { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)) }
+.offer .card { border-top: 3px solid var(--accent) }
+.offer .card.free { border-top-color: var(--ok) }
+.note { font-family: var(--sans); white-space: pre-line; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; font-size: 15px; max-width: 62ch }
+.two { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)) }
+.two > * { min-width: 0 }
+.yes li::marker { color: var(--ok) }
+.no li::marker { color: var(--accent) }
+footer { margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink-3) }
+</style>
+
+<div class="page">
+<header class="masthead">
+  <div class="inner">
+    <p class="eyebrow">Quiet Accounts · Breakage &amp; Offer Blueprint</p>
+    <h1>Every quote gets a yes or a no.</h1>
+    <p>Where home-service revenue quietly leaks, why the software contractors already pay for can't stop it, and the product and offer that do. Built from a market-research pass across Jobber, Housecall Pro, ServiceTitan, QuickBooks and the reactivation tools, three real first-150 results, and an adversarial review of our own build.</p>
+    <p class="meta">v2 · 30 Sep 2026 · For Jack, operators and anyone we hire</p>
+  </div>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <a href="#thesis">The thesis</a><a href="#types">12 kinds of breakage</a><a href="#rules">Rules on every note</a><a href="#incumbents">Why incumbents miss it</a><a href="#show">Showing the owner</a><a href="#offer">The offer</a><a href="#numbers">What we can claim</a><a href="#trades">Trades</a><a href="#compliance">Compliance</a><a href="#different">Differentiation</a><a href="#built">What's built</a>
+</nav>
+
+<section id="thesis">
+  <p class="eyebrow">01 · The thesis</p>
+  <h2>Quotes don't say no. They go quiet.</h2>
+  <p class="lede">A contractor pays for a lead, drives out, prices the job and sends the quote. Then nobody says yes or no. The owner is on a roof, the homeowner is busy, and the quote dies without an answer. The same happens to requests that never got priced, "yes" answers that never got scheduled, and past customers nobody asked back.</p>
+  <div class="cards">
+    <div class="card"><span class="k">Dow's Tree Service · NH</span><b class="big num">4 booked</b><span class="muted">from 150 old quotes · 12 wrote back · over $10k in jobs</span></div>
+    <div class="card"><span class="k">Nelson Fence · CT</span><b class="big num">4 booked</b><span class="muted">from 150 old quotes · 12 wrote back · about $19,800</span></div>
+    <div class="card"><span class="k">Capital City Landscaping · NH</span><b class="big num">17 booked</b><span class="muted">from 150 past customers · 28 wrote back · about $34,000</span></div>
+  </div>
+  <p class="muted">Owner-reported counts of each shop's first 150, with no comparison group. Old quotes booked at about 2.7% (4 of 150); past customers at about 11%.</p>
+  <div class="callout"><b>The product is the system, not a dashboard.</b> It reads the shop's records, finds every quiet quote, request and customer, writes one short note per person in the company's name, reads every reply, texts the owner the ones who want the work, and keeps doing it every month on everything new, with a ledger that proves which jobs came back. The owner never logs in.</div>
+</section>
+
+<section id="types">
+  <p class="eyebrow">02 · Breakage</p>
+  <h2>Twelve kinds of breakage, each with its own play.</h2>
+  <p>A <i>prior</i> is the share of eligible records we expect to book within about 90 days of a full sequence. We now use the research brief's mid values, with a low–high range per type that drives the careful forecast. Most are still unproven and are labelled that way.</p>
+  <div class="table-wrap wide" role="region" aria-label="Breakage types" tabindex="0">
+  <table>
+    <thead><tr><th>Breakage</th><th>How we detect it</th><th>Why the incumbents miss it</th><th>Prior (range)</th><th>Our play</th></tr></thead>
+    <tbody>
+      <tr><td><b>Quotes nobody answered</b><br><code>unanswered_quote</code></td><td>Awaiting response, no job. Age from the last send; viewed-in-client-hub date when present.</td><td>Jobber sends at most 2 reminders within 90 days, going forward only. HCP stops at 3, ServiceTitan at 4, QuickBooks sends none.</td><td class="num">2.5% (1.5–4) <span class="pill ev-m">owner-reported + RCT</span></td><td>3 notes max, then close the file either way. Viewed quotes first.</td></tr>
+      <tr><td><b>Quotes filed away</b><br><code>archived_quote</code></td><td>Archived with no job; a fixed archive gap means auto-archive.</td><td>Auto-archive ends the thread; win-back campaigns are paid add-ons that only run forward.</td><td class="num">2% (1–3.5) <span class="pill ev-u">unproven</span></td><td>Same as above, assuming two reminders already went out.</td></tr>
+      <tr><td><b>Asked for changes</b><br><code>changes_requested</code></td><td>Changes requested, no newer quote.</td><td>The quote disappears from client hub until resent; follow-ups skip this status.</td><td class="num">10% (5–20) <span class="pill ev-u">unproven</span></td><td>"Tell me what you'd like changed and I'll get you an updated price this week."</td></tr>
+      <tr><td><b>Said yes, never scheduled</b><br><code>approved_unscheduled</code></td><td>Approved quote with no job.</td><td>Only internal dashboard prompts: "ships passing in the night".</td><td class="num">30% (15–45) <span class="pill ev-m">analog</span></td><td>Owner confirms it wasn't done, then "Want to lock in a date?"</td></tr>
+      <tr><td><b>Asked for a price, never quoted</b><br><code>unquoted_request</code></td><td>Request with no quote, or an unsent draft.</td><td>Requests auto-archive; pipeline tasks are internal only. 23% of firms never answered a web lead (HBR).</td><td class="num">5% (3–10) <span class="pill ev-m">analog RCT</span></td><td>Always-on: answered in minutes, 7am–8pm, promising only a call, never a price or a date.</td></tr>
+      <tr><td><b>Add-ons left on the table</b><br><code>declined_option</code></td><td>Optional line items not taken on an approved quote.</td><td>Unselected options vanish at conversion.</td><td class="num">3% (2–6) <span class="pill ev-u">unproven</span></td><td>After the job, at the trade's window: sealing after a pour, stump after a removal.</td></tr>
+      <tr><td><b>Said no a while ago</b><br><code>declined_quote</code></td><td>Declined (HCP Lost, ST Dismissed, QBO Rejected). Jobber has no declined status.</td><td>Software-closed quotes aren't a customer's "no"; expired ones go back to the unanswered play.</td><td class="num">1% (0.5–1.5) <span class="pill ev-u">unproven</span></td><td>One "we can refresh this price" check-in after 120+ days.</td></tr>
+      <tr><td><b>Hired once, never back</b><br><code>one_and_done</code></td><td>One closed job 300+ days ago, not recurring.</td><td>Reactivation is a paid, email-only, forward-only add-on.</td><td class="num">2% (1–3.5) <span class="pill ev-m">weak analog</span></td><td>Only when the trade gives a reason: an interval, a season or a follow-on job.</td></tr>
+      <tr><td><b>Regulars gone quiet</b><br><code>lapsed_regular</code></td><td>2+ visits of a real routine, current gap over 1.5× their usual.</td><td>Shows up only in reports.</td><td class="num">8% (5–12) <span class="pill ev-m">Capital City 17/150</span></td><td>Pre-season "keep your regular day?"</td></tr>
+      <tr><td><b>Due for service</b><br><code>service_due</code></td><td>Last job's service line against the trade's interval (septic, chimney, gutters, stain).</td><td>No FSM has a due-date engine.</td><td class="num">8% (4–12) <span class="pill ev-m">reminder meta-analysis</span></td><td>"We did the pump-out for you back in November 2023 — you're coming up on due."</td></tr>
+      <tr><td><b>Next job nobody offered</b><br><code>missed_upsell</code></td><td>Completed service with no quote for its natural follow-on.</td><td>Nothing native does this.</td><td class="num">2% (1–4) <span class="pill ev-u">unproven</span></td><td>Follow-on offer timed to the trade.</td></tr>
+      <tr><td><b>Work done, not paid</b><br><code>unpaid_invoice</code></td><td>Balance past due.</td><td>Mostly covered already: FSMs send their own reminders.</td><td class="num">5% incr. <span class="pill ev-h">RCTs</span></td><td>Shown to the owner as "cash to collect" only. Never messaged, never in lift or the guarantee.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="rules">
+  <p class="eyebrow">03 · Rules</p>
+  <h2>What every note obeys.</h2>
+  <div class="two">
+    <ul class="yes">
+      <li><b>Three notes at most</b> per quote or job, then it's closed out either way.</li>
+      <li><b>Checked twice:</b> at planning and again at send, against the latest records. Converted, rebooked, do-not-contact, unsubscribed, bounced or commercial (unless turned on) never get a note.</li>
+      <li><b>Owner veto first:</b> "go-away" prices (3× the shop's own usual), realtor/HOA/insurance bids and bad-customer tags are held for a look.</li>
+      <li><b>The call list:</b> quotes of $10,000 or more and people with only a phone number are never emailed. The owner gets them, biggest first.</li>
+      <li><b>Stale prices:</b> after 180 days a note never repeats the old number; the owner's hand-off says to re-price.</li>
+    </ul>
+    <ul class="yes">
+      <li><b>Only facts from the record:</b> their job, their street, the month. No invented crews, dates, discounts or free visits.</li>
+      <li><b>An easy out:</b> "Just reply 'pass' and I'll close it out." Every "pass" becomes a loss reason for the owner.</li>
+      <li><b>Any reply stops the sequence.</b> A price or a date goes to the owner by text within minutes; a stop is honored everywhere that minute.</li>
+      <li><b>Booked out:</b> the owner texts BUSY until Nov 15 and new work waits until about three weeks before they open.</li>
+      <li><b>Seasons:</b> no oak pruning offered April–October (oak wilt), emerald ash borer treatment timed to May–June, septic on its real interval.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="incumbents">
+  <p class="eyebrow">04 · Why the incumbents miss it</p>
+  <h2>Every native tool only works going forward, and none reads the replies.</h2>
+  <div class="table-wrap" role="region" aria-label="What field-service software does" tabindex="0">
+  <table>
+    <thead><tr><th>Platform</th><th>Native follow-up</th><th>Hard limits</th><th>Works the backlog?</th><th>Reads replies?</th></tr></thead>
+    <tbody>
+      <tr><td><b>Jobber</b></td><td>2 quote reminders; paid campaigns (Marketing Suite $99 add-on)</td><td>Awaiting-response quotes only, ≤90 days, one channel; campaigns are email templates with a button</td><td>No: "Automations will not apply to any past items retroactively"</td><td>No</td></tr>
+      <tr><td><b>Housecall Pro</b></td><td>Pipeline resends the estimate 3×</td><td>Timing locked; estimates auto-expire</td><td>No</td><td>No</td></tr>
+      <tr><td><b>ServiceTitan</b></td><td>Marketing Pro unsold-estimate texts (≤4)</td><td>Excludes won and dismissed; unsold options on won jobs hidden</td><td>Audience-based</td><td>Stops on a call or booking</td></tr>
+      <tr><td><b>QuickBooks, LMN, Kickserv</b></td><td>None for estimates</td><td>Estimates sit "Pending" forever</td><td>–</td><td>–</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>The done-for-you and AI tools (Hatch at $600–1,500/mo annual, Podium, Birdeye, GoHighLevel reactivation agencies) sell sending. The complaints are consistent: "Spent 15 grand… promised 15%… didn't see any increase", "The AI would just make things up", "predatory auto-renewals". <b>Sending scales. Answering doesn't.</b> We win on the answering, the proof and how easy we are to leave.</p>
+</section>
+
+<section id="show">
+  <p class="eyebrow">05 · Showing the owner the problem</p>
+  <h2>Their own numbers, before they give us anything.</h2>
+  <p>Owners treat a 30–60% loss rate as proof their prices are right. Most of those "losses" never got a yes or a no. So the first thing they see is their own export, read in their browser in about ten seconds (the site's Quote Audit; nothing is uploaded):</p>
+  <ol>
+    <li><b>What their software shows vs what happened:</b> quotes sent → became work · said no · <b>never answered</b>, with dollars.</li>
+    <li><b>The monthly leak:</b> "Every month about $32,300 of what you quote goes quiet. That's 51 cents of every quoted dollar, and nobody said no to it." <span class="muted">(sample tree company)</span></li>
+    <li><b>Lead money already spent</b> on quotes that went quiet, when they tell us what a lead costs.</li>
+    <li><b>The call list:</b> big quotes and phone-only people worth a call from them.</li>
+    <li><b>One finished note</b> to their hottest quiet quote, with their company name typed in live. Then: "Follow up on your first 150 like this. Free."</li>
+  </ol>
+  <div class="note">Hi Mark,
+
+This is Sarah with Ridgeline Tree Co. We priced the oak for you back in August. Did you still want us to take care of that?
+
+If not, just reply "pass" and I'll close it out.
+
+Sarah</div>
+  <p class="muted">A real first note from the engine (sample data). The footer adds the company's postal address, why they're getting it, and a one-word stop.</p>
+</section>
+
+<section id="offer">
+  <p class="eyebrow">06 · The offer</p>
+  <h2>No risk to start, a reason to stay every month.</h2>
+  <div class="offer">
+    <div class="card free"><span class="k">Start</span><b class="big">$0</b><p><b>We work your first 150 customers free.</b> No card, no call, no contract. The owner reads and OKs the first note before anything goes out. Every yes is texted to them the same day.</p></div>
+    <div class="card"><span class="k">Then</span><b class="big num">$497/mo</b><p><b>One plan, everything:</b> every new request answered in minutes, every quote followed to a yes or a no, past customers asked back when due, every reply read, the call list, the ledger. Cancel with a text.</p></div>
+    <div class="card"><span class="k">Quiet Month Guarantee</span><b class="big">$0</b><p><b>Any month nobody asks for a price or a date, that month is free.</b> Automatic, counted on the ledger by published rules, texted before every charge. Never called "money-back"; nothing to claim.</p></div>
+    <div class="card"><span class="k">Yearly, only when it's an easy yes</span><b class="big num">$4,970</b><p>Twelve months for the price of ten. Price locked, a quiet month still refunds a twelfth ($414.17), nothing renews without a yes (asked 30 days out). Offered only when the free round alone beat a year's price, or the careful forecast is 5× it.</p></div>
+  </div>
+  <div class="callout ok"><b>Why they pay month after month.</b> The backlog alone takes months to work at a safe 75 new people a week. Then always-on keeps running on everything new: requests answered in minutes, fresh quotes followed to an answer, regulars and service clocks coming due. And the guarantee makes every month justify itself. The weekly text shows fees paid next to jobs traced.</div>
+  <p><b>The Hyros lesson, applied honestly.</b> Keep the specific promise on the same inputs ("Same quotes. Same Jobber. Nothing goes quiet."), measurement on real jobs, and done-for-you setup. Drop what hurt Hyros: a guarantee with a claim window, auto-renewal and a chargeback clause. The price anchors against the owner's own number: "Your typical quote is $5,300. One yes a month covers it."</p>
+</section>
+
+<section id="numbers">
+  <p class="eyebrow">07 · Forecasts and claims</p>
+  <h2>We say less than we could, and all of it is true.</h2>
+  <div class="two">
+    <div class="card"><h3>Fit tiers (screened on their own export)</h3>
+      <ul>
+        <li><b>Tier A</b>: real revenue from invoices or jobs, careful year one ≥ 8%, likely ≥ 15%, dead quotes ≥ 1.5× revenue, warm work ≥ 0.4×. May be shown "9–16% in year one, 84% of it the one-time backlog". Never a recurring percentage.</li>
+        <li><b>Tier B</b>: careful year one ≥ 3× a year's fee and 150+ reachable people. Shown in dollars only; qualifies for the guarantee.</li>
+        <li><b>Everyone else</b>: the free audit, no promise.</li>
+      </ul>
+      <p class="muted">On sample data, tree, septic, lawn and pressure washing reach Tier A; fence and painting reach Tier B; the cleaning sample misses Tier B by $34.</p>
+    </div>
+    <div class="card"><h3>Claims</h3>
+      <ul class="yes">
+        <li>Jobber: 2 reminders, ≤90 days, not retroactive (Help Center).</li>
+        <li>About 1 in 5 pros answer a new lead within the hour (Jobber 2026, n=1,050).</li>
+        <li>About 39% of tree estimates never become a job (ArboStar 2025).</li>
+        <li>Our three shops' numbers, labelled owner-reported.</li>
+      </ul>
+      <ul class="no">
+        <li>"80% of sales need 5 follow-ups", "44% give up", "98% SMS open", "7× if you respond in 5 minutes", vendor growth claims, "risk-free", "money-back", "guaranteed 15–20%". The copy linter blocks them.</li>
+      </ul>
+    </div>
+  </div>
+  <p><b>How we count a win.</b> Traced: the homeowner replied, or the very quote we chased converted (180-day window). "Came back after our note" with no reply is shown separately and never counted. Value is what was invoiced. One credit per job. A "Not ours" button removes any line. A comparison group (a staggered 10% who start ~60 days late) measures real lift; a single shop's group is "early" or "fair", never "solid".</p>
+</section>
+
+<section id="trades">
+  <p class="eyebrow">08 · Trades</p>
+  <h2>Tree, fence, painting and cleaning first.</h2>
+  <div class="cards">
+    <div class="card"><h3>Tree</h3><p>Quotes die three ways: no response, shopping, or "got someone sooner". The note offers a real open week, never a fake one. No oak pruning April–October. Winter is the slow season, so dormant-season work gets asked for in fall.</p></div>
+    <div class="card"><h3>Fence</h3><p>Stalls on permits, surveys, HOAs and neighbors. The note removes the blocker ("we can check HOA rules and pull the permit"). Spring installs fill months out, so pre-book asks run in winter. Stain every 2–3 years.</p></div>
+    <div class="card"><h3>Painting</h3><p>Three bids and "we'll talk it over". Most painters never follow up; the one who does is remembered. Exterior asks respect the season; interior runs year-round. Phased scope ("just the front and sides") answers price.</p></div>
+    <div class="card"><h3>Cleaning</h3><p>The leak is regulars who skip a month and never return, and one-time deep cleans that never become recurring. Win-back at 30–45 days; "keep your regular day?" No free-look promises in this trade.</p></div>
+  </div>
+  <p class="muted">Every other trade runs on the same engine through its playbook (septic, lawn, landscape, pressure washing, gutters, chimney, HVAC, pest, pool, concrete and more). The trade is read from the shop's own job titles; nobody has to pick it.</p>
+</section>
+
+<section id="compliance">
+  <p class="eyebrow">09 · Compliance, enforced in code</p>
+  <h2>The rules the software won't let anyone break.</h2>
+  <ul>
+    <li><b>CAN-SPAM:</b> honest headers and subjects (no fake "Re:" on a first note), the postal address and a why-line in every commercial note, one-click unsubscribe, opt-outs honored within minutes, everywhere.</li>
+    <li><b>Deliverability brakes:</b> pause at 3% bounces, 0.1% complaints, or 1% "who is this?" replies. At most 3 notes per quote. Addresses checked before sending.</li>
+    <li><b>No texting homeowners.</b> Owners only. Marketing texts need stored written consent, 10DLC registration and DNC checks, so they stay off.</li>
+    <li><b>AI:</b> sorts replies and drafts answers; the only thing it sends on its own is a fixed acknowledgment ("Dave will give you a call this afternoon"). Price, dates, discounts and scope go to a person.</li>
+    <li><b>Collections:</b> never messaged. Unpaid invoices appear only as "cash to collect".</li>
+    <li><b>Jobber app listing:</b> read-only on clients and quotes by default, nothing written back unless switched on, 3 notes max, quotes over $10,000 left for the owner to call.</li>
+  </ul>
+</section>
+
+<section id="different">
+  <p class="eyebrow">10 · Differentiation</p>
+  <h2>Nobody else combines these eight.</h2>
+  <ol>
+    <li><b>Done for you.</b> The owner forwards one email and OKs one note.</li>
+    <li><b>The backlog and the whole lifecycle</b>, not just new quotes going forward.</li>
+    <li><b>Timing tuned to each trade</b> and season.</li>
+    <li><b>One-to-one notes about their own job</b>, in the company's name, three at most.</li>
+    <li><b>Replies read and routed</b> in minutes; the owner gets a text with the name, number and what they said.</li>
+    <li><b>Proof from invoices</b>, with published counting rules and a comparison group.</li>
+    <li><b>Month to month</b>, cancel by text, and an automatic Quiet Month Guarantee.</li>
+    <li><b>Jobber-first, CSV for everything else.</b> Keep Jobber; we work from its export.</li>
+  </ol>
+</section>
+
+<section id="built">
+  <p class="eyebrow">11 · What's built</p>
+  <h2>The software behind it.</h2>
+  <div class="cards">
+    <div class="card"><h3>Engine</h3><p>Reads Jobber, Housecall Pro, ServiceTitan, QuickBooks or any CSV; finds the 12 kinds of breakage; plans, writes and lints every note; reads replies; keeps the ledger; runs billing and the guarantee. 724 tests.</p></div>
+    <div class="card"><h3>Server</h3><p>API, SQLite store, worker, webhooks, owner texts (BOOKED 2400, BUSY, CANCEL, RENEW), Jobber OAuth sync, Instantly sending, Claude reply reader and drafter. 99 tests, end to end.</p></div>
+    <div class="card"><h3>Site</h3><p>Drop a quotes export and see the leak in ten seconds, in the browser. Tree, fence, painting and cleaning versions.</p></div>
+    <div class="card"><h3>Operator console</h3><p>Every client, what's waiting on the owner, the call list, sending health, fit, ledger, drafts to send with one click.</p></div>
+  </div>
+  <div class="callout"><b>Next.</b> The adversarial review confirmed 55 findings. The engine-side ones are fixed: service-due dates, the first-month guarantee, one credit per job, and top-up pacing. The copy fixes are in progress. Server routing when two clients share a homeowner, Instantly pause/cancel, and owner-text parsing come next, then a re-review. Open questions for counsel and Jobber are listed in the research brief (§12).</div>
+</section>
+
+<footer>Quiet Accounts · 9 Carter St, Concord, NH 03301 · Evidence tags: <span class="pill ev-h">primary</span> <span class="pill ev-m">secondary / analog</span> <span class="pill ev-u">unproven</span></footer>
+</div>
