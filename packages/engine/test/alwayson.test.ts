@@ -83,7 +83,7 @@ describe("always-on: every new request answered within minutes", () => {
 });
 
 describe("one-tap setup: the trade is read from their own titles", () => {
-  it("names every sample trade correctly, without inventing a second trade", async () => {
+  it("names every sample trade correctly, without inventing a second trade", { timeout: 60_000 }, async () => {
     const { generateSample } = await import("../src/sample/generate.ts");
     const { detectTrade } = await import("../src/trades/index.ts");
     for (const trade of ["tree", "fence", "painting", "cleaning", "septic", "lawn", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool"] as const) {

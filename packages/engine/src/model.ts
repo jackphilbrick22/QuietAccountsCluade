@@ -484,6 +484,12 @@ export interface Reply {
    * in silence while the owner is up a tree. `promise` is what the owner is now on the hook for.
    */
   ack?: { text: string; promise: string; sentAt?: ISODateTime; error?: string };
+  /** Where to answer them: the thread this reply belongs to (per sending route). */
+  thread?: { subject?: string; messageId?: string; replyEmailId?: string; toAccount?: string };
+  /** An AI-drafted answer to their question, waiting for one click (never sent on its own). */
+  draft?: { text: string; needsOwner: boolean; at: ISODateTime };
+  /** What we wrote back in this thread (instant answers, drafts sent, typed replies). */
+  answers?: { text: string; at: ISODateTime; by: "auto" | "operator" | "owner" }[];
 }
 
 export interface ReplyExtract {

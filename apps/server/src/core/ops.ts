@@ -2,6 +2,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import {
   addDays,
   adoptTrade,
+  bannedStatIn,
+  playbook,
   answerNewRequests,
   approveAll,
   counted,
@@ -35,7 +37,7 @@ import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundP
 import { ProviderError } from "../contracts.ts";
 import type { Llm } from "../agents/llm.ts";
 import type { MailCheck } from "../providers/mailcheck.ts";
-import { readReplyWithClaude } from "../agents/replies.ts";
+import { draftAnswer, readReplyWithClaude } from "../agents/replies.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
 import type { Accounts } from "./accounts.ts";
@@ -398,6 +400,7 @@ export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string |
       // the engine reasons in the business's local time ("call you today" depends on it)
       const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
       reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: ev.inReplyTo }, override);
+      if (reply) reply.thread = { subject: ev.subject, messageId: ev.messageId, replyEmailId: ev.replyEmailId, toAccount: ev.toAccount };
       if (reply && !["auto_reply", "bounce"].includes(reply.intent)) {
         const name = customerById(state.dataset, reply.customerId)?.name ?? reply.from;
         note = fsmNote(state, reply.customerId, reply.opportunityId, `Quiet Accounts: ${name} replied to our follow-up (${INTENT_WORDS[reply.intent] ?? "replied"}): "${oneLine(reply.text, 400)}"`);
@@ -405,6 +408,21 @@ export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string |
     });
     if (note) queueFsmNote(d, bid, note);
     const hot = reply as Reply | undefined;
+    // a question gets a specific answer drafted for one-click sending (grounded only in what we know)
+    if (hot && hot.intent === "question" && d.llm) {
+      const st = d.accounts.peek(bid)?.state;
+      const b = st?.dataset.business;
+      const o = st ? oppById(st.scan?.opportunities, hot.opportunityId) : undefined;
+      if (b && st) {
+        const services = [b.trade, ...b.otherTrades].flatMap((t) => playbook(t).services.map((sv) => sv.label.toLowerCase()));
+        const draft = await draftAnswer(d.llm, { question: hot.text, job: o?.jobPhrase ?? "their project", businessName: b.name, signer: b.signerName, services }).catch(() => null);
+        if (draft?.draft && !bannedStatIn(draft.draft))
+          await d.accounts.withAccount(bid, (s) => {
+            const live = s.replies.find((x) => x.id === hot.id);
+            if (live) live.draft = { text: draft.draft, needsOwner: draft.needsOwner, at: nowLocal(d, s) };
+          });
+      }
+    }
     if (hot?.ack && !hot.ack.sentAt) {
       const task = { replyId: hot.id, to: email ?? ev.from, subject: ev.subject ?? "", messageId: ev.messageId ?? "", replyEmailId: ev.replyEmailId ?? "", toAccount: ev.toAccount ?? "" };
       const tz = d.accounts.peek(bid)?.state.dataset.business.timezone ?? "America/New_York";
@@ -808,7 +826,57 @@ export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void
     const live = s.replies.find((x) => x.id === r.id);
     if (!live?.ack) return;
     if (error) live.ack.error = error;
-    else live.ack.sentAt = nowLocal(d, s);
+    else {
+      live.ack.sentAt = nowLocal(d, s);
+      live.answers = [...(live.answers ?? []), { text: live.ack.text, at: live.ack.sentAt, by: "auto" }];
+    }
   });
   if (error) d.log(`[ack] ${bid} ${r.id}: ${error}`);
+}
+
+/**
+ * Write back to a homeowner in their own thread — from the console (typed or a one-click draft) or the
+ * instant answer. Direct mail threads under their Message-ID; Instantly answers from the receiving mailbox.
+ */
+export async function answerInThread(d: Deps, bid: string, replyId: string, text: string, by: "auto" | "operator" | "owner"): Promise<{ ok: boolean; error?: string }> {
+  const state = d.accounts.peek(bid)?.state;
+  const r = state?.replies.find((x) => x.id === replyId);
+  if (!state || !r) return { ok: false, error: "No such reply" };
+  const clean = text.trim();
+  if (!clean) return { ok: false, error: "Nothing to send" };
+  const banned = bannedStatIn(clean);
+  if (banned) return { ok: false, error: `Remove the unsourced stat first: ${banned}` };
+  if (state.suppressions[r.from]) return { ok: false, error: "They asked us to stop — nothing more goes to them." };
+  const b = state.dataset.business;
+  const subject0 = r.thread?.subject ?? "your note";
+  const subject = /^re:/i.test(subject0) ? subject0 : `Re: ${subject0}`;
+  try {
+    if (d.email.kind === "direct") {
+      await d.email.send({
+        businessId: bid,
+        touchId: `ans_${r.id}_${(r.answers?.length ?? 0) + 1}`,
+        customerId: r.customerId ?? "",
+        to: r.from,
+        toName: customerById(state.dataset, r.customerId)?.name ?? "",
+        fromName: `${b.signerName} at ${b.name}`,
+        replyTo: b.replyTo,
+        subject,
+        text: clean,
+        inReplyTo: r.thread?.messageId || undefined,
+        references: r.thread?.messageId ? [r.thread.messageId] : undefined,
+      });
+    } else if (d.email.replyTo && r.thread?.replyEmailId && r.thread.toAccount) {
+      await d.email.replyTo(b, { replyEmailId: r.thread.replyEmailId, account: r.thread.toAccount, to: r.from, subject }, clean);
+    } else return { ok: false, error: "No thread to answer in" };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  await d.accounts.withAccount(bid, (s) => {
+    const live = s.replies.find((x) => x.id === replyId);
+    if (!live) return;
+    const at = nowLocal(d, s);
+    live.answers = [...(live.answers ?? []), { text: clean, at, by }];
+    if (live.draft && by !== "auto") live.draft = undefined;
+  });
+  return { ok: true };
 }

@@ -27,7 +27,7 @@ import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
 import { NotFound } from "../core/accounts.ts";
 import { localIso } from "../core/clock.ts";
-import { approve, deliverOwnerMessages, handleInbound, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
+import { answerInThread, approve, deliverOwnerMessages, handleInbound, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
 import { verifyTwilioSignature } from "../providers/sms.ts";
 
 export interface HttpDeps extends Deps {
@@ -312,6 +312,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.post("/businesses/:id/replies/:rid/outcome", async (c) => {
     const body = Outcome.parse(await c.req.json());
     await logOutcome(c.req.param("id"), c.req.param("rid"), body.outcome, body.value);
+    return c.json({ ok: true });
+  });
+
+  // Write back in the homeowner's thread: a typed reply, or the AI draft as-is (one click).
+  const Answer = z.object({ text: z.string().max(4000).optional(), useDraft: z.boolean().optional() });
+  op.post("/businesses/:id/replies/:rid/answer", async (c) => {
+    const body = Answer.parse(await c.req.json());
+    const bid = c.req.param("id");
+    const r = d.accounts.peek(bid)?.state.replies.find((x) => x.id === c.req.param("rid"));
+    if (!r) return c.json({ error: "No such reply" }, 404);
+    const text = body.useDraft ? r.draft?.text : body.text;
+    if (!text) return c.json({ error: body.useDraft ? "No draft to send" : "Write something to send" }, 400);
+    const res = await answerInThread(d, bid, r.id, text, "operator");
+    if (!res.ok) return c.json({ error: res.error }, 400);
+    repo.audit(bid, c.get("actor") ?? "operator", "reply.answer", { rid: r.id, draft: !!body.useDraft });
     return c.json({ ok: true });
   });
 
