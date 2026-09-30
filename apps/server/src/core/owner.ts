@@ -152,20 +152,15 @@ function plainWords(text: string, shortName?: string): string {
   return t.split(/\s+/).filter((w) => w && (!shortName || w !== shortName.toLowerCase())).join(" ");
 }
 const AMT = "\\$?\\d+(\\.\\d+)?k?";
-/** Words for a person, a company or a bid: never the thing the owner booked ("the cheaper guy", "the lowest bid"). */
-const PERSONISH = "(guy|guys|gal|company|companies|crew|one|bid|bids|quote|contractor|contractors|competitor|competition|outfit|service|person|people|team|other|others|lowest|cheapest)";
-const BOOKED_WHAT = `(it|her|him|them|us|the job|the work|(the|her|his|their) (?!${PERSONISH}\\b)[a-z]+( (?!${PERSONISH}\\b)[a-z]+)?)`;
-const BOOKED_WHEN = "(today|tonight|tomorrow|this week|next week|this month|next month)";
 /**
- * A booking that is plainly the owner's: the owner (or no one) as the subject ("Booked 2400", "Sold it 5k", "Booked
- * the dead oak, 1800", "We booked him for 1500"), the amount alone, or the homeowner booking us ("She booked us for
- * 2400"). She/he/they with anything else ("They got the job", "She booked the cheaper guy") is someone else's win as
- * often as ours. The amount comes last, alone: "for 10 tomorrow" is a time.
+ * A booking that is plainly the owner's, in the words of the command we give them ("BOOKED 2400 #K7Q"): the word and
+ * the amount ("Booked 2400", "Sold it 2.4k", "Won it, 3200"), the amount alone, or the homeowner booking us ("She
+ * booked us for 2400"). Nothing in between: every free-form object tried so far ("the cheaper guy", "her tmrw 1030",
+ * "the low bidder") let someone else's win or an appointment time through. Anything else read as a booking goes to
+ * Claude, or to a person.
  */
 const PLAIN_BOOKING = new RegExp(
-  `^((we|i) )?(just )?(booked|book it|sold|closed|closed it|got the job|got it|landed it|signed|won)( ${BOOKED_WHAT})?( ${BOOKED_WHEN})?( for)?( ${AMT})?$` +
-    `|^${AMT}( (booked|sold))?$` +
-    `|^(she|he|they) (just )?(booked|hired|signed with|went with|picked|chose|signed) (us|me|it)( ${BOOKED_WHEN})?( for)?( ${AMT})?$`,
+  `^(just )?(booked|sold|won|closed)( it)?( for)?( ${AMT})?$` + `|^${AMT}( (booked|sold))?$` + `|^(she|he|they) (just )?(booked|hired|picked|chose) us( for)?( ${AMT})?$`,
 );
 /** A day, a time or a date anywhere in it: a number next to one may be "at 1030" or "March 2027", not a price. */
 const TIMEY = /\b(at|today|tonight|tomorrow|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|am|pm|morning|afternoon|evening|noon)\b/;

@@ -182,8 +182,14 @@ Updated every loop iteration. Newest first.
   no day, date or time word anywhere in the text, and "at" no longer leads into an amount. Engine 1,232,
   server 261.
 
+- Seventeenth adversarial review: the plain-booking rule's free "thing booked" slot was still a way in
+  ("Booked her tmrw 1030" as $1,030, "Booked the cheaper roofer, 1500" as ours). The rule is now the command
+  we teach the owner and nothing else: BOOKED 2400, booked it 2400, sold 2.4k, won it, the amount alone, or
+  "she booked us for 2400". Any other booking text goes to Claude, or to Jack with no key. Engine 1,232,
+  server 261.
+
 **Next**
-- A seventeenth review pass; stop when a pass finds nothing material.
+- An eighteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 
