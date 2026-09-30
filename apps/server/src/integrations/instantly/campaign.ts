@@ -216,8 +216,16 @@ function baseBody(name: string, schedule: InstantlySchedule, steps: InstantlySte
   return body;
 }
 
+/**
+ * A client with its own sending mailbox (connected in Instantly) sends only from it, so one client's list never
+ * spends another's reputation; everyone else rotates through the server's mailboxes. Applies when a campaign is created.
+ */
+function mailboxesFor(business: Pick<BusinessProfile, "fromEmail">, settings: CampaignSettings): CampaignSettings {
+  return business.fromEmail?.trim() ? { ...settings, sendingAccounts: [business.fromEmail.trim()] } : settings;
+}
+
 export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
-  const body = baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), settings);
+  const body = baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), mailboxesFor(business, settings));
   const perDay = dailyNewLeads(business, settings.dailyLimit);
   if (perDay !== undefined) body.daily_max_leads = perDay;
   return body;
@@ -231,7 +239,7 @@ export function buildInstantSchedule(business: Pick<BusinessProfile, "timezone">
 /** The 1-step campaign that answers a new request within minutes: new leads first, no new-lead cap, minimal gaps. */
 export function buildInstantCampaignBody(business: BusinessProfile, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
   return {
-    ...baseBody(instantCampaignName(business), buildInstantSchedule(business, ref), buildSteps(1), settings),
+    ...baseBody(instantCampaignName(business), buildInstantSchedule(business, ref), buildSteps(1), mailboxesFor(business, settings)),
     prioritize_new_leads: true,
     email_gap: 1,
     random_wait_max: 1,

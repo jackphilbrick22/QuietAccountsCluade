@@ -53,6 +53,8 @@ const schema = z.object({
   /** Worker cadence. */
   WORKER_INTERVAL_MS: z.coerce.number().default(60_000),
   WORKER_ENABLED: z.enum(["true", "false"]).default("true"),
+  /** How long one business's turn may hold up a tick before the worker moves on to the others. */
+  WORKER_BUSINESS_BUDGET_MS: z.coerce.number().default(20_000),
   /** Texts about money (the close, pre-charge, free month) wait for an operator by default. */
   AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
   /** Pre-send check that each address's domain accepts mail (DNS MX). "off" skips it. */

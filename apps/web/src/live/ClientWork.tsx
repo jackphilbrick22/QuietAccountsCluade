@@ -6,9 +6,9 @@ import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
 import { FileDrop, KIND_LABEL, SOURCE_LABEL, toFileIns, type StagedFile } from "../components/files";
 import { hourLabel, WEEKDAYS } from "../lib/labels";
-import { api, type AgentEvent, type FileRow, type ImportResult, type Integrations, type Links, type OwnerMessageRow, type Overview, type TouchPage } from "./api";
+import { api, type AgentEvent, type FileRow, type ImportResult, type Integrations, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
 import { copy, useAction, useApi } from "./store";
-import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ago, usePeople, when } from "./parts";
+import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, ago, usePeople, when } from "./parts";
 import { Field } from "./Clients";
 
 const PER = 50;
@@ -241,7 +241,9 @@ export function RepliesTab({ id }: { id: string }) {
                     </dl>
                     {r.status !== "done" && (WANTS.has(r.intent) || r.intent === "unclear") && (
                       <div className="flex flex-col gap-1.5">
-                        <span className="text-[12.5px] font-semibold text-ink-2">Log what happened (when the owner tells you)</span>
+                        <span className="text-[12.5px] font-semibold text-ink-2">Answer them, sort the reply, or hand it to the owner</span>
+                        <ReplyActions bid={id} reply={{ id: r.id, name: p?.name }} draft={r.draft?.text} draftNeedsOwner={r.draft?.needsOwner} handedOff={r.status === "handed_off"} />
+                        <span className="mt-1 text-[12.5px] font-semibold text-ink-2">Log what happened (when the owner tells you)</span>
                         <OutcomeForm bid={id} reply={{ id: r.id, name: p?.name }} />
                       </div>
                     )}
@@ -308,7 +310,39 @@ export function OwnerTextsTab({ id }: { id: string }) {
         })}
         {!q.data?.length && <Box className="px-4 py-8 text-center text-[13.5px] text-ink-3">{q.loading ? "Loading…" : "No texts here."}</Box>}
       </div>
+      <FromOwner id={id} />
     </div>
+  );
+}
+
+/** Every text the owner sent us, with what we did about it (the ones we couldn't act on also sit in Needs a person). */
+function FromOwner({ id }: { id: string }) {
+  const q = useApi<OwnerTextRow[]>(`/businesses/${encodeURIComponent(id)}/owner-texts`);
+  const { busy, run } = useAction();
+  return (
+    <Section title="From the owner" sub="Their texts to us, newest first, and what each one did.">
+      <ErrorNote error={q.error} onRetry={q.reload} />
+      <div className="flex flex-col gap-2">
+        {(q.data ?? []).map((t) => (
+          <Box key={t.seq} className="flex flex-col gap-1.5 px-3.5 py-3">
+            <span className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
+              <Pill tone={t.needs_person && !t.done_at ? "warn" : "neutral"}>{t.handled.replace(/_/g, " ")}</Pill>
+              {when(t.at)}
+            </span>
+            <p className="note-body text-[13.5px]">“{t.body}”</p>
+            <p className="text-[12.5px] text-ink-3">We replied: {t.reply}</p>
+            {t.needs_person && !t.done_at ? (
+              <div>
+                <Btn disabled={!!busy} onClick={() => void run(`t${t.seq}`, () => api("POST", `/businesses/${encodeURIComponent(id)}/owner-texts/${t.seq}/done`), "Marked handled")}>
+                  Mark handled
+                </Btn>
+              </div>
+            ) : null}
+          </Box>
+        ))}
+        {!q.data?.length && <Box className="px-4 py-6 text-center text-[13.5px] text-ink-3">{q.loading ? "Loading…" : "The owner hasn't texted us yet."}</Box>}
+      </div>
+    </Section>
   );
 }
 
@@ -501,9 +535,11 @@ const TEXT_FIELDS: [keyof BusinessProfile, string, string?][] = [
   ["name", "Business name"],
   ["ownerName", "Owner's name"],
   ["ownerPhone", "Owner's cell", "Hand-offs and reports are texted here."],
-  ["ownerEmail", "Owner's email"],
+  ["ownerEmail", "Owner's email", "Hand-offs go here when a text can't (no cell, or they texted STOP)."],
   ["signerName", "Who signs the notes"],
-  ["replyTo", "Reply-to email"],
+  ["fromName", "Notes come from (name)", "Leave empty for “Sarah at Ridgeline Tree Co.”"],
+  ["fromEmail", "Notes come from (address)", "This client's own sending mailbox. Empty: the server's sender."],
+  ["replyTo", "Reply-to email", "Leave empty unless it forwards to our inbound address: replies we never see can't be read, answered or stopped."],
   ["businessPhone", "Business phone"],
   ["mailingAddress", "Mailing address", "Required in every email footer (CAN-SPAM)."],
   ["city", "City"],
@@ -629,7 +665,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
 
 function diff(a: BusinessProfile, b: BusinessProfile): Patch {
   const out: Record<string, unknown> = {};
-  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
+  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "fromName", "fromEmail", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
   for (const k of keys) {
     let v: unknown = b[k];
     if (JSON.stringify(v) === JSON.stringify(a[k])) continue;

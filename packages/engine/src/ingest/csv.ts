@@ -147,10 +147,21 @@ function isTotalsRow(r: string[]): boolean {
   return filled.length > 0 && filled.length <= Math.max(1, Math.floor(r.length / 4)) && filled.every((c) => /^[\d$.,\-()]+$/.test(c)) && r.length > 4;
 }
 
-/** Serialize rows back to CSV (for exports / Instantly uploads). */
+/**
+ * A text cell a spreadsheet would run as a formula (=, +, -, @, tab or CR first) gets a leading ' so Excel and
+ * Sheets show it as text. Homeowner-written text lands in these files. Plain numbers, dates and phone numbers
+ * ("-120.50", "+1 603 555 0199") are left alone: they can't call a function.
+ */
+export function neutralizeFormula(s: string): string {
+  if (!/^[=+\-@\t\r]/.test(s)) return s;
+  if (/^[+-]?[\d\s().,/-]*\d[\d\s().,/-]*$/.test(s)) return s;
+  return `'${s}`;
+}
+
+/** Serialize rows back to CSV (for exports / Instantly uploads). Text that would run as a formula is neutralized. */
 export function toCSV(headers: string[], rows: (string | number | undefined | null)[][]): string {
   const esc = (v: string | number | undefined | null) => {
-    const s = v == null ? "" : String(v);
+    const s = v == null ? "" : typeof v === "number" ? String(v) : neutralizeFormula(String(v));
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return [headers.map(esc).join(","), ...rows.map((r) => r.map(esc).join(","))].join("\n");

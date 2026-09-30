@@ -183,8 +183,8 @@ export function NewClient() {
     for (const [k, v] of Object.entries(f)) if (String(v).trim()) body[k] = String(v).trim();
     if (body.state) body.state = body.state.toUpperCase();
     try {
-      const r = await api<{ id: string }>("POST", "/businesses", body);
-      toast(`Added ${f.name.trim()}. Now drop in their exports.`);
+      const r = await api<{ id: string; warnings?: string[] }>("POST", "/businesses", body);
+      toast(`Added ${f.name.trim()}. ${r.warnings?.length ? r.warnings.join(" ") : "Now drop in their exports."}`);
       bump();
       setClientTab("files");
       go({ area: "live", tab: "client", detail: r.id });
@@ -222,7 +222,7 @@ export function NewClient() {
           </Field>
           {field("ownerName", "Owner's name", { placeholder: "Dave Ridge" })}
           {field("ownerPhone", "Owner's cell", { type: "tel", hint: "Hand-offs and the Friday report are texted here.", placeholder: "+1 603 555 0199" })}
-          {field("ownerEmail", "Owner's email", { type: "email", hint: "Fallback when a text can't go out." })}
+          {field("ownerEmail", "Owner's email", { type: "email", hint: "Hand-offs go here when a text can't (no cell, or they texted STOP)." })}
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
             {field("signerName", "Who signs the notes", { placeholder: "Sarah" })}
             <div className="flex flex-col gap-1">
@@ -247,7 +247,7 @@ export function NewClient() {
               ))}
             </select>
           </Field>
-          {field("replyTo", "Reply-to email", { type: "email", hint: "Where replies to the notes go." })}
+          {field("replyTo", "Reply-to email", { type: "email", hint: "Leave empty unless it forwards to our inbound address: replies we never see can't be read or stopped." })}
           {field("businessPhone", "Business phone", { type: "tel" })}
         </div>
         {error && (

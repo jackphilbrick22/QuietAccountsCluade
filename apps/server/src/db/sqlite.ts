@@ -174,6 +174,50 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX tasks_due ON tasks(status, run_at);
   `,
+  /* 2 */ `
+  -- Every text an owner sends us, whether or not we understood it, so the operator sees them all.
+  CREATE TABLE owner_texts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id TEXT,
+    at TEXT NOT NULL,
+    from_phone TEXT NOT NULL,
+    body TEXT NOT NULL,
+    reply TEXT NOT NULL,
+    handled TEXT NOT NULL,
+    needs_person INTEGER NOT NULL DEFAULT 0,
+    done_at TEXT
+  );
+  CREATE INDEX owner_texts_business ON owner_texts(business_id, at);
+  CREATE INDEX owner_texts_open ON owner_texts(needs_person, done_at);
+  -- Single-use OAuth state: minted when the owner opens the connect link, spent on the callback.
+  CREATE TABLE oauth_states (
+    nonce TEXT PRIMARY KEY,
+    business_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  ) WITHOUT ROWID;
+  -- Per-business "last done" marks for the worker's daily and nightly jobs (survive restarts).
+  CREATE TABLE worker_marks (
+    business_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (business_id, name)
+  ) WITHOUT ROWID;
+  -- Things the operator must see that aren't a reply or a text (a refused Jobber re-bind, a carrier opt-out).
+  CREATE TABLE alerts (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    detail TEXT,
+    done_at TEXT
+  );
+  CREATE INDEX alerts_open ON alerts(business_id, done_at);
+  -- A per-business random key inside owner, import and connect links, so one client's links can be rotated.
+  ALTER TABLE businesses ADD COLUMN link_key TEXT;
+  ALTER TABLE integrations ADD COLUMN last_attempt_at TEXT;
+  `,
 ];
 
 export class Db {

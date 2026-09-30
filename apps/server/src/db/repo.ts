@@ -42,6 +42,19 @@ export interface BusinessRow {
   updated_at: string;
 }
 
+export interface OwnerTextRow {
+  seq: number;
+  business_id: string | null;
+  at: string;
+  from_phone: string;
+  body: string;
+  reply: string;
+  /** What the text did: "booked", "pause", "cancel", "unrecognized", "accepted", "ask_which", ... */
+  handled: string;
+  needs_person: number;
+  done_at: string | null;
+}
+
 export class Repo {
   constructor(readonly db: Db) {}
 
@@ -67,7 +80,7 @@ export class Repo {
 
   delete(id: string): void {
     this.db.tx(() => {
-      for (const t of ["records", "contacts", "opportunities", "touches", "replies", "recoveries", "outreach", "suppressions", "events", "owner_messages", "integrations", "tasks"])
+      for (const t of ["records", "contacts", "opportunities", "touches", "replies", "recoveries", "outreach", "suppressions", "events", "owner_messages", "integrations", "tasks", "owner_texts", "oauth_states", "worker_marks", "alerts"])
         this.db.run(`DELETE FROM ${t} WHERE business_id = ?`, id);
       this.db.run("DELETE FROM businesses WHERE id = ?", id);
     });
@@ -114,7 +127,9 @@ export class Repo {
       .reverse();
     const messages = this.db
       .all<{ data: string }>(
-        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month') OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
+        // Billing texts and SLA nudges always load: "already sent?" is decided from them, and a nudge that fell out
+        // of the window would otherwise go out again after every restart.
+        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge') OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
         id,
         id,
       )
@@ -321,14 +336,14 @@ export class Repo {
 
   /* ----------------------------- integrations ----------------------------- */
 
-  getIntegration(bid: string, kind: string): { account_id: string | null; secret: string | null; settings: string; status: string; cursor: string | null; last_sync_at: string | null; last_error: string | null } | undefined {
-    return this.db.get("SELECT account_id, secret, settings, status, cursor, last_sync_at, last_error FROM integrations WHERE business_id = ? AND kind = ?", bid, kind);
+  getIntegration(bid: string, kind: string): { account_id: string | null; secret: string | null; settings: string; status: string; cursor: string | null; last_sync_at: string | null; last_error: string | null; last_attempt_at: string | null } | undefined {
+    return this.db.get("SELECT account_id, secret, settings, status, cursor, last_sync_at, last_error, last_attempt_at FROM integrations WHERE business_id = ? AND kind = ?", bid, kind);
   }
 
-  putIntegration(bid: string, kind: string, f: { accountId?: string | null; secret?: string | null; settings?: unknown; status?: string; cursor?: string | null; lastSyncAt?: string | null; lastError?: string | null }): void {
+  putIntegration(bid: string, kind: string, f: { accountId?: string | null; secret?: string | null; settings?: unknown; status?: string; cursor?: string | null; lastSyncAt?: string | null; lastError?: string | null; lastAttemptAt?: string | null }): void {
     const cur = this.getIntegration(bid, kind);
     this.db.run(
-      "INSERT INTO integrations (business_id, kind, account_id, secret, settings, status, cursor, last_sync_at, last_error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(business_id, kind) DO UPDATE SET account_id = excluded.account_id, secret = excluded.secret, settings = excluded.settings, status = excluded.status, cursor = excluded.cursor, last_sync_at = excluded.last_sync_at, last_error = excluded.last_error",
+      "INSERT INTO integrations (business_id, kind, account_id, secret, settings, status, cursor, last_sync_at, last_error, last_attempt_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(business_id, kind) DO UPDATE SET account_id = excluded.account_id, secret = excluded.secret, settings = excluded.settings, status = excluded.status, cursor = excluded.cursor, last_sync_at = excluded.last_sync_at, last_error = excluded.last_error, last_attempt_at = excluded.last_attempt_at",
       bid,
       kind,
       f.accountId !== undefined ? f.accountId : (cur?.account_id ?? null),
@@ -338,7 +353,83 @@ export class Repo {
       f.cursor !== undefined ? f.cursor : (cur?.cursor ?? null),
       f.lastSyncAt !== undefined ? f.lastSyncAt : (cur?.last_sync_at ?? null),
       f.lastError !== undefined ? f.lastError : (cur?.last_error ?? null),
+      f.lastAttemptAt !== undefined ? f.lastAttemptAt : (cur?.last_attempt_at ?? null),
     );
+  }
+
+  deleteIntegration(bid: string, kind: string): void {
+    this.db.run("DELETE FROM integrations WHERE business_id = ? AND kind = ?", bid, kind);
+  }
+
+  /* ----------------------------- OAuth state (single use) ----------------------------- */
+
+  putOAuthState(nonce: string, bid: string, kind: string, expiresAt: string): void {
+    this.db.run("INSERT INTO oauth_states (nonce, business_id, kind, expires_at) VALUES (?, ?, ?, ?)", nonce, bid, kind, expiresAt);
+  }
+
+  /** Spend a state: returns its business once, and only before it expires. Expired states are cleared on the way. */
+  takeOAuthState(nonce: string, kind: string, now: string): string | undefined {
+    return this.db.tx(() => {
+      this.db.run("DELETE FROM oauth_states WHERE expires_at < ?", now);
+      const row = this.db.get<{ business_id: string }>("SELECT business_id FROM oauth_states WHERE nonce = ? AND kind = ?", nonce, kind);
+      if (row) this.db.run("DELETE FROM oauth_states WHERE nonce = ?", nonce);
+      return row?.business_id;
+    });
+  }
+
+  /* ----------------------------- links ----------------------------- */
+
+  /** The random key inside this business's owner, import and connect links (undefined: made before keys existed). */
+  linkKey(bid: string): string | undefined {
+    return this.db.get<{ link_key: string | null }>("SELECT link_key FROM businesses WHERE id = ?", bid)?.link_key ?? undefined;
+  }
+
+  setLinkKey(bid: string, key: string): void {
+    this.db.run("UPDATE businesses SET link_key = ? WHERE id = ?", key, bid);
+  }
+
+  /* ----------------------------- worker marks ----------------------------- */
+
+  mark(bid: string, name: string): string | undefined {
+    return this.db.get<{ value: string }>("SELECT value FROM worker_marks WHERE business_id = ? AND name = ?", bid, name)?.value;
+  }
+
+  setMark(bid: string, name: string, value: string): void {
+    this.db.run("INSERT INTO worker_marks (business_id, name, value) VALUES (?, ?, ?) ON CONFLICT(business_id, name) DO UPDATE SET value = excluded.value", bid, name, value);
+  }
+
+  /* ----------------------------- texts from owners ----------------------------- */
+
+  logOwnerText(t: { businessId?: string; at: string; from: string; body: string; reply: string; handled: string; needsPerson: boolean }): number {
+    const r = this.db.run(
+      "INSERT INTO owner_texts (business_id, at, from_phone, body, reply, handled, needs_person) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      t.businessId ?? null, t.at, t.from, t.body.slice(0, 2000), t.reply.slice(0, 2000), t.handled, t.needsPerson ? 1 : 0,
+    );
+    return Number(r.lastInsertRowid);
+  }
+
+  ownerTexts(bid: string, opts: { open?: boolean; limit?: number } = {}): OwnerTextRow[] {
+    return opts.open
+      ? this.db.all("SELECT * FROM owner_texts WHERE business_id = ? AND needs_person = 1 AND done_at IS NULL ORDER BY at DESC, seq DESC LIMIT ?", bid, opts.limit ?? 100)
+      : this.db.all("SELECT * FROM owner_texts WHERE business_id = ? ORDER BY at DESC, seq DESC LIMIT ?", bid, opts.limit ?? 100);
+  }
+
+  finishOwnerText(bid: string, seq: number, at: string): boolean {
+    return Number(this.db.run("UPDATE owner_texts SET done_at = ? WHERE business_id = ? AND seq = ? AND done_at IS NULL", at, bid, seq).changes) > 0;
+  }
+
+  /* ----------------------------- operator alerts ----------------------------- */
+
+  addAlert(a: { businessId: string; at: string; kind: string; title: string; detail?: string }): number {
+    return Number(this.db.run("INSERT INTO alerts (business_id, at, kind, title, detail) VALUES (?, ?, ?, ?, ?)", a.businessId, a.at, a.kind, a.title, a.detail ?? null).lastInsertRowid);
+  }
+
+  openAlerts(bid: string): { seq: number; at: string; kind: string; title: string; detail: string | null }[] {
+    return this.db.all("SELECT seq, at, kind, title, detail FROM alerts WHERE business_id = ? AND done_at IS NULL ORDER BY at", bid);
+  }
+
+  finishAlert(bid: string, seq: number, at: string): boolean {
+    return Number(this.db.run("UPDATE alerts SET done_at = ? WHERE business_id = ? AND seq = ? AND done_at IS NULL", at, bid, seq).changes) > 0;
   }
 
   businessForIntegrationAccount(kind: string, accountId: string): string | undefined {

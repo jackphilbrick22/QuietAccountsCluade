@@ -178,6 +178,31 @@ export interface Health {
   sms: string;
   ai: string | null;
   time: string;
+  /** The worker: is it ticking, how long a tick takes, how far behind clients are (per client with the operator token). */
+  worker?: {
+    stalled: boolean;
+    ticks: number;
+    running: boolean;
+    lastTickAt: string | null;
+    lastTickMs: number | null;
+    secondsSinceLastTick: number | null;
+    maxLagSeconds: number | null;
+    behind: number;
+    errors?: string[];
+    businesses?: { id: string; lagSeconds: number | null; lastTurnMs: number | null; overBudget: boolean; running: boolean }[];
+  };
+}
+
+/** A text the owner sent us, and what we did with it. */
+export interface OwnerTextRow {
+  seq: number;
+  at: string;
+  from_phone: string;
+  body: string;
+  reply: string;
+  handled: string;
+  needs_person: number;
+  done_at: string | null;
 }
 
 interface ReviewBase {
@@ -185,11 +210,20 @@ interface ReviewBase {
   businessName: string;
   at: string;
 }
+/** An AI-drafted answer riding on a reply, not sent yet. */
+interface Drafted {
+  draft?: string;
+  draftNeedsOwner?: boolean;
+}
 export type ReviewItem =
-  | (ReviewBase & { kind: "unclear"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; text: string })
-  | (ReviewBase & { kind: "late_lead"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; hours: number; text: string })
+  | (ReviewBase & Drafted & { kind: "unclear"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; text: string })
+  | (ReviewBase & Drafted & { kind: "late_lead"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; hours: number; text: string })
+  | (ReviewBase & Drafted & { kind: "draft"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; text: string })
   | (ReviewBase & { kind: "flagged_note"; touchId: string; customerId: string; name: string; step: number; status: string; subject: string; body: string; flags: string[] })
-  | (ReviewBase & { kind: "owner_message"; messageId: string; messageKind: string; delivery: string; text: string });
+  | (ReviewBase & { kind: "owner_message"; messageId: string; messageKind: string; delivery: string; text: string })
+  | (ReviewBase & { kind: "owner_text"; seq: number; text: string; reply: string; handled: string })
+  | (ReviewBase & { kind: "alert"; seq: number; alertKind: string; title: string; detail: string })
+  | (ReviewBase & { kind: "ready"; quotes: number; customers: number; headline: string });
 
 export interface ReviewQueue {
   now: string;

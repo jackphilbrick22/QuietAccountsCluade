@@ -225,6 +225,12 @@ export interface BusinessProfile {
   /** How the signer is described: "office", "owner". */
   signerRole: "owner" | "office";
   replyTo?: string;
+  /** This client's sending address (the From on direct mail). Unset: the server's global sender. */
+  fromEmail?: string;
+  /** The display name on this client's notes. Unset: "<signer> at <business>". */
+  fromName?: string;
+  /** The owner texted STOP, or their carrier opted them out: nothing is texted; owner messages go by email or to the operator. */
+  ownerTextsOff?: { at: ISODateTime; by: "owner" | "carrier" };
   businessPhone?: string;
   /** Physical mailing address — required in every commercial email footer (CAN-SPAM). */
   mailingAddress?: string;
@@ -513,6 +519,9 @@ export interface Reply {
   draft?: { text: string; needsOwner: boolean; at: ISODateTime };
   /** What we wrote back in this thread (instant answers, drafts sent, typed replies). */
   answers?: { text: string; at: ISODateTime; by: "auto" | "operator" | "owner" }[];
+  /** SLA reminders the owner has had about this lead (kept on the reply so a restart never re-sends them). */
+  nudges?: number;
+  lastNudgeAt?: ISODateTime;
 }
 
 export interface ReplyExtract {

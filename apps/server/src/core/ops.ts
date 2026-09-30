@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   addDays,
   adoptTrade,
@@ -31,6 +31,7 @@ import {
   renewPlan,
   stopSequence,
   type AccountState,
+  type BusinessProfile,
   type FileIn,
   type Reply,
   type Touch,
@@ -93,6 +94,46 @@ export function verifySigned(secret: string, token: string): string | undefined 
 
 export function unsubscribeUrl(cfg: Config, businessId: string, email: string): string {
   return `${cfg.PUBLIC_URL.replace(/\/$/, "")}/u/${sign(cfg.APP_SECRET, `u|${businessId}|${email}`)}`;
+}
+
+/**
+ * Owner, import and Jobber-connect links carry the business's random link key, so one client's links can be
+ * rotated (a departed office manager, a forwarded text) without touching APP_SECRET — which would also break every
+ * unsubscribe link already sent and the stored Jobber tokens. A deleted-then-recreated business id gets a new key,
+ * so the old tenant's links don't carry over. Links made before keys existed keep working until the first rotation.
+ */
+export type LinkKind = "owner" | "import" | "oauth|jobber";
+
+export function linkToken(d: Deps, kind: LinkKind, bid: string): string {
+  const key = d.accounts.repo.linkKey(bid);
+  return sign(d.cfg.APP_SECRET, key ? `${kind}|${bid}|${key}` : `${kind}|${bid}`);
+}
+
+/** The business a link belongs to, or undefined when it's forged, rotated away, or its business is gone. */
+export function readLinkToken(d: Deps, kind: LinkKind, token: string): string | undefined {
+  const payload = verifySigned(d.cfg.APP_SECRET, token);
+  if (!payload?.startsWith(`${kind}|`)) return undefined;
+  const [bid, key, ...rest] = payload.slice(kind.length + 1).split("|");
+  if (!bid || rest.length || !d.accounts.repo.exists(bid)) return undefined;
+  return (key ?? undefined) === d.accounts.repo.linkKey(bid) ? bid : undefined;
+}
+
+/** New links for one client; every link given out before stops working. */
+export function rotateLinks(d: Deps, bid: string): void {
+  d.accounts.repo.setLinkKey(bid, randomBytes(9).toString("base64url"));
+}
+
+export function ownerLink(d: Deps, bid: string): string {
+  return `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/o/${linkToken(d, "owner", bid)}`;
+}
+
+export function connectJobberLink(d: Deps, bid: string): string {
+  return `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/oauth/jobber/start?state=${encodeURIComponent(linkToken(d, "oauth|jobber", bid))}`;
+}
+
+/** Who a client's mail comes from: their own name and address when set, else "<signer> at <business>" from the server's sender. */
+export function sender(b: BusinessProfile): { fromName: string; fromEmail?: string; replyTo?: string } {
+  return { fromName: b.fromName?.trim() || `${b.signerName} at ${b.name}`, fromEmail: b.fromEmail?.trim() || undefined, replyTo: b.replyTo };
 }
 
 function nowLocal(d: Deps, state: AccountState): string {
@@ -263,8 +304,7 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
         customerId: t.customerId,
         to: item.to,
         toName: item.customerName,
-        fromName: `${b.signerName} at ${b.name}`,
-        replyTo: b.replyTo,
+        ...sender(b),
         subject: t.subject ?? "",
         text: t.body,
         inReplyTo: prev?.providerId,
@@ -558,6 +598,15 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 
 const BILLING_KINDS = new Set(["close", "precharge", "free_month"]);
 
+/** Twilio refuses a number that texted STOP (error 21610): the owner is opted out at the carrier. */
+const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
+
+/**
+ * Owner messages go out by text. With no cell on file, or texts turned off (the owner texted STOP, or their carrier
+ * says they did), they go by email through the direct mail provider when there is one; otherwise they're marked
+ * failed, which puts them in the operator's review queue. Nothing is ever "sent" to a log in production.
+ * A cancelled client gets nothing more.
+ */
 export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowBilling?: boolean } = {}): Promise<number> {
   let n = 0;
   for (const m of d.accounts.repo.pendingOwnerMessages(100)) {
@@ -565,145 +614,111 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
     const loaded = d.accounts.peek(m.business_id);
     if (!loaded) continue;
     const b = loaded.state.dataset.business;
+    const done = (delivery: "sent" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
+      d.accounts.repo.markOwnerMessage(m.business_id, m.id, delivery, { ...f, at: d.clock().toISOString() });
+    if (b.plan.stage === "cancelled") {
+      done("skipped", { error: "Cancelled: nothing more goes to the owner." });
+      continue;
+    }
     if (BILLING_KINDS.has(m.kind) && d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" && !opts.allowBilling) {
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, "review");
       continue;
     }
-    try {
-      const res = await d.notifier.notify({ phone: b.ownerPhone, email: b.ownerEmail }, m.text);
-      d.accounts.repo.markOwnerMessage(m.business_id, m.id, "sent", { channel: res.channel, providerId: res.id, at: d.clock().toISOString() });
-      n++;
-    } catch (e) {
-      d.accounts.repo.markOwnerMessage(m.business_id, m.id, "failed", { error: (e as Error).message });
-      d.log(`[owner] ${m.business_id} message ${m.id} failed: ${(e as Error).message}`);
+    let why = !b.ownerPhone ? "No cell on file" : b.ownerTextsOff ? (b.ownerTextsOff.by === "owner" ? "The owner texted STOP" : "Their carrier says they opted out of texts") : "";
+    if (!why) {
+      try {
+        const res = await d.notifier.notify({ phone: b.ownerPhone, email: b.ownerEmail }, m.text);
+        done("sent", { channel: res.channel, providerId: res.id });
+        n++;
+        continue;
+      } catch (e) {
+        const msg = (e as Error).message;
+        d.log(`[owner] ${m.business_id} message ${m.id} failed: ${msg}`);
+        if (!CARRIER_OPTED_OUT.test(msg)) {
+          done("failed", { error: msg });
+          continue;
+        }
+        for (const off of await setOwnerTexts(d, b.ownerPhone!, { by: "carrier" }))
+          d.accounts.repo.addAlert({ businessId: off, at: d.clock().toISOString(), kind: "texts_off", title: `${b.ownerFirstName}'s phone refuses our texts (opted out at the carrier)`, detail: `${b.ownerEmail && d.email.kind === "direct" ? `Their texts now go to ${b.ownerEmail}.` : "Their texts wait here for you."} If they texted CANCEL or STOP by mistake, ask them to text START.` });
+        why = "Their carrier says they opted out of texts";
+      }
     }
+    // Email instead, when there's an address and a mail route that can send one message on its own.
+    if (b.ownerEmail && d.email.kind === "direct") {
+      try {
+        const res = await d.email.send({
+          businessId: m.business_id,
+          touchId: `owner_${m.id}`,
+          customerId: "",
+          to: b.ownerEmail,
+          toName: b.ownerName,
+          fromName: "Quiet Accounts",
+          subject: `Quiet Accounts: ${oneLine(m.text.split("\n")[0] ?? "", 80)}`,
+          text: `${m.text}\n\n(${why}, so this came by email.)`,
+        });
+        done("sent", { channel: "email", providerId: res.messageId ?? res.providerId });
+        n++;
+      } catch (e) {
+        done("failed", { error: `${why}, and the email didn't go either: ${(e as Error).message}` });
+      }
+      continue;
+    }
+    done("failed", { error: `${why}${b.ownerEmail ? " and there's no direct mail route to email them" : " and no email on file"}. Pass it on yourself.` });
   }
   return n;
 }
 
-export interface OwnerCommandResult {
-  businessId?: string;
-  reply: string;
-}
-
 /**
- * The owner never has to open the dashboard: they answer the hand-off text.
- * "booked 2400" · "booked 2400 #K7Q" · "done" · "no" · "quoted" · "pause" · "resume" · "status".
+ * Texts to the owner of every client on this phone go off (STOP, or the carrier refused one) or back on (START).
+ * The phone is what opted out, so a two-brand owner is off for both. Returns the clients changed.
  */
-export async function ownerCommand(d: Deps, fromPhone: string, text: string): Promise<OwnerCommandResult> {
-  const digits = fromPhone.replace(/\D/g, "").slice(-10);
-  const business = d.accounts.repo.listBusinesses().find((b) => (b.profile.ownerPhone ?? "").replace(/\D/g, "").slice(-10) === digits);
-  if (!business) return { reply: "We don't recognize this number. Text from the phone we have on file for you." };
-  const bid = business.id;
-  const t = text.trim().toLowerCase();
-  if (/^(pause|stop sending|hold)\b/.test(t)) {
-    d.accounts.setPaused(bid, true);
-    return { businessId: bid, reply: "Paused. No notes will go out until you text RESUME." };
-  }
-  if (/^(resume|start|unpause|go)\b/.test(t)) {
-    d.accounts.setPaused(bid, false);
-    return { businessId: bid, reply: "Back on. Notes resume on your next send day." };
-  }
-  if (/^(status|how|numbers)\b/.test(t)) {
-    const s = d.accounts.peek(bid)!.state;
-    const wants = s.replies.filter((r) => r.intent === "wants_it" || r.intent === "wants_price").length;
-    const booked = counted(s.recoveries).reduce((a, r) => a + r.value, 0);
-    return { businessId: bid, reply: `So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} asked for a price or a date, $${Math.round(booked).toLocaleString("en-US")} booked.` };
-  }
-  // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
-  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(t)) {
-    const choice = /^(monthly|month to month)/.test(t) ? "monthly" : "year";
-    let reply = "";
+export async function setOwnerTexts(d: Deps, phone: string, off: { by: "owner" | "carrier" } | undefined): Promise<string[]> {
+  const digits = phone.replace(/\D/g, "").slice(-10);
+  if (digits.length < 10) return [];
+  const bids = d.accounts.repo.listBusinesses().filter((b) => (b.profile.ownerPhone ?? "").replace(/\D/g, "").slice(-10) === digits).map((b) => b.id);
+  for (const bid of bids)
     await d.accounts.withAccount(bid, (state) => {
-      reply = renewPlan(state, choice, nowLocal(d, state));
-    });
-    d.accounts.setPaused(bid, false);
-    return { businessId: bid, reply: choice === "year" ? `${reply} Jack will text you the payment link.` : reply };
-  }
-  // Month to month, cancel by text. The first CANCEL shows the facts; CANCEL YES does it.
-  if (/^cancel\b/.test(t)) {
-    const s = d.accounts.peek(bid)!.state;
-    if (s.dataset.business.plan.stage === "cancelled") return { businessId: bid, reply: "You're already cancelled. Text START if you ever want us back." };
-    if (!/^cancel\s+(yes|confirm)\b/.test(t)) {
-      const tt = totals(s);
-      const open = new Set(s.touches.filter((x) => x.status === "approved" || x.status === "planned").map((x) => x.customerId)).size;
-      return {
-        businessId: bid,
-        reply: `No problem. So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} traced. Cancelling stops notes to ${open} ${open === 1 ? "person" : "people"} still in line; everything we found stays yours. Text CANCEL YES to confirm.`,
-      };
-    }
-    await d.accounts.withAccount(bid, (state) => {
+      const b = state.dataset.business;
+      if (!!b.ownerTextsOff === !!off) return;
       const at = nowLocal(d, state);
-      state.dataset.business.plan.stage = "cancelled";
-      let n = 0;
-      for (const x of state.touches) if (x.status === "approved" || x.status === "planned") (x.status = "cancelled"), n++;
-      state.events.push({ id: `ev_cancel_${at}`, at, agent: "guard", kind: "warning", title: "Owner cancelled by text", detail: `${n} queued notes stopped. No further charges.` });
+      b.ownerTextsOff = off ? { at, by: off.by } : undefined;
+      state.events.push(
+        off
+          ? {
+              id: `ev_texts_off_${at}`,
+              at,
+              agent: "guard",
+              kind: "warning",
+              title: off.by === "owner" ? `${b.ownerFirstName} texted STOP — no more texts to them` : `${b.ownerFirstName}'s carrier refused our text (opted out)`,
+              detail: b.ownerEmail ? `Hand-offs and reports now go to ${b.ownerEmail}. They can text START to turn texts back on.` : "Hand-offs and reports wait in Needs a person until you pass them on. They can text START to turn texts back on.",
+            }
+          : { id: `ev_texts_on_${at}`, at, agent: "guard", kind: "action", title: `${b.ownerFirstName} turned texts back on`, detail: "Hand-offs and reports are texted again." },
+      );
     });
-    d.accounts.setPaused(bid, true);
-    d.accounts.repo.audit(bid, "owner-sms", "cancel", {});
-    return { businessId: bid, reply: "Done — cancelled. No more notes and no more charges. Your ledger link keeps working, and your data is yours to take. Thanks for giving us a shot." };
-  }
-  // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
-  if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(t) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
-    let reply = "";
-    await d.accounts.withAccount(bid, (state) => {
-      const today = nowLocal(d, state).slice(0, 10);
-      const until = parseBusyUntil(t, today);
-      const r = setBookedOut(state, until, nowLocal(d, state));
-      reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
-    });
-    return { businessId: bid, reply };
-  }
-  if (/^(open|not busy|free|room|slow)\b/.test(t)) {
-    let reply = "";
-    await d.accounts.withAccount(bid, (state) => {
-      const r = setBookedOut(state, undefined, nowLocal(d, state));
-      reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us on your next send day.` : ""}`;
-    });
-    return { businessId: bid, reply };
-  }
-  const code = text.match(/#\s?([A-Z0-9]{3})\b/i)?.[1]?.toUpperCase();
-  const amount = Number((text.match(/\$?\s?(\d[\d,]*(?:\.\d{1,2})?)\s?(k)?\b/i)?.[1] ?? "").replace(/,/g, "")) * (/\d\s?k\b/i.test(text) ? 1000 : 1);
-  let outcome: Reply["outcome"] | undefined;
-  if (/\b(booked|sold|won|scheduled|yes)\b/.test(t)) outcome = "booked";
-  else if (/\b(quoted|sent (a |the )?price|requoted|sent quote)\b/.test(t)) outcome = "quoted";
-  else if (/\b(no answer|voicemail|vm|left (a )?message)\b/.test(t)) outcome = "no_answer";
-  else if (/\b(no|lost|pass|dead|not a fit|nope|went with)\b/.test(t)) outcome = "lost";
-  else if (/\b(done|called|talked|reached|spoke)\b/.test(t)) outcome = undefined;
-  else return { businessId: bid, reply: 'Text BOOKED + amount (like "booked 2400"), DONE, NO, or QUOTED. Add the #code from the lead text if you have more than one waiting.' };
-
-  let reply = "";
-  let note: FsmNote | undefined;
-  await d.accounts.withAccount(bid, (state) => {
-    const waiting = state.replies.filter((r) => r.status === "handed_off" && !r.ownerContactedAt).sort((a, b) => (a.receivedAt < b.receivedAt ? 1 : -1));
-    const target = code ? waiting.find((r) => leadCode(r.id) === code) ?? state.replies.find((r) => leadCode(r.id) === code) : waiting[0];
-    if (!target) {
-      reply = code ? `No lead with #${code}.` : "Nobody's waiting on a call right now.";
-      return;
-    }
-    const at = nowLocal(d, state);
-    markContacted(state, target.id, at, outcome, outcome === "booked" && amount > 0 ? amount : undefined);
-    const name = state.dataset.customers.find((c) => c.id === target.customerId)?.name ?? target.from;
-    if (outcome === "booked" || outcome === "quoted")
-      note = fsmNote(state, target.customerId, target.opportunityId, `Quiet Accounts: owner marked ${name} ${outcome === "booked" ? `booked${amount > 0 ? ` ($${amount.toLocaleString("en-US")})` : ""}` : "quoted"} after they answered our follow-up.`);
-    reply =
-      outcome === "booked"
-        ? amount > 0
-          ? `Booked: ${name}, $${amount.toLocaleString("en-US")}. Added to your results.`
-          : `Booked: ${name}. What's the job worth? Text "booked 2400 #${leadCode(target.id)}".`
-        : outcome === "quoted"
-          ? `Got it — ${name} has a price. We'll count it when it books.`
-          : outcome === "lost"
-            ? `Got it — ${name} marked not a fit.`
-            : outcome === "no_answer"
-              ? `Got it — no answer from ${name}. Try again tomorrow.`
-              : `Thanks — ${name} marked as reached.`;
-    const left = waiting.filter((r) => r.id !== target.id).length;
-    if (left) reply += ` ${left} more waiting.`;
-  });
-  if (note) queueFsmNote(d, bid, note);
-  return { businessId: bid, reply };
+  return bids;
 }
+
+/** Something the operator must act on: it waits in "Needs a person" and shows in the client's activity. */
+export async function raiseAlert(d: Deps, bid: string, a: { kind: string; title: string; detail: string }): Promise<void> {
+  d.log(`[alert] ${bid} ${a.title} ${a.detail}`);
+  d.accounts.repo.addAlert({ businessId: bid, at: d.clock().toISOString(), ...a });
+  await d.accounts.withAccount(bid, (state) => {
+    const at = nowLocal(d, state);
+    state.events.push({ id: `ev_alert_${a.kind}_${at}`, at, agent: "guard", kind: "warning", title: a.title, detail: a.detail });
+  });
+}
+
+/** Pause or resume a client's notes, including the campaigns already handed to a sending platform. */
+export async function setBusinessPaused(d: Deps, bid: string, paused: boolean): Promise<void> {
+  d.accounts.setPaused(bid, paused);
+  if (d.email.kind !== "sequencer") return;
+  const state = d.accounts.peek(bid)?.state;
+  if (!state) return;
+  const campaigns = new Set(state.touches.map((t) => (t.providerId?.startsWith(`${d.email.name}:`) ? t.providerId.split(":")[1] : undefined)).filter((x): x is string => !!x));
+  for (const cid of campaigns) await d.email.pauseCampaign(state.dataset.business, cid, paused);
+}
+
+// Texts from the owner (BOOKED 2400 #K7Q, PAUSE, STOP...) are read in ./owner.ts.
 
 /* ------------------------------------------------------------------ */
 /* Unsubscribe links                                                   */
@@ -722,44 +737,68 @@ export async function unsubscribeByToken(d: Deps, token: string): Promise<{ ok: 
 /* Ledger: field-service software sync                                 */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A Jobber failure only the owner can fix: a dead refresh token (a password change, a revoked app) or a stored
+ * token we can no longer read. Anything else (Jobber down, rate limits) is retried.
+ */
+export function jobberNeedsReconnect(e: unknown): boolean {
+  if (e instanceof ProviderError) return e.provider === "jobber" && !e.retryable && (e.status === 400 || e.status === 401 || /invalid_grant|unauthori[sz]ed|token/i.test(e.message));
+  return /Unreadable stored secret|unable to authenticate data/i.test((e as Error)?.message ?? "");
+}
+
+/** Any Jobber call that fails: the error is on the connection for the console, and a dead login asks the owner to reconnect. */
+async function jobberFailed(d: Deps, bid: string, kind: "jobber", e: unknown): Promise<void> {
+  const dead = jobberNeedsReconnect(e);
+  d.accounts.repo.putIntegration(bid, kind, { lastError: (e as Error).message, ...(dead ? { status: "needs_reconnect" } : {}) });
+  if (dead) await askToReconnect(d, bid);
+}
+
 export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ records: number; newRecoveries: number } | undefined> {
   const conn = d.fsm[kind];
   const integ = d.accounts.repo.getIntegration(bid, kind);
   if (!conn || !integ?.secret || integ.status === "disconnected" || integ.status === "needs_reconnect") return undefined;
-  let tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
-  if (tokens.expiresAt && Date.parse(tokens.expiresAt) - d.clock().getTime() < 5 * 60000 && tokens.refreshToken) {
-    tokens = await conn.refresh(tokens);
-    d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(tokens)) });
-  }
+  const firstSync = !integ.last_sync_at;
+  d.accounts.repo.putIntegration(bid, kind, { lastAttemptAt: d.clock().toISOString() });
+  let pulled: Awaited<ReturnType<FsmConnector["pull"]>>;
   try {
-    const pulled = await conn.pull(tokens, { since: integ.cursor ?? undefined, onProgress: (m) => d.log(`[${kind}] ${bid} ${m}`) });
-    // Jobber rotates refresh tokens: the old one is dead the moment a new one is issued.
-    const fresh = (pulled as { tokens?: OAuthTokens }).tokens;
-    if (fresh) d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(fresh)) });
-    let newRecoveries = 0;
-    let answered = 0;
-    await d.accounts.withAccount(bid, (state) => {
-      const at = nowLocal(d, state);
-      state.dataset = mergePulled(state.dataset, pulled, kind);
-      state.dataset.asOf = at.slice(0, 10);
-      // always-on: a request that just came in gets its answer now, not tomorrow
-      answered = answerNewRequests(state, at);
-      const n = pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length;
-      if (n) state.events.push({ id: `ev_sync_${at}`, at, agent: "reader", kind: "action", title: `Synced ${n.toLocaleString("en-US")} records from ${kind === "jobber" ? "Jobber" : kind}`, detail: pulled.warnings.join(" ") || undefined });
-      newRecoveries = ledgerPass(state, at).newRecoveries;
-    });
-    d.accounts.repo.putIntegration(bid, kind, { cursor: pulled.nextSince ?? integ.cursor, lastSyncAt: d.clock().toISOString(), lastError: null, status: "connected" });
-    d.accounts.repo.markScanned(bid, d.clock().toISOString());
-    await deliverOwnerMessages(d, bid);
-    if (answered) await sendDue(d, bid);
-    return { records: pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length, newRecoveries };
+    // The refresh is inside the try: tokens last an hour and syncs run hourly, so a dead refresh token is
+    // the usual way a connection dies, and it must end in a reconnect text, not a silent retry every minute.
+    let tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
+    if (tokens.expiresAt && Date.parse(tokens.expiresAt) - d.clock().getTime() < 5 * 60000 && tokens.refreshToken) {
+      tokens = await conn.refresh(tokens);
+      d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(tokens)) });
+    }
+    pulled = await conn.pull(tokens, { since: integ.cursor ?? undefined, onProgress: (m) => d.log(`[${kind}] ${bid} ${m}`) });
   } catch (e) {
-    const err = e as ProviderError;
-    const dead = err instanceof ProviderError && !err.retryable && (err.status === 400 || err.status === 401 || /invalid_grant|unauthori[sz]ed|token/i.test(err.message));
-    d.accounts.repo.putIntegration(bid, kind, { lastError: err.message, ...(dead ? { status: "needs_reconnect" } : {}) });
-    if (dead) await askToReconnect(d, bid);
+    await jobberFailed(d, bid, kind, e);
     throw e;
   }
+  // Jobber rotates refresh tokens: the old one is dead the moment a new one is issued.
+  const fresh = (pulled as { tokens?: OAuthTokens }).tokens;
+  if (fresh) d.accounts.repo.putIntegration(bid, kind, { secret: encrypt(d.cfg.APP_SECRET, JSON.stringify(fresh)) });
+  const records = pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length;
+  let newRecoveries = 0;
+  let answered = 0;
+  await d.accounts.withAccount(bid, (state) => {
+    const at = nowLocal(d, state);
+    state.dataset = mergePulled(state.dataset, pulled, kind);
+    state.dataset.asOf = at.slice(0, 10);
+    // always-on: a request that just came in gets its answer now, not tomorrow (never for a client who cancelled)
+    answered = state.dataset.business.plan.stage === "cancelled" ? 0 : answerNewRequests(state, at);
+    if (records) state.events.push({ id: `ev_sync_${at}`, at, agent: "reader", kind: "action", title: `Synced ${records.toLocaleString("en-US")} records from ${kind === "jobber" ? "Jobber" : kind}`, detail: pulled.warnings.join(" ") || undefined });
+    newRecoveries = ledgerPass(state, at).newRecoveries;
+    // The connect page promised a text once we'd read their Jobber; the operator sees it's ready to plan.
+    if (firstSync) {
+      const b = state.dataset.business;
+      state.ownerMessages.push({ id: `om_connected_${at}`, at, kind: "info", text: `${b.ownerFirstName}, we're connected to your Jobber and have read ${records.toLocaleString("en-US")} records. Jack will text you what we found before a single note goes out.`, refs: [{ kind: "connected", id: kind }] });
+      state.events.push({ id: `ev_connected_${at}`, at, agent: "reader", kind: "review", title: "Jobber connected and read — ready to plan", detail: `${records.toLocaleString("en-US")} records on the first sync.` });
+    }
+  });
+  d.accounts.repo.putIntegration(bid, kind, { cursor: pulled.nextSince ?? integ.cursor, lastSyncAt: d.clock().toISOString(), lastError: null, status: "connected" });
+  d.accounts.repo.markScanned(bid, d.clock().toISOString());
+  await deliverOwnerMessages(d, bid);
+  if (answered) await sendDue(d, bid);
+  return { records, newRecoveries };
 }
 
 /**
@@ -767,7 +806,7 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
  * reconnect link — at most once a week — and the work carries on from the last sync meanwhile.
  */
 async function askToReconnect(d: Deps, bid: string): Promise<void> {
-  const link = `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/oauth/jobber/start?state=${encodeURIComponent(sign(d.cfg.APP_SECRET, `oauth|jobber|${bid}`))}`;
+  const link = connectJobberLink(d, bid);
   await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     const recent = state.ownerMessages.some((m) => m.kind === "info" && m.refs?.some((r) => r.kind === "reconnect") && daysBetween(m.at.slice(0, 10), at.slice(0, 10)) < 7);
@@ -849,8 +888,14 @@ export async function writeFsmNote(d: Deps, bid: string, note: FsmNote): Promise
   const conn = d.fsm.jobber;
   const integ = d.accounts.repo.getIntegration(bid, "jobber");
   if (d.cfg.JOBBER_WRITE_NOTES !== "on" || !conn?.writeNote || !integ?.secret || integ.status !== "connected") return;
-  const tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
-  await conn.writeNote(tokens, { kind: note.kind, sourceId: note.sourceId }, note.text);
+  try {
+    const tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
+    await conn.writeNote(tokens, { kind: note.kind, sourceId: note.sourceId }, note.text);
+  } catch (e) {
+    // A dead login found here stalls nothing quietly either: same reconnect text as a failed sync.
+    if (jobberNeedsReconnect(e)) await jobberFailed(d, bid, "jobber", e);
+    throw e;
+  }
 }
 
 function oneLine(s: string, max: number): string {
@@ -883,11 +928,6 @@ export function parseBusyUntil(t: string, today: string): string {
   return addDays(today, 28);
 }
 
-function fmtDay(iso: string): string {
-  const [, m, d] = iso.split("-").map(Number) as [number, number, number];
-  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][m - 1]} ${d}`;
-}
-
 /* ------------------------- instant answer to hot replies ------------------------- */
 
 export interface AckTask {
@@ -917,8 +957,7 @@ export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void
         customerId: r.customerId ?? "",
         to: task.to,
         toName: c?.name ?? "",
-        fromName: `${b.signerName} at ${b.name}`,
-        replyTo: b.replyTo,
+        ...sender(b),
         subject,
         text: r.ack.text,
         inReplyTo: task.messageId || undefined,
@@ -968,8 +1007,7 @@ export async function answerInThread(d: Deps, bid: string, replyId: string, text
         customerId: r.customerId ?? "",
         to: r.from,
         toName: customerById(state.dataset, r.customerId)?.name ?? "",
-        fromName: `${b.signerName} at ${b.name}`,
-        replyTo: b.replyTo,
+        ...sender(b),
         subject,
         text: clean,
         inReplyTo: r.thread?.messageId || undefined,
