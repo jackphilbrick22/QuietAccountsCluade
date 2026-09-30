@@ -1,8 +1,9 @@
 import type { BusinessProfile, ISODate, Money, Opportunity, Recovery, Reply } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
-import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, humanAge, isoWeekKey, mondayOf, monthName, round2, spokenWhen, sum } from "../util.ts";
+import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { counted } from "../ledger/attribution.ts";
+import { quoteById } from "../lookup.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
 
@@ -52,7 +53,7 @@ export function handoffText(state: AccountState, r: Reply): string {
   const street = c?.address?.street ? `, ${c.address.street}` : "";
   const lines = [
     `${tradeMark(b)} NEW — ${name}${street}`,
-    o ? `${o.lastDoneOn ? "Last done" : "Original"}: ${(o.lastDoneOn ?? o.anchorDate) ? spokenWhen((o.lastDoneOn ?? o.anchorDate)!, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
+    o ? recordLine(state, o, r.receivedAt.slice(0, 10)) : "",
     staleNote(b, o, r.receivedAt.slice(0, 10)),
     r.ack ? `We already wrote back that ${r.ack.promise}.` : "",
     `They said: “${oneLine(r.text, 160)}”`,
@@ -61,6 +62,39 @@ export function handoffText(state: AccountState, r: Reply): string {
     `Text back BOOKED + amount, DONE, or NO · #${leadCode(r.id)}`,
   ].filter(Boolean);
   return lines.join("\n");
+}
+
+/**
+ * The record the owner will look up: its real date and amount, never a modelled number passed off as one.
+ * An estimate is labelled "est."; a request that was never priced says so.
+ */
+export function recordLine(state: AccountState, o: Opportunity, today: ISODate): string {
+  const ds = state.dataset;
+  // the date as it reads on the record ("Feb 12, 2025"), so the owner finds it in their software
+  const when = (d: ISODate | undefined) => (d ? `${monthName(d).slice(0, 3)} ${Number(d.slice(8))}${d.slice(0, 4) === today.slice(0, 4) ? "" : `, ${d.slice(0, 4)}`}` : "no date");
+  const money = (n: number) => (n > 0 ? fmtMoney(n) : "no amount");
+  const what = o.jobPhrase.replace(/^the /, "");
+  if (o.source.kind === "quote") {
+    const q = quoteById(ds, o.source.id);
+    if (q) {
+      const sent = q.sentOn ?? q.createdOn ?? q.approvedOn;
+      if (o.type === "declined_option") return `Passed on: ${when(q.convertedOn ?? q.approvedOn ?? sent)} · ${fmtMoney(o.value)} · ${what}`;
+      return `Quote${q.number ? ` #${q.number}` : ""}: ${when(sent)} · ${money(q.total)} · ${what}`;
+    }
+  } else if (o.source.kind === "job" || o.source.kind === "invoice") {
+    const j = o.source.kind === "job" ? ds.jobs.find((x) => x.id === o.source.id) : undefined;
+    const inv = o.source.kind === "invoice" ? ds.invoices.find((x) => x.id === o.source.id) : undefined;
+    const rec = j ? { d: j.completedOn ?? j.scheduledOn ?? j.createdOn, total: j.total, title: j.title } : inv ? { d: inv.issuedOn ?? inv.paidOn, total: inv.total, title: inv.subject } : undefined;
+    if (rec) {
+      if (o.type === "unpaid_invoice") return `Invoice${inv?.number ? ` #${inv.number}` : ""}: ${when(rec.d)} · ${money(rec.total)} · ${fmtMoney(o.value)} still owed`;
+      const head = `${o.type === "service_due" ? "Last done" : "Last job"}: ${when(o.lastDoneOn ?? rec.d)} · ${money(rec.total)} · ${oneLine(rec.title || what, 50)}`;
+      return o.type === "missed_upsell" ? `${head} · next: ${what}, est. ${fmtMoney(o.value)}` : head;
+    }
+  } else if (o.source.kind === "request") {
+    const req = ds.requests.find((x) => x.id === o.source.id);
+    return `Request: ${when(req?.createdOn ?? o.anchorDate)} · never priced · ${what}`;
+  }
+  return `${what} · est. ${fmtMoney(o.value)}`;
 }
 
 const WEEKDAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -75,7 +109,8 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
   if (!(r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question")) return undefined;
   const c = state.dataset.customers.find((x) => x.id === r.customerId);
   if (!c) return undefined;
-  const first = c.firstName && !/^(customer|client|owner|resident|homeowner)$/i.test(c.firstName) ? c.firstName : "";
+  const greet = greetingName(c.firstName);
+  const first = greet === "there" ? "" : greet;
   const hour = Number(r.receivedAt.slice(11, 13));
   const today = r.receivedAt.slice(0, 10);
   let when = "today";
@@ -88,11 +123,14 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
   const at = r.extracted.phone ? ` at ${fmtPhone(r.extracted.phone)}` : "";
   const hi = first ? `Thanks ${first}.` : "Thanks.";
   const who = isOwner ? "I'll" : `I've passed this to ${b.ownerFirstName}, who'll`;
+  // "updated" only when there was a price to update; a request or a past customer never got one for this
+  const o = state.scan?.opportunities.find((x) => x.id === r.opportunityId);
+  const quoted = !!o && ["unanswered_quote", "archived_quote", "changes_requested", "declined_quote", "approved_unscheduled"].includes(o.type) && o.source.kind === "quote";
   const body =
     r.intent === "question"
       ? `${first ? `Thanks ${first}, good question.` : "Good question."} ${isOwner ? "I'll get back to you" : `I've passed it to ${b.ownerFirstName}, who'll get back to you`} ${when}.`
       : r.intent === "wants_price"
-        ? `${hi} ${who} give you a call${at} ${when} to go over it and get you an updated price.`
+        ? `${hi} ${who} give you a call${at} ${when} to go over it and get you ${quoted ? "an updated price" : "a price"}.`
         : `${hi} ${who} give you a call${at} ${when} to get it on the schedule.`;
   const promise = r.intent === "question" ? `you'll get back to them ${when}` : `you'll call them ${when}`;
   return { text: `${body}\n\n${b.signerName}\n${b.name}`, promise };
@@ -278,22 +316,20 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
   const t = totals(state);
   const names = counted(state.recoveries)
     .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name)
-    .filter(Boolean)
-    .slice(0, 4) as string[];
-  const askers = state.replies
-    .filter((r) => WANTS.has(r.intent))
-    .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from)
-    .slice(0, 4);
+    .filter(Boolean) as string[];
+  // one name per person, however many times they wrote
+  const askers = [...new Set(state.replies.filter((r) => WANTS.has(r.intent)).map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from))];
   const trial = b.plan.trialSize;
+  const notes = state.touches.filter((x) => x.status === "sent" || x.status === "delivered").length;
   const lead =
     t.booked > 0
-      ? `${b.ownerFirstName}, the free ${trial} put ${t.booked} ${t.booked === 1 ? "job" : "jobs"} back on your calendar, ${fmtMoney(t.bookedValue)}: ${joinNames(names)}.`
+      ? `${b.ownerFirstName}, the free ${trial} put ${t.booked} ${t.booked === 1 ? "job" : "jobs"} back on your calendar, ${fmtMoney(t.bookedValue)}: ${someNames(names, t.booked)}.`
       : askers.length
-        ? `${b.ownerFirstName}, from the free ${trial}, ${joinNames(askers)} asked for a price or a date.`
+        ? `${b.ownerFirstName}, from the free ${trial}, ${someNames(askers, askers.length)} asked for a price or a date.`
         : `${b.ownerFirstName}, the free ${trial} is done.`;
   const lines = [
     lead,
-    `From ${t.contacted} notes, ${t.replied} wrote back and ${t.wants} asked for a price or a date.`,
+    `From ${notes} ${notes === 1 ? "note" : "notes"} to ${t.contacted} ${t.contacted === 1 ? "person" : "people"}, ${t.replied} wrote back and ${t.wants} asked for a price or a date.`,
     t.remaining ? `There are ${t.remaining.toLocaleString("en-US")} more quiet quotes and past customers behind them.` : "",
     `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list and every new quote you write. Cancel by text, any time.`,
     `And the guarantee: any month nobody asks for a price or a date, you don't pay.`,
@@ -343,6 +379,13 @@ export function renewalNotice(state: AccountState, asOf: ISODate): { yearEnds: I
 function joinNames(n: string[]): string {
   if (n.length <= 1) return n[0] ?? "";
   return `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}`;
+}
+
+/** Up to four names; past that, "+N more" so a partial list never reads as the whole one. */
+function someNames(all: string[], total: number, max = 4): string {
+  const shown = all.slice(0, max);
+  const more = Math.max(total, all.length) - shown.length;
+  return more > 0 ? `${shown.join(", ")} +${more} more` : joinNames(shown);
 }
 
 /* ------------------------------------------------------------------ */
@@ -420,7 +463,8 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const notesInPeriod = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && inPeriod(t.sentAt ?? t.dueAt)).length;
   const repliesInPeriod = state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent) && inPeriod(r.receivedAt)).length;
   const t = totals(state);
-  const since = spokenWhen(periodStart, asOf).replace(/^back in /, "");
+  // a date, never "since a few weeks ago"
+  const since = `${monthName(periodStart)} ${Number(periodStart.slice(8))}`;
   const annual = b.plan.billing === "annual";
   const text = free
     ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`

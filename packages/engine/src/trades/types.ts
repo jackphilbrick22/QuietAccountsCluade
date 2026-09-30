@@ -16,8 +16,11 @@ export interface ServiceDef {
   reserviceMonths?: number;
   /** Hazard work gets worse if ignored; improvements can wait. */
   kind: "hazard" | "repair" | "maintenance" | "improvement" | "recurring";
-  /** Natural next jobs after this one. */
-  followOns?: { serviceId: string; afterDays: [number, number]; why: string }[];
+  /**
+   * Natural next jobs after this one. `why` is for the owner; `pitch` is the one honest sentence a
+   * homeowner reads about it (left out of the note when there isn't one).
+   */
+  followOns?: { serviceId: string; afterDays: [number, number]; why: string; pitch?: string }[];
   /** A single honest sentence on why waiting doesn't help — used by the "problem grows" angle. */
   worseIfWaiting?: string;
   /**
@@ -25,8 +28,12 @@ export interface ServiceDef {
    * works around May). Out of season, notes never offer a near-term slot.
    */
   strictSeason?: boolean;
+  /** Strict-season work: why it waits, in one plain sentence for the homeowner. */
+  waitLine?: string;
   /** Timing line for the "timing" angle, keyed by climate. */
   timingLine?: Partial<Record<Climate, string>>;
+  /** Months the timing line reads true in ("leaf-off months" is a winter line). Default: the season. */
+  timingMonths?: Partial<Record<Climate, number[]>>;
 }
 
 export interface TradePlaybook {
@@ -55,6 +62,11 @@ export interface TradePlaybook {
   crewLine: string;
   /** Default minimum quote worth chasing. */
   minQuote: number;
+  /**
+   * Coming out to look is free in this trade (estimates), so a note may say "No charge to look."
+   * Off where a visit is a paid service or diagnostic call (HVAC, septic, pest). The owner can override.
+   */
+  freeLook: boolean;
 }
 
 export const WARM_STATES = new Set(["FL", "TX", "AZ", "CA", "LA", "MS", "AL", "GA", "SC", "HI", "NV", "NM"]);

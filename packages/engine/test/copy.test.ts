@@ -23,8 +23,10 @@ function problemsWith(subject: string, body: string, flags: string[], ds: Datase
   if (/https?:\/\/|www\.|\b[a-z0-9-]+\.(com|net|org)\b/i.test(subject + "\n" + body)) p.push("has a link");
   if (/!/.test(subject + body)) p.push("has an exclamation mark");
   if (/\d\s?%|percent/i.test(subject + body)) p.push("has a percentage");
-  if (!subject || subject.length > 60) p.push(`subject length ${subject.length}`);
-  if (!body.includes(greetingName(c.firstName))) p.push("doesn't greet them by name");
+  // a follow-up's "Re: " repeats note 1's subject exactly, so it doesn't count toward the length
+  if (!subject || subject.replace(/^Re: /, "").length > 60) p.push(`subject length ${subject.length}`);
+  // with no first name, a follow-up leaves the name out rather than saying "there, …"
+  if (greetingName(c.firstName) === "there" ? /^there,|, there[.?]/m.test(body) : !body.includes(greetingName(c.firstName))) p.push("doesn't greet them by name");
   if (!body.includes(ds.business.signerName)) p.push("not signed");
   if (/\{\w+\}|undefined|NaN/.test(subject + body)) p.push("unfilled token");
   return p;
@@ -60,6 +62,12 @@ const SYNTHESIZE: Partial<Record<BreakageType, (r: ScanResult, trade: TradeId) =
   declined_quote: (r) => {
     const donor = r.opportunities.find((o) => o.type === "archived_quote")!;
     return { ...donor, id: `${donor.id}-no`, type: "declined_quote" };
+  },
+  // only a real routine lapses (a fence sample's repeat customers are one-off jobs)
+  lapsed_regular: (r, trade) => {
+    const donor = r.opportunities.find((o) => o.source.kind === "job" && !o.suppressed)!;
+    const svc = playbook(trade).services.find((s) => s.kind === "maintenance" || s.kind === "recurring")!;
+    return { ...donor, id: `${donor.id}-lapsed`, type: "lapsed_regular", serviceId: svc.id, jobPhrase: svc.phrase };
   },
 };
 

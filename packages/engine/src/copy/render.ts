@@ -1,7 +1,7 @@
 import type { BusinessProfile, Customer, Dataset, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
-import { climateOf, findService, jobPhrase, playbook, seasonFit } from "../trades/index.ts";
+import { classifyService, climateOf, findService, jobPhrase, monthsUntilSeason, playbook, seasonFit } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
-import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, mondayOf, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
+import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
 import { quoteById, scheduledWork, type ScheduledWork } from "../lookup.ts";
 import { sequenceFor, TEMPLATES, templateKey, type NoteTemplate } from "./templates.ts";
@@ -20,6 +20,11 @@ export interface RenderContext {
   sendOn: ISODate;
   /** We've written to this person before — so never say "that's on us for not following up". */
   contactedBefore?: boolean;
+  /**
+   * The subject note 1 actually went out with. Every later note is "Re: " + exactly this, so it threads
+   * (Gmail splits a thread whose subject changes). Worked out from note 1 when not given.
+   */
+  threadSubject?: string;
 }
 
 /** Factual crew-nearby line from the real schedule or the owner's open-crew weeks. Never invented. */
@@ -62,8 +67,13 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   const when = doneOn ? spokenWhen(doneOn, rc.sendOn) : "a while back";
   const quoteFamily = ["unanswered_quote", "archived_quote", "changes_requested", "declined_quote"].includes(o.type);
   const stale = quoteFamily && !!anchor && daysBetween(anchor, rc.sendOn) > (b.voice.staleQuoteDays ?? STALE_QUOTE_DAYS);
+  const month = Number(rc.sendOn.slice(5, 7));
+  const fit = svc ? seasonFit(svc, climate, month) : "now";
   // out-of-season work that would do harm (oaks in summer) never gets offered a near-term slot
-  const holdForSeason = !!svc?.strictSeason && seasonFit(svc, climate, Number(rc.sendOn.slice(5, 7))) !== "now";
+  const holdForSeason = !!svc?.strictSeason && fit !== "now";
+  // a timing line only goes out in the months it's true ("leaf-off months" is a winter line)
+  const lineMonths = svc?.timingMonths?.[climate] ?? svc?.season[climate] ?? svc?.season.cold ?? [];
+  const timingLine = svc?.timingLine?.[climate] && (!lineMonths.length || lineMonths.includes(month)) ? svc.timingLine[climate]! : "";
   const t: Record<string, string> = {
     first: greetingName(c.firstName),
     signer: b.signerName,
@@ -79,7 +89,14 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     city: c.address?.city ?? "",
     crewLine: holdForSeason ? "" : crewLine(rc.ds, c, rc.sendOn) ?? "",
     worse: lowerFirst(svc?.worseIfWaiting ?? ""),
-    timingLine: svc?.timingLine?.[climate] ?? "",
+    timingLine,
+    inSeason: fit === "now" ? "yes" : "",
+    seasonMonth: svc && fit !== "now" ? MONTH_NAMES[(month - 1 + monthsUntilSeason(svc, climate, month)) % 12]! : "",
+    nearTerm: holdForSeason ? "" : "yes",
+    held: holdForSeason ? "yes" : "",
+    waitLine: holdForSeason ? svc?.waitLine ?? "" : "",
+    // only where the owner doesn't charge to come out (never HVAC, septic or pest by default)
+    freeLook: (b.voice.freeLook ?? playbook(b.trade).freeLook) ? " No charge to look." : "",
     interval: svc?.reserviceMonths ? intervalWords(svc.reserviceMonths) : "",
     service: svc?.label.toLowerCase() ?? "",
     years: doneOn ? humanAge(daysBetween(doneOn, rc.sendOn)) : "",
@@ -92,18 +109,24 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     option: "",
     why: "",
   };
+  // "we used to take care of the pines for you" is false once the pines are gone: name the service instead
+  if (o.type === "lapsed_regular" && svc && svc.kind !== "maintenance" && svc.kind !== "recurring") t.job = svc.phrase;
   if (o.type === "declined_option") {
     const q = quoteById(rc.ds, o.source.id);
     t.mainJob = q ? jobPhrase(q.title, b.trade, q.lineItems.filter((l) => !l.optional)) : "the job";
-    t.option = lowerFirst(o.evidence.find((e) => e.startsWith("Option not picked:"))?.replace(/^Option not picked: /, "").replace(/ — .*$/, "") ?? "the add-on");
+    const name = o.evidence.find((e) => e.startsWith("Option not picked:"))?.replace(/^Option not picked: /, "").replace(/ — .*$/, "");
+    // "Install risers & lids" is a line item; a person says "the risers & lids"
+    t.option = name ? lowerFirst(name).replace(/^(install|add|replace|upgrade to|upgrade|put in|new)\s+(the\s+)?/i, "the ") : "the add-on";
   }
   if (o.type === "missed_upsell") {
     const next = svc;
     t.option = next?.phrase ?? "the next step";
-    const src = o.source.kind === "job" ? rc.ds.jobs.find((j) => j.id === o.source.id)?.title : rc.ds.invoices.find((i) => i.id === o.source.id)?.subject;
-    t.mainJob = src ? jobPhrase(src, b.trade) : "the work";
-    const why = o.reason.split("—")[1]?.trim().replace(/\.$/, "");
-    t.why = why ? capitalize(why) + "." : "";
+    const src = o.source.kind === "job" ? rc.ds.jobs.find((j) => j.id === o.source.id) : undefined;
+    const title = src?.title ?? rc.ds.invoices.find((i) => i.id === o.source.id)?.subject;
+    t.mainJob = title ? jobPhrase(title, b.trade) : "the work";
+    // the homeowner's sentence for it, never the owner-facing reason
+    const did = title ? classifyService(title, src?.lineItems ?? [], [b.trade, ...b.otherTrades]).service : undefined;
+    t.why = did?.followOns?.find((f) => f.serviceId === o.serviceId)?.pitch ?? "";
   }
   if (o.type === "unpaid_invoice") {
     const inv = rc.ds.invoices.find((x) => x.id === o.source.id);
@@ -111,15 +134,6 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     t.balance = fmtMoney(o.value);
   }
   return t;
-}
-
-/** 36 → "3 years", 30 → "2½ years", 18 → "18 months". */
-export function intervalWords(months: number): string {
-  if (months < 24) return `${months} months`;
-  const y = months / 12;
-  if (Number.isInteger(y)) return `${y} years`;
-  if (Number.isInteger(y * 2)) return `${Math.floor(y)}½ years`;
-  return `${months} months`;
 }
 
 function playbookTicket(b: BusinessProfile): number {
@@ -134,12 +148,21 @@ function capitalize(s: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : s;
 }
 
-/** Mechanical cleanup: "Co.." -> "Co.", "Raj, We've" -> "Raj, we've". */
+/** Mechanical cleanup: "Co.." -> "Co.", "Raj, We've" -> "Raj, we've", "José, Oaks" -> "José, oaks". */
 function tidy(s: string): string {
   return s
     .replace(/([^.])\.\.(?!\.)/g, "$1.")
-    .replace(/^([A-Z][\w'-]*), ([A-Z])(?=[a-z])/, (_m, name: string, c: string) => `${name}, ${c.toLowerCase()}`)
+    .replace(/^(\p{Lu}[\p{L}'-]*), (\p{Lu})(?=\p{Ll})/u, (_m, name: string, c: string) => `${name}, ${c.toLowerCase()}`)
+    .replace(/\bback back in\b/g, "back in")
     .replace(/ +\n/g, "\n");
+}
+
+/**
+ * No first name to use: a follow-up never opens "there, …" or ends ", there." — the sentence is
+ * rewritten without it ("there, checking back" -> "Checking back").
+ */
+function withoutThere(s: string): string {
+  return s.replace(/^there, (\S)/, (_m, c: string) => c.toUpperCase()).replace(/, there([.?])/g, "$1");
 }
 
 function fill(text: string, t: Record<string, string>): string {
@@ -197,29 +220,41 @@ export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step:
   const plan = seq.steps.find((s) => s.step === step);
   if (!plan) return undefined;
   const t = tokens(o, c, b, rc);
-  let chosen: NoteTemplate | undefined;
-  for (const angle of plan.angles) {
-    for (const key of templateKey(seq.family, angle, step)) {
-      const options = (TEMPLATES[key] ?? []).filter((tpl) => eligible(tpl, t));
-      if (options.length) {
-        chosen = pickBy(options, `${c.id}|${o.id}|${step}`);
-        break;
-      }
-    }
-    if (chosen) break;
-  }
+  const chosen = chooseTemplate(seq, plan.angles, step, t, `${c.id}|${o.id}|${step}`);
   if (!chosen) return undefined;
-  let subject = tidy(applySwaps(fill(chosen.subject, t), b.voice.wordSwaps)).replace(/\s+/g, " ").trim();
-  // long job names ("the aluminum fence around the pool") make long subjects; fall back to just the job
-  if (subject.length > 60) subject = `${/^re:/i.test(subject) ? "Re: " : ""}${applySwaps(t.job!, b.voice.wordSwaps)}`;
-  if (subject.length > 60) subject = subject.slice(0, 58).replace(/\s+\S*$/, "");
+  let subject: string;
+  if (step > 1) {
+    // a follow-up is a reply in note 1's thread: "Re: " + exactly what note 1 said
+    const first = rc.threadSubject ?? renderNote(o, c, { ...rc, threadSubject: undefined }, 1)?.subject ?? subjectFrom(chosen, t, b);
+    subject = `Re: ${first.replace(/^re:\s*/i, "")}`;
+  } else subject = subjectFrom(chosen, t, b);
   let body = tidy(applySwaps(fill(chosen.body, t), b.voice.wordSwaps))
     .split("\n")
     .filter((line, i, arr) => !(line.trim() === "" && arr[i - 1]?.trim() === ""))
     .join("\n")
     .trim();
+  if (t.first === "there") body = withoutThere(body);
   body = `${body}\n\n${footer(b, o.type)}`;
   return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, step, commercial: o.type !== "unpaid_invoice", requireJob: step === 1 && ["quote", "fresh", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
+}
+
+/** The first angle whose facts are available wins; within it, the same person always gets the same variant. */
+function chooseTemplate(seq: { family: string }, angles: MessageAngle[], step: number, t: Record<string, string>, key: string): NoteTemplate | undefined {
+  for (const angle of angles) {
+    for (const k of templateKey(seq.family, angle, step)) {
+      const options = (TEMPLATES[k] ?? []).filter((tpl) => eligible(tpl, t));
+      if (options.length) return pickBy(options, key);
+    }
+  }
+  return undefined;
+}
+
+function subjectFrom(tpl: NoteTemplate, t: Record<string, string>, b: BusinessProfile): string {
+  let subject = tidy(applySwaps(fill(tpl.subject, t), b.voice.wordSwaps)).replace(/\s+/g, " ").trim();
+  // long job names ("the aluminum fence around the pool") make long subjects; fall back to just the job
+  if (subject.length > 60) subject = `${/^re:/i.test(subject) ? "Re: " : ""}${applySwaps(t.job!, b.voice.wordSwaps)}`;
+  if (subject.length > 60) subject = subject.slice(0, 58).replace(/\s+\S*$/, "");
+  return subject;
 }
 
 /** "Today" before 3pm, else the next weekday — a call-back window an owner can actually keep. */

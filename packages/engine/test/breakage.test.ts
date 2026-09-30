@@ -3,6 +3,7 @@ import { scan, type ScanResult } from "../src/breakage/detect.ts";
 import { closeRate, silentAudit, summarize } from "../src/breakage/forecast.ts";
 import { shopProfile } from "../src/breakage/profile.ts";
 import { readiness } from "../src/breakage/readiness.ts";
+import { renderNote } from "../src/copy/render.ts";
 import { ADJUST, rangeFactor, TYPE_RANK } from "../src/breakage/assumptions.ts";
 import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
@@ -193,14 +194,17 @@ describe("detectors", () => {
       const r = scan(dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Stump grinding x3", completedOn: ago(100) })] }));
       expect(oppsFor(r, "c1", "one_and_done")).toEqual([]);
     });
-    it("does not fire on someone who hired the shop twice", () => {
+    it("two one-off jobs are a past customer, not a lost regular", () => {
       const r = scan(
         dataset({
           customers: [customer("c1")],
           jobs: [job("j1", "c1", { title: "Stump grinding x3", completedOn: ago(700) }), job("j2", "c1", { title: "Stump grinding", completedOn: ago(400) })],
         }),
       );
-      expect(oppsFor(r, "c1", "one_and_done")).toEqual([]);
+      const o = oneOpp(r, "c1", "one_and_done");
+      expect(o.source).toEqual({ kind: "job", id: "j2" });
+      expect(o.reason).toMatch(/2 times for one-off jobs/);
+      expect(oppsFor(r, "c1", "lapsed_regular")).toEqual([]);
     });
   });
 
@@ -219,6 +223,40 @@ describe("detectors", () => {
     });
     it("does not fire while the regular is still on rhythm", () => {
       expect(oppsFor(scan(mowing(10)), "c1", "lapsed_regular")).toEqual([]);
+    });
+    it("two unrelated one-off jobs are not a lost routine", () => {
+      const r = scan(dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Oak removal", completedOn: ago(1100), total: 2000 }), job("j2", "c1", { title: "Remove pines over garage", completedOn: ago(500), total: 4600 })] }));
+      expect(oppsFor(r, "c1", "lapsed_regular")).toEqual([]);
+      expect(oneOpp(r, "c1", "one_and_done").source).toEqual({ kind: "job", id: "j2" });
+    });
+    it("a maintenance service done twice is a routine, and the note is about that service", () => {
+      const ds = dataset({
+        business: { trade: "pest", name: "Test Pest", avgJobValue: 150, minQuoteValue: 100 },
+        customers: [customer("c1")],
+        jobs: [job("j1", "c1", { title: "Quarterly pest plan", completedOn: ago(390), total: 150 }), job("j2", "c1", { title: "Quarterly pest plan - perimeter", completedOn: ago(300), total: 150 })],
+      });
+      const o = oneOpp(scan(ds), "c1", "lapsed_regular");
+      expect(o.serviceId).toBe("pest.plan");
+      expect(o.jobPhrase).toBe("the pest plan");
+    });
+    it("a regular whose last job was a one-off is written to about the routine, with its real last date", () => {
+      const ds = dataset({
+        customers: [customer("c1")],
+        jobs: [
+          job("j1", "c1", { title: "Crown thinning, maples", completedOn: ago(1500), total: 900 }),
+          job("j2", "c1", { title: "Crown thinning, maples", completedOn: ago(1200), total: 900 }),
+          job("j3", "c1", { title: "Crown thinning, maples", completedOn: ago(900), total: 900 }),
+          job("j4", "c1", { title: "Oak removal", completedOn: ago(600), total: 4600 }),
+        ],
+      });
+      const o = oneOpp(scan(ds), "c1", "lapsed_regular");
+      expect(o).toMatchObject({ serviceId: "tree.prune", jobPhrase: "the pruning", source: { kind: "job", id: "j3" }, anchorDate: ago(900) });
+      const [g1, g3] = [1, 2].map((step) => renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, step)!);
+      expect(g1!.body).toContain("We used to take care of the pruning for you, and the last time was");
+      expect(g1!.body).not.toMatch(/take care of the oak/);
+      // the last note implies nothing went wrong
+      expect(g3!.body).not.toMatch(/done better|make it right/);
+      expect(g3!.body).toContain("If you'd like us back for the pruning, just reply");
     });
   });
 

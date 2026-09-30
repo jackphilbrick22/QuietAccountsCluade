@@ -21,19 +21,21 @@ const tree: TradePlaybook = {
     {
       id: "tree.removal",
       label: "Tree removal",
-      match: /\b(remov|take down|takedown|cut down|fell|drop|hazard|dead|leaning|crane)/i,
+      // "deadwood removal" and "limb removal" are pruning: the tree stays
+      match: /\b(?<!\b(?:dead ?wood|limbs?|branch(?:es)?)\s)(remov|take down|takedown|cut down|fell|drop|hazard|dead(?! ?wood|\s(?:limbs?|branch))|leaning|crane)/i,
       phrase: "the tree removal",
       season: { cold: ALL, warm: ALL },
       kind: "hazard",
       followOns: [
-        { serviceId: "tree.stump", afterDays: [3, 120], why: "stumps left behind after removals are the most common add-on" },
-        { serviceId: "tree.plant", afterDays: [30, 365], why: "replacement planting after a removal" },
+        { serviceId: "tree.stump", afterDays: [3, 120], why: "stumps left behind after removals are the most common add-on", pitch: "Grinding it out gets it out of the way of the mower and keeps it from sprouting." },
+        { serviceId: "tree.plant", afterDays: [30, 365], why: "replacement planting after a removal", pitch: "If you'd like something planted where it stood, we can do that too." },
       ],
       worseIfWaiting: "A tree that needed to come down doesn't get easier to take down — it gets heavier, more brittle, and closer to the house.",
       timingLine: {
         cold: "Leaf-off months make removals quicker and cleaner, and the ground is firm for equipment.",
         warm: "Getting ahead of storm season is the cheapest time to deal with it.",
       },
+      timingMonths: { cold: [10, 11, 12, 1, 2, 3], warm: [12, 1, 2, 3, 4, 5] },
     },
     {
       id: "tree.stump",
@@ -54,11 +56,13 @@ const tree: TradePlaybook = {
       reserviceMonths: 36,
       kind: "maintenance",
       strictSeason: true,
+      waitLine: "Oaks have to wait for the dormant season because of oak wilt.",
       worseIfWaiting: "Limbs that are over the roof or wires only get longer and heavier each season.",
       timingLine: {
         cold: "Oaks can only be pruned safely in the dormant months, when oak wilt can't spread, so the winter schedule is the one to get on.",
         warm: "Oaks are safest to prune in the coldest part of winter, so that's the schedule to get on.",
       },
+      timingMonths: { cold: ALL, warm: ALL },
     },
     {
       id: "tree.ash",
@@ -66,20 +70,22 @@ const tree: TradePlaybook = {
       // Penn State Extension: applications in May or early June
       match: /\b(emerald ash|ash borer|eab)\b|\bash\b[^.·]{0,20}\b(treat|inject|protect)/i,
       phrase: "the ash treatment",
-      season: { cold: [4, 5, 6], warm: [3, 4, 5] },
+      season: { cold: [5, 6], warm: [3, 4, 5] },
       reserviceMonths: 24,
       kind: "repair",
       strictSeason: true,
+      waitLine: "Ash treatments only work when they go in during the spring.",
       worseIfWaiting: "Once borers get into an ash it usually dies within a few years, and a dead ash gets brittle and harder to take down safely.",
       timingLine: {
         cold: "Ash treatments only work when they go in around May or early June, so it's worth getting on the spring list now.",
         warm: "Ash treatments work best when they go in during spring, so it's worth getting on that list now.",
       },
+      timingMonths: { cold: ALL, warm: ALL },
     },
     {
       id: "tree.prune",
       label: "Pruning / trimming",
-      match: /\b(prun|trim|thin|raise|reduc|crown|deadwood|clearance|lift|shape|cabling|brac)/i,
+      match: /\b(prun|trim|thin|raise|reduc|crown|deadwood|dead wood|dead ?limb|limbs? (remov|up|back)|limbing|branch(es)? remov|clearance|lift|shape|cabling|brac)/i,
       phrase: "the pruning",
       season: { cold: [1, 2, 3, 4, 10, 11, 12], warm: [1, 2, 3, 11, 12] },
       reserviceMonths: 36,
@@ -89,6 +95,7 @@ const tree: TradePlaybook = {
         cold: "Dormant season (late fall through early spring) is the best time for most pruning.",
         warm: "Winter is the best window for most pruning before spring growth starts.",
       },
+      timingMonths: { cold: [9, 10, 11, 12, 1, 2, 3], warm: [10, 11, 12, 1, 2] },
     },
     {
       id: "tree.storm",
@@ -156,7 +163,7 @@ const tree: TradePlaybook = {
     [/garage/i, "over the garage"],
     [/(house|home|roof)/i, "over the house"],
     [/(power ?line|wire|line)/i, "by the lines"],
-    [/(back ?yard|backyard|rear)/i, "out back"],
+    [/(back ?yard|backyard|rear)/i, "in the backyard"],
     [/(front ?yard|front)/i, "out front"],
     [/(fence ?line|property line|neighbor)/i, "on the property line"],
     [/(deck|patio|pool)/i, "by the deck"],
@@ -172,6 +179,7 @@ const tree: TradePlaybook = {
   quoteAngles: ["check_in", "problem_grows", "timing", "crew_nearby", "close_file"],
   crewLine: "We've got a crew working nearby with a couple of open days.",
   minQuote: 400,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -198,6 +206,7 @@ const lawn: TradePlaybook = {
         cold: "Spring routes fill up by April — the spots go to whoever says yes first.",
         warm: "Routes for the season are getting set now, and the best days go first.",
       },
+      timingMonths: { cold: [1, 2, 3, 4], warm: [12, 1, 2] },
     },
     {
       id: "lawn.fert",
@@ -221,6 +230,7 @@ const lawn: TradePlaybook = {
         cold: "Late summer to early fall is the window for aeration and seed — it closes when the nights get cold.",
         warm: "Late spring is when warm-season grass recovers fastest from aeration.",
       },
+      timingMonths: { cold: [7, 8, 9, 10], warm: [3, 4, 5, 6] },
     },
     {
       id: "lawn.cleanup",
@@ -234,6 +244,7 @@ const lawn: TradePlaybook = {
         cold: "Clean-up schedules fill fast once the leaves drop.",
         warm: "The clean-up calendar fills fast in late winter.",
       },
+      timingMonths: { cold: [9, 10, 11], warm: [11, 12, 1, 2] },
     },
     {
       id: "lawn.sod",
@@ -261,6 +272,7 @@ const lawn: TradePlaybook = {
   quoteAngles: ["check_in", "timing", "easy_yes", "crew_nearby", "close_file"],
   crewLine: "We've got a route running through your neighborhood with room for one or two more.",
   minQuote: 150,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -284,6 +296,7 @@ const landscape: TradePlaybook = {
       reserviceMonths: 12,
       kind: "maintenance",
       timingLine: { cold: "Spring mulch books out fast once the snow's gone.", warm: "Fresh mulch before the heat keeps the beds from drying out." },
+      timingMonths: { cold: [2, 3, 4, 5], warm: [1, 2, 3, 4] },
     },
     {
       id: "land.hardscape",
@@ -292,11 +305,12 @@ const landscape: TradePlaybook = {
       phrase: "the patio project",
       season: { cold: [4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
       kind: "improvement",
-      followOns: [{ serviceId: "land.lighting", afterDays: [14, 365], why: "lighting finishes a new patio" }],
+      followOns: [{ serviceId: "land.lighting", afterDays: [14, 365], why: "lighting finishes a new patio", pitch: "A few lights make a new patio usable after dark." }],
       timingLine: {
         cold: "Hardscape crews book out months ahead for spring — getting on the list now is how it gets built before summer.",
         warm: "Cooler months are the best time to build before the heat.",
       },
+      timingMonths: { cold: [11, 12, 1, 2, 3], warm: [10, 11, 12, 1, 2, 3] },
     },
     {
       id: "land.planting",
@@ -352,6 +366,7 @@ const landscape: TradePlaybook = {
   quoteAngles: ["check_in", "revise", "timing", "crew_nearby", "close_file"],
   crewLine: "We've got a crew finishing up nearby and a couple of open days after.",
   minQuote: 500,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -386,14 +401,15 @@ const septic: TradePlaybook = {
       reserviceMonths: 36,
       kind: "maintenance",
       followOns: [
-        { serviceId: "septic.riser", afterDays: [0, 365], why: "risers make every future pump-out faster and cheaper" },
-        { serviceId: "septic.filter", afterDays: [0, 365], why: "an effluent filter protects the drain field" },
+        { serviceId: "septic.riser", afterDays: [0, 365], why: "risers make every future pump-out faster and cheaper", pitch: "Risers bring the lids up to ground level, so there's no digging to find them at the next pump-out." },
+        { serviceId: "septic.filter", afterDays: [0, 365], why: "an effluent filter protects the drain field", pitch: "An effluent filter catches solids before they can get out to the drain field." },
       ],
       worseIfWaiting: "Solids that build past the baffle go out to the drain field — and a drain field is the part that costs thousands.",
       timingLine: {
         cold: "Best to get it done before the ground freezes and the lid gets hard to reach.",
         warm: "Heavy rain season is hard on a full tank — better to pump it before then.",
       },
+      timingMonths: { cold: [8, 9, 10, 11], warm: ALL },
     },
     {
       id: "septic.inspect",
@@ -461,6 +477,8 @@ const septic: TradePlaybook = {
   quoteAngles: ["check_in", "problem_grows", "timing", "crew_nearby", "close_file"],
   crewLine: "We've got the truck in your area next week and room for a couple more stops.",
   minQuote: 250,
+  // a visit is a paid service call
+  freeLook: false,
 };
 
 /* ================================================================== */
@@ -483,13 +501,14 @@ const fence: TradePlaybook = {
       season: { cold: [3, 4, 5, 6, 7, 8, 9, 10], warm: ALL },
       kind: "improvement",
       followOns: [
-        { serviceId: "fence.stain", afterDays: [60, 540], why: "new wood fences should be sealed within the first year" },
-        { serviceId: "fence.gate", afterDays: [0, 365], why: "gate hardware and self-closers after install" },
+        { serviceId: "fence.stain", afterDays: [60, 540], why: "new wood fences should be sealed within the first year", pitch: "A new wood fence holds up a lot longer if it's sealed in its first year." },
+        { serviceId: "fence.gate", afterDays: [0, 365], why: "gate hardware and self-closers after install", pitch: "Self-closing hinges and a solid latch keep the gate shut on its own." },
       ],
       timingLine: {
         cold: "Spring is the busiest fence season — the install calendar fills months out.",
         warm: "Getting on the calendar now beats the spring rush.",
       },
+      timingMonths: { cold: [11, 12, 1, 2, 3], warm: [10, 11, 12, 1, 2] },
     },
     {
       id: "fence.repair",
@@ -536,7 +555,7 @@ const fence: TradePlaybook = {
     [/\bfence\b/i, "the fence"],
   ],
   places: [
-    [/back ?yard|rear/i, "out back"],
+    [/back ?yard|rear/i, "in the backyard"],
     [/pool/i, "around the pool"],
     [/front/i, "out front"],
   ],
@@ -549,6 +568,7 @@ const fence: TradePlaybook = {
   quoteAngles: ["check_in", "revise", "timing", "crew_nearby", "close_file"],
   crewLine: "We've got a crew installing nearby and an open slot on the calendar.",
   minQuote: 800,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -570,11 +590,12 @@ const concrete: TradePlaybook = {
       phrase: "the driveway",
       season: { cold: [4, 5, 6, 7, 8, 9, 10], warm: ALL },
       kind: "improvement",
-      followOns: [{ serviceId: "conc.seal", afterDays: [30, 365], why: "new concrete should be sealed after it cures" }],
+      followOns: [{ serviceId: "conc.seal", afterDays: [30, 365], why: "new concrete should be sealed after it cures", pitch: "New concrete holds up better against water and salt once it's sealed." }],
       timingLine: {
         cold: "Pour season ends when nights drop near freezing — the last slots go fast.",
         warm: "Cooler months are the best time to pour before the summer heat.",
       },
+      timingMonths: { cold: [8, 9, 10], warm: [10, 11, 12, 1, 2, 3, 4] },
     },
     {
       id: "conc.patio",
@@ -637,6 +658,7 @@ const concrete: TradePlaybook = {
   quoteAngles: ["check_in", "timing", "revise", "crew_nearby", "close_file"],
   crewLine: "We've got a pour scheduled near you and could add one more while the crew's in the area.",
   minQuote: 1000,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -661,10 +683,11 @@ const pressure: TradePlaybook = {
       reserviceMonths: 36,
       kind: "maintenance",
       followOns: [
-        { serviceId: "pw.gutter", afterDays: [0, 365], why: "gutter brightening and clean-out pair with a house wash" },
-        { serviceId: "pw.window", afterDays: [0, 60], why: "clean windows after a wash" },
+        { serviceId: "pw.gutter", afterDays: [0, 365], why: "gutter brightening and clean-out pair with a house wash", pitch: "Gutters can be brightened and cleared out so they match a clean house." },
+        { serviceId: "pw.window", afterDays: [0, 60], why: "clean windows after a wash", pitch: "Windows can pick up spots from a wash, and a window cleaning finishes it off." },
       ],
       timingLine: { cold: "Spring is when the green and black streaks show up worst.", warm: "Getting ahead of pollen and mildew season." },
+      timingMonths: { cold: [2, 3, 4, 5], warm: [11, 12, 1, 2] },
     },
     {
       id: "pw.roof",
@@ -714,12 +737,12 @@ const pressure: TradePlaybook = {
     },
   ],
   objects: [
-    [/roof/i, "the roof"],
-    [/driveway/i, "the driveway"],
-    [/deck/i, "the deck"],
-    [/fence/i, "the fence"],
-    [/patio/i, "the patio"],
-    [/(house|siding|home)/i, "the house"],
+    [/roof/i, "the roof cleaning"],
+    [/driveway/i, "the driveway cleaning"],
+    [/deck/i, "the deck cleaning"],
+    [/fence/i, "the fence cleaning"],
+    [/patio/i, "the patio cleaning"],
+    [/(house|siding|home)/i, "the house wash"],
   ],
   places: [],
   whyQuotesDie: [
@@ -731,6 +754,7 @@ const pressure: TradePlaybook = {
   quoteAngles: ["check_in", "timing", "crew_nearby", "easy_yes", "close_file"],
   crewLine: "We're washing a couple of houses on your street next week and can fit one more.",
   minQuote: 150,
+  freeLook: true,
 };
 
 /* ================================================================== */
@@ -748,6 +772,7 @@ function simple(
   why: string[],
   crew: string,
   min: number,
+  freeLook = false,
 ): TradePlaybook {
   return {
     id,
@@ -764,20 +789,21 @@ function simple(
     quoteAngles: ["check_in", "timing", "problem_grows", "crew_nearby", "close_file"],
     crewLine: crew,
     minQuote: min,
+    freeLook,
   };
 }
 
 const gutter = simple(
   "gutter", "Gutter service", "gutter company", [120, 350, 6000], 0.5, { cold: [4, 5, 10, 11], warm: [3, 10, 11, 12] },
   [
-    { id: "gutter.clean", label: "Gutter cleaning", match: /\b(clean|clear|flush|debris|leaves)/i, phrase: "the gutter cleaning", season: { cold: [4, 5, 10, 11, 12], warm: [3, 4, 10, 11, 12] }, reserviceMonths: 6, kind: "maintenance", worseIfWaiting: "Overflowing gutters dump water right at the foundation.", followOns: [{ serviceId: "gutter.guard", afterDays: [0, 365], why: "guards end the twice-a-year cleaning" }] },
+    { id: "gutter.clean", label: "Gutter cleaning", match: /\b(clean|clear|flush|debris|leaves)/i, phrase: "the gutter cleaning", season: { cold: [4, 5, 10, 11, 12], warm: [3, 4, 10, 11, 12] }, reserviceMonths: 6, kind: "maintenance", worseIfWaiting: "Overflowing gutters dump water right at the foundation.", followOns: [{ serviceId: "gutter.guard", afterDays: [0, 365], why: "guards end the twice-a-year cleaning", pitch: "Gutter guards cut down on how often they need cleaning out." }] },
     { id: "gutter.guard", label: "Gutter guards", match: /\b(guard|screen|cover|leaf ?filter|mesh)/i, phrase: "the gutter guards", season: { cold: ALL, warm: ALL }, kind: "improvement" },
     { id: "gutter.install", label: "New gutters", match: /\b(install|new|seamless|replace|downspout)/i, phrase: "the new gutters", season: { cold: [4, 5, 6, 7, 8, 9, 10, 11], warm: ALL }, kind: "improvement" },
     { id: "gutter.repair", label: "Gutter repair", match: /\b(repair|leak|sag|reattach|pitch)/i, phrase: "the gutter repair", season: { cold: ALL, warm: ALL }, kind: "repair" },
   ],
   [[/gutter/i, "the gutters"], [/downspout/i, "the downspouts"]],
   ["Easy to forget until the next storm", "Guard quotes feel expensive next to a cleaning", "Nobody reminds them in the fall"],
-  "We're doing gutters on a few houses near you and can add one more.", 100,
+  "We're doing gutters on a few houses near you and can add one more.", 100, true,
 );
 
 const windowCleaning = simple(
@@ -787,13 +813,13 @@ const windowCleaning = simple(
   ],
   [[/window/i, "the windows"]],
   ["Nice-to-have that slides", "They meant to book before the holidays", "Nobody asked again the next season"],
-  "We're working on your street next week and have room for one more house.", 100,
+  "We're working on your street next week and have room for one more house.", 100, true,
 );
 
 const pool = simple(
   "pool", "Pool service", "pool company", [150, 1200, 15000], 0.45, { cold: [4, 5, 9], warm: [2, 3, 4, 5] },
   [
-    { id: "pool.open", label: "Pool opening", match: /\b(open|start ?up|de-?winteriz|spring)/i, phrase: "the pool opening", season: { cold: [3, 4, 5], warm: [2, 3] }, reserviceMonths: 12, kind: "maintenance", timingLine: { cold: "Opening slots fill up by May.", warm: "Opening slots fill up early." } },
+    { id: "pool.open", label: "Pool opening", match: /\b(open|start ?up|de-?winteriz|spring)/i, phrase: "the pool opening", season: { cold: [3, 4, 5], warm: [2, 3] }, reserviceMonths: 12, kind: "maintenance", timingLine: { cold: "Opening slots fill up by May.", warm: "Opening slots fill up early." }, timingMonths: { cold: [1, 2, 3, 4], warm: [11, 12, 1, 2] } },
     { id: "pool.close", label: "Pool closing", match: /\b(clos|winteriz|cover)/i, phrase: "the pool closing", season: { cold: [8, 9, 10], warm: [10, 11] }, reserviceMonths: 12, kind: "maintenance" },
     { id: "pool.weekly", label: "Weekly service", match: /\b(weekly|service|maint|chemical|clean)/i, phrase: "the weekly pool service", season: { cold: [5, 6, 7, 8, 9], warm: ALL }, reserviceMonths: 12, kind: "recurring" },
     { id: "pool.repair", label: "Equipment repair", match: /\b(pump|filter|heater|leak|repair|motor|liner|salt|cell|replace)/i, phrase: "the pool repair", season: { cold: ALL, warm: ALL }, kind: "repair", worseIfWaiting: "Equipment problems tend to fail completely at the worst time — mid-season." },
@@ -833,19 +859,19 @@ const junk = simple(
   [{ id: "junk.haul", label: "Haul-away", match: /\b(junk|haul|remov|clean ?out|debris|demo|furniture|appliance|estate|garage|basement|shed)/i, phrase: "the clean-out", season: { cold: ALL, warm: ALL }, kind: "improvement" }],
   [[/garage/i, "the garage"], [/basement/i, "the basement"], [/shed/i, "the shed"], [/attic/i, "the attic"]],
   ["They decided to do it themselves 'this weekend'", "Timing tied to a move or sale that shifted"],
-  "We've got a truck in your area with room on it.", 150,
+  "We've got a truck in your area with room on it.", 150, true,
 );
 
 const painting = simple(
   "painting", "Painting", "painting company", [400, 4500, 25000], 0.35, { cold: [4, 5, 6, 7, 8, 9], warm: [2, 3, 4, 10, 11] },
   [
     { id: "paint.exterior", label: "Exterior painting", match: /\b(exterior|siding|trim|house paint|outside|shutters|door)/i, phrase: "the exterior painting", season: { cold: [5, 6, 7, 8, 9], warm: [1, 2, 3, 4, 10, 11, 12] }, reserviceMonths: 84, kind: "improvement" },
-    { id: "paint.interior", label: "Interior painting", match: /\b(interior|room|walls|ceiling|cabinet|kitchen|bath|inside)/i, phrase: "the interior painting", season: { cold: [1, 2, 3, 11, 12], warm: [6, 7, 8] }, kind: "improvement", timingLine: { cold: "Winter is the best time to get interior work scheduled quickly." } },
+    { id: "paint.interior", label: "Interior painting", match: /\b(interior|room|walls|ceiling|cabinet|kitchen|bath|inside)/i, phrase: "the interior painting", season: { cold: [1, 2, 3, 11, 12], warm: [6, 7, 8] }, kind: "improvement", timingLine: { cold: "Winter is the best time to get interior work scheduled quickly." }, timingMonths: { cold: [10, 11, 12, 1, 2] } },
     { id: "paint.deck", label: "Deck & fence staining", match: /\b(deck|fence|stain)/i, phrase: "the staining", season: { cold: [5, 6, 7, 8, 9], warm: [3, 4, 5, 10, 11] }, reserviceMonths: 30, kind: "maintenance" },
   ],
-  [[/cabinet/i, "the cabinets"], [/deck/i, "the deck"], [/trim/i, "the trim"], [/(exterior|house|siding)/i, "the house"]],
+  [[/cabinet/i, "the cabinets"], [/deck/i, "the deck"], [/trim/i, "the trim"], [/(exterior|house|siding)/i, "the house painting"]],
   ["Large ticket — they wanted to wait", "Color decisions stalled", "They meant to do it before selling"],
-  "We're finishing a job near you and have a gap in the schedule.", 500,
+  "We're finishing a job near you and have a gap in the schedule.", 500, true,
 );
 
 const roofing = simple(
@@ -857,7 +883,7 @@ const roofing = simple(
   ],
   [[/flat roof/i, "the flat roof"], [/metal/i, "the metal roof"], [/chimney/i, "the chimney flashing"], [/roof/i, "the roof"]],
   ["Insurance claim uncertainty", "Big number — waiting on money", "Three-bid shopping"],
-  "We're working on a roof near you and could come take a look while we're there.", 500,
+  "We're working on a roof near you and could come take a look while we're there.", 500, true,
 );
 
 const irrigation = simple(
@@ -876,7 +902,7 @@ const irrigation = simple(
 const chimney = simple(
   "chimney", "Chimney", "chimney company", [150, 450, 8000], 0.5, { cold: [8, 9, 10, 11], warm: [9, 10, 11] },
   [
-    { id: "chim.sweep", label: "Sweep & inspection", match: /\b(sweep|clean|inspect|level|cam)/i, phrase: "the chimney sweep", season: { cold: [5, 6, 7, 8, 9, 10, 11], warm: [8, 9, 10, 11] }, reserviceMonths: 12, kind: "maintenance", timingLine: { cold: "Fall is when everyone calls at once — getting in before the first fire is the move." } },
+    { id: "chim.sweep", label: "Sweep & inspection", match: /\b(sweep|clean|inspect|level|cam)/i, phrase: "the chimney sweep", season: { cold: [5, 6, 7, 8, 9, 10, 11], warm: [8, 9, 10, 11] }, reserviceMonths: 12, kind: "maintenance", timingLine: { cold: "Fall is when everyone calls at once — getting in before the first fire is the move." }, timingMonths: { cold: [7, 8, 9, 10] } },
     { id: "chim.repair", label: "Repair", match: /\b(repair|crown|cap|liner|flashing|tuckpoint|rebuild|damper|leak|crack)/i, phrase: "the chimney repair", season: { cold: [4, 5, 6, 7, 8, 9, 10], warm: ALL }, kind: "repair", worseIfWaiting: "Water that gets past a cracked crown works into the masonry every freeze." },
   ],
   [[/liner/i, "the liner"], [/crown/i, "the crown"], [/cap/i, "the cap"], [/(chimney|fireplace|flue)/i, "the chimney"]],
@@ -891,7 +917,7 @@ const cleaning = simple(
     { id: "clean.deep", label: "Deep clean", match: /\b(deep|spring clean|first clean|initial|top to bottom)/i, phrase: "the deep clean", season: { cold: [3, 4, 5, 11, 12], warm: [3, 4, 11, 12] }, reserviceMonths: 6, kind: "maintenance" },
     { id: "clean.move", label: "Move in / out", match: /\b(move|vacat|rental|turnover|airbnb)/i, phrase: "the move-out clean", season: { cold: ALL, warm: ALL }, kind: "improvement" },
   ],
-  [[/kitchen/i, "the kitchen"], [/(house|home)/i, "the house"]],
+  [[/kitchen/i, "the kitchen"], [/(house|home)/i, "the house cleaning"]],
   ["Price compared to a solo cleaner", "They started 'next month' and never did", "Recurring clients drop quietly after a holiday"],
   "We have a team in your neighborhood with an opening this week.", 100,
 );

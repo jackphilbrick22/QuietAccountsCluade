@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Plus, X } from "lucide-react";
-import { fmtMoney, mondayOf, type BusinessProfile } from "@qa/engine";
+import { fmtMoney, mondayOf, playbook, type BusinessProfile } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { cx, Toggle } from "../../components/ui";
 import { Box, Btn, ConfirmBtn, EmptyRow, PageHead, selectCls, shortDate, smallInputCls, Table, Td, Th, Tr } from "../../components/table";
@@ -101,6 +101,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
         <div className="flex flex-col divide-y divide-line">
           <Toggle id="s-price" checked={v.voice.mentionPrice} onChange={(x) => change((d) => ({ ...d, voice: { ...d.voice, mentionPrice: x } }))} label="Mention the original price" sub="Off by default. Bringing up the old number can bring back the sticker shock." />
           <Toggle id="s-options" checked={v.voice.offerOptions} onChange={(x) => change((d) => ({ ...d, voice: { ...d.voice, offerOptions: x } }))} label="Offer smaller options" sub="Lets a note offer to split the job or do the key part first." />
+          <Toggle id="s-freelook" checked={v.voice.freeLook ?? playbook(v.trade).freeLook} onChange={(x) => change((d) => ({ ...d, voice: { ...d.voice, freeLook: x } }))} label={'Say "No charge to look"'} sub="Only if you never charge to come out. Off by default where a visit is a paid service call." />
         </div>
         <SwapEditor swaps={v.voice.wordSwaps} onChange={(ws) => change((d) => ({ ...d, voice: { ...d.voice, wordSwaps: ws } }))} />
       </Group>

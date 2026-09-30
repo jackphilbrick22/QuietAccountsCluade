@@ -20,6 +20,7 @@ import {
   daysBetween,
   fmtMoney,
   humanAge,
+  intervalWords,
   sendableEmail,
   makeId,
   maxDate,
@@ -393,7 +394,7 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
     const overdueDays = -until;
     if (overdueDays > svc.reserviceMonths * 30 * 2) continue;
     const o = base(ctx, "service_due", c.id, { kind: w.kind, id: w.id }, w.total, dueOn < ctx.asOf ? dueOn : ctx.asOf, w.title, w.lineItems,
-      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : "due next month"} — every ${svc.reserviceMonths >= 24 ? `${Math.round(svc.reserviceMonths / 12)} years` : `${svc.reserviceMonths} months`} is the rule of thumb.`,
+      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : "due next month"} — ${intervalWords(svc.reserviceMonths).toLowerCase()} is the rule of thumb.`,
       [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
     if (o) {
       o.lastDoneOn = w.date;
@@ -419,34 +420,51 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       const o = base(ctx, "missed_upsell", c.id, { kind: w.kind, id: w.id }, typical, w.date, next.label, [],
         `Did ${service.phrase.replace(/^the /, "the ")} ${spokenWhen(w.date, ctx.asOf)}. ${capitalize(next.phrase)} was never offered — ${f.why}.`,
         [evWork(w), `No quote or job for ${next.label.toLowerCase()} on file`], next);
+      // two follow-ons from one job (risers and a filter) are two opportunities, not one id
+      if (o && out.some((x) => x.id === o.id)) o.id = makeId("op", "missed_upsell", w.kind, w.id, c.id, next.id);
       if (o) out.push(o);
     }
   }
 
-  // Lapsed regulars: a rhythm that stopped.
+  // Lapsed regulars: a real routine that stopped. Two unrelated one-off jobs are not a routine.
+  const routineCount = new Map<string, { svc: ServiceDef; n: number; last: (typeof work)[number] }>();
+  for (const w of work) {
+    const { service } = classifyService(w.title, w.lineItems, ctx.trades);
+    if (service.kind !== "recurring" && service.kind !== "maintenance") continue;
+    const r = routineCount.get(service.id) ?? { svc: service, n: 0, last: w };
+    r.n++;
+    r.last = w;
+    routineCount.set(service.id, r);
+  }
+  const routine = [...routineCount.values()].sort((a, b) => b.n - a.n || (a.last.date < b.last.date ? 1 : -1))[0];
+  let regular = false;
   if (work.length >= 2) {
     const gaps: number[] = [];
     for (let i = 1; i < work.length; i++) gaps.push(daysBetween(work[i - 1]!.date, work[i]!.date));
     const sorted = [...gaps].filter((g) => g > 0).sort((a, b) => a - b);
     const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
     const recurring = work.some((w) => w.recurring) || (median > 0 && median <= 120 && work.length >= 3);
+    regular = recurring || (routine?.n ?? 0) >= 2;
     const expected = recurring ? Math.max(median, 7) : median;
-    if (expected > 0 && sinceLast > Math.max(expected * 1.75, expected + 45) && !dueFound) {
+    if (regular && expected > 0 && sinceLast > Math.max(expected * 1.75, expected + 45) && !dueFound) {
       const perYear = Math.min(52, Math.max(1, Math.round(365 / Math.max(expected, 7))));
       const avg = work.reduce((s, w) => s + w.total, 0) / work.length;
       const annual = recurring ? avg * perYear : avg;
-      const o = base(ctx, "lapsed_regular", c.id, { kind: last.kind, id: last.id }, annual, last.date, last.title, last.lineItems,
-        `Used you ${work.length} times${recurring ? ` (about every ${humanAge(expected)})` : ""}. Last visit ${spokenWhen(last.date, ctx.asOf)} — then nothing.`,
-        [evWork(last), `${work.length} visits on file`, recurring ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`]);
+      // the note is about the routine ("the mowing"), and "the last time" is the last time it was done
+      const w = routine?.last ?? last;
+      const o = base(ctx, "lapsed_regular", c.id, { kind: w.kind, id: w.id }, annual, w.date, w.title, w.lineItems,
+        `Used you ${work.length} times${recurring ? ` (about every ${humanAge(expected).replace(/^a /, "")})` : ""}. Last visit ${spokenWhen(last.date, ctx.asOf)} — then nothing.`,
+        [evWork(last), `${work.length} visits on file`, recurring ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`], routine?.svc);
       if (o) out.push(o);
     }
   }
 
-  // One and done.
-  if (work.length === 1 && !dueFound) {
+  // One and done — or a few one-off jobs with no routine: the same "past customer" note fits both.
+  if (!regular && !dueFound) {
     const pb = playbook(ctx.ds.business.trade);
     const o = base(ctx, "one_and_done", c.id, { kind: last.kind, id: last.id }, Math.max(last.total * 0.6, pb.ticket.low), last.date, last.title, last.lineItems,
-      `Hired you once, ${spokenWhen(last.date, ctx.asOf)}, and never came back.`, [evWork(last)]);
+      work.length === 1 ? `Hired you once, ${spokenWhen(last.date, ctx.asOf)}, and never came back.` : `Hired you ${work.length} times for one-off jobs, last ${spokenWhen(last.date, ctx.asOf)}, and hasn't been back.`,
+      work.length === 1 ? [evWork(last)] : [evWork(last), `${work.length} jobs on file, no routine service`]);
     if (o) out.push(o);
   }
   return out;

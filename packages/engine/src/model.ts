@@ -278,6 +278,11 @@ export interface BusinessProfile {
     offerOptions: boolean;
     /** Quotes older than this many days never repeat the old price (default 180). */
     staleQuoteDays?: number;
+    /**
+     * Notes may say "No charge to look." Default from the trade: on where estimates are free (tree, fence,
+     * painting), off where a visit is a paid service or diagnostic call (HVAC, septic, pest, cleaning).
+     */
+    freeLook?: boolean;
     /** Words the owner wants swapped: [["estimate","quote"]]. */
     wordSwaps: [string, string][];
   };
