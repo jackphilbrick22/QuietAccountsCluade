@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+    <title>Quiet Accounts</title>
+    <meta name="description" content="Every quote gets a yes or a no. Drop your quotes export and see what's sitting in the ones nobody answered, in about ten seconds. We work your first 150 customers free." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Manrope:wght@500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <a class="logo" href="#top" aria-label="Quiet Accounts, top of page"><img src="./src/assets/logo-mark.svg" width="30" height="30" alt="" />Quiet Accounts</a>
+        <a class="btn" href="#start">Start free</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <!-- 1. The promise and the one action -->
+      <section class="hero" id="hero">
+        <div class="wrap hero-grid">
+          <div>
+            <p class="eyebrow" data-t="eyebrow">For tree services</p>
+            <h1 data-t="h1">Your quotes don't say no. They go quiet.</h1>
+            <p class="promise">We get every one an answer. Or you don't pay.</p>
+            <p class="lede">You paid for every lead. We follow up every new request, every quote and every past customer in your company's name, and text you the minute one is ready to book.</p>
+            <ul class="ticks">
+              <li>We work your first 150 customers free</li>
+              <li>No card</li>
+              <li>Nothing changes in Jobber</li>
+              <li>Cancel by text</li>
+            </ul>
+            <figure class="tally">
+              <figcaption data-t="tallyCap">Dow's Tree Service, NH · old quotes · first 150</figcaption>
+              <div class="tally-row">
+                <div><b data-t="asked">150</b><span>asked</span></div>
+                <div><b data-t="wrote">12</b><span>wrote back</span></div>
+                <div><b data-t="booked">4</b><span>booked</span></div>
+                <div class="hot"><b data-t="jobs">$10k+</b><span>in jobs</span></div>
+              </div>
+            </figure>
+          </div>
+
+          <div class="acard" id="acard">
+            <h2>See what's sitting in your quotes.</h2>
+            <p class="hint">Drop your quotes export. In about ten seconds you'll see every quote nobody answered, what they're worth, and the note we'd send first.</p>
+            <label class="drop" id="drop">
+              <input type="file" id="file" accept=".csv,.tsv,.txt,text/csv" multiple aria-describedby="whereFile" />
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V4" /><path d="m7 9 5-5 5 5" /><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" /></svg>
+              <b>Drop your quotes file here</b>
+              <small>or tap to choose · a CSV from Jobber, Housecall Pro, QuickBooks or a spreadsheet</small>
+            </label>
+            <p class="where" id="whereFile"><b>Where's the file?</b> <span data-t="exportHint">In Jobber: Reports → Quotes report → All time → Export CSV. Jobber emails the file to your login address.</span></p>
+            <p class="or-sample">No file handy? <button type="button" class="link" id="trySample">Try it on a sample <span data-t="sampleNoun">tree company</span></button></p>
+            <p class="privacy">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+              <span>It runs right here in your browser. Your file never leaves this computer, and nothing is sent to anyone.</span>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Their own numbers (filled in by the audit) -->
+      <section class="reveal" id="audit" hidden aria-live="polite">
+        <div class="wrap">
+          <p class="eyebrow" id="auditEyebrow">Your quote audit</p>
+          <h2 id="auditH">Reading your quotes…</h2>
+          <ol class="steps" id="steps"></ol>
+          <div class="result" id="result" hidden>
+            <div class="bignum wide">
+              <p class="label">Never got a yes or a no</p>
+              <p class="money" id="rSilent">$0</p>
+              <p class="what" id="rSilentWhat"></p>
+              <p class="line" id="rLine"></p>
+            </div>
+
+            <div class="vs2 wide">
+              <div class="shows">
+                <p class="h">Your software shows</p>
+                <p class="sent" id="rSent">0 quotes sent</p>
+                <small id="rRange"></small>
+              </div>
+              <div>
+                <p class="h">What actually happened</p>
+                <ul class="split" id="rSplit"></ul>
+                <div class="ages" id="rAges"></div>
+              </div>
+            </div>
+
+            <div class="facts wide" id="rFacts"></div>
+
+            <div>
+              <p class="eyebrow">The first note, already written</p>
+              <div class="pickme">
+                <label>Your company<input id="pCompany" autocomplete="organization" placeholder="Your company" /></label>
+                <label>Signed by<input id="pSigner" autocomplete="given-name" placeholder="Sarah" /></label>
+              </div>
+              <div class="mail" id="mail">
+                <div class="mail-h">
+                  <span>To <b id="mTo"></b></span>
+                  <span>Subject <b id="mSubject"></b></span>
+                </div>
+                <div class="mail-b" id="mBody"></div>
+              </div>
+              <p class="mail-caption" id="mCap"></p>
+            </div>
+
+            <div class="after-cta">
+              <div class="calllist" id="rCalls" hidden>
+                <h3 id="rCallsH"></h3>
+                <p id="rCallsP"></p>
+              </div>
+              <a class="btn" href="#start" id="followAll">Follow up on all of them like this. Free. <span class="arr" aria-hidden="true">&rarr;</span></a>
+              <p class="fine" id="followFine">We work your first 150 free. You read and OK the first note before anything goes out.</p>
+              <p class="warns" id="rWarns"></p>
+            </div>
+          </div>
+          <p class="err" id="auditErr" hidden></p>
+        </div>
+      </section>
+
+      <!-- 3. How it starts -->
+      <section class="sec" id="how">
+        <div class="wrap">
+          <p class="eyebrow">How it starts</p>
+          <h2>Three steps. Two of them are yours.</h2>
+          <ol class="three">
+            <li>
+              <h3>Send your quotes.</h3>
+              <p>Forward one email from Jobber, or drop the file above. About four minutes. You never give us a login.</p>
+            </li>
+            <li>
+              <h3>Read your first note.</h3>
+              <p>Your company's name on it, about their job. Change anything you want. Nothing goes out until you OK it.</p>
+            </li>
+            <li>
+              <h3>Take the calls.</h3>
+              <p>When someone wants a price or a date, you get a text with their name, their number and what they said.</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- 4. What keeps running, shown as the real outputs -->
+      <section class="sec band" id="runs">
+        <div class="wrap">
+          <p class="eyebrow">Then it never stops</p>
+          <h2>Nothing on the table. No lead wasted.</h2>
+          <p class="sub">After the first 150, it keeps running on everything new. <span class="tag-ex">Examples</span></p>
+          <div class="runs">
+            <article class="frag">
+              <h3>A new request gets an answer in minutes.</h3>
+              <div class="thread">
+                <p class="bubble them"><small>Request · 2:14 PM</small><span data-t="reqSaid">Two pines by the garage need to come down. One is dead.</span></p>
+                <p class="bubble us"><small>From your office · 2:16 PM</small><span data-t="reqAck">Thanks for reaching out about the pines. Dave will give you a call this afternoon to set up a time to take a look. Sarah</span></p>
+              </div>
+              <p class="cap">Only 1 in 5 home-service pros answer a new lead within the hour. Yours get an answer from 7am to 8pm, every day, and it never promises a price or a date you didn't give.</p>
+            </article>
+
+            <article class="frag">
+              <h3>Every new quote is followed until there's an answer.</h3>
+              <ol class="journey" aria-label="Example: one quote followed to an answer" data-t="journey"></ol>
+              <p class="cap">Jobber's follow-ups send at most two reminders. Ours are short notes about their job: three at most, then it's closed out either way, so nothing sits.</p>
+            </article>
+
+            <article class="frag">
+              <h3>You get a text when someone's ready.</h3>
+              <div class="qw-feed" id="feed"></div>
+              <p class="cap">Name, address, the job, what they said and the best time to call. You reply BOOKED 2400 when it's booked.</p>
+            </article>
+
+            <article class="frag">
+              <h3>Every job we bring back, on a ledger you can check.</h3>
+              <div class="ledger" role="region" aria-label="Example ledger" tabindex="0">
+                <table>
+                  <thead><tr><th>Customer</th><th>Job</th><th>Quiet</th><th>Your record</th><th class="amt">Amount</th></tr></thead>
+                  <tbody data-t="ledger">
+                    <tr><td>K. Whitfield</td><td>Leaning oak</td><td>49 days</td><td>Quote #1042</td><td class="amt">$2,400</td></tr>
+                    <tr><td>P. Brennan</td><td>Crown thinning</td><td>90 days</td><td>Job #2211</td><td class="amt">$1,850</td></tr>
+                    <tr><td>J. Ortega</td><td>Stump grinding</td><td>34 days</td><td>Quote #1057</td><td class="amt">$650</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="cap">Every line names the record in your own software. If a win wasn't ours, say so and it comes off.</p>
+              <p class="sms" data-t="friday"></p>
+              <p class="cap">And every Friday, the week on your phone. Same format as the real one.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. Proof -->
+      <section class="sec" id="results">
+        <div class="wrap">
+          <p class="eyebrow">Results</p>
+          <h2>What the first 150 did for three shops.</h2>
+          <div class="cards">
+            <article class="card">
+              <h3>Dow's Tree Service</h3>
+              <p class="meta">NH · old quotes</p>
+              <p class="money">$10,000+<small>in jobs</small></p>
+              <div class="mini"><span><b>150</b> asked</span><span><b>12</b> wrote back</span><span><b>4</b> booked</span></div>
+              <p class="note">He was skeptical going in.</p>
+              <figure class="shot"><img src="./src/assets/ryan-text.jpg" width="480" height="709" loading="lazy" alt="Text from Ryan: Honestly I was pretty skeptical at first but it ended up bringing us back 4 jobs that we probably would've never gotten. We booked over 10k from it so yeah I'd definitely tell another tree guy about it" /><figcaption>Ryan's text, unedited</figcaption></figure>
+            </article>
+            <article class="card">
+              <h3>Nelson Fence</h3>
+              <p class="meta">CT · old quotes</p>
+              <p class="money">$19,800<small>in jobs</small></p>
+              <div class="mini"><span><b>150</b> asked</span><span><b>12</b> wrote back</span><span><b>4</b> booked</span></div>
+              <p class="note">People who got a quote and never got back to him.</p>
+              <figure class="shot"><img src="./src/assets/david-text.jpg" width="480" height="635" loading="lazy" alt="Text from David: honestly its worth trying. we picked up 4 jobs from people that had already gotten a quote and just never got back to us. stuff we probably wouldve just lost otherwise" /><figcaption>David's text, unedited</figcaption></figure>
+            </article>
+            <article class="card">
+              <h3>Capital City Landscaping</h3>
+              <p class="meta">NH · past customers</p>
+              <p class="money">$34,000<small>in jobs</small></p>
+              <div class="mini"><span><b>150</b> asked</span><span><b>28</b> wrote back</span><span><b>17</b> booked</span></div>
+              <p class="note">21 said yes. He had room for 17.</p>
+              <figure class="shot"><img src="./src/assets/tom-text.jpg" width="480" height="694" loading="lazy" alt="Text from Tom: honestly its been pretty great. we had a bunch of people we thought were dead accounts end up getting back to us. got jobs out of it we probably wouldnt have gotten otherwise" /><figcaption>Tom's text, unedited</figcaption></figure>
+            </article>
+          </div>
+          <p class="swipe">Swipe for the other two →</p>
+          <p class="ask">Want to ask them yourself? Text <b>603-340-7673</b> and we'll pass on their number.</p>
+        </div>
+      </section>
+
+      <!-- 6. Why not the software they already pay for -->
+      <section class="sec band" id="compare">
+        <div class="wrap narrow">
+          <p class="eyebrow">Doesn't Jobber already follow up?</p>
+          <h2>Jobber sends reminders. We get answers.</h2>
+          <p class="sub">Everyone means to call the quotes back. Nobody gets to it.</p>
+          <div class="vs" role="table" aria-label="Jobber's follow-ups compared with Quiet Accounts">
+            <div class="h first" role="columnheader"></div><div class="h a" role="columnheader">Jobber's follow-ups</div><div class="h b" role="columnheader">Quiet Accounts</div>
+            <div class="k" role="rowheader">Who does the work</div><div class="a" role="cell">You set it up and watch it</div><div class="b" role="cell">We run it</div>
+            <div class="k" role="rowheader">Quotes from before you turned it on</div><div class="a" role="cell">Never touched</div><div class="b" role="cell">Every one gets asked</div>
+            <div class="k" role="rowheader">How far it goes</div><div class="a" role="cell">Two reminders, then nothing</div><div class="b" role="cell">Until there's a yes or a no</div>
+            <div class="k" role="rowheader">What your customer gets</div><div class="a" role="cell">A reminder with a button</div><div class="b" role="cell">A short note about their job</div>
+            <div class="k" role="rowheader">Who reads the replies</div><div class="a" role="cell">You, in your inbox</div><div class="b" role="cell">Read in minutes, then texted to you</div>
+            <div class="k" role="rowheader">A month nobody asks for a price or a date</div><div class="a" role="cell">You pay anyway</div><div class="b money" role="cell">$0</div>
+          </div>
+          <p class="src">Jobber Help Center (Automations): quote follow-ups send at most two reminders, only while a quote is "awaiting response". Housecall Pro's estimate follow-ups only run on estimates sent after you turn them on.</p>
+          <p class="keep">Keep Jobber. <span>We work from its export.</span></p>
+        </div>
+      </section>
+
+      <!-- 7. Price -->
+      <section class="sec" id="pricing">
+        <div class="wrap narrow">
+          <p class="eyebrow">One plan</p>
+          <h2>We work your first 150 customers free.</h2>
+          <div class="plans">
+            <div class="plan free">
+              <p class="tag">Your first 150</p>
+              <p class="price">$0</p>
+              <div class="expect">
+                <p>What the first 150 got three shops</p>
+                <div class="expect-row"><span><b>12–28</b>wrote back</span><span><b>4–17</b>booked</span><span><b>$10k–$34k</b>in jobs</span></div>
+              </div>
+              <ul class="checks">
+                <li>No card, no call, no contract</li>
+                <li>You OK the first note</li>
+                <li>Every yes texted to you the same day</li>
+              </ul>
+              <a class="btn full" href="#start">Start my free 150 <span class="arr" aria-hidden="true">&rarr;</span></a>
+            </div>
+            <div class="plan">
+              <p class="tag">After that, everything</p>
+              <p class="price">$497<small>/month</small></p>
+              <p class="rule">Quiet month? Free month. Any month nobody asks you for a price or a date, you don't pay.</p>
+              <ul class="checks">
+                <li>Every new request answered in minutes</li>
+                <li>Every quote followed to a yes or a no</li>
+                <li>Past customers asked back when they're due</li>
+                <li>Every reply read, every yes texted to you</li>
+                <li>Big jobs and phone-only people handed to you to call</li>
+                <li>A ledger of every job we brought back</li>
+                <li>Cancel with a text</li>
+              </ul>
+              <p class="anchor" id="anchor">At a typical <span data-t="tradeWord">tree</span> job of <b data-t="typical">$900</b>, one booking covers the month.</p>
+              <p class="annual">Rather pay yearly? <b>$4,970</b>: twelve months for the price of ten. Your price is locked while you stay, a quiet month is still refunded, and nothing renews without your yes.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 8. Straight answers -->
+      <section class="sec band" id="faq">
+        <div class="wrap narrow">
+          <p class="eyebrow">Straight answers</p>
+          <h2>What owners ask first.</h2>
+          <div class="faq">
+            <details><summary>What exactly is the guarantee?</summary><div class="a">Each month, if not one person we followed up with asks you for a price, a visit or a date, that month is free. You don't claim it. We text you before every charge, and in a quiet month the text says the month is free. It's counted on your ledger, and the counting rules are written down before we start. No contract, no renewal at a new price.</div></details>
+            <details><summary>What do I have to do?</summary><div class="a">Forward one email with your quotes export, read the first note with your name on it, and take the calls. We set everything else up. You never give us a login and never learn new software.</div></details>
+            <details><summary>Will my customers feel spammed?</summary><div class="a">Each person gets at most three short notes about their own job, from your office, then we stop. Anyone who says stop is off the list that minute. Nobody gets texted or called by us, ever.</div></details>
+            <details><summary>What if I already won the job, or they said no on the phone?</summary><div class="a">We check every name against your records before a note goes out, and skip anyone who's already booked or came back. Quotes over $10,000 and people with only a phone number go on your call list instead, because those deserve your voice. Text us a name and they're off the list.</div></details>
+            <details><summary>Who reads the replies? Is it a bot?</summary><div class="a">Every reply is read the minute it lands. Software sorts it, a person checks anything that isn't a plain yes or a stop, and you get a text. Only the routine answer goes out on its own ("Thanks, Dave will call you today"), and it never promises a price or a date.</div></details>
+            <details><summary>What if I'm booked solid?</summary><div class="a">Text BUSY until Nov 15. New work waits until about three weeks before you open up, and people who already said yes still get handled. Text OPEN when you want it back.</div></details>
+            <details><summary>I don't use Jobber.</summary><div class="a">Housecall Pro, ServiceTitan, QuickBooks, or a spreadsheet. Anything that exports quotes with a date and an email works. Pick "Something else" below and we'll sort it out by text.</div></details>
+            <details><summary>How do I cancel?</summary><div class="a">Text CANCEL. We text back what's still scheduled, you reply CANCEL YES, and that's it.</div></details>
+          </div>
+        </div>
+      </section>
+
+      <!-- 9. Start -->
+      <section class="sec start" id="start">
+        <div class="wrap start-grid">
+          <div>
+            <p class="eyebrow">Start here</p>
+            <h2>Your first 150 are free.</h2>
+            <p class="sub">Four fields, then one forwarded email. We text you the first note to read within one business day.</p>
+            <ul class="start-pts">
+              <li>Any month nobody asks you for a price or a date, you don't pay</li>
+              <li>No card, no contract</li>
+              <li>Cancel by text</li>
+            </ul>
+          </div>
+          <div class="fcard">
+            <form id="form" autocomplete="on" novalidate>
+              <div class="fgrid">
+                <div class="field"><label for="company">Company</label><input id="company" name="company" autocomplete="organization" required placeholder="Ridgeline Tree Co." /></div>
+                <div class="field"><label for="first">Your first name</label><input id="first" name="first" autocomplete="given-name" required placeholder="Dave" /></div>
+                <div class="field full"><label for="cell">Cell (replies get texted here)</label><input id="cell" name="cell" type="tel" inputmode="tel" autocomplete="tel-national" required placeholder="603-555-0100" /></div>
+                <div class="field full">
+                  <span class="swlbl" id="swLbl">Where your quotes live</span>
+                  <div class="swpick" role="radiogroup" aria-labelledby="swLbl">
+                    <button type="button" class="sw sw-jobber on" data-sw="jobber" role="radio" aria-checked="true"><b>Jobber</b><small>Emails you a file</small></button>
+                    <button type="button" class="sw sw-hcp" data-sw="hcp" role="radio" aria-checked="false"><b>Housecall Pro</b><small>Forward one report</small></button>
+                    <button type="button" class="sw sw-other" data-sw="other" role="radio" aria-checked="false"><b>Something else</b><small>Any export or spreadsheet</small></button>
+                  </div>
+                </div>
+                <label class="consent full"><input type="checkbox" id="consent" required /><span>I authorize Quiet Accounts to follow up with my customers on behalf of my company.</span></label>
+                <div class="full"><button class="btn full" type="submit">Start my free 150 <span class="arr" aria-hidden="true">&rarr;</span></button></div>
+              </div>
+              <p class="fine2">Nothing is sent until you've read and OK'd the first note with your name on it.</p>
+            </form>
+            <div class="done" id="done" hidden>
+              <h3 id="doneH">Got it. One thing left.</h3>
+              <p class="lead">Send us the export and we'll have your first note ready to read within one business day.</p>
+              <div class="dstep"><span class="n">1</span><p id="step1"></p></div>
+              <div class="dstep"><span class="n">2</span><p>Forward that email, as it is, to<br /><span class="addr">quotes@quietaccounts.com</span></p></div>
+              <div class="dstep"><span class="n">3</span><p>You'll get a text from <b>Jack</b> within one business day with your first note. Change anything you want. Nothing goes out until you say so.</p></div>
+              <p class="fine2" id="doneFine"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <span>Quiet Accounts · 9 Carter St, Concord, NH 03301 · Text 603-340-7673</span>
+        <span class="trades">For <a href="#tree">tree</a><a href="#fence">fence</a><a href="#painting">painting</a><a href="#cleaning">cleaning</a></span>
+      </div>
+    </footer>
+
+    <div class="sticky" id="sticky" aria-hidden="true"><span>First 150 free<small>No card · cancel by text</small></span><a class="btn" href="#start" tabindex="-1">Start free</a></div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
