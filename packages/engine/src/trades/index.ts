@@ -36,7 +36,7 @@ export function classifyService(title: string, lineItems: LineItem[] = [], trade
   let best: { trade: TradeId; service: ServiceDef; score: number } | undefined;
   for (const t of trades) {
     for (const s of playbook(t).services) {
-      if (s.id === "gen.work") continue;
+      if (s.id === "gen.work" || s.unless?.test(text)) continue;
       const idx = earliestSpecific(text, s.match);
       if (idx < 0) continue;
       const score = idx - PRIORITY[s.kind];
@@ -135,7 +135,8 @@ const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
   fence: /\b(fenc\w*|gates?|pickets?|chain ?link|privacy)\b/i,
   // "driveway" alone is as likely a wash as a pour; replacing or pouring one is concrete work
   concrete: /\b(concrete|slab|mudjack\w*|pour\w*|stamped|flatwork|sealcoat\w*|asphalt|(replace|new|install)\w* driveway|driveway (replace\w*|install\w*|extension))\b/i,
-  pressure_washing: /\b(pressure|power ?wash\w*|soft ?wash\w*|house wash|surface clean\w*|driveway (&|and) walks?|(driveway|patio|deck|siding) clean\w*)\b/i,
+  // "pressure treated" is lumber, not a wash
+  pressure_washing: /\b(pressure(?![- ]treated)|power ?wash\w*|soft ?wash\w*|house wash|surface clean\w*|driveway (&|and) walks?|(driveway|patio|deck|siding) (clean|wash)\w*)\b/i,
   gutter: /\b(gutters?|downspouts?)\b/i,
   pool: /\b(pool|spa|liner)\b/i,
   roofing: /\b(roof\w*|shingles?|flashing|skylights?|re-?roof)\b/i,
@@ -150,6 +151,19 @@ const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
   pest: /\b(pest|termites?|rodents?|mosquito\w*|ticks?|wasps?|hornets?|bed ?bugs?|ants?)\b/i,
   junk_removal: /\b(junk|haul\w*|clean-?out|debris|dumpster|demolition|removal - |pickup)\b/i,
   cleaning: /\b(maid|move-?out|deep clean|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
+  // plain "lights" is landscape and path lighting too; these name holiday or permanent roofline work
+  holiday_lighting: /\b(christmas|xmas|holiday (light\w*|decor\w*|display)|c9s?|c7s?|mini[- ]lights|wreaths?|garlands?|roofline|permanent (led |house |home |roofline |track |eave |christmas |holiday )?light\w*|trimlight|gemstone lights?|jellyfish lights?|light(s|ing)? (take-?down|removal|storage)|take-?down (&|and|\+|\/) storage)\b/i,
+  // "deck stain" and "deck wash" are shared with painting and washing on purpose, so neither shop reads as a second
+  // trade of the other; a pool deck is the pool's
+  deck: /\b(?<!pool )decks?\b|\b(decking|pergolas?|trex|timbertech|azek|fiberon|joists?|screen(ed)?[- ](in )?porch)\b/i,
+};
+
+/**
+ * Words that settle a title by themselves. "Christmas lights - roofline + 2 trees" names a roof and trees, but it is
+ * lighting work: it votes for lighting alone.
+ */
+const SETTLED_BY: Partial<Record<TradeId, RegExp>> = {
+  holiday_lighting: /\b((christmas|xmas|holiday) (lights?|lighting|light install\w*|decor\w*|display)|c9s?|c7s?|mini[- ]lights|permanent (led |house |home |roofline |track |eave |christmas |holiday )?light(s|ing)?|trimlight|gemstone lights?|jellyfish lights?)\b/i,
 };
 
 /**
@@ -165,8 +179,10 @@ export function detectTrade(titles: string[]): { trade: TradeId; others: TradeId
   for (const title of titles.slice(0, 3000)) {
     if (!title) continue;
     let fits = all.filter((t) => TRADE_WORDS[t]?.test(title));
+    const settled = fits.filter((t) => SETTLED_BY[t]?.test(title));
+    if (settled.length) fits = settled;
     if (!fits.length)
-      fits = all.filter((t) => playbook(t).services.some((sv) => { const i = earliestSpecific(title, sv.match); return i >= 0 && i < 1000; }));
+      fits = all.filter((t) => playbook(t).services.some((sv) => { if (sv.unless?.test(title)) return false; const i = earliestSpecific(title, sv.match); return i >= 0 && i < 1000; }));
     if (!fits.length) continue;
     classified++;
     for (const t of fits) counts[t] = (counts[t] ?? 0) + 1 / fits.length;

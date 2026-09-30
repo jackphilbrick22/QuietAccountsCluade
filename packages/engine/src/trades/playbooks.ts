@@ -3,7 +3,7 @@ import type { TradePlaybook } from "./types.ts";
 
 const ALL = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
-const WORK_PHRASE: Partial<Record<TradeId, string>> = {"tree": "the tree work", "lawn": "the lawn work", "landscape": "the landscaping", "septic": "the septic work", "fence": "the fence", "concrete": "the concrete work", "pressure_washing": "the washing", "gutter": "the gutter work", "window_cleaning": "the window cleaning", "pool": "the pool work", "pest": "the pest treatment", "hvac": "the heating and cooling work", "junk_removal": "the clean-out", "painting": "the painting", "roofing": "the roof work", "irrigation": "the sprinkler work", "chimney": "the chimney work", "cleaning": "the cleaning", "general": "the work we quoted"};
+const WORK_PHRASE: Partial<Record<TradeId, string>> = {"tree": "the tree work", "lawn": "the lawn work", "landscape": "the landscaping", "septic": "the septic work", "fence": "the fence", "concrete": "the concrete work", "pressure_washing": "the washing", "gutter": "the gutter work", "window_cleaning": "the window cleaning", "pool": "the pool work", "pest": "the pest treatment", "hvac": "the heating and cooling work", "junk_removal": "the clean-out", "painting": "the painting", "roofing": "the roof work", "irrigation": "the sprinkler work", "chimney": "the chimney work", "cleaning": "the cleaning", "holiday_lighting": "the lights", "deck": "the deck", "general": "the work we quoted"};
 
 /* ================================================================== */
 /* TREE                                                                */
@@ -33,7 +33,7 @@ const tree: TradePlaybook = {
       worseIfWaiting: "A tree that needed to come down doesn't get easier to take down — it gets heavier, more brittle, and closer to the house.",
       timingLine: {
         cold: "Leaf-off months make removals quicker and cleaner, and the ground is firm for equipment.",
-        warm: "Getting ahead of storm season is the cheapest time to deal with it.",
+        warm: "Getting ahead of storm season is the cheapest time to take care of it.",
       },
       timingMonths: { cold: [10, 11, 12, 1, 2, 3], warm: [12, 1, 2, 3, 4, 5] },
     },
@@ -758,6 +758,270 @@ const pressure: TradePlaybook = {
 };
 
 /* ================================================================== */
+/* HOLIDAY & PERMANENT LIGHTING                                        */
+/* ================================================================== */
+// Jobber's bid guide: a full holiday package runs about $750-$5,000; permanent systems about $2,000-$6,000+.
+// Sold Aug-Nov, installed from November 1 to the end of January (Jobber); returning customers book in
+// September and October (Big Star Lights). No shop's numbers yet, so the close rate is only a prior.
+const SELL_LIGHTS = [8, 9, 10, 11, 12];
+const PERMANENT_WORDS = "permanent|trimlight|gemstone|jellyfish|oelo|track (?:light\\w*|system)";
+const TAKEDOWN_WORDS = "take-?downs?|take down|remov\\w*|storage|pack\\w* up";
+/** What goes up: a quote that names it is the install, even when takedown and storage are on it too. */
+const PUT_UP_WORDS = "install\\w*|hang\\w*|put up|package|lease\\w*|roofline|c9s?|c7s?|mini[- ]?lights?|wreaths?|garlands?|bows?|trees?|bush(?:es)?|shrubs?";
+const LIGHT_ADDON = /\b(add-?ons?|extension|extend\w*|add (a |another |more )?(run|zone|section|side)|additional (run|zone|section|footage|feet|side)|expan\w*)/i;
+const lighting: TradePlaybook = {
+  id: "holiday_lighting",
+  workPhrase: "the lights",
+  label: "Holiday lighting",
+  noun: "holiday lighting company",
+  ticket: { low: 400, typical: 1500, high: 8000 },
+  typicalCloseRate: 0.45,
+  peakMonths: { cold: [9, 10, 11], warm: [9, 10, 11] },
+  services: [
+    {
+      id: "light.install",
+      label: "Holiday light install",
+      match: /\b(christmas|xmas|holiday|c9s?|c7s?|mini[- ]?lights?|roofline|wreaths?|garlands?|install\w*|hang\w*|put up|lease\w*|rental|package|decor\w*|display)/i,
+      // a permanent system, or a takedown visit ("Takedown - roofline", "Christmas light removal"), uses the same words
+      unless: new RegExp(
+        `\\b(${PERMANENT_WORDS})\\b|^\\W*((christmas|xmas|holiday) (lights?|lighting) )?(${TAKEDOWN_WORDS})\\b|^(?!.*\\b(${PUT_UP_WORDS})\\b)(?=.*\\b(${TAKEDOWN_WORDS})\\b)`,
+        "i",
+      ),
+      phrase: "the holiday lights",
+      season: { cold: SELL_LIGHTS, warm: SELL_LIGHTS },
+      reserviceMonths: 12,
+      // due October 1, so the note can go from late August, when returning customers book
+      dueMonth: 10,
+      dueAsk: "Want the lights up again this year?",
+      kind: "maintenance",
+      followOns: [
+        {
+          serviceId: "light.permanent",
+          afterDays: [120, 540],
+          why: "customers who hire you every fall are the ones who ask about permanent lights",
+          pitch: "Permanent lights mount along the roofline once and stay up all year, so nobody has to hang them again each fall.",
+        },
+      ],
+      timingLine: {
+        cold: "Most of our install dates for November fill in October.",
+        warm: "Most of our install dates for November fill in October.",
+      },
+      timingMonths: { cold: [8, 9, 10], warm: [8, 9, 10] },
+    },
+    {
+      id: "light.takedown",
+      label: "Takedown & storage",
+      match: /\b(take-?downs?|take down|light(s|ing)? remov\w*|remov\w* (of )?(the )?(\w+ )?lights|storage|pack\w* up)/i,
+      phrase: "the light takedown",
+      season: { cold: [1, 2], warm: [1, 2] },
+      // rides on the install: never a routine or a clock of its own
+      kind: "improvement",
+    },
+    {
+      id: "light.permanent",
+      label: "Permanent lighting",
+      match: new RegExp(`\\b(${PERMANENT_WORDS}|year[- ]round|app[- ]controlled|rgbw?)`, "i"),
+      // adding a run to a system already up is the add-on
+      unless: LIGHT_ADDON,
+      phrase: "the permanent lights",
+      season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
+      kind: "improvement",
+      followOns: [
+        {
+          serviceId: "light.addon",
+          afterDays: [60, 540],
+          why: "owners often extend a permanent system to the garage or the back of the house once they've lived with the front",
+          pitch: "If you'd like the lights to run along the garage or the back of the house too, they can usually tie into the same controller.",
+        },
+      ],
+      timingLine: {
+        cold: "Permanent lights can go up any time the weather's decent, and the spring schedule is a lot quieter than the fall.",
+        warm: "Permanent lights can go up any time of year, and the spring schedule is a lot quieter than the fall.",
+      },
+      timingMonths: { cold: [3, 4, 5], warm: [2, 3, 4, 5] },
+    },
+    {
+      id: "light.addon",
+      label: "Permanent lighting add-on",
+      match: LIGHT_ADDON,
+      phrase: "extending the permanent lights",
+      season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
+      kind: "improvement",
+    },
+    {
+      id: "light.event",
+      label: "Event & landscape lighting",
+      match: /\b(event|wedding|party|parties|graduation|bistro|caf[eé]|string lights|patio lights|market lights|landscape light\w*|path lights?|up-?light\w*|outdoor lighting)/i,
+      phrase: "the outdoor lighting",
+      season: { cold: [4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "improvement",
+    },
+  ],
+  objects: [
+    // extending a system already up reads as the add-on's own phrase
+    [/\bpermanent\b(?!.*\b(add-?ons?|extension|extend\w*|additional)\b)/i, "the permanent lights"],
+    [/\broofline\b/i, "the roofline lights"],
+    [/\bfront tree/i, "the lights on the front tree"],
+    [/\bwreaths?\b/i, "the wreath"],
+    [/\bgarlands?\b/i, "the garland"],
+    [/\bporch\b/i, "the lights on the porch"],
+    [/\bdriveway\b/i, "the lights along the driveway"],
+    [/\bwalkway\b/i, "the lights along the walkway"],
+  ],
+  places: [],
+  whyQuotesDie: [
+    "Price shock the first year: a full roofline costs more than they pictured",
+    "They waited, then figured every install date was gone",
+    "They decided to hang the lights themselves this year",
+    "They forgot about it until December, and by then it felt too late to ask",
+    "Last year's customers expect you to call them, and nobody does",
+  ],
+  quoteAngles: ["check_in", "timing", "easy_yes", "crew_nearby", "close_file"],
+  crewLine: "We've got a crew hanging lights in your neighborhood next week.",
+  minQuote: 300,
+  freeLook: true,
+};
+
+/* ================================================================== */
+/* DECKS                                                               */
+/* ================================================================== */
+// Cost vs Value 2025: a wood deck addition averages about $18,263, a composite one about $25,096. Most builders
+// are small shops (NADRA: 49% have five employees or fewer). Sold Feb-Jun; wood needs a stain and seal every
+// 24-36 months (the painting playbook's deck interval is 30).
+const DECK_STAIN = "A wood deck holds up a lot longer when it's stained and sealed every couple of years.";
+const DECK_LIGHTS = "Post cap and stair lights make the steps easy to see after dark.";
+const DECK_SHADE = "A pergola gives part of the deck some shade in the middle of the afternoon.";
+const COMPOSITE = "composite|trex|timbertech|azek|fiberon|pvc";
+const deck: TradePlaybook = {
+  id: "deck",
+  workPhrase: "the deck",
+  label: "Decks",
+  noun: "deck builder",
+  ticket: { low: 600, typical: 12000, high: 60000 },
+  typicalCloseRate: 0.3,
+  peakMonths: { cold: [2, 3, 4, 5, 6], warm: [1, 2, 3, 4, 5, 10] },
+  services: [
+    {
+      id: "deck.build",
+      label: "New deck",
+      match: /\b(new deck|deck (build\w*|install\w*|addition|extension|expan\w*)|build\w* (a |an |the )?(new )?deck|(pressure[- ]treated|pt|treated|cedar|redwood|mahogany|ipe|hardwood|wood|raised|elevated|multi-level|two-level|second[- ]story|ground[- ]level|floating|wrap-?around)\s+(\w+\s+)?deck)/i,
+      // composite never needs a stain; tearing off an old deck is the replacement
+      unless: new RegExp(`\\b(${COMPOSITE}|replace\\w*|resurfac\\w*|re-?deck\\w*|re-?board\\w*|tear[- ]?(off|out)|rebuild\\w*)\\b`, "i"),
+      phrase: "the new deck",
+      season: { cold: [2, 3, 4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "improvement",
+      followOns: [
+        { serviceId: "deck.stain", afterDays: [730, 1095], why: "a wood deck needs a stain and seal every two to three years", pitch: DECK_STAIN },
+        { serviceId: "deck.lighting", afterDays: [14, 540], why: "lighting is the most common add-on to a new deck", pitch: DECK_LIGHTS },
+        { serviceId: "deck.pergola", afterDays: [60, 540], why: "shade is the next thing people want once they use the deck", pitch: DECK_SHADE },
+      ],
+      timingLine: {
+        cold: "Most decks that get built by early summer are planned over the winter and spring.",
+        warm: "The cooler months are the easiest time to build before the summer heat.",
+      },
+      timingMonths: { cold: [1, 2, 3, 4], warm: [10, 11, 12, 1, 2] },
+    },
+    {
+      id: "deck.composite",
+      label: "Composite deck",
+      match: new RegExp(`\\b(${COMPOSITE})`, "i"),
+      // "Trex railing" or a PVC pergola on its own is that job, not a deck
+      unless: /^(?!.*\bdeck)(?=.*\b(rail\w*|stairs?|steps|pergola\w*|porch\w*|cover\w*|lights?|lighting)\b)/i,
+      phrase: "the composite deck",
+      season: { cold: [2, 3, 4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "improvement",
+      followOns: [
+        { serviceId: "deck.lighting", afterDays: [14, 540], why: "lighting is the most common add-on to a new deck", pitch: DECK_LIGHTS },
+        { serviceId: "deck.pergola", afterDays: [60, 540], why: "shade is the next thing people want once they use the deck", pitch: DECK_SHADE },
+      ],
+      timingLine: {
+        cold: "Most decks that get built by early summer are planned over the winter and spring.",
+        warm: "The cooler months are the easiest time to build before the summer heat.",
+      },
+      timingMonths: { cold: [1, 2, 3, 4], warm: [10, 11, 12, 1, 2] },
+    },
+    {
+      id: "deck.railing",
+      label: "Railings & stairs",
+      match: /\b((replace\w*|new|install\w*|add\w*|rebuild\w*) (\w+ )?)?(rail\w*|stairs?|steps|balusters?|spindles?|handrails?|landing)/i,
+      phrase: "the railing",
+      season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
+      kind: "improvement",
+    },
+    {
+      id: "deck.pergola",
+      label: "Pergolas, covers & porches",
+      match: /\b(pergola\w*|gazebo\w*|arbor\w*|shade (sail|structure|cover)\w*|awning\w*|cover(ed)? (deck|patio|porch)|deck cover\w*|roof(ed)? over|screen(ed)?[- ](in )?porch|three[- ]season|sunroom|new porch|porch (build\w*|addition|roof))/i,
+      phrase: "the pergola",
+      season: { cold: [2, 3, 4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "improvement",
+    },
+    {
+      id: "deck.replace",
+      label: "Deck replacement",
+      match: /\b(replace\w*|resurfac\w*|re-?deck\w*|re-?board\w*|tear[- ]?(off|out)|rebuild\w*)/i,
+      unless: new RegExp(`\\b(${COMPOSITE})\\b`, "i"),
+      phrase: "the deck replacement",
+      season: { cold: [2, 3, 4, 5, 6, 7, 8, 9, 10], warm: ALL },
+      kind: "improvement",
+      followOns: [{ serviceId: "deck.stain", afterDays: [730, 1095], why: "a wood deck needs a stain and seal every two to three years", pitch: DECK_STAIN }],
+    },
+    {
+      id: "deck.stain",
+      label: "Staining & sealing",
+      match: /\b(stain\w*|seal\w*|refinish\w*|restor\w*|brighten\w*|strip\w*|sand\w*|clean\w*|wash\w*|oil\w*)/i,
+      phrase: "the deck staining",
+      season: { cold: [5, 6, 7, 8, 9], warm: [3, 4, 5, 10, 11] },
+      reserviceMonths: 30,
+      kind: "maintenance",
+      worseIfWaiting: "Once the old stain wears through, water soaks into the boards and they start to gray and crack.",
+      timingLine: {
+        cold: "Stain needs a few dry days in a row with warm nights, so late spring through early fall is when it goes on.",
+        warm: "Stain goes on best when it isn't too hot, so spring and fall are the times to do it.",
+      },
+      timingMonths: { cold: [3, 4, 5, 6, 7, 8], warm: [2, 3, 4, 9, 10] },
+    },
+    {
+      id: "deck.repair",
+      label: "Deck repair",
+      match: /\b(repair\w*|fix\w*|rot\w*|soft spots?|loose|wobbl\w*|sagg?\w*|replace (\d+ |a |some |the )?(\w+ )?boards?|board replace\w*|sister\w*|joists?|ledger|footings?|(rotted|rotten|loose|new|replace\w*) posts?)/i,
+      phrase: "the deck repair",
+      season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
+      kind: "repair",
+      worseIfWaiting: "Rot spreads from one board to the next and down into the framing, so a small repair now keeps it from becoming a bigger one.",
+    },
+    {
+      id: "deck.lighting",
+      label: "Deck lighting",
+      match: /\b(light\w*|post caps?|riser lights?|lamps?|lantern\w*)/i,
+      phrase: "the deck lighting",
+      season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
+      kind: "improvement",
+    },
+  ],
+  // the service names the rest ("the new deck", "the railing", "the pergola"), so "new deck + pergola" stays the deck
+  objects: [
+    [/\bgazebo/i, "the gazebo"],
+    [/screen(ed)?[- ](in )?porch/i, "the screened porch"],
+  ],
+  places: [
+    [/(back ?yard|backyard|rear)/i, "in the backyard"],
+    [/\bpool\b/i, "by the pool"],
+  ],
+  whyQuotesDie: [
+    "Big number: they wanted to save up, or wait for a tax refund or a bonus",
+    "They got three bids and the decision stalled",
+    "Waiting on a permit, the HOA or a spouse, and nobody followed up",
+    "They meant to build 'this summer' and the summer got away",
+    "Wood or composite: too many choices and no next step",
+  ],
+  quoteAngles: ["check_in", "revise", "timing", "crew_nearby", "close_file"],
+  crewLine: "We've got a crew building a deck near you and a few open days after.",
+  minQuote: 800,
+  freeLook: true,
+};
+
+/* ================================================================== */
 /* The rest — compact but real                                         */
 /* ================================================================== */
 function simple(
@@ -949,6 +1213,8 @@ export const PLAYBOOKS: Record<TradeId, TradePlaybook> = {
   irrigation,
   chimney,
   cleaning,
+  holiday_lighting: lighting,
+  deck,
   general,
 };
 

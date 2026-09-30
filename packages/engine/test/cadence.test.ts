@@ -201,7 +201,7 @@ describe("who goes first", () => {
     for (let i = 1; i < p.length; i++) expect(p[i]!).toBeLessThanOrEqual(p[i - 1]!);
   });
 
-  it.each(["tree", "septic", "pressure_washing"] as const)("no breakage type takes more than %s's share of a limited round", (trade) => {
+  it.each(["tree", "septic", "pressure_washing", "holiday_lighting", "deck"] as const)("no breakage type takes more than %s's share of a limited round", (trade) => {
     const s = trade === "tree" ? tree : generateSample({ trade, asOf: ASOF });
     const r = trade === "tree" ? treeScan : scan(s.dataset);
     const types = new Map(r.primary.map((o) => [o.customerId, o.type]));

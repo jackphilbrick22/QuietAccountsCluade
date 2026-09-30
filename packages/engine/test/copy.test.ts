@@ -1,16 +1,16 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { scan, type ScanResult } from "../src/breakage/detect.ts";
+import { dueDate, scan, type ScanResult } from "../src/breakage/detect.ts";
 import { crewLine, footer, renderNote } from "../src/copy/render.ts";
 import { lint } from "../src/copy/lint.ts";
 import { SEQUENCES } from "../src/copy/templates.ts";
 import { BANNED_STATS, bannedStatIn } from "../src/claims.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
-import type { BreakageType, Customer, Dataset, Opportunity, TradeId } from "../src/model.ts";
+import type { BreakageType, Customer, Dataset, Job, Opportunity, TradeId } from "../src/model.ts";
 import { findService, playbook } from "../src/trades/index.ts";
 import { greetingName } from "../src/util.ts";
-import { ASOF, ago, business, customer, dataset, job, oneOpp, quote } from "./fixtures.ts";
+import { ASOF, ago, business, customer, dataset, job, oneOpp, oppsFor, quote } from "./fixtures.ts";
 
-const TRADES = ["tree", "septic", "lawn", "fence", "pressure_washing"] as const;
+const TRADES = ["tree", "septic", "lawn", "fence", "pressure_washing", "holiday_lighting", "deck"] as const;
 const ALL_TYPES = Object.keys(SEQUENCES) as BreakageType[];
 const SEND_ON = "2026-10-01"; // Thursday, two days after the sample's as-of date
 
@@ -267,6 +267,99 @@ describe("voice", () => {
     const ds = dataset({ customers: [customer("c1", { firstName: "", name: "Acme Holdings LLC" })], quotes: [quote("q1", "c1")] });
     const n = renderNote(oneOpp(scan(ds), "c1", "unanswered_quote"), ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
     expect(n.body).toMatch(/^Hi there,/);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Seasonal clocks: last year's lights, a wood deck's stain            */
+/* ------------------------------------------------------------------ */
+
+describe("holiday lights come due again in the fall", () => {
+  const lightsDs = (asOf: string, completedOn: string) =>
+    dataset({
+      asOf,
+      business: { trade: "holiday_lighting", name: "Bright Nights Holiday Lighting", avgJobValue: 1500, minQuoteValue: 300 },
+      customers: [customer("c1", { firstName: "Karen" })],
+      jobs: [job("j1", "c1", { title: "Christmas lights - roofline", total: 1650, completedOn })],
+    });
+  const install = () => playbook("holiday_lighting").services.find((s) => s.id === "light.install")!;
+
+  it("a September note to a customer whose lights went up last November asks, plainly, if they want them up again", () => {
+    const ds = lightsDs("2026-09-15", "2025-11-08");
+    const o = oneOpp(scan(ds), "c1", "service_due");
+    expect([o.serviceId, o.seasonFit]).toEqual(["light.install", "now"]);
+    expect(o.reason).toMatch(/due in October/);
+    const [n1, n2, n3] = [1, 2, 3].map((step) => renderNote(o, ds.customers[0]!, { ds, sendOn: "2026-09-15" }, step)!);
+    expect(n1!.templateId).toBe("s1a");
+    expect(n1!.subject).toBe("the holiday lights");
+    expect(n1!.body.split("\n\n").slice(0, 5).join("\n\n")).toBe(
+      "Hi Karen,\n\nIt's Sarah at Bright Nights Holiday Lighting. We did the holiday lights for you last November. Want the lights up again this year?\n\nMost of our install dates for November fill in October.\n\nIf so, just reply \"yes\" and I'll get you on the schedule.\n\nSarah",
+    );
+    // no rule of thumb, nothing "due", no deadline
+    expect(n1!.body).not.toMatch(/rule of thumb|due again|once a year|book by|spots? left|before .* gone/i);
+    for (const n of [n1!, n2!, n3!]) {
+      expect(n.flags).toEqual([]);
+      expect(problemsWith(n.subject, n.body, n.flags, ds, ds.customers[0]!)).toEqual([]);
+    }
+    expect([n2!.subject, n3!.subject]).toEqual(["Re: the holiday lights", "Re: the holiday lights"]);
+  });
+
+  it("lights hung in December or taken down in January are due the same October, so the note still goes in September", () => {
+    for (const done of ["2025-12-12", "2026-01-20"]) expect(oneOpp(scan(lightsDs("2026-09-15", done)), "c1", "service_due").reason).toMatch(/due in October/);
+    expect(dueDate(install(), "2025-11-08")).toBe("2026-10-01");
+    expect(dueDate(install(), "2026-01-20")).toBe("2026-10-01");
+    expect(dueDate(install(), "2026-05-02")).toBe("2027-10-01");
+    // work without a season keeps its plain clock
+    expect(dueDate(playbook("septic").services.find((s) => s.id === "septic.pump")!, "2023-06-10")).toBe("2026-06-10");
+  });
+
+  it("nothing goes out in midsummer, and the timing line runs only while it's true", () => {
+    expect(oppsFor(scan(lightsDs("2026-07-10", "2025-11-08")), "c1", "service_due")).toEqual([]);
+    const ds = lightsDs("2026-11-20", "2025-11-08");
+    const n = renderNote(oneOpp(scan(ds), "c1", "service_due"), ds.customers[0]!, { ds, sendOn: "2026-11-20" }, 1)!;
+    expect(n.body).toMatch(/Want the lights up again this year\?/);
+    expect(n.body).not.toMatch(/fill in October/);
+    expect(n.flags).toEqual([]);
+  });
+
+  it("other trades' service-due notes keep their rule of thumb", () => {
+    const ds = dataset({ business: { trade: "septic", name: "Granite State Septic" }, customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Routine pump-out 1000 gal", total: 450, completedOn: ago(3 * 365 + 20) })] });
+    const n = renderNote(oneOpp(scan(ds), "c1", "service_due"), ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.templateId).toBe("s1");
+    expect(n.body).toContain("Every 3 years is the rule of thumb.");
+  });
+});
+
+describe("a wood deck's stain", () => {
+  const deckDs = (...jobs: Job[]) =>
+    dataset({ business: { trade: "deck", name: "Kearsarge Deck & Porch", avgJobValue: 12000, minQuoteValue: 800 }, customers: [customer("c1", { firstName: "Paul" }), customer("c2", { firstName: "Dana" })], jobs });
+
+  it("is offered two to three years after a wood build, and never after a composite one", () => {
+    const ds = deckDs(
+      job("j1", "c1", { title: "New pressure treated deck 14x16", total: 16500, completedOn: ago(800) }),
+      job("j2", "c2", { title: "Composite deck 16x20 - Trex", total: 26000, completedOn: ago(800) }),
+    );
+    const r = scan(ds);
+    const stain = oppsFor(r, "c1", "missed_upsell").find((o) => o.serviceId === "deck.stain")!;
+    expect(stain).toBeDefined();
+    expect(oppsFor(r, "c2", "missed_upsell").map((o) => o.serviceId)).not.toContain("deck.stain");
+    const n = renderNote(stain, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.body).toContain("When we took care of the new deck for you back in July 2024, we never talked about the deck staining. A wood deck holds up a lot longer when it's stained and sealed every couple of years.");
+    expect(n.flags).toEqual([]);
+  });
+
+  it("is not offered in the first two years", () => {
+    const r = scan(deckDs(job("j1", "c1", { title: "New pressure treated deck 14x16", total: 16500, completedOn: ago(400) })));
+    expect(oppsFor(r, "c1", "missed_upsell").map((o) => o.serviceId)).toEqual(["deck.lighting", "deck.pergola"]);
+  });
+
+  it("then comes due every 30 months", () => {
+    const ds = deckDs(job("j1", "c1", { title: "Deck stain & seal", total: 1600, completedOn: ago(915) }));
+    const o = oneOpp(scan(ds), "c1", "service_due");
+    expect(o.serviceId).toBe("deck.stain");
+    const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.body).toContain("We did the deck staining for you back in March 2024, and you're coming up on when it's due again. Every 2½ years is the rule of thumb.");
+    expect(n.flags).toEqual([]);
   });
 });
 

@@ -158,6 +158,28 @@ export const CATALOG: Partial<Record<TradeId, CatalogItem[]>> = {
     { title: "Post-construction clean", low: 500, high: 1200, weight: 1 },
     { title: "Carpet cleaning - 4 rooms", low: 180, high: 350, weight: 3 },
   ],
+  // Jobber's bid guide puts a full holiday package at about $750-$5,000; permanent systems run about $2,000-$6,000+.
+  holiday_lighting: [
+    { title: "Christmas lights - roofline", low: 750, high: 2200, weight: 8, addOn: { name: "Wreath + bows for the front door", low: 120, high: 300 } },
+    { title: "Holiday lighting - roofline + 2 trees", low: 1400, high: 3800, weight: 5, addOn: { name: "Mini lights on the front bushes", low: 250, high: 650 } },
+    { title: "Mini lights - front tree wrap", low: 400, high: 1200, weight: 3 },
+    { title: "Garland + wreaths on porch", low: 350, high: 900, weight: 2 },
+    { title: "Holiday lights - driveway + walkway", low: 450, high: 1200, weight: 2 },
+    { title: "Permanent lighting - front roofline", low: 2400, high: 6500, weight: 2 },
+    { title: "Christmas light takedown & storage", low: 150, high: 450, weight: 1 },
+    { title: "Bistro string lights - backyard party", low: 500, high: 1500, weight: 1 },
+  ],
+  // Cost vs Value 2025: a wood deck addition averages about $18,263 and a composite one about $25,096.
+  deck: [
+    { title: "New pressure treated deck 14x16", low: 9000, high: 22000, weight: 5, addOn: { name: "Post cap lights", low: 400, high: 1100 } },
+    { title: "Composite deck 16x20 - Trex", low: 16000, high: 34000, weight: 4, addOn: { name: "Lights on the stair risers", low: 350, high: 900 } },
+    { title: "Deck replacement - cedar", low: 11000, high: 26000, weight: 3 },
+    { title: "Deck stain & seal", low: 900, high: 2400, weight: 5 },
+    { title: "Deck repair - rotted boards + joists", low: 800, high: 3500, weight: 4 },
+    { title: "Deck railing - aluminum + new stairs", low: 2500, high: 7500, weight: 3 },
+    { title: "Pergola 12x14", low: 5500, high: 14000, weight: 2 },
+    { title: "Screened porch on existing deck", low: 14000, high: 38000, weight: 1 },
+  ],
   general: [
     { title: "Deck repair - replace boards", low: 600, high: 2500, weight: 4 },
     { title: "Drywall patch + paint", low: 250, high: 700, weight: 5 },
@@ -178,6 +200,26 @@ export const RECURRING_VISIT: Partial<Record<TradeId, { title: string; price: nu
   gutter: { title: "Gutter cleaning", price: 190, everyDays: 182 },
   hvac: { title: "Maintenance plan tune-up", price: 160, everyDays: 182 },
   chimney: { title: "Annual chimney sweep", price: 254, everyDays: 365 },
+  holiday_lighting: { title: "Christmas lights - install & takedown", price: 1350, everyDays: 365 },
+};
+
+/**
+ * Trades that sell in one part of the year: how busy each month is (January first), in place of the
+ * peak-month default. Holiday lights are sold August to November; spring quotes are permanent lighting.
+ */
+export const MONTH_WEIGHT: Partial<Record<TradeId, number[]>> = {
+  holiday_lighting: [0.15, 0.1, 0.15, 0.2, 0.2, 0.25, 0.4, 0.9, 1.6, 2, 1.5, 0.5],
+};
+
+/** Quotes a typical owner-run shop writes in a month, where it differs from the default. */
+export const QUOTES_PER_MONTH: Partial<Record<TradeId, number>> = {
+  septic: 48,
+  lawn: 55,
+  pressure_washing: 60,
+  // research: 20-60 a month from September to November
+  holiday_lighting: 30,
+  // research: 8-20 a month in season
+  deck: 16,
 };
 
 export const FIRST_NAMES = [

@@ -28,6 +28,7 @@ import {
   monthOf,
   round2,
   spokenWhen,
+  yearOf,
 } from "../util.ts";
 import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, CALL_OVER_AMOUNT, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
 import { quoteById } from "../lookup.ts";
@@ -215,13 +216,14 @@ function base(
   reason: string,
   evidence: string[],
   serviceOverride?: ServiceDef,
+  maxDays?: number,
 ): Opportunity | undefined {
   const w = WINDOW[type];
   const minDays = ctx.alwaysOn ? (ALWAYS_ON_MIN_DAYS[type] ?? w.minDays) : w.minDays;
   const age = anchor ? daysBetween(anchor, ctx.asOf) : NaN;
   if (Number.isNaN(age)) {
     // no date: keep only types that don't depend on age, and mark them old-ish
-  } else if (age < minDays || age > w.maxDays) return undefined;
+  } else if (age < minDays || age > (maxDays ?? w.maxDays)) return undefined;
   const cls = serviceOverride ? { service: serviceOverride, trade: findService(serviceOverride.id)?.trade ?? ctx.ds.business.trade } : classifyService(title, lineItems, ctx.trades);
   return {
     id: makeId("op", type, source.kind, source.id, customerId),
@@ -388,13 +390,13 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
   for (const [sid, w] of seenServices) {
     const svc = findService(sid)?.service;
     if (!svc?.reserviceMonths || svc.kind === "recurring") continue;
-    const dueOn = addMonths(w.date, svc.reserviceMonths);
+    const dueOn = dueDate(svc, w.date);
     const until = daysBetween(ctx.asOf, dueOn); // negative = overdue
     if (until > 45) continue;
     const overdueDays = -until;
     if (overdueDays > svc.reserviceMonths * 30 * 2) continue;
     const o = base(ctx, "service_due", c.id, { kind: w.kind, id: w.id }, w.total, dueOn < ctx.asOf ? dueOn : ctx.asOf, w.title, w.lineItems,
-      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : "due next month"} — ${intervalWords(svc.reserviceMonths).toLowerCase()} is the rule of thumb.`,
+      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : svc.dueMonth ? `due in ${monthName(dueOn)}` : "due next month"} — ${intervalWords(svc.reserviceMonths).toLowerCase()} is the rule of thumb.`,
       [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
     if (o) {
       o.lastDoneOn = w.date;
@@ -417,9 +419,11 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       // the original job itself may have included the follow-on ("removal + stump")
       if (already || next.match.test(w.title) || w.lineItems.some((l) => next.match.test(l.name))) continue;
       const typical = Math.max(playbook(findService(f.serviceId)!.trade).ticket.low, Math.round(ctx.avgJob * 0.35));
+      // a follow-on that comes up years later (a wood deck's stain) keeps its own window past the usual cap
+      const late = f.afterDays[1] > WINDOW.missed_upsell.maxDays ? f.afterDays[1] + 180 : undefined;
       const o = base(ctx, "missed_upsell", c.id, { kind: w.kind, id: w.id }, typical, w.date, next.label, [],
         `Did ${service.phrase.replace(/^the /, "the ")} ${spokenWhen(w.date, ctx.asOf)}. ${capitalize(next.phrase)} was never offered — ${f.why}.`,
-        [evWork(w), `No quote or job for ${next.label.toLowerCase()} on file`], next);
+        [evWork(w), `No quote or job for ${next.label.toLowerCase()} on file`], next, late);
       // two follow-ons from one job (risers and a filter) are two opportunities, not one id
       if (o && out.some((x) => x.id === o.id)) o.id = makeId("op", "missed_upsell", w.kind, w.id, c.id, next.id);
       if (o) out.push(o);
@@ -472,6 +476,18 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
 
 function capitalize(s: string): string {
   return s ? s[0]!.toUpperCase() + s.slice(1) : s;
+}
+
+/**
+ * When clock-based work comes due again. Seasonal work comes due when its season opens, at least half a cycle
+ * after the last visit: lights hung in November or taken down in January are both due the next October.
+ */
+export function dueDate(svc: ServiceDef, done: ISODate): ISODate {
+  const months = svc.reserviceMonths ?? 12;
+  if (!svc.dueMonth) return addMonths(done, months);
+  const from = addMonths(done, Math.ceil(months / 2));
+  const opens = `${yearOf(from)}-${String(svc.dueMonth).padStart(2, "0")}-01`;
+  return opens >= from ? opens : `${yearOf(from) + 1}${opens.slice(4)}`;
 }
 
 /* ------------------------------------------------------------------ */

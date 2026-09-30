@@ -71,7 +71,9 @@ export interface HttpDeps extends Deps {
 
 type Env = { Variables: { bid?: string; actor: string } };
 
-const TRADES = ["tree", "lawn", "landscape", "septic", "fence", "concrete", "pressure_washing", "gutter", "window_cleaning", "pool", "pest", "hvac", "junk_removal", "painting", "roofing", "irrigation", "chimney", "cleaning", "general"] as const;
+const TRADES = ["tree", "lawn", "landscape", "septic", "fence", "concrete", "pressure_washing", "gutter", "window_cleaning", "pool", "pest", "hvac", "junk_removal", "painting", "roofing", "irrigation", "chimney", "cleaning", "holiday_lighting", "deck", "general"] as const satisfies readonly TradeId[];
+// a trade the engine knows but this list leaves out fails the typecheck here
+const _everyTrade: Record<Exclude<TradeId, (typeof TRADES)[number]>, never> = {};
 
 const CreateBusiness = z.object({
   id: z

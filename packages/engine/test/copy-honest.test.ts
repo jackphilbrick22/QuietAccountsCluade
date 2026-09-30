@@ -196,7 +196,7 @@ describe("no charge to look", () => {
 /* ------------------------------------------------------------------ */
 
 describe("follow-ups thread under note 1", () => {
-  it.each(["tree", "fence", "painting", "cleaning", "septic", "hvac", "pest"] as const)("%s: every later subject is exactly 'Re: ' + the first", (trade) => {
+  it.each(["tree", "fence", "painting", "cleaning", "septic", "hvac", "pest", "holiday_lighting", "deck"] as const)("%s: every later subject is exactly 'Re: ' + the first", (trade) => {
     const s = generateSample({ trade, asOf: ASOF });
     const r = scan(s.dataset);
     const plan = planOutreach(s.dataset, r, { startOn: "2026-10-01", applyHoldout: false, limitPeople: 150 });

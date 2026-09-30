@@ -2,7 +2,7 @@ import type { BusinessProfile, Dataset, ISODate, TradeId } from "../model.ts";
 import { emptyDataset, ingestFile, toCSV } from "../ingest/index.ts";
 import { playbook } from "../trades/index.ts";
 import { addDays, addMonths, daysBetween, monthOf, rng } from "../util.ts";
-import { CATALOG, EMAIL_DOMAINS, FIRST_NAMES, LAST_NAMES, RECURRING_VISIT, STREETS, TOWNS, type CatalogItem } from "./catalog.ts";
+import { CATALOG, EMAIL_DOMAINS, FIRST_NAMES, LAST_NAMES, MONTH_WEIGHT, QUOTES_PER_MONTH, RECURRING_VISIT, STREETS, TOWNS, type CatalogItem } from "./catalog.ts";
 
 export interface SampleOptions {
   trade: TradeId;
@@ -36,6 +36,8 @@ const BUSINESS_NAMES: Partial<Record<TradeId, string>> = {
   fence: "Stonewall Fence Co.",
   concrete: "Merrimack Concrete",
   pressure_washing: "Clearview Exterior Wash",
+  holiday_lighting: "Bright Nights Holiday Lighting",
+  deck: "Kearsarge Deck & Porch",
 };
 
 interface RawClient {
@@ -136,7 +138,7 @@ export function generateSample(opts: SampleOptions): Sample {
   const pb = playbook(trade);
   const catalog = CATALOG[trade] ?? CATALOG.tree!;
   const months = opts.months ?? 36;
-  const qpm = opts.quotesPerMonth ?? (trade === "septic" ? 48 : trade === "lawn" ? 55 : trade === "pressure_washing" ? 60 : 58);
+  const qpm = opts.quotesPerMonth ?? QUOTES_PER_MONTH[trade] ?? 58;
   const start = addMonths(opts.asOf, -months);
   const salespeople = [opts.ownerName ?? "Dave Ridge", "Marcus Hale"];
   const visit = RECURRING_VISIT[trade];
@@ -281,7 +283,7 @@ export function generateSample(opts: SampleOptions): Sample {
   for (let m = 0; m < months; m++) {
     const monthStart = addMonths(start, m);
     const mo = monthOf(monthStart);
-    const peak = pb.peakMonths.cold.includes(mo) ? 1.35 : [12, 1, 2].includes(mo) ? 0.55 : 0.9;
+    const peak = MONTH_WEIGHT[trade]?.[mo - 1] ?? (pb.peakMonths.cold.includes(mo) ? 1.35 : [12, 1, 2].includes(mo) ? 0.55 : 0.9);
     const n = Math.round(qpm * peak * (0.85 + r() * 0.3));
     for (let i = 0; i < n; i++) {
       const created = addDays(monthStart, Math.floor(r() * 28));

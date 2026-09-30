@@ -8,12 +8,24 @@ export interface ServiceDef {
   label: string;
   /** Matches quote/job titles and line items. */
   match: RegExp;
+  /** Titles that use this service's words but are another job: "Christmas lights takedown" is not the install. */
+  unless?: RegExp;
   /** How a person refers to it: "the stump grinding", "your septic pump-out". */
   phrase: string;
   /** Months (1-12) this is normally bought/done, per climate. Empty = year-round. */
   season: Partial<Record<Climate, number[]>>;
   /** Re-service interval in months (septic pump-out ~36). */
   reserviceMonths?: number;
+  /**
+   * Seasonal work comes due in this month (1-12) when its season comes back around, not a year to the day
+   * after the last visit: lights hung in November or taken down in January are both due again in October.
+   */
+  dueMonth?: number;
+  /**
+   * Work that simply comes around again each season: the question a service-due note asks in place of
+   * "once a year is the rule of thumb" ("Want the lights up again this year?").
+   */
+  dueAsk?: string;
   /** Hazard work gets worse if ignored; improvements can wait. */
   kind: "hazard" | "repair" | "maintenance" | "improvement" | "recurring";
   /**
