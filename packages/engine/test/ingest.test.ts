@@ -301,7 +301,7 @@ describe("status words from the tools fence and painting quotes live in", () => 
     expect(read(sheet(status))).toEqual({ status: want, source: "spreadsheet" });
   });
 
-  // When the status starts with the answer, the answer decides; a trailing "not booked" only says the work isn't on
+  // When the status starts with a no, the no decides; after a yes, a trailing "not booked" only says the work isn't on
   // the calendar. And a sale that hasn't happened yet is still open. Quoted, since some carry a comma.
   it.each<[string, QuoteStatus]>([
     // a yes, still to schedule: never open, never converted
@@ -311,16 +311,48 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["Sold - not completed", "approved"], // said yes, work not done
     ["Deposit paid - not booked", "approved"],
     ["Won - not scheduled", "approved"],
-    // a no, whatever follows it
+    // a no, whatever follows it, even a "not signed" or "never viewed" that would otherwise read as still open
     ["Lost - not booked", "declined"],
     ["Declined - not booked", "declined"],
     ["Rejected - not scheduled", "declined"],
+    ["Lost - not signed", "declined"],
+    ["Lost - never signed", "declined"],
+    ["Declined - unsigned", "declined"],
+    ["Declined - not signed", "declined"],
+    ["Declined - not accepted", "declined"],
+    ["Rejected - not accepted", "declined"],
+    ["Rejected - not approved by HOA", "declined"],
+    ["Lost - never viewed", "declined"],
+    ["Declined - never opened", "declined"],
+    // a yes followed by "not signed" is still waiting on the signature
+    ["Approved - not signed", "awaiting_response"],
     // not sold yet is still open
     ["Not sold yet", "awaiting_response"],
     ["Not yet sold", "awaiting_response"],
     ["Pending - not sold", "awaiting_response"],
     ["Pending, not sold", "awaiting_response"],
     ["Opened, not sold", "awaiting_response"],
+    // and so is one still waiting, whichever side of the "not sold" the waiting is written on
+    ["Not sold - pending", "awaiting_response"],
+    ["Not Sold (Pending)", "awaiting_response"],
+    ["Not sold (no response)", "awaiting_response"],
+    ["Not sold - no response yet", "awaiting_response"],
+    ["Not sold - following up", "awaiting_response"],
+    ["Not sold - waiting on HOA", "awaiting_response"],
+    ["Not sold - pending financing", "awaiting_response"],
+    ["Not sold - still thinking", "awaiting_response"],
+    ["Not sold - call back in spring", "awaiting_response"],
+    ["Not sold as of yet", "awaiting_response"],
+    ["No response - not sold", "awaiting_response"],
+    ["Quoted - not sold", "awaiting_response"],
+    ["Emailed - not sold", "awaiting_response"],
+    ["Follow up - not sold", "awaiting_response"],
+    ["On hold - not sold", "awaiting_response"],
+    ["Outstanding - not sold", "awaiting_response"],
+    ["Resent - not sold", "awaiting_response"],
+    ["Reopened - not sold", "awaiting_response"],
+    ["Sent - not sold (no response)", "awaiting_response"],
+    ["No response", "awaiting_response"],
     // unless a no is written anywhere in it
     ["Sent - Not Sold - Lost to competitor", "declined"],
     ["Sent - not sold - went with competitor", "declined"],
@@ -335,10 +367,29 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["Lost - estimate sent, not sold", "declined"],
     ["Lost - not sold yet", "declined"],
     ["Declined - not sold yet", "declined"],
+    // every no the declined rule hears, and the reasons owners write for one
+    ["Sent - customer said no", "declined"],
+    ["Sent - not sold - customer said no", "declined"],
+    ["Sent, not sold, HOA denied", "declined"],
+    ["Sent - not sold - did not win", "declined"],
+    ["Sent - not sold - disapproved", "declined"],
+    ["Sent - not sold - price too high", "declined"],
+    ["Sent - not sold - too expensive", "declined"],
+    ["Sent - not sold - chose competitor", "declined"],
+    ["Sent - not sold - hired a competitor", "declined"],
+    ["Sent - not sold - went w/ competitor", "declined"],
+    ["Sent - not sold - used another company", "declined"],
+    ["Sent - not sold - not moving forward", "declined"],
+    ["Sent - not sold - no thanks", "declined"],
+    ["Sent - not sold - wife said no", "declined"],
+    // closed out: nobody is waiting on it
+    ["Sent - not sold - cancelled", "declined"],
     // unchanged
     ["Not sold", "declined"],
+    ["Not Sold", "declined"],
     ["Unsold", "declined"],
     ["No sale", "declined"],
+    ["Closed - not sold", "declined"],
     ["Not sent", "draft"],
     ["Unsigned", "awaiting_response"],
     ["Viewed - not signed", "awaiting_response"],
