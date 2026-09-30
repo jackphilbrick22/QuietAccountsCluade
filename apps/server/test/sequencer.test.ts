@@ -259,6 +259,21 @@ describe("the reply backstop", () => {
     expect(state().suppressions[KIM]).toBe("unsubscribed");
   });
 
+  it("the person we wrote to, following up in her own thread after her spouse wrote there, is still herself", async () => {
+    now = new Date("2026-10-01T04:10:00Z");
+    // Pat's thread now also holds Jo's earlier reply (from her own record's address)
+    inbox.threads["th-pat3"] = [
+      email("em-ours-pat3", { from_address_email: MAILBOX, to_address_email_list: PAT, i_sent: true, lead: null, thread_id: "th-pat3", campaign_id: "camp-now" }),
+      email("em-jo-earlier", { from_address_email: "jo.lee@gmail.com", lead: null, thread_id: "th-pat3" }),
+    ];
+    const pat = email("em-r10", { from_address_email: PAT, lead: null, thread_id: "th-pat3", timestamp_created: "2026-10-01T04:06:00.000Z", body: { text: "Following up on what Jo said, Thursday works. Call my cell." } });
+    inbox.primary = [];
+    inbox.others = [pat];
+    inbox.byId["em-r10"] = pat;
+    expect(await pollReplies(d, { force: true })).toMatchObject({ processed: 1 });
+    expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r10")!.customerId).toBe("c1");
+  });
+
   it("the note a reply answers comes from its own campaign, never the newest note in another", async () => {
     now = new Date("2026-10-01T03:40:00Z");
     const jo = email("em-r7", { from_address_email: "jo.lee@gmail.com", lead: KIM, thread_id: "th-kim", campaign_id: "camp-2", timestamp_created: "2026-10-01T03:36:00.000Z", body: { text: "Hi, Kim's neighbour Jo here on her account. She'd like the maples done, please call." } });

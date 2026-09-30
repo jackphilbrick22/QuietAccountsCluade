@@ -111,10 +111,12 @@ const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|hav
 const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|signed|found|contracted|gave it|gave the job)";
 const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other|a local) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|roofer|fence company|cleaner|\\w+ (company|service|guy|contractor))|a competitor|the competition)";
 /**
- * Shopping around, not hired: "she has another guy coming out Thursday", "has the other guy's quote at 3000". Only
- * after a "has/got another guy": once someone else "got the job", the price that follows is why we lost it.
+ * Shopping around, not hired: "she has another guy coming out Thursday", "has another company giving her a price".
+ * Only after a "has/got another guy": once someone else "got the job", the price that follows is why we lost it.
  */
-const SHOPPING = "(?!['’]s (quote|price|bid|estimate)|.{0,40}\\b(coming|come out|looking|look at|to bid|to quote|bidding|quoting|getting))";
+const SHOPPING = "(?!['’]s (quote|price|bid|estimate)|.{0,40}\\b(coming|come out|looking|look at|to bid|to quote|bidding|quoting|getting|giving|quot|bid|pric|estimat))";
+/** Right after "someone else already…": giving a price is shopping ("already quoted her 1800", "did an estimate too"). */
+const GAVE_A_PRICE = "(?! (quoted|bid|priced|(gave|got) (her|him|them) (a |an |their )?(price|quote|estimate|bid|number)|(a|an|their) (quote|estimate|bid|price)|(her|him|them) (a|an) (quote|estimate|bid|price)))";
 /** "she's got another guy", "had someone else": hired, unless what follows says they're only shopping. */
 const ELSEWHERE_HAS = `\\b(has|got|had)( with| to)? ${ELSEWHERE_WHO}\\b${SHOPPING}`;
 /** The same, before the shopping check: a booking next to it ("has another guy, he won the bid") goes to a person. */
@@ -123,7 +125,7 @@ const ELSEWHERE_HAS_ANY = new RegExp(`\\b(has|got|had)( with| to)? ${ELSEWHERE_W
 const WENT_WITH_WHO = `\\b(went|going|gone|go) (with\\b|w/|w\\b) ?(${ELSEWHERE_WHO}|someone|somebody)\\b`;
 /** Someone else as the subject: "Someone else already did it", "The other guy got the job", "Another company won the bid". */
 const ELSEWHERE_SUBJ = "((someone|somebody) else|(another|the other|a different) (company|guy|contractor|crew|outfit|\\w+ (company|service|guy|contractor)))";
-const ELSEWHERE_DID = `\\b${ELSEWHERE_SUBJ} (did|does|already|got|won|booked|hired|sold|is doing|will do)\\b|\\b${ELSEWHERE_SUBJ} (has|had)\\b${SHOPPING}`;
+const ELSEWHERE_DID = `\\b${ELSEWHERE_SUBJ} (did|does|already|got|won|booked|hired|sold|is doing|will do)\\b${GAVE_A_PRICE}|\\b${ELSEWHERE_SUBJ} (has|had)\\b${SHOPPING}`;
 const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|${ELSEWHERE_HAS}|${WENT_WITH_WHO}|${ELSEWHERE_DID}|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
 /**
  * "went with …" naming neither someone else nor us: "She went with the 2 tree option", "went with Plan B". Maybe ours,

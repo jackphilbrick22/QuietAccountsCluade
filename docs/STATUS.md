@@ -142,8 +142,14 @@ Updated every loop iteration. Newest first.
   no lead on the email is tied to the person we wrote to through our note in that thread.
   Engine 1,232, server 258.
 
+- Eleventh adversarial review: 7 reported, 2 confirmed (13 → 11 → 7 → 4 → 2), both fixed and tested. A
+  competitor's price is shopping, not a loss ("she has another company giving her a price", "someone else
+  already quoted her 1800"), while "someone else got the job, 1800 cheaper" stays a loss. In the reply
+  poll, only our own notes say whose thread it is, so the person we wrote to following up after her spouse
+  wrote there is still herself. Engine 1,232, server 259.
+
 **Next**
-- An eleventh review pass; stop when a pass finds nothing material.
+- A twelfth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

@@ -132,6 +132,11 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["Quoted 1800. She's got another company coming out Friday", { outcome: "quoted", amount: 0 }],
       ["Quoted 2400, she has the other guy's quote at 3000", { outcome: "quoted", amount: 0 }],
       ["Talked to her, someone else is looking at it Friday", open],
+      ["Quoted 2400, she has another company giving her a price", { outcome: "quoted", amount: 0 }],
+      ["Quoted 2400, someone else already quoted her 1800", { outcome: "quoted", amount: 0 }],
+      ["Quoted 2400, she has another guy doing an estimate Friday", { outcome: "quoted", amount: 0 }],
+      ["Quoted 2400, the other guy already quoted her 2000", { outcome: "quoted", amount: 0 }],
+      ["someone else did an estimate too", undefined],
       // busy, not a booking
       ["We're booked solid till spring", undefined],
       ["Sold out till spring", undefined],
@@ -141,6 +146,8 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["No problem, booked him 900", { outcome: "booked", amount: 900 }],
     ];
     for (const [text, want] of table) expect(readLeadText(text), text).toEqual(want);
+    // a competitor's estimate is shopping, never a loss
+    expect(readLeadText("Called her, someone else already gave her an estimate")?.outcome).not.toBe("lost");
   });
 
   it("a negated booking, or someone else's, never books the lead or puts a dollar on the ledger (review 7)", async () => {

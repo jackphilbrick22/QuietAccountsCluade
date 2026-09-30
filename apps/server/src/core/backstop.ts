@@ -117,10 +117,11 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
   let campaignId = e.campaignId;
   let ambiguous = false;
   /** Who our note in this thread went to (one lookup against the platform's limit). */
-  const fromThread = async (threadId: string, skip?: string) => {
+  const fromThread = async (threadId: string, opts: { ourNotesOnly?: boolean } = {}) => {
     for (const t of await seq.threadEmails!(threadId)) {
+      // who we wrote to, never who else wrote in: a spouse's earlier reply doesn't make it her thread
+      if (opts.ourNotesOnly && !t.sentByUs) continue;
       for (const addr of [t.lead, ...(t.sentByUs ? t.to : [t.from])]) {
-        if (skip && bareAddr(addr) === skip) continue;
         const who = addr ? whoIs(d, addr, among) : undefined;
         ambiguous ||= !who && known(addr);
         if (who) {
@@ -140,7 +141,8 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
     let other = lead && bareAddr(e.lead) !== bareAddr(e.from) && (!sender || lead.businessId === sender.businessId) ? lead : undefined;
     if (!other && !e.lead && e.threadId && seq.threadEmails) {
       if (!mayLookUp()) return "later";
-      const was = await fromThread(e.threadId, bareAddr(e.from));
+      // our note there went to her: her own thread, so she's the one writing about it
+      const was = await fromThread(e.threadId, { ourNotesOnly: true });
       if (was && (!sender || (was.businessId === sender.businessId && was.customerId !== sender.customerId))) other = was;
     }
     if (!other) return sender ? { businessId: sender.businessId } : {};
