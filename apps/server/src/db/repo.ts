@@ -467,6 +467,11 @@ export class Repo {
     );
   }
 
+  /** The owner undid a cancel: platform withdrawals still waiting in the queue must not delete the leads we push again. */
+  dropQueuedWithdrawals(bid: string): number {
+    return Number(this.db.run("UPDATE tasks SET status = 'done', last_error = 'undone by the owner', dedupe_key = NULL WHERE status = 'queued' AND type = 'sequencer.withdraw' AND json_extract(payload, '$.bid') = ?", bid).changes);
+  }
+
   dueTasks(now: string, limit = 20): { seq: number; business_id: string | null; type: string; payload: string; attempts: number }[] {
     return this.db.all("SELECT seq, business_id, type, payload, attempts FROM tasks WHERE status = 'queued' AND run_at <= ? ORDER BY run_at LIMIT ?", now, limit);
   }

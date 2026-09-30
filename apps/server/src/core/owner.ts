@@ -264,6 +264,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
         needsPerson: true,
       };
     }
+    // a withdrawal still queued from the cancel would delete the notes we're about to push again
+    d.accounts.repo.dropQueuedWithdrawals(b.id);
     // the owner had paused before cancelling: it stays paused
     if (!res.paused) await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
     d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: res.restored });
