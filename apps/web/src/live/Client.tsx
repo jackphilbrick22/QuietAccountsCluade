@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, Check, CheckCheck, Pause, Play, RefreshCw, Send, X } from "lucide-react";
-import { AGENTS, BREAKAGE_LABEL, fmtMoney, plural, type BreakageType } from "@qa/engine";
+import { AGENTS, BREAKAGE_LABEL, fmtMoney, fmtPhone, plural, type BreakageType } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, Table, Td, Th, Tr } from "../components/table";
@@ -192,6 +192,28 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
           </ul>
         </Box>
       </Section>
+
+      {!!s?.callList?.people && (
+        <Section
+          title={`For the owner to call (${s.callList.people.toLocaleString("en-US")} · ${fmtMoney(s.callList.value, { compact: true })})`}
+          sub={`We never email these: ${[s.callList.bigQuotes ? `${s.callList.bigQuotes} quotes over $10,000` : "", s.callList.phoneOnly ? `${s.callList.phoneOnly} with only a phone number` : ""].filter(Boolean).join(" and ")}. It goes to the owner in the welcome text, biggest first.`}
+        >
+          <Box>
+            <ul className="divide-y divide-line">
+              {s.callList.top.slice(0, 8).map((x) => (
+                <li key={x.customerId} className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 px-3.5 py-2.5 text-[13.5px]">
+                  <span className="min-w-0 truncate">
+                    <b>{x.name}</b>
+                    <span className="text-ink-3">{x.job ? ` · ${x.job}` : ""} · {x.why === "big_quote" ? "big quote" : "phone only"}</span>
+                  </span>
+                  <span className="num font-semibold">{fmtMoney(x.value)}</span>
+                  <span className="num col-span-2 text-[12.5px] text-ink-3">{fmtPhone(x.phone)}</span>
+                </li>
+              ))}
+            </ul>
+          </Box>
+        </Section>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Box className="flex flex-col gap-2 p-4">
