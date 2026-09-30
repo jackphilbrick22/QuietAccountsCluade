@@ -163,15 +163,14 @@ export function runAudit(files: AuditFile[], o: AuditOptions = {}): AuditResult 
   const daysAgo = (d: number) => new Date(Date.parse(`${ds.asOf}T12:00:00Z`) - d * 86_400_000).toISOString().slice(0, 10);
   const quietCut = daysAgo(14);
 
-  // The quiet rate. The engine's summary carries it as audit.rate once that lands; until then the same rule, here:
-  // quotes sent in the last two years, at least 14 days old, no drafts, no $0. Expired or archived counts as quiet.
+  // The quiet rate is the engine's (audit.rate): quotes sent in the last two years, at least 14 days old, no drafts,
+  // no $0; expired or archived counts as quiet. The window counts below use the same rule for the lines around it.
   const sentOn = (q: (typeof ds.quotes)[number]) => q.sentOn ?? q.createdOn;
   const inWindow = (from: string) => ds.quotes.filter((q) => { const d = sentOn(q); return !!d && d >= from && d <= quietCut && q.status !== "draft" && q.total > 0; });
   const isQuiet = (q: (typeof ds.quotes)[number]) => !ANSWERED.has(q.status);
   const twoYears = inWindow(daysAgo(730));
   const window = { quotes: twoYears.length, quiet: twoYears.filter(isQuiet).length };
-  const engineRate = (a as unknown as { rate?: number }).rate;
-  const quietRate = typeof engineRate === "number" ? engineRate : window.quotes ? Math.round((window.quiet / window.quotes) * 100) / 100 : 0;
+  const quietRate = a.rate;
   const quietPerMonth = Math.round((inWindow(daysAgo(365)).filter(isQuiet).length / 12) * 10) / 10;
   const freshQuotes = ds.quotes.filter((q) => { const d = sentOn(q); return !!d && d > quietCut && q.status !== "draft"; });
   const fresh = { count: freshQuotes.length, value: Math.round(freshQuotes.reduce((s, q) => s + q.total, 0)) };

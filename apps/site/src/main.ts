@@ -126,7 +126,8 @@ function applyTrade(t: TradeCopy) {
         "Wrote back: 7",
         "Want a price or a date: 3",
         `Booked: 2 · ${money(wonValue)}`,
-        "Quotes that went quiet: 29% (was 41% before we started)",
+        // before-only: a before-and-after drop here would read as a typical result
+        "Your quiet rate before we started: 41%. Tracked here every Friday.",
         "Your average time to call them back: 3h",
       ].join("\n"),
     ),

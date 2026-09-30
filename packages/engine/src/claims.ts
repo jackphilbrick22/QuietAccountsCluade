@@ -61,9 +61,17 @@ export const CLAIMS: Claim[] = [
     id: "jobber-two-reminders",
     text: "Jobber's quote follow-ups send at most two reminders, and only while a quote is still 'awaiting response'.",
     source: "Jobber Help Center — Automations",
-    url: "https://help.getjobber.com/",
+    url: "https://help.getjobber.com/en/articles/automations/",
     year: 2026,
     caveat: "Documented product behavior. Requires the Connect plan or higher.",
+  },
+  {
+    id: "jobber-automations-not-retroactive",
+    text: "Jobber's custom automations don't reach quotes from before they were set up.",
+    source: "Jobber Help Center — Custom Automation Builder",
+    url: "https://help.getjobber.com/en/articles/custom-automation-builder/",
+    year: 2026,
+    caveat: 'Documented for custom automations ("will not apply to any past items retroactively"). The built-in quote reminder\'s behavior on older quotes isn\'t documented: check it on a Jobber test account before saying it about the built-in one.',
   },
   {
     id: "tcia-followup-standard",
@@ -108,7 +116,7 @@ export const CLAIMS: Claim[] = [
   {
     id: "lead-cost-by-trade",
     text: "A request from a Google Local Services ad costs about $38 for tree work, $33 for painting and $33 for cleaning; a painting request from Google search costs about $138.",
-    source: "99 Calls LSA data (Apr–Jun 2026); LocaliQ search benchmarks (3,211 campaigns, 2024–25)",
+    source: "99 Calls LSA data (Apr–Jun 2026); LocaliQ search benchmarks (3,211 campaigns, 2024–25, localiq.com/blog/home-services-search-advertising-benchmarks)",
     url: "https://99calls.com/blog/lsa-cost-per-lead-by-industry",
     year: 2026,
     caveat: "Agency and platform data, not a survey of every shop. Fence has no solid figure. Always show the source beside the number; the owner's own cost beats it.",
