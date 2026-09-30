@@ -55,6 +55,68 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
     expect(readLeadText("She won't go above 1200")).toBeUndefined();
     expect(readLeadText("He won't pick up")).toEqual({ outcome: "no_answer", amount: 0 });
     expect(readLeadText("won it, 3200")).toEqual({ outcome: "booked", amount: 3200 });
+    // nothing negated is a booking, nor is someone else's; the iPhone's curly apostrophe reads like a straight one
+    const lost = { outcome: "lost" as const, amount: 0 };
+    const open = { outcome: undefined, amount: 0 }; // reached, not booked yet: never lost either
+    const table: [string, ReturnType<typeof readLeadText>][] = [
+      ["Won't book it", lost],
+      ["won’t book it", lost],
+      ["wont book", lost],
+      ["He will not book", lost],
+      ["Not gonna book it", lost],
+      ["Didn’t book it", lost],
+      ["didnt book it", lost],
+      ["They booked someone else", lost],
+      ["Lost it, they booked someone cheaper", lost],
+      ["went with someone else", lost],
+      ["He's going with someone else", lost],
+      ["booked with another company", lost],
+      ["He sold the house", lost],
+      ["Won't book it unless we come down to 1800", open],
+      ["hasn't booked yet", open],
+      ["hasn’t booked yet", open],
+      ["Not booked yet", open],
+      ["Quoted him 2400, hasn't booked yet", { outcome: "quoted", amount: 0 }],
+      ["He won’t pick up", { outcome: "no_answer", amount: 0 }],
+      ["Didn’t answer", { outcome: "no_answer", amount: 0 }],
+      // both ways at once: a person reads it
+      ["Booked 2400, beat the other guy's price", { amount: 0, unclear: true }],
+      // busy, not a booking
+      ["We're booked solid till spring", undefined],
+      ["Sold out till spring", undefined],
+      // still bookings
+      ["Booked the dead oak, 1800", { outcome: "booked", amount: 1800 }],
+      ["SOLD 2.4k", { outcome: "booked", amount: 2400 }],
+      ["No problem, booked him 900", { outcome: "booked", amount: 900 }],
+    ];
+    for (const [text, want] of table) expect(readLeadText(text), text).toEqual(want);
+  });
+
+  it("a negated booking, or someone else's, never books the lead or puts a dollar on the ledger (review 7)", async () => {
+    const h = make();
+    await h.business("ridge");
+    const cases: [string, string][] = [
+      ["Won't book it unless we come down to 1800", "Thanks — Kim Tran marked as reached."],
+      ["Quoted him 2400, hasn't booked yet", "Got it — Kim Tran has a price. We'll count it when it books."],
+      ["They booked someone else", "Got it — Kim Tran marked not a fit."],
+      ["Lost it, they booked someone cheaper", "Got it — Kim Tran marked not a fit."],
+      ["He sold the house", "Got it — Kim Tran marked not a fit."],
+      ["Didn’t book it", "Got it — Kim Tran marked not a fit."],
+    ];
+    for (const [i, [text, want]] of cases.entries()) {
+      const rid = `r${i}`;
+      await addLead(h, "ridge", rid, "Kim Tran", "2026-09-29T08:00:00");
+      expect(await h.sms(`${text} #${leadCode(rid)}`), text).toBe(want);
+      expect(reply(h, "ridge", rid).outcome, text).not.toBe("booked");
+    }
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    expect(state(h, "ridge").events.some((e) => /^Booked/.test(e.title))).toBe(false);
+    // it says both ways: the lead waits for a person, who sees the text
+    await addLead(h, "ridge", "r-both", "Al Moss", "2026-09-29T08:00:00");
+    expect(await h.sms(`Booked 2400, beat the other guy's price #${leadCode("r-both")}`)).toMatch(/^Thanks — that one could go either way, so Jack will read it and mark the lead himself\./);
+    expect(reply(h, "ridge", "r-both").status).toBe("handed_off");
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "unclear_lead", needs_person: 1 });
+    expect(state(h, "ridge").recoveries).toEqual([]);
   });
 });
 
@@ -85,15 +147,20 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     await h.d.accounts.withAccount("aaa-tree", (s) => {
       s.awaitingOwnerOk = "2026-09-29T09:00:00";
     });
-    for (const text of ["No, say Hey instead of Hi", "Hold on, can you change the greeting to Hey AAA", "Free quote, not free estimate AAA", "Go with Hey instead of Hi AAA", "Add that we won Best of Concord 2025", "Say we won't email them again", "Say we sent them an estimate last year"])
+    // short edits that mention quoted, booked, sold or won are edits too (review 7): a person gets each one
+    const shortEdits = ["Say estimate, not quoted", "Say we're booked till spring", "Mention we won an award", "Change sold to finished", "Say booked solid", "Don't say quoted", "Don’t say sold", "Remove 'sold out'", "Quoted, change to estimate"];
+    for (const text of ["No, say Hey instead of Hi", "Hold on, can you change the greeting to Hey AAA", "Free quote, not free estimate AAA", "Go with Hey instead of Hi AAA", "Add that we won Best of Concord 2025", "Say we won't email them again", "Say we sent them an estimate last year", ...shortEdits]) {
       expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
+      expect(h.d.accounts.repo.ownerTexts("aaa-tree")[0], text).toMatchObject({ body: text, handled: "first_note_change", needs_person: 1 });
+    }
     expect(reply(h, "bbb-tree", "r-bbb-old").status).toBe("handed_off");
     expect(state(h, "bbb-tree").recoveries).toEqual([]);
     expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);
     // a lead that just came in: a short "no" with more after it is still about the note; a booking is about the lead
     await addLead(h, "bbb-tree", "r-bbb-new", "Al Moss", "2026-09-29T09:20:00");
-    for (const text of ["No, say Hey", "No, too pushy"]) expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
+    for (const text of ["No, say Hey", "No, too pushy", ...shortEdits]) expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
     expect(reply(h, "bbb-tree", "r-bbb-new").status).toBe("handed_off");
+    expect(reply(h, "bbb-tree", "r-bbb-old").status).toBe("handed_off");
     // the close is out for BBB: "Ok but…" is a change to AAA's note, never a yes to BBB's plan
     await h.d.accounts.withAccount("bbb-tree", (s) => {
       s.ownerMessages.push({ id: "om-close-bbb", at: "2026-09-25T09:00:00", kind: "close", text: "Your free round is done…" });
@@ -102,6 +169,41 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     expect(state(h, "bbb-tree").events.some((e) => /said yes to keep going/.test(e.title))).toBe(false);
     expect(await h.sms(`booked 2400 #${leadCode("r-bbb-new")}`)).toContain("Booked: Al Moss, $2,400");
     expect(await h.sms("booked 1800")).not.toMatch(/make that change/);
+    // read as a lead with no code while a note waits: a person looks too
+    expect(h.d.accounts.repo.ownerTexts("bbb-tree")[0]).toMatchObject({ body: "booked 1800", handled: "booked", needs_person: 1 });
+  });
+
+  it("with both businesses waiting for their OK, a change to a note asks which one and reaches a person; it never acts on a lead (review 7)", async () => {
+    const h = make();
+    await h.business("aaa-tree", { name: "AAA Tree" });
+    await h.business("bbb-tree", { name: "BBB Tree" });
+    for (const bid of ["aaa-tree", "bbb-tree"])
+      await h.d.accounts.withAccount(bid, (s) => {
+        s.awaitingOwnerOk = "2026-09-29T09:00:00";
+      });
+    const latest = () => h.d.accounts.repo.db.all<{ body: string; handled: string; needs_person: number }>("SELECT * FROM owner_texts ORDER BY seq DESC LIMIT 1")[0]!;
+    const which = /^AAA Tree and BBB Tree are both waiting for your OK on the first note\. Which one is that about\? Text it again with the name, like ".+ AAA" or ".+ BBB"\. Nothing goes out until you say OK\.$/;
+    // nothing else open: never "Nobody's waiting on a call" or a bare "Got it" that drops the text
+    for (const text of ["No, say Hey instead of Hi", "Say we emailed them last spring", "Take out the part where we called", "Let's do it", "Absolutely", "Say estimate, not quoted"]) {
+      expect(await h.sms(text), text).toMatch(which);
+      expect(latest(), text).toMatchObject({ body: text, handled: "first_note_change", needs_person: 1 });
+    }
+    // a lead waiting in BBB: the same texts never mark it lost or quoted
+    await addLead(h, "bbb-tree", "r-bbb", "Kim Tran", "2026-09-29T09:20:00");
+    for (const text of ["No, say Hey instead of Hi", "No, too pushy", "Don't say quoted", "Say we're booked till spring"]) {
+      expect(await h.sms(text), text).toMatch(which);
+      expect(latest(), text).toMatchObject({ body: text, handled: "first_note_change", needs_person: 1 });
+    }
+    expect(reply(h, "bbb-tree", "r-bbb").status).toBe("handed_off");
+    expect(state(h, "bbb-tree").recoveries).toEqual([]);
+    // an OK with no name still asks which; with the name it's that business's note
+    expect(await h.sms("OK")).toMatch(/^This number runs AAA Tree and BBB Tree\. Which one\?/);
+    expect(await h.sms("Say Hey instead of Hi AAA")).toMatch(/^AAA Tree: Got it — we'll make that change/);
+    expect(await h.sms("OK AAA")).toMatch(/^AAA Tree: Done — the first notes go out/);
+    expect(state(h, "bbb-tree").awaitingOwnerOk).toBeTruthy();
+    // a lead outcome said plainly is still about the lead, and a person looks too
+    expect(await h.sms("booked 2400")).toBe("BBB Tree: Booked: Kim Tran, $2,400. Added to your results.");
+    expect(latest()).toMatchObject({ handled: "booked", needs_person: 1 });
   });
 
   it("a trial owner texting MONTHLY or YEARLY goes to Jack for the payment link; nothing turns paying on a text", async () => {

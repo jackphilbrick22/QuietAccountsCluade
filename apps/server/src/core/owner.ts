@@ -58,6 +58,14 @@ const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|
 const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls))*$/;
 /** The whole text is a lead outcome with nothing after it: "No", "Nope", "Done", "Not a fit", "Called him". */
 const BARE_OUTCOME = /^(no|nope|lost|pass|passed|dead|not a fit|no go|not interested|no thanks|went with someone else|done|called|reached|talked|spoke)( (him|her|them|it|already|today))?$/;
+/**
+ * A lead outcome said first, the way a lead text gets answered (matched against the words only): "Booked 2400",
+ * "$2,400 booked", "Quoted her", "No answer", "Left a VM", "She won't pick up". While a first note waits, a short
+ * outcome counts only in this shape; "Say booked solid", "Don't say quoted" and "Mention we won an award" don't.
+ */
+const OUTCOME_FIRST = /^((he|she|they|just|already|finally) )?(booked|book it|sold|won|got the job|closed|quoted|re ?quoted|sent|gave|emailed|texted|no answer|no response|no pick ?up|didn ?t (answer|pick up)|did not (answer|pick up)|won ?t (answer|pick up)|left|voice ?mail|vm|called|\d+)\b/;
+/** Words that change a note: "Say estimate, not quoted", "Change sold to finished", "Booked is fine, use scheduled instead". */
+const NOTE_EDIT = /\b(say|add|remove|change|use|put|write|mention|instead|replace|swap|take out|leave out|drop|delete|reword|call it)\b/;
 
 const HELP_TEXT =
   'About a lead: BOOKED 2400 #code, DONE, NO or QUOTED (the #code is on the lead text). About a person: SKIP and their name takes them off the list. About the service: PAUSE, RESUME, BUSY until Nov 15, OPEN, STATUS, CANCEL. STOP turns off our texts (your follow-ups keep running); START turns them back on.';
@@ -83,9 +91,22 @@ export function shortNames(bizs: { id: string; profile: { name: string } }[]): M
 /* ------------------------------ reading a text about a lead ------------------------------ */
 
 const CODE = /#\s?([a-z0-9]{3})\b/i;
-const NO_ANSWER = /\b(no answer|didn'?t answer|did not answer|no response|voice ?mail|vm|left (a )?(message|msg|vm|voice ?mail)|not picking up|didn'?t pick up|won['’]?t (pick up|answer)|no pick ?up)\b/;
-const NOT_BOOKED = /\b(not|didn'?t|did not|never|no)\s+(book|booked|sold|won|buy|bought|go)\b/;
-const BOOKED = /\b(booked|book it|sold|won(?!['’])|got the job|closed (it|the deal))\b/;
+/** A phone's curly apostrophe (the iPhone default) reads as a straight one: "Didn’t book it" is "Didn't book it". */
+const APOSTROPHE = /[‘’ʼ`´]/g;
+const NO_ANSWER = /\b(no answer|didn'?t answer|did not answer|no response|voice ?mail|vm|left (a )?(message|msg|vm|voice ?mail)|not picking up|didn'?t pick up|won'?t (pick up|answer)|no pick ?up)\b/;
+/**
+ * No booking: "didn't book", "never bought", "won't book it", "not gonna sign", "hasn't booked yet". "She won't go
+ * above 1200" is haggling, not a no.
+ */
+const NOT_BOOKED = /\b(not|didn'?t|did not|never|no)\s+(even |end up |ended up |actually |really )?(book|booked|booking|sold|won|buy|bought|go)\b|\b(won'?t|will not|wouldn'?t|would not|not gonna|not going to|isn'?t gonna|isn'?t going to|doesn'?t want to|does not want to|don'?t want to)\s+(book|buy|sign|hire|do it|go ahead|go with (us|me|it|our))\b|\b(hasn'?t|has not|haven'?t|have not|hadn'?t|had not|isn'?t|is not|aren'?t|are not)\s+(\w+ )?(booked|bought|sold|signed|decided|committed)\b/;
+/** ...but not over: "hasn't booked yet", "not sold yet", "won't book unless we come down to 1800". Never a loss either. */
+const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|have not)\b/;
+/**
+ * Someone else got the job, or there's no job to get: "booked someone else", "went with someone cheaper", "lost it",
+ * "sold the house". The booking in it is theirs, never ours. (Global: it's cut out of the text before BOOKED looks.)
+ */
+const ELSEWHERE = /\b((booked|book|hired|chose|picked|used|went|going|go|gone|signed|gave it|gave the job)( with| to)? )?((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other) (company|guy|contractor|crew|outfit|service|tree service|landscaper))\b|\b(sold|selling) (the|his|her|their) (house|home|place|property)\b|\b(went|going) with\b|\blost (it|the job|that one|out)\b/g;
+const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
 const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|went with|going with|no go|not interested|no thanks|too expensive|chose someone)\b/;
 const REACHED = /\b(done|called|talked|reached|spoke|spoken|texted|emailed|contacted|handled|got (a )?hold of)\b/;
@@ -106,15 +127,23 @@ export function readAmount(text: string): number {
 
 /**
  * What an owner's text says about a lead, or undefined when it says nothing about one. A plain "yes" is never a
- * booking (it answers the close, or nothing), and "called, no answer" is a no answer, not a win.
+ * booking (it answers the close, or nothing), and "called, no answer" is a no answer, not a win. Nothing negated is
+ * a booking ("Won't book it", "hasn't booked yet"), and nor is someone else's ("They booked someone else"). A text
+ * that says both ways ("Booked 2400, beat the other guy's price") is `unclear`: a person reads it.
  */
-export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount: number } | undefined {
+export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount: number; unclear?: true } | undefined {
   const body = text.replace(/#\s?[a-z0-9]{3}\b/gi, " ");
-  const t = body.toLowerCase().replace(/\s+/g, " ").trim();
+  const t = body.toLowerCase().replace(APOSTROPHE, "'").replace(/\s+/g, " ").trim();
   const amount = readAmount(body);
   if (NO_ANSWER.test(t)) return { outcome: "no_answer", amount: 0 };
-  if (NOT_BOOKED.test(t)) return { outcome: "lost", amount: 0 };
-  if (BOOKED.test(t) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t))) return { outcome: "booked", amount };
+  // not booked yet is still open: they were reached, with a price if the owner gave one
+  if (NOT_BOOKED.test(t)) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };
+  const ours = t.replace(ELSEWHERE, " ");
+  const elsewhere = ours !== t;
+  const booked = BOOKED.test(ours) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
+  if (booked && elsewhere) return { amount: 0, unclear: true };
+  if (booked) return { outcome: "booked", amount };
+  if (elsewhere) return { outcome: "lost", amount: 0 };
   if (QUOTED.test(t)) return { outcome: "quoted", amount: 0 };
   if (LOST.test(t)) return { outcome: "lost", amount: 0 };
   if (REACHED.test(t)) return { outcome: undefined, amount: 0 };
@@ -141,7 +170,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const namedHits = multi ? all.filter((b) => said.includes(tags.get(b.id)!.toLowerCase())) : [];
   const named = namedHits.length === 1 ? namedHits[0] : undefined;
   const bare = named ? said.filter((w) => w !== tags.get(named.id)!.toLowerCase()).join(" ") : said.join(" ");
-  const t = text.trim().toLowerCase();
+  const t = text.trim().toLowerCase().replace(APOSTROPHE, "'");
   const one = multi ? named : all[0];
   const tag = (b: Biz) => (multi ? `${b.profile.name}: ` : "");
   const fallback = () => one ?? latestHandoff(d, all) ?? all[0]!;
@@ -174,18 +203,29 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // (a lead handed off more than a week ago is the operator's to chase, not something a text is likely answering)
   const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id, true) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id, true));
   // While a first note waits, a text is about something else only when it reads like an answer to it: a short lead
-  // outcome ("booked 2400", "no answer") with a lead waiting, a bare "no" or "done" with one handed over this week, or
-  // a yes and nothing more with the close or renewal out. "No, say Hey", "Ok but change the sign-off" and "Add that we
-  // won Best of Concord 2025" are changes to the note.
+  // outcome said first ("booked 2400", "no answer") with a lead waiting, a bare "no" or "done" with one handed over
+  // this week, or a yes and nothing more with the close or renewal out. "No, say Hey", "Ok but change the sign-off",
+  // "Say estimate, not quoted" and "Add that we won Best of Concord 2025" are changes to the note.
   // "No, say Hey instead of Hi" is a change to the note, whatever else is open on the phone.
   const aboutOther = () => {
     const scope = named ? [named] : all;
     const lead = readLeadText(text);
     // words as the owner typed them, less the #code and the business's name ("Booked $2,400 for the oak" is five)
     const typed = text.replace(CODE, " ").trim().split(/\s+/).filter((w) => !named || w.toLowerCase().replace(/[^a-z0-9]/g, "") !== tags.get(named.id)!.toLowerCase()).length;
-    const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted") && typed <= 5;
+    const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted") && typed <= 5 && OUTCOME_FIRST.test(bare) && !NOTE_EDIT.test(bare);
     return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (BARE_OUTCOME.test(bare) && scope.some((x) => hasWaitingLead(d, x.id, true))) || (WHOLE_YES.test(bare) && scope.some((x) => outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal")));
   };
+  // A change to a first note waiting for the OK. With two waiting and neither named, which note it's for is the
+  // owner's to say, and a person sees it too: never read as a lead, never dropped.
+  const noteChange = (): OwnerCommandResult =>
+    waitingOk.length > 1
+      ? {
+          businessId: waitingOk[0]!.id,
+          reply: `${joinOr(waitingOk.map((b) => b.profile.name), "and")} are ${waitingOk.length === 2 ? "both" : "all"} waiting for your OK on the first note. Which one is that about? Text it again with the name, like ${joinOr(waitingOk.map((b) => `"${example} ${tags.get(b.id)}"`), "or")}. Nothing goes out until you say OK.`,
+          handled: "first_note_change",
+          needsPerson: true,
+        }
+      : { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
   if (waitingOk.length && !hasCode && APPROVE.test(bare)) {
     if (waitingOk.length > 1) return askWhich();
     const b = waitingOk[0]!;
@@ -201,10 +241,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone wants a price or a date, you'll get a text with their name and number.`, handled: "approved_first_note" };
   }
 
-  // While one business waits for the OK and nothing else is open, only exact commands act; anything else
-  // ("Hold on, change the greeting", "How many people is this going to?") is about the first note.
-  if (waitingOk.length === 1 && !hasCode && !WHILE_WAITING.test(bare) && !aboutOther())
-    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
+  // While a first note waits for the OK (one business's or two's), only exact commands act; anything else ("Hold on,
+  // change the greeting", "How many people is this going to?") is about the first note.
+  if (waitingOk.length && !hasCode && !WHILE_WAITING.test(bare) && !aboutOther()) return noteChange();
 
   /* ---- the service (one client at a time) ---- */
   if (/^(pause|stop sending|hold)\b/.test(bare)) {
@@ -347,7 +386,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const skip = bare.match(SKIP);
   if (skip) {
     // The name is what comes before any reason: "don't email the Johnsons, they're family".
-    const said = text.replace(CODE, " ").trim().toLowerCase().replace(/^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don'?t (email|write|contact))\s+/, "");
+    const said = text.replace(CODE, " ").trim().toLowerCase().replace(APOSTROPHE, "'").replace(/^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don'?t (email|write|contact))\s+/, "");
     const full = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.trim() || skip[4]!;
     // "SKIP John Smith" where SMITH is also a business's short name: the name as written is searched everywhere
     // first; only when it finds nobody is the short name taken as naming the business
@@ -359,6 +398,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       who = stripped;
       hits = peopleNamed(d.accounts.peek(named.id)!.state, stripped).map((c) => ({ b: named, c }));
     }
+    // nobody by that name while a first note waits: "Remove 'sold out'" is about the note
+    if (!hits.length && waitingOk.length && !hasCode) return noteChange();
     if (!hits.length)
       return { businessId: fallback().id, reply: `I couldn't find "${who}" in your records. Jack will check and take them off by hand.`, handled: "skip_unknown", needsPerson: true };
     if (hits.length > 1) {
@@ -376,13 +417,19 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   }
 
   /* ---- a lead ---- */
-  // While one business waits for the OK, anything that isn't an answer to something else is a change to the first note.
-  if (waitingOk.length === 1 && !hasCode && !aboutOther())
-    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
+  // While a first note waits for the OK, anything that isn't an answer to something else is a change to it.
+  if (waitingOk.length && !hasCode && !aboutOther()) return noteChange();
 
   const lead = readLeadText(text);
-  // a #code names the lead on its own; a business name mentioned in passing never overrides it
-  if (lead) return leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags, named);
+  // it says both ways ("Booked 2400, beat the other guy's price"): a person marks it, never a guess
+  if (lead?.unclear)
+    return { businessId: fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
+  if (lead) {
+    // a #code names the lead on its own; a business name mentioned in passing never overrides it
+    const res = await leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags, named);
+    // read as a lead, no code, while a first note waits: a person looks too, in case it was about the note
+    return waitingOk.length && !hasCode ? { ...res, needsPerson: true } : res;
+  }
 
   /* ---- "yes": the answer to the close (or the renewal), never a booking ---- */
   if (AFFIRM.test(t)) {
@@ -403,9 +450,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack" };
   }
 
-  // While the first note waits for their OK, anything else is a change they want made to it.
-  if (waitingOk.length === 1)
-    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
+  // While the first note waits for their OK, anything else is a change they want made to it (one with a #code is
+  // about that lead, and goes to a person below).
+  if (waitingOk.length && !hasCode) return noteChange();
   return { businessId: fallback().id, reply: `Thanks — Jack will read this and get back to you. For a lead, text BOOKED + amount + the #code, DONE, or NO. Text HELP for everything else.`, handled: "unrecognized", needsPerson: true };
 }
 
