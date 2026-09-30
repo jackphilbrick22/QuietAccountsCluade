@@ -13,9 +13,9 @@ import { ActivityTab, FilesTab, NotesTab, OwnerTextsTab, RepliesTab, SettingsTab
 
 const TABS: { id: ClientTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "opportunities", label: "Opportunities" },
+  { id: "opportunities", label: "Money Map" },
   { id: "notes", label: "Notes" },
-  { id: "replies", label: "Replies" },
+  { id: "replies", label: "Reply Desk" },
   { id: "texts", label: "Texts to owner" },
   { id: "activity", label: "Activity" },
   { id: "files", label: "Files" },
@@ -259,6 +259,15 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
             <dt className="text-ink-3">Owner call-back time</dt>
             <dd className="num text-right font-semibold">{o.week?.avgHoursToCall !== undefined ? `${o.week.avgHoursToCall}h` : "—"}</dd>
           </dl>
+          <span className="mt-2 text-[12px] font-bold uppercase tracking-wide text-ink-3">Every Month After</span>
+          <dl className="grid grid-cols-2 gap-y-1 text-[13px]">
+            <dt className="text-ink-3">New requests answered</dt>
+            <dd className="num text-right font-semibold">{o.week?.requestsAnswered ?? 0}</dd>
+            <dt className="text-ink-3">Typical answer time</dt>
+            <dd className="num text-right font-semibold">{o.week?.answerMinutes !== undefined ? `${o.week.answerMinutes} min` : "—"}</dd>
+            <dt className="text-ink-3">New quotes followed up</dt>
+            <dd className="num text-right font-semibold">{o.week?.freshFollowed ?? 0}</dd>
+          </dl>
         </Box>
         <Box className="flex flex-col gap-2 p-4">
           <span className="text-[14px] font-bold">Sending health</span>
@@ -428,7 +437,7 @@ function OpportunitiesTab({ id, o }: { id: string; o: Overview }) {
           )}
         </div>
         <ErrorNote error={q.error} onRetry={q.reload} />
-        <Table minWidth={900} tall label="Opportunities">
+        <Table minWidth={900} tall label="Money Map">
           <thead>
             <tr>
               <Th>Name</Th>

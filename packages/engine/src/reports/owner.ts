@@ -224,6 +224,11 @@ export interface WeekNumbers {
   bookedValue: Money;
   waiting: string[];
   avgHoursToCall?: number;
+  /** Every Month After: new requests answered this week, and how fast (median minutes from reaching us to the answer going out). */
+  requestsAnswered: number;
+  answerMinutes?: number;
+  /** New quotes followed up this week (the fresh-quote track). */
+  freshFollowed: number;
 }
 
 export function weekNumbers(state: AccountState, monday: ISODate): WeekNumbers {
@@ -235,6 +240,11 @@ export function weekNumbers(state: AccountState, monday: ISODate): WeekNumbers {
   const waiting = state.replies
     .filter((r) => WANTS.has(r.intent) && r.status !== "done" && !r.ownerContactedAt)
     .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from);
+  const answers = sent.filter((t) => t.track === "new_request");
+  const mins = answers
+    .filter((t) => t.askedAt && t.sentAt)
+    .map((t) => Math.max(0, Math.round((Date.parse(`${t.sentAt!.slice(0, 16)}:00Z`) - Date.parse(`${t.askedAt!.slice(0, 16)}:00Z`)) / 60_000)))
+    .sort((a, b) => a - b);
   const hrs = state.replies
     .filter((r) => r.ownerContactedAt && inWeek(r.receivedAt))
     .map((r) => (Date.parse(r.ownerContactedAt!) - Date.parse(r.receivedAt)) / 3600000);
@@ -248,6 +258,9 @@ export function weekNumbers(state: AccountState, monday: ISODate): WeekNumbers {
     bookedValue: round2(sum(recovered, (r) => r.value)),
     waiting,
     avgHoursToCall: hrs.length ? Math.round(sum(hrs, (h) => h) / hrs.length) : undefined,
+    requestsAnswered: answers.length,
+    answerMinutes: mins.length ? mins[Math.floor(mins.length / 2)] : undefined,
+    freshFollowed: new Set(sent.filter((t) => t.track === "fresh_quote").map((t) => t.customerId)).size,
   };
 }
 

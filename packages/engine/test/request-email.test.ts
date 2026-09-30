@@ -124,3 +124,18 @@ describe("the ledger counts comebacks, not new requests", () => {
     expect(st.recoveries).toHaveLength(0);
   });
 });
+
+describe("Every Month After is measured, not claimed", () => {
+  it("the week's numbers count new requests answered and how many minutes it took", async () => {
+    const { markSent } = await import("../src/runtime/agents.ts");
+    const { weekNumbers } = await import("../src/reports/owner.ts");
+    const { mondayOf } = await import("../src/util.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } });
+    const st = emptyState(dataset({ business: paying, customers: [] }), `${ASOF}T10:00:00`);
+    takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`);
+    markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ASOF}T10:09:00`, "msg-1");
+    const w = weekNumbers(st, mondayOf(ASOF));
+    expect(w).toMatchObject({ requestsAnswered: 1, answerMinutes: 3, freshFollowed: 0 });
+  });
+});

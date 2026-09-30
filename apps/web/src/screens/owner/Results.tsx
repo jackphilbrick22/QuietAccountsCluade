@@ -8,7 +8,7 @@ import { Box, Btn, Chip, EmptyRow, Kpi, Kpis, PageHead, pct, Section, shortDate,
 import { Guarantee } from "./Today";
 
 const MSG_KIND: Record<OwnerMessage["kind"], string> = {
-  handoff: "Hand-off",
+  handoff: "Ready Text",
   sla_nudge: "Reminder",
   weekly: "Weekly report",
   close: "Free round results",

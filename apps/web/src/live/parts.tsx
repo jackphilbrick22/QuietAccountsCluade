@@ -322,7 +322,7 @@ export function IntentPill({ intent }: { intent: string }) {
 export const OUTCOME_LABEL: Record<string, string> = { booked: "Booked", quoted: "Sent a price", lost: "Not a fit", no_answer: "No answer" };
 
 export const MSG_KIND: Record<string, string> = {
-  handoff: "Hand-off",
+  handoff: "Ready Text",
   sla_nudge: "Reminder",
   weekly: "Friday report",
   close: "Free round results",
