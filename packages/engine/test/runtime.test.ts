@@ -455,6 +455,32 @@ describe("Ledger and Reporter", () => {
     expect(mine().map((r) => r.value)).toEqual([4800]);
   });
 
+  it("approved online in October, BOOKED texted in November when it's scheduled: one job, either order", () => {
+    const counted = (s: AccountState, cid: string) => s.recoveries.filter((r) => r.customerId === cid && !r.disputed && r.tier !== "after_note").map((r) => r.value);
+    // the approval reaches the ledger first
+    {
+      const { s, yes } = week1();
+      const cid = yes.customerId!;
+      markContacted(s, yes.id, "2026-10-07T10:00:00", "quoted");
+      s.dataset.quotes = [...s.dataset.quotes, quote("q-oak", cid, { status: "approved", rawStatus: "Approved", total: 4800, createdOn: "2026-10-07", sentOn: "2026-10-07", approvedOn: "2026-10-12" })];
+      ledgerPass(s, "2026-10-12T12:00:00Z");
+      markContacted(s, yes.id, "2026-11-16T10:00:00", "booked", 4800);
+      s.dataset.jobs = [...s.dataset.jobs, job("j-oak", cid, { status: "scheduled", rawStatus: "Upcoming", total: 4800, createdOn: "2026-11-16", quoteId: "q-oak" })];
+      ledgerPass(s, "2026-11-17T12:00:00Z");
+      expect(counted(s, cid)).toEqual([4800]);
+    }
+    // the BOOKED text first, the job (created at the approval) after
+    {
+      const { s, yes } = week1();
+      const cid = yes.customerId!;
+      markContacted(s, yes.id, "2026-10-07T10:00:00", "quoted");
+      markContacted(s, yes.id, "2026-11-16T10:00:00", "booked", 4800);
+      s.dataset.jobs = [...s.dataset.jobs, job("j-oak", cid, { status: "scheduled", rawStatus: "Upcoming", total: 4800, createdOn: "2026-10-12" })];
+      ledgerPass(s, "2026-11-17T12:00:00Z");
+      expect(counted(s, cid)).toEqual([4800]);
+    }
+  });
+
   it("a quote marked not ours stays out when it becomes a job, and a folded win keeps the day it came back", async () => {
     const { disputeRecovery } = await import("../src/runtime/agents.ts");
     const { s, sent } = week1();

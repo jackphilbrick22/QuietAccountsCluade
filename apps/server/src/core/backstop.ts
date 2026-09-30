@@ -113,32 +113,44 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
   const among = inCampaign.length === 1 ? inCampaign[0] : undefined;
   const known = (addr?: string) => !!addr && repo.businessesForEmail(addr).length > 0;
   const bareAddr = (s?: string) => s?.match(/[^\s<>]+@[^\s<>]+/)?.[0]?.toLowerCase();
+  // the campaign the thread belongs to: the email's own, or our note in the same thread
+  let campaignId = e.campaignId;
+  let ambiguous = false;
+  /** Who our note in this thread went to (one lookup against the platform's limit). */
+  const fromThread = async (threadId: string, skip?: string) => {
+    for (const t of await seq.threadEmails!(threadId)) {
+      for (const addr of [t.lead, ...(t.sentByUs ? t.to : [t.from])]) {
+        if (skip && bareAddr(addr) === skip) continue;
+        const who = addr ? whoIs(d, addr, among) : undefined;
+        ambiguous ||= !who && known(addr);
+        if (who) {
+          campaignId ??= t.campaignId;
+          return who;
+        }
+      }
+    }
+    return undefined;
+  };
   let lead = e.lead ? whoIs(d, e.lead, among) : undefined;
   if (known(e.from)) {
     const sender = whoIs(d, e.from, among);
     // A spouse with a record of their own answering our note to someone else: it's about the note we sent that
-    // person, so the reply goes in with that note (and a stop stops them too).
-    const other = lead && bareAddr(e.lead) !== bareAddr(e.from) && (!sender || lead.businessId === sender.businessId) ? lead : undefined;
+    // person, so the reply goes in with that note (and a stop stops them too). With no lead on the email, our note
+    // in the thread says who that was.
+    let other = lead && bareAddr(e.lead) !== bareAddr(e.from) && (!sender || lead.businessId === sender.businessId) ? lead : undefined;
+    if (!other && !e.lead && e.threadId && seq.threadEmails) {
+      if (!mayLookUp()) return "later";
+      const was = await fromThread(e.threadId, bareAddr(e.from));
+      if (was && (!sender || (was.businessId === sender.businessId && was.customerId !== sender.customerId))) other = was;
+    }
     if (!other) return sender ? { businessId: sender.businessId } : {};
     lead = other;
   }
-  let ambiguous = !lead && known(e.lead);
-  // the campaign the thread belongs to: the email's own, or our note in the same thread
-  let campaignId = e.campaignId;
+  ambiguous ||= !lead && known(e.lead);
   if (!lead && !ambiguous && e.threadId && seq.threadEmails) {
     // out of lookups for this poll: "later", never "nobody", so a spouse's reply isn't written off for good
     if (!mayLookUp()) return "later";
-    for (const t of await seq.threadEmails(e.threadId)) {
-      for (const addr of [t.lead, ...(t.sentByUs ? t.to : [t.from])]) {
-        lead = addr ? whoIs(d, addr, among) : undefined;
-        ambiguous ||= !lead && known(addr);
-        if (lead) break;
-      }
-      if (lead) {
-        campaignId ??= t.campaignId;
-        break;
-      }
-    }
+    lead = await fromThread(e.threadId);
   }
   if (!lead) return ambiguous ? {} : undefined;
   // The note it answers is one in the email's own campaign (sent before queued, newest first); with no campaign to go

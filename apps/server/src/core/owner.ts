@@ -110,14 +110,20 @@ const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|hav
  */
 const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|signed|found|contracted|gave it|gave the job)";
 const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other|a local) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|roofer|fence company|cleaner|\\w+ (company|service|guy|contractor))|a competitor|the competition)";
-/** Shopping around, not hired: "she has another guy coming out Thursday", "someone else is coming to bid". */
-const SHOPPING = "(?!.{0,40}\\b(coming|come out|looking|look at|quot|bid|price|estimate))";
+/**
+ * Shopping around, not hired: "she has another guy coming out Thursday", "has the other guy's quote at 3000". Only
+ * after a "has/got another guy": once someone else "got the job", the price that follows is why we lost it.
+ */
+const SHOPPING = "(?!['’]s (quote|price|bid|estimate)|.{0,40}\\b(coming|come out|looking|look at|to bid|to quote|bidding|quoting|getting))";
 /** "she's got another guy", "had someone else": hired, unless what follows says they're only shopping. */
 const ELSEWHERE_HAS = `\\b(has|got|had)( with| to)? ${ELSEWHERE_WHO}\\b${SHOPPING}`;
+/** The same, before the shopping check: a booking next to it ("has another guy, he won the bid") goes to a person. */
+const ELSEWHERE_HAS_ANY = new RegExp(`\\b(has|got|had)( with| to)? ${ELSEWHERE_WHO}\\b`);
 /** "went with another roofer", "going w/ someone else". */
 const WENT_WITH_WHO = `\\b(went|going|gone|go) (with\\b|w/|w\\b) ?(${ELSEWHERE_WHO}|someone|somebody)\\b`;
-/** Someone else as the subject: "Someone else already did it", "another company got it". */
-const ELSEWHERE_DID = `\\b(someone|somebody) else (did|does|already|got|is doing|will do|has|had)\\b${SHOPPING}|\\banother (company|guy|contractor|crew|outfit) (did|is doing|got|has|had|already)\\b${SHOPPING}`;
+/** Someone else as the subject: "Someone else already did it", "The other guy got the job", "Another company won the bid". */
+const ELSEWHERE_SUBJ = "((someone|somebody) else|(another|the other|a different) (company|guy|contractor|crew|outfit|\\w+ (company|service|guy|contractor)))";
+const ELSEWHERE_DID = `\\b${ELSEWHERE_SUBJ} (did|does|already|got|won|booked|hired|sold|is doing|will do)\\b|\\b${ELSEWHERE_SUBJ} (has|had)\\b${SHOPPING}`;
 const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|${ELSEWHERE_HAS}|${WENT_WITH_WHO}|${ELSEWHERE_DID}|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
 /**
  * "went with …" naming neither someone else nor us: "She went with the 2 tree option", "went with Plan B". Maybe ours,
@@ -167,8 +173,9 @@ export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount
   const named = !!name && !NOT_A_NAME.has(name);
   const other = !named && WENT_WITH_OTHER.test(positive) && !WENT_WITH_US.test(positive);
   const booked = BOOKED.test(positive) || WENT_WITH_US.test(positive) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
+  const shopping = ELSEWHERE_HAS_ANY.test(positive);
   // "Booked 2400, she won't sign up for the maintenance plan": a booking and a no in one text is a person's call
-  if (booked && (elsewhere || negated || named || other)) return { amount: 0, unclear: true };
+  if (booked && (elsewhere || negated || named || other || shopping)) return { amount: 0, unclear: true };
   if (booked) return { outcome: "booked", amount };
   // not booked yet is still open: they were reached, with a price if the owner gave one
   if (negated) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };

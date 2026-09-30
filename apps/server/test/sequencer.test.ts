@@ -247,6 +247,18 @@ describe("the reply backstop", () => {
     expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r8")!.followUpOf).toBe("req:r1");
   });
 
+  it("a spouse with her own record and no lead on the email: our note in the thread says who she's writing about", async () => {
+    now = new Date("2026-10-01T04:00:00Z");
+    inbox.threads["th-kim2"] = [email("em-ours-kim2", { from_address_email: MAILBOX, to_address_email_list: KIM, i_sent: true, lead: null, thread_id: "th-kim2", campaign_id: "camp-2" })];
+    const jo = email("em-r9", { from_address_email: "jo.lee@gmail.com", lead: null, thread_id: "th-kim2", timestamp_created: "2026-10-01T03:56:00.000Z", body: { text: "This is Kim's wife. Please stop emailing her." } });
+    inbox.primary = [];
+    inbox.others = [jo];
+    inbox.byId["em-r9"] = jo;
+    expect(await pollReplies(d, { force: true })).toMatchObject({ processed: 1 });
+    expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r9")).toMatchObject({ customerId: "c2", intent: "stop" });
+    expect(state().suppressions[KIM]).toBe("unsubscribed");
+  });
+
   it("the note a reply answers comes from its own campaign, never the newest note in another", async () => {
     now = new Date("2026-10-01T03:40:00Z");
     const jo = email("em-r7", { from_address_email: "jo.lee@gmail.com", lead: KIM, thread_id: "th-kim", campaign_id: "camp-2", timestamp_created: "2026-10-01T03:36:00.000Z", body: { text: "Hi, Kim's neighbour Jo here on her account. She'd like the maples done, please call." } });

@@ -115,6 +115,17 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["She went with the 2 tree option, 1800", undefined],
       ["Going with plan B", undefined],
       ["She went with the cheaper guy from town", { amount: 0, unclear: true }],
+      // someone else won it, however it's said, with or without the price that lost it
+      ["Someone else got the job, 1800 cheaper than my quote", lost],
+      ["Another company got the job at a lower price", lost],
+      ["Someone else got the job, lower bid", lost],
+      ["Another guy got the job, beat my price", lost],
+      ["Another company won the bid at 1800", lost],
+      ["Someone else won the bid at 1800", lost],
+      ["The other guy got the job for 1800", lost],
+      ["Someone else booked it for 1800", lost],
+      ["The other company won it", lost],
+      ["She had another company, they won the bid", { amount: 0, unclear: true }],
       // shopping around, not hired
       ["Quoted 2400, she has another guy coming out Thursday", { outcome: "quoted", amount: 0 }],
       ["Quoted her 2400, someone else is coming out tomorrow to bid", { outcome: "quoted", amount: 0 }],

@@ -133,8 +133,17 @@ Updated every loop iteration. Newest first.
   reply carries none. Statuses: someone else's lower price is a no however it's written. Engine 1,231,
   server 257.
 
+- Tenth adversarial review: 13 reported, 4 confirmed (13 → 11 → 7 → 4), all fixed and tested. An owner's
+  BOOKED is matched to their records over the whole lead (from the month before they wrote back to the
+  month after BOOKED), so a quote approved in October and a BOOKED texted in November count once, in
+  either order. "Someone else got the job, 1800 cheaper", "Another company won the bid", "The other guy
+  got the job" read as losses (the price that follows is why we lost it, not a booking); shopping words
+  only protect a "has another guy coming out". A spouse with her own record replying in our thread with
+  no lead on the email is tied to the person we wrote to through our note in that thread.
+  Engine 1,232, server 258.
+
 **Next**
-- A tenth review pass; stop when a pass finds nothing material.
+- An eleventh review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

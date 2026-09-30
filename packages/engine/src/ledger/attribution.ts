@@ -1,5 +1,5 @@
 import type { Dataset, ISODate, Money, Recovery, Reply } from "../model.ts";
-import { daysBetween, makeId, round2, sum } from "../util.ts";
+import { addDays, daysBetween, makeId, round2, sum } from "../util.ts";
 
 /** One person we worked (or deliberately held out). */
 export interface OutreachRecord {
@@ -165,13 +165,22 @@ function rec(r: OutreachRecord, record: Recovery["record"], value: Money, on: IS
 }
 
 /** Bookings the owner reported from a reply ("booked Mike for $2,400") that the export hasn't shown yet. */
+/** The days a booking the owner reported can match a record on: from 30 days before they wrote back to 30 after BOOKED. */
+export function bookingSpan(r: Pick<Reply, "receivedAt" | "ownerContactedAt" | "bookedAt">, bookedOn?: ISODate): [ISODate, ISODate] {
+  const start = r.receivedAt.slice(0, 10);
+  const end = (bookedOn ?? r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt).slice(0, 10);
+  return [addDays(start, -30), addDays(end, 30)];
+}
+
 export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[] {
   // One per booking the owner told us about (keyed by the reply). Skipped only when that booking is already
   // on the ledger as a counted job within a month of it; an older or uncounted comeback never blocks it.
   const have = new Set(existing.map((r) => r.id));
+  // The same booking is anything on the ledger for them from the month before they wrote back to the month after the
+  // owner said BOOKED: a quote approved in October and a BOOKED texted in November when it's scheduled are one job.
   const already = (r: Reply) => {
-    const on = (r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt).slice(0, 10);
-    return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
+    const [from, to] = bookingSpan(r);
+    return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
   };
   return replies
     // a booking from someone answering our reply to their own new request is theirs, not a comeback

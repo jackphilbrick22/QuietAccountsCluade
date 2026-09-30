@@ -5,8 +5,8 @@ import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
 import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
-import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, RecordKind, Reply, Touch } from "../model.ts";
+import { attribute, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
 import { ackFor, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
@@ -623,7 +623,8 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
       if (rec.match === "owner_reported" && rec.record.id === r.id && rec.disputed?.by === "owner") {
         // unless the job itself reached the ledger meanwhile (their export shows it): that one counts, and only once
         const on = at.slice(0, 10);
-        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
+        const [from, to] = bookingSpan(r, on);
+        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
         if (shown) continue;
         rec.disputed = undefined;
         rec.cameBackOn = on;
@@ -710,7 +711,13 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
     }
     if (r.record.kind === "quote" && state.dataset.jobs.some((j) => j.quoteId === r.record.id && known.has(`job:${j.id}`))) continue;
     // The export now shows the job the owner told us about: the invoiced figure replaces the owner's.
-    const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30) : undefined;
+    // (matched over the whole lead, from their reply to the month after BOOKED: the job can be dated before the text)
+    const reported = (x: Recovery) => {
+      const reply = state.replies.find((y) => y.id === x.record.id);
+      const [from, to] = reply ? bookingSpan(reply) : [addDays(x.cameBackOn, -30), addDays(x.cameBackOn, 30)];
+      return r.cameBackOn >= from && r.cameBackOn <= to;
+    };
+    const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && reported(x)) : undefined;
     if (told) {
       Object.assign(told, { record: r.record, value: r.value, match: r.match, confidence: r.confidence });
       known.add(`${r.record.kind}:${r.record.id}`);
