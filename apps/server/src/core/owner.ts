@@ -78,6 +78,15 @@ const NAME_NOISE = new Set(["the", "and", "co", "company", "inc", "llc", "ltd", 
 const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
 const digitsOf = (phone: string | undefined) => (phone ?? "").replace(/\D/g, "").slice(-10);
 
+/** Letters only: "360 Tree Care" is "TC"; a clash gets the next letters of the last word ("TCA"). */
+function initials(name: string, taken: string[]): string {
+  const ws = words(name).filter((x) => /^[a-z]/.test(x) && !/\d/.test(x));
+  let tag = ws.map((x) => x[0]).join("") || "biz";
+  const last = ws.at(-1) ?? "biz";
+  for (let i = 1; taken.includes(tag.toUpperCase()) && i < last.length; i++) tag += last[i];
+  return tag;
+}
+
 /** For each client on the phone: the first word of its name no other client on that phone shares ("AAA", "LANDSCAPING"). */
 export function shortNames(bizs: { id: string; profile: { name: string } }[]): Map<string, string> {
   const out = new Map<string, string>();
@@ -85,7 +94,8 @@ export function shortNames(bizs: { id: string; profile: { name: string } }[]): M
     const others = new Set(bizs.filter((o) => o.id !== b.id).flatMap((o) => words(o.profile.name)));
     // never a word with a digit in it: "360" in "360 Tree Care" would be read as $360 as well as the business
     const w = words(b.profile.name).find((x) => x.length >= 2 && !/\d/.test(x) && !NAME_NOISE.has(x) && !COMMAND_WORDS.has(x) && !others.has(x));
-    out.set(b.id, (w ?? b.id.split("-").pop() ?? b.id).toUpperCase());
+    // no word of its own: its initials, never a piece of its id (that can be all digits, and read as dollars)
+    out.set(b.id, (w ?? initials(b.profile.name, [...out.values()])).toUpperCase());
   }
   return out;
 }
@@ -175,6 +185,14 @@ function plainAmount(words: string): boolean {
   if (nums.length > 1) return false;
   if (!nums.length) return true;
   if (TIMEY.test(words)) return false;
+  // "Booked for 930", "booked it for 2027": after "for", a bare number that could be a clock time or a year is an
+  // appointment as often as a price ("for 1800", "$930" and "BOOKED 930" stay plain)
+  const bare = nums[0]!;
+  if (/\bfor\b/.test(words) && /^\d{3,4}$/.test(bare)) {
+    const v = Number(bare);
+    const clock = Number(bare.slice(-2)) < 60 && Number(bare.slice(0, -2)) >= 1 && Number(bare.slice(0, -2)) <= 12;
+    if (clock || (v >= 1900 && v <= 2099)) return false;
+  }
   const n = nums[0]!.replace("$", "");
   return Number(n.replace(/k$/, "")) * (n.endsWith("k") ? 1000 : 1) >= 50;
 }

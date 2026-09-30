@@ -214,7 +214,9 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       // review 17: shorthand times, appointment words, a trade named as the thing booked
       "Booked her tmrw 1030", "Booked her in for 1030", "Booked the estimate for 1030", "Booked her for weds 1030", "Booked her for May 2027", "Booked the cheaper roofer, 1500", "Booked the low bidder, 1500", "Booked their roofer 1800", "Booked the davey boys 1800",
       // review 18: "@" is "at"
-      "Booked @ 1030", "Booked it @ 930", "She booked us @ 1030"];
+      "Booked @ 1030", "Booked it @ 930", "She booked us @ 1030",
+      // review 19: a clock time or a year right after "for"
+      "Booked for 930", "Booked for 1030", "She booked us for 1030", "Booked it for 2027"];
     for (const t of others) expect((await texts(t)).out, t).toMatch(/^Thanks — that one could go either way/);
     expect(state(h, "ridge").recoveries.length).toBe(before);
     // with Claude, it reads them
@@ -267,6 +269,10 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     const { shortNames } = await import("../src/core/owner.ts");
     const names = shortNames([{ id: "a", profile: { name: "Ridgeline Tree Co." } }, { id: "b", profile: { name: "360 Tree Care" } }]);
     expect(names.get("b")).toBe("CARE");
+    // no word of its own: letters, never a piece of the id
+    const two = shortNames([{ id: "ridgeline-tree-care-1a2b3", profile: { name: "Ridgeline Tree Care" } }, { id: "360-tree-care-20481", profile: { name: "360 Tree Care" } }]);
+    expect(two.get("360-tree-care-20481")).toBe("TC");
+    expect(two.get("360-tree-care-20481")).not.toMatch(/\d/);
   });
 
   it("SKIP searches the name as written first, even when a word in it is also a business's short name", async () => {

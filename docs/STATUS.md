@@ -192,8 +192,13 @@ Updated every loop iteration. Newest first.
   $1,030), and a business's short name is never a word with a digit in it ("360 Tree Care" is CARE, so
   "BOOKED #K7Q 360" means $360, not the business). Engine 1,232, server 262.
 
+- Nineteenth adversarial review: 1 confirmed (plus a low one), fixed. After "for", a bare number that could
+  be a clock time or a year ("Booked for 930", "booked it for 2027") is Claude's or Jack's to read; "for
+  1800", "$930" and "BOOKED 930" stay plain. A business with no word of its own gets its initials as its
+  short name, never a piece of its id. Engine 1,232, server 262.
+
 **Next**
-- A nineteenth review pass; stop when a pass finds nothing material.
+- A twentieth, narrow pass on this; then one whole-codebase pass before wrapping up.
 
 ## 2026-09-30 — iteration 2
 
