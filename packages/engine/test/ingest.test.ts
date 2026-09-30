@@ -301,6 +301,43 @@ describe("status words from the tools fence and painting quotes live in", () => 
     expect(read(sheet(status))).toEqual({ status: want, source: "spreadsheet" });
   });
 
+  // When the status starts with the answer, the answer decides; a trailing "not booked" only says the work isn't on
+  // the calendar. And a sale that hasn't happened yet is still open. Quoted, since some carry a comma.
+  it.each<[string, QuoteStatus]>([
+    // a yes, still to schedule: never open, never converted
+    ["Accepted - not booked", "approved"],
+    ["Approved - not booked", "approved"],
+    ["Approved - not scheduled", "approved"],
+    ["Sold - not completed", "approved"], // said yes, work not done
+    ["Deposit paid - not booked", "approved"],
+    ["Won - not scheduled", "approved"],
+    // a no, whatever follows it
+    ["Lost - not booked", "declined"],
+    ["Declined - not booked", "declined"],
+    ["Rejected - not scheduled", "declined"],
+    // not sold yet is still open
+    ["Not sold yet", "awaiting_response"],
+    ["Not yet sold", "awaiting_response"],
+    ["Pending - not sold", "awaiting_response"],
+    ["Pending, not sold", "awaiting_response"],
+    // unchanged
+    ["Not sold", "declined"],
+    ["Unsold", "declined"],
+    ["No sale", "declined"],
+    ["Not sent", "draft"],
+    ["Unsigned", "awaiting_response"],
+    ["Viewed - not signed", "awaiting_response"],
+    ["Not booked", "awaiting_response"],
+    ["Not converted", "awaiting_response"],
+    ["Awaiting deposit", "approved"],
+    ["Won't proceed", "awaiting_response"],
+    ["Won’t proceed - not booked", "awaiting_response"],
+    ["Not approved - not booked", "awaiting_response"],
+    ["Closed won", "approved"],
+  ])("a sheet's %s reads as %s, the leading word deciding", (status, want) => {
+    expect(read(sheet(`"${status}"`))).toEqual({ status: want, source: "spreadsheet" });
+  });
+
   const quickbooks = (status: string) =>
     `Date,Transaction type,Num,Customer,Email,Memo/Description,Amount,Estimate status,Expiration date\n03/02/2026,Estimate,1045,Pat Doe,pat@doe.com,160 ft cedar privacy,7850.00,${status},04/01/2026\n`;
   it.each<[string, QuoteStatus]>([

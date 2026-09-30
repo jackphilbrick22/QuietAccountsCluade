@@ -210,6 +210,13 @@ export const SOURCE_SIGNALS: { source: SourceSystem; patterns: RegExp[] }[] = [
 const NOT = String.raw`\b(?:not(?:\s+yet)?[\s-]+|never[\s-]+|un-?)`;
 /** Said yes, and the deposit that books the date hasn't come in: "Awaiting deposit", "Deposit due". */
 const WAITING_ON_DEPOSIT = String.raw`\b(?:awaiting|pending|needs?|waiting (?:on|for)|no) deposit\b|\bdeposit (?:due|requested|needed|pending|sent|invoice sent)\b`;
+/** The start of the status, past any bullet or dash, allowing for "Customer approved". */
+const LEADS_WITH = String.raw`^\W*(?:(?:customer|client)\s+)?`;
+/** A yes, or a no, from the customer. "Won't" is not a win. */
+const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received))\b`;
+const SAID_NO = String.raw`(?:lost|declined|rejected|closed[\s-]*lost)\b`;
+/** "Not booked", "not yet scheduled", "unconverted": the work isn't on the calendar. Says nothing about the answer. */
+const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed?|closed)\b`;
 
 /**
  * Raw status words -> canonical meaning, per record kind. Checked in order.
@@ -227,9 +234,17 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // Out, but no yes yet: "Unsigned" is Estimate Rocket's open status, not a signature; "Viewed - not signed".
   [new RegExp(`${NOT}(?:signed|accepted|approved|answered|decided|won)\\b|\\b(?:awaiting|pending|needs?|waiting (?:on|for)) (?:an? )?(?:signature|approval|decision|e-?sign\\w*)\\b|\\bsign(?:ature)? requested\\b|\\bsent for signature\\b`, "i"), "awaiting_response"],
   [new RegExp(`${NOT}(?:viewed|opened|seen|read)\\b`, "i"), "awaiting_response"],
-  // "Sold / Not sold" sheets: a sale that didn't happen is a no. Not yet sold, or not booked, converted, completed or
-  // closed, is still open. Neither is a yes, whatever word follows the "not".
+  // When the status starts with the answer, the answer decides. A "not booked" after it only says the work isn't on
+  // the calendar yet: "Accepted - not booked" and "Sold - not completed" are a yes to schedule, not open and not
+  // converted; "Lost - not booked" is still a no.
+  [new RegExp(`${LEADS_WITH}${SAID_YES}.*${NOT_ON_CALENDAR}`, "i"), "approved"],
+  [new RegExp(`${LEADS_WITH}${SAID_NO}.*${NOT_ON_CALENDAR}`, "i"), "declined"],
+  // "Sold / Not sold" sheets: a sale that didn't happen is a no. One that hasn't happened yet is still open: "Not sold
+  // yet", "Pending - not sold", "Sent, not sold".
+  [new RegExp(`\\b(?:not[\\s-]+sold|no[\\s-]+sale)\\W+yet\\b|\\b(?:pending|awaiting|waiting|open(?:ed)?|sent|viewed)\\b.*(?:${NOT}sold\\b|\\bno[\\s-]+sale\\b)`, "i"), "awaiting_response"],
   [/\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b/i, "declined"],
+  // With no answer in front, not yet sold, or not booked, converted, completed or closed, is still open. Neither is a
+  // yes, whatever word follows the "not".
   [new RegExp(`${NOT}(?:sold|booked|converted|completed?|closed)\\b`, "i"), "awaiting_response"],
   // A yes that isn't on the calendar: "Unscheduled", "Needs scheduling", "Awaiting deposit". Housecall Pro's own
   // "Unscheduled" is about the estimate visit and is handled in SOURCE_QUOTE_STATUS before this runs.
