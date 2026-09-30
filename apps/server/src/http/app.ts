@@ -275,8 +275,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const id = input.id ?? `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32)}-${createHash("sha1").update(input.name + d.clock().toISOString()).digest("hex").slice(0, 5)}`;
     const today = localIso(d.clock(), input.timezone).slice(0, 10);
     await d.accounts.create(defaultProfile({ ...input, ownerPhone: cell }, id, today), today);
-    // A fresh link key: a reused id never inherits an old client's links.
-    rotateLinks(d, id);
+    // A fresh link key: a reused id never inherits an old client's links, not even as an "old address".
+    rotateLinks(d, id, { created: true });
     repo.audit(id, "operator", "business.create", { name: input.name });
     return c.json({ id, ownerLink: ownerLink(d, id), importAddressToken: linkToken(d, "import", id), warnings: sharedCell(id, cell) }, 201);
   });
@@ -524,9 +524,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // nothing to send (already sent, or withdrawn): say so instead of reporting a send that didn't happen
     if (!Number(moved.changes)) return c.json({ ok: false, error: "That text isn't waiting to be sent any more (it was sent or withdrawn)." }, 409);
     await deliverOwnerMessages(d, c.req.param("id"), { allowBilling: true });
-    const after = repo.ownerMessages(c.req.param("id")).find((m) => m.id === c.req.param("mid"));
+    const after = d.accounts.repo.db.get<{ delivery: string; error: string | null }>("SELECT delivery, error FROM owner_messages WHERE business_id = ? AND id = ?", c.req.param("id"), c.req.param("mid"));
     repo.audit(c.req.param("id"), "operator", "owner-message.approve", { id: c.req.param("mid"), delivery: after?.delivery });
-    return c.json({ ok: after?.delivery === "sent", delivery: after?.delivery });
+    // 200 either way (the approval stands); the console reads ok/delivery and says what really happened
+    const sent = after?.delivery === "sent";
+    return c.json({ ok: sent, delivery: after?.delivery, ...(sent ? {} : { error: after?.error ?? undefined }) });
   });
 
   op.get("/businesses/:id/close-preview", (c) => {
@@ -867,7 +869,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       profile.software = software;
       profile.signup = others.length ? { from: "site", sharedCell: cell } : { from: "site" };
       await d.accounts.create(profile, today);
-      rotateLinks(d, id);
+      rotateLinks(d, id, { created: true });
     }
     const mayRead = !again || untouchedSignup(id);
     const sent = (f.files ?? []).map((x) => `${x.name} (${Math.max(1, Math.round(x.text.length / 1024)).toLocaleString("en-US")} KB)`).join(", ");

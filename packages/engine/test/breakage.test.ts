@@ -327,6 +327,46 @@ describe("detectors", () => {
         expect(ask(ds(10, [job("j2", "c1", { title: "Bi-weekly cleaning", total: 180, completedOn: ago(4) })])), title).toEqual([]);
       }
     });
+
+    it("the 'regular schedule?' ask never goes to someone already on one, before or after the one-time clean", () => {
+      const cleaning = (jobs: Job[]) => dataset({ business: { trade: "cleaning", name: "Tidewell Home Cleaning", avgJobValue: 180 }, customers: [customer("c1")], jobs });
+      const ask = (d: Dataset) => oppsFor(scan(d), "c1", "missed_upsell").filter((o) => o.serviceId === "clean.recurring" && !o.suppressed);
+      const weekly = (from: number, n: number, over: Partial<Job> = {}) => Array.from({ length: n }, (_, i) => job(`w${i}`, "c1", { title: "Weekly clean", recurring: true, total: 160, completedOn: ago(from + i * 7), ...over }));
+      // a weekly client whose latest visit was a deep clean
+      expect(ask(cleaning([...weekly(12, 10), job("d1", "c1", { title: "Deep clean", total: 380, completedOn: ago(5) })]))).toEqual([]);
+      // an initial deep clean, then every other week under another name, not marked recurring
+      const standard = Array.from({ length: 5 }, (_, i) => job(`s${i}`, "c1", { title: "Standard Clean", total: 160, completedOn: ago(61 - i * 14) }));
+      expect(ask(cleaning([job("d1", "c1", { title: "Initial Deep Clean", total: 380, completedOn: ago(75) }), ...standard]))).toEqual([]);
+      // the visit before it was a steady rhythm under a plain name
+      const plain = Array.from({ length: 6 }, (_, i) => job(`p${i}`, "c1", { title: "Cleaning - Smith", total: 160, completedOn: ago(19 + i * 14) }));
+      expect(ask(cleaning([...plain, job("d1", "c1", { title: "Deep clean", total: 380, completedOn: ago(5) })]))).toEqual([]);
+      // the deep clean was itself a visit on their schedule
+      expect(ask(cleaning([job("d1", "c1", { title: "Deep clean", recurring: true, total: 380, completedOn: ago(5) })]))).toEqual([]);
+      // a regular who stopped two years ago and came back for a deep clean is worth asking again
+      expect(ask(cleaning([...weekly(700, 10), job("d1", "c1", { title: "Deep clean", total: 380, completedOn: ago(5) })]))).toHaveLength(1);
+    });
+
+    it("an invoice-only shop's weekly client billed on net terms is not 'gone quiet' while last week's invoices are open", () => {
+      const billing = (lastPaid: number, open: number[]) => {
+        const invoices = [
+          ...open.map((d, i) => invoice(`o${i}`, "c1", { subject: "Weekly house cleaning", total: 160, balance: 160, status: "awaiting_payment", issuedOn: ago(d), dueOn: ago(d - 30) })),
+          ...Array.from({ length: 10 }, (_, i) => invoice(`p${i}`, "c1", { subject: "Weekly house cleaning", total: 160, balance: 0, status: "paid", rawStatus: "Paid", issuedOn: ago(lastPaid + i * 7), paidOn: ago(lastPaid + i * 7 - 20) })),
+        ];
+        return dataset({ business: { trade: "cleaning", name: "Tidewell Home Cleaning", avgJobValue: 160, software: "quickbooks" }, customers: [customer("c1")], invoices });
+      };
+      expect(oppsFor(scan(billing(24, [3, 10, 17])), "c1", "lapsed_regular")).toEqual([]);
+      // gone quiet is still gone quiet, measured from the last invoice issued
+      const gone = oneOpp(scan(billing(38, [24, 31])), "c1", "lapsed_regular");
+      expect(gone.anchorDate).toBe(ago(24));
+      expect(gone.reason).toMatch(/^Used you 12 times/);
+      // a jobs file that stops before the billing does: the invoices say they were there
+      const ds = billing(24, [3, 10, 17]);
+      ds.jobs = Array.from({ length: 8 }, (_, i) => job(`j${i}`, "c1", { title: "Weekly house cleaning", recurring: true, total: 160, completedOn: ago(30 + i * 7) }));
+      expect(oppsFor(scan(ds), "c1", "lapsed_regular")).toEqual([]);
+      // someone who has never paid is not a past customer to write to
+      const unpaid = dataset({ business: { trade: "cleaning", name: "Tidewell Home Cleaning" }, customers: [customer("c1")], invoices: [invoice("i1", "c1", { subject: "Deep clean", issuedOn: ago(5) })] });
+      expect(scan(unpaid).primary).toEqual([]);
+    });
   });
 
   describe("service_due", () => {

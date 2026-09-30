@@ -119,8 +119,18 @@ export function unsubscribeUrl(cfg: Config, businessId: string, email: string): 
  * rotated (a departed office manager, a forwarded text) without touching APP_SECRET — which would also break every
  * unsubscribe link already sent and the stored Jobber tokens. A deleted-then-recreated business id gets a new key,
  * so the old tenant's links don't carry over. Links made before keys existed keep working until the first rotation.
+ *
+ * A key is "<lineage>.<secret>". The lineage is made when the business is created (or gets its first key) and kept
+ * through every "Replace all links"; only the secret changes. So a link whose lineage matches but whose secret
+ * doesn't is one we really gave this client and later replaced, and one with another lineage was made for a deleted
+ * business that had the same id: it never reaches the new one, not even as an "old address" alert. (A key from before
+ * lineages is its own lineage.)
  */
 export type LinkKind = "owner" | "import" | "requests" | "oauth|jobber";
+
+/** Marks a lineage started on a business that already had keyless links out (made before keys existed). */
+const KEYLESS_LINEAGE = "~";
+const lineageOf = (key: string): string => key.split(".")[0]!;
 
 export function linkToken(d: Deps, kind: LinkKind, bid: string): string {
   const key = d.accounts.repo.linkKey(bid);
@@ -146,12 +156,21 @@ export function staleLinkToken(d: Deps, kind: LinkKind, token: string): string |
   if (!payload?.startsWith(`${kind}|`)) return undefined;
   const [bid, key, ...rest] = payload.slice(kind.length + 1).split("|");
   if (!bid || rest.length || !d.accounts.repo.exists(bid)) return undefined;
-  return (key ?? undefined) !== d.accounts.repo.linkKey(bid) ? bid : undefined;
+  const current = d.accounts.repo.linkKey(bid);
+  if (!current || key === current) return undefined;
+  // ours only if it comes from this business's own line of keys
+  const ours = key ? lineageOf(key) === lineageOf(current) : lineageOf(current).startsWith(KEYLESS_LINEAGE);
+  return ours ? bid : undefined;
 }
 
-/** New links for one client; every link given out before stops working. */
-export function rotateLinks(d: Deps, bid: string): void {
-  d.accounts.repo.setLinkKey(bid, randomBytes(9).toString("base64url"));
+/**
+ * New links for one client; every link given out before stops working. `created`: the business was made just now,
+ * so it starts its own lineage and nothing given out under its id before (by a deleted business) counts as its own.
+ */
+export function rotateLinks(d: Deps, bid: string, opts: { created?: boolean } = {}): void {
+  const current = opts.created ? undefined : d.accounts.repo.linkKey(bid);
+  const lineage = current ? lineageOf(current) : `${opts.created ? "" : KEYLESS_LINEAGE}${randomBytes(6).toString("base64url")}`;
+  d.accounts.repo.setLinkKey(bid, `${lineage}.${randomBytes(9).toString("base64url")}`);
 }
 
 export function ownerLink(d: Deps, bid: string): string {

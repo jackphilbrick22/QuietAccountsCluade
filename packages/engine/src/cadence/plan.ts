@@ -3,7 +3,8 @@ import type { ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
-import { addDays, hash, makeId, mondayOf, weekday } from "../util.ts";
+import { climateOf, findService, seasonFit } from "../trades/index.ts";
+import { addDays, hash, makeId, mondayOf, monthOf, weekday } from "../util.ts";
 
 export interface PlanOptions {
   /** First day notes may go out. */
@@ -152,6 +153,11 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
       if ((dayCount.get(day) ?? 0) < perDay && (weekCount.get(wk) ?? 0) < weeklyNew) break;
       day = nextAllowed(ds, addDays(day, 1));
     }
+    // Work that comes back each season ("Want the lights up again this year?") is only asked about in its selling
+    // season: a start that would land past it waits for the next scan in season, and a follow-up past it is left off.
+    const seasonal = o.type === "service_due" ? findService(o.serviceId)?.service : undefined;
+    const inSeason = (d: ISODate) => !seasonal?.dueMonth || seasonFit(seasonal, climateOf(b.state), monthOf(d)) === "now";
+    if (!inSeason(day)) continue;
     if (held) heldDay = day;
     else nowDay = day;
     const seq = sequenceFor(o, alwaysOnFor(b));
@@ -161,6 +167,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     let threadSubject: string | undefined;
     for (const st of seq.steps) {
       const sendOn = st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
+      if (!inSeason(sendOn)) break;
       // follow-ups reply in note 1's thread, so they carry its exact subject
       const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id), threadSubject }, st.step);
       if (st.step === 1 && n) threadSubject = n.subject;

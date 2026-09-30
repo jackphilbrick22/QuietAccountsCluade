@@ -32,11 +32,19 @@ function earliestSpecific(text: string, re: RegExp): number {
 
 /** Which service a quote/job is for, across the business's trades. */
 export function classifyService(title: string, lineItems: LineItem[] = [], trades: TradeId[] = ["general"]): { trade: TradeId; service: ServiceDef; matched: boolean } {
-  const text = [title, ...lineItems.map((l) => l.name)].join(" · ");
+  const lines = [title, ...lineItems.map((l) => l.name)];
+  const text = lines.join(" · ");
+  const excepted = (s: ServiceDef): boolean => {
+    if (!s.unless) return false;
+    if (!s.unlessPrimaryLine) return s.unless.test(text);
+    // the line that says what the job is: the title, or the first line item naming this work or its exception
+    const primary = lines.find((l) => s.match.test(l) || s.unless!.test(l));
+    return primary !== undefined && s.unless.test(primary);
+  };
   let best: { trade: TradeId; service: ServiceDef; score: number } | undefined;
   for (const t of trades) {
     for (const s of playbook(t).services) {
-      if (s.id === "gen.work" || s.unless?.test(text)) continue;
+      if (s.id === "gen.work" || excepted(s)) continue;
       const idx = earliestSpecific(text, s.match);
       if (idx < 0) continue;
       const score = idx - PRIORITY[s.kind];

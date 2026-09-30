@@ -281,6 +281,22 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["Cancelled", "archived"],
     ["Archived", "archived"],
     ["Void", "archived"],
+    // a negation is never a yes, whatever word follows it ("Sold / Not sold" painting and fence sheets)
+    ["Not sold", "declined"],
+    ["Not Sold", "declined"],
+    ["Unsold", "declined"],
+    ["No sale", "declined"],
+    ["Closed - not sold", "declined"],
+    ["Not yet sold", "awaiting_response"],
+    ["Not booked", "awaiting_response"],
+    ["Unbooked", "awaiting_response"],
+    ["Not converted", "awaiting_response"],
+    ["Not completed", "awaiting_response"],
+    ["Not closed", "awaiting_response"],
+    ["Booked", "approved"],
+    // a phone's curly apostrophe: "Won’t proceed" is not a win
+    ["Won’t proceed", "awaiting_response"],
+    ["Won't proceed", "awaiting_response"],
   ])("a sheet's %s reads as %s", (status, want) => {
     expect(read(sheet(status))).toEqual({ status: want, source: "spreadsheet" });
   });

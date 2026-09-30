@@ -3,6 +3,7 @@ import { dueDate, scan, type ScanResult } from "../src/breakage/detect.ts";
 import { crewLine, footer, renderNote } from "../src/copy/render.ts";
 import { lint } from "../src/copy/lint.ts";
 import { SEQUENCES } from "../src/copy/templates.ts";
+import { planOutreach } from "../src/cadence/plan.ts";
 import { BANNED_STATS, bannedStatIn } from "../src/claims.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { BreakageType, Customer, Dataset, Job, Opportunity, TradeId } from "../src/model.ts";
@@ -320,6 +321,60 @@ describe("holiday lights come due again in the fall", () => {
     expect(n.body).toMatch(/Want the lights up again this year\?/);
     expect(n.body).not.toMatch(/fill in October/);
     expect(n.flags).toEqual([]);
+  });
+
+  /** A repeat customer: lights up each November, taken down each January, and the takedowns are jobs of their own. */
+  const seasons = (asOf: string, installs = ["2024-11-08", "2025-11-07"], takedowns = ["2025-01-12", "2026-01-10"]) =>
+    dataset({
+      asOf,
+      business: { trade: "holiday_lighting", name: "Bright Nights Holiday Lighting", avgJobValue: 1500, minQuoteValue: 300 },
+      customers: [customer("c1", { firstName: "Karen" })],
+      jobs: [
+        ...installs.map((d, i) => job(`in${i}`, "c1", { title: "Christmas lights - roofline", total: 1650, completedOn: d })),
+        ...takedowns.map((d, i) => job(`out${i}`, "c1", { title: "Takedown & storage", total: 350, completedOn: d })),
+      ],
+    });
+
+  it("a repeat customer whose takedowns are logged separately is between seasons in spring and summer, not a lapsed regular", () => {
+    for (const asOf of ["2026-05-20", "2026-07-10", "2026-08-10"]) {
+      const r = scan(seasons(asOf));
+      expect(oppsFor(r, "c1").filter((o) => o.type === "lapsed_regular" || o.type === "one_and_done"), asOf).toEqual([]);
+      expect(r.primary.map((o) => o.type), asOf).not.toContain("lapsed_regular");
+    }
+    // late August, the note they should get: the lights up again this year
+    const r = scan(seasons("2026-08-25"));
+    expect(r.primary.map((o) => [o.type, o.serviceId])).toEqual([["service_due", "light.install"]]);
+  });
+
+  it("an install and its takedown are one season: a customer gone two seasons is valued at their installs, not a visit every two months", () => {
+    const o = oneOpp(scan(seasons("2025-10-15", ["2021-11-05", "2022-11-04"], ["2022-01-10", "2023-01-12"])), "c1", "lapsed_regular");
+    expect(o.serviceId).toBe("light.install");
+    expect(o.reason).toMatch(/^Used you 2 times\. Last visit/);
+    expect(o.value).toBe(1650);
+  });
+
+  it("an overdue customer's note waits for the next selling season instead of going out in winter or midsummer", () => {
+    for (const asOf of ["2026-01-20", "2026-03-10", "2026-07-10"]) {
+      const r = scan(lightsDs(asOf, "2024-11-08"));
+      expect(oppsFor(r, "c1").filter((o) => ["service_due", "lapsed_regular", "one_and_done"].includes(o.type)), asOf).toEqual([]);
+    }
+    // the season they missed, and the next one, both get it
+    for (const asOf of ["2025-09-15", "2025-12-10", "2026-09-15"]) expect(oneOpp(scan(lightsDs(asOf, "2024-11-08")), "c1", "service_due").serviceId, asOf).toBe("light.install");
+    const ds = lightsDs("2026-09-15", "2024-11-08");
+    const n = renderNote(oneOpp(scan(ds), "c1", "service_due"), ds.customers[0]!, { ds, sendOn: "2026-09-15" }, 1)!;
+    expect(n.body).toContain("We did the holiday lights for you back in November 2024. Want the lights up again this year?");
+  });
+
+  it("a note found late in the season is never planned, or followed up, after the season closes", () => {
+    const ds = lightsDs("2026-12-22", "2025-11-08");
+    const r = scan(ds);
+    expect(oneOpp(r, "c1", "service_due").suppressed).toBeUndefined();
+    const late = planOutreach(ds, r, { startOn: "2026-12-22", applyHoldout: false });
+    expect(late.touches.map((t) => [t.step, t.dueAt.slice(0, 7)])).toEqual([[1, "2026-12"], [2, "2026-12"]]);
+    expect(planOutreach(ds, r, { startOn: "2027-01-05", applyHoldout: false }).touches).toEqual([]);
+    // other trades' clocks don't care what month it is
+    const septic = dataset({ asOf: "2026-12-22", business: { trade: "septic", name: "Granite State Septic" }, customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Routine pump-out 1000 gal", total: 450, completedOn: "2023-11-20" })] });
+    expect(planOutreach(septic, scan(septic), { startOn: "2027-01-05", applyHoldout: false }).touches.map((t) => t.step)).toEqual([1, 2, 3]);
   });
 
   it("other trades' service-due notes keep their rule of thumb", () => {

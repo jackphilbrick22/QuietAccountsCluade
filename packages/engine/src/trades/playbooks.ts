@@ -826,8 +826,10 @@ const lighting: TradePlaybook = {
       id: "light.permanent",
       label: "Permanent lighting",
       match: new RegExp(`\\b(${PERMANENT_WORDS}|year[- ]round|app[- ]controlled|rgbw?)`, "i"),
-      // adding a run to a system already up is the add-on
+      // adding a run to a system already up is the add-on, when that's what the quote is: a new system's own
+      // "Additional footage - garage" line doesn't make it one
       unless: LIGHT_ADDON,
+      unlessPrimaryLine: true,
       phrase: "the permanent lights",
       season: { cold: [3, 4, 5, 6, 7, 8, 9, 10, 11], warm: ALL },
       kind: "improvement",
@@ -836,6 +838,7 @@ const lighting: TradePlaybook = {
           serviceId: "light.addon",
           afterDays: [60, 540],
           why: "owners often extend a permanent system to the garage or the back of the house once they've lived with the front",
+          byPrimaryLine: true,
           pitch: "If you'd like the lights to run along the garage or the back of the house too, they can usually tie into the same controller.",
         },
       ],
@@ -863,8 +866,8 @@ const lighting: TradePlaybook = {
     },
   ],
   objects: [
-    // extending a system already up reads as the add-on's own phrase
-    [/\bpermanent\b(?!.*\b(add-?ons?|extension|extend\w*|additional)\b)/i, "the permanent lights"],
+    // extending a system already up reads as the add-on's own phrase, when the title (or the line naming it) says so
+    [/(?<!^[^·]*\b(?:add-?ons?|extension|extend\w*|additional)\b.*)\bpermanent\b(?![^·]*\b(?:add-?ons?|extension|extend\w*|additional)\b)/i, "the permanent lights"],
     [/\broofline\b/i, "the roofline lights"],
     [/\bfront tree/i, "the lights on the front tree"],
     [/\bwreaths?\b/i, "the wreath"],
