@@ -45,6 +45,8 @@ export interface AuditResult {
   reachable: number;
   firstRound: number;
   typicalQuote?: number;
+  /** Median of the quotes that never got an answer, under the call-list line (what one booking from them is worth). */
+  typicalQuiet?: number;
   hottest?: { name: string; job: string; value: number; quietDays: number; subject: string; body: string; notes: number };
   callList: CallList;
   warnings: string[];
@@ -139,6 +141,12 @@ export function runAudit(files: AuditFile[], o: AuditOptions = {}): AuditResult 
     : undefined;
 
   const quoteTotals = ds.quotes.filter((q) => q.total > 0).map((q) => q.total).sort((x, y) => x - y);
+  const quietCut = ds.asOf && new Date(Date.parse(`${ds.asOf}T12:00:00Z`) - 14 * 86_400_000).toISOString().slice(0, 10);
+  const callOver = ds.business.callOverAmount ?? 10_000;
+  const quietTotals = ds.quotes
+    .filter((q) => q.total > 0 && q.total < callOver && !["draft", "approved", "converted", "declined", "changes_requested"].includes(q.status) && (q.sentOn ?? q.createdOn ?? "9999") <= quietCut)
+    .map((q) => q.total)
+    .sort((x, y) => x - y);
   return {
     trade: ds.business.trade,
     tradeLabel: playbook(ds.business.trade).label,
@@ -159,6 +167,7 @@ export function runAudit(files: AuditFile[], o: AuditOptions = {}): AuditResult 
     reachable: s.reachablePeople,
     firstRound: Math.min(150, s.reachablePeople),
     typicalQuote: quoteTotals.length ? quoteTotals[Math.floor(quoteTotals.length / 2)] : undefined,
+    typicalQuiet: quietTotals.length ? quietTotals[Math.floor(quietTotals.length / 2)] : undefined,
     hottest,
     callList: s.callList,
     warnings: [...new Set(warnings)],

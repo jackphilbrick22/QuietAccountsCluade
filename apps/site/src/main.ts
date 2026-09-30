@@ -198,7 +198,11 @@ async function start(req: { files: AuditFile[] } | { sample: TradeCopy["engine"]
     await sleep(380);
     li.classList.add("done");
   }
-  $("#auditH").textContent = r.silent.count ? `${money(r.silent.value)} is sitting in quotes nobody answered.` : "Every quote got an answer. That's rare.";
+  // The quiet rate, from their own file: the one number the whole service drives toward zero.
+  const sent = r.won.count + r.saidNo.count + r.silent.count;
+  $("#auditH").textContent = r.silent.count && sent
+    ? `${Math.round((r.silent.count / sent) * 100)}% of your quotes never got a yes or a no. ${money(r.silent.value)} is sitting quiet.`
+    : "Every quote got an answer. That's rare.";
   render(r);
 }
 
@@ -207,6 +211,16 @@ function render(r: AuditResult) {
   $("#rSilentWhat").textContent = `${n(r.silent.count)} quotes${r.from ? `, ${monthYear(r.from)} to ${monthYear(r.to)}` : ""}`;
   const pm = r.perMonth;
   $("#rLine").textContent = pm.value > 0 ? `Every month about ${money(pm.value >= 1000 ? Math.round(pm.value / 100) * 100 : pm.value)} of what you quote goes quiet. That's ${Math.round(pm.shareOfQuoted * 100)} cents of every quoted dollar, and nobody said no to it.` : "";
+
+  // What our first three shops saw on old quotes (4 of 150 booked; 1.5–4% across them), applied to this file.
+  // Always labelled: owner-reported, no comparison group, an estimate.
+  const asked = Math.min(150, r.silent.count);
+  const lo = Math.round(asked * 0.015), hi = Math.round(asked * 0.04);
+  const ifAsked = $("#rIf");
+  const each = r.typicalQuiet ?? r.typicalQuote;
+  ifAsked.hidden = !(hi >= 2 && each);
+  if (each && !ifAsked.hidden)
+    ifAsked.innerHTML = `If yours go like our first three shops, about <b>${lo}–${hi}</b> of the first ${n(asked)} book. At your typical unanswered quote of ${money(each)}, that's roughly <b>${money(lo * each)}–${money(hi * each)}</b>. <span>Owner-reported by those shops, no comparison group. Your free round shows your real number.</span>`;
 
   $("#rSent").textContent = `${n(r.won.count + r.saidNo.count + r.silent.count)} quotes sent`;
   $("#rRange").textContent = "Sent at least two weeks ago. Won, lost, or still “awaiting response”.";

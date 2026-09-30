@@ -297,6 +297,10 @@ describe("lint", () => {
     "60-70% of estimates die from silence.",
     "Calling back in an hour closes 30-50% more.",
     "Shops see 35% revenue growth in year one.",
+    "Only 22% of painting bids ever close.",
+    "78% of homeowners hire the first company to respond.",
+    "62% of calls to contractors go unanswered.",
+    "25-40% of estimates are recoverable.",
     "Keeping 5% more customers means 25 to 95% more profit.",
   ];
 
