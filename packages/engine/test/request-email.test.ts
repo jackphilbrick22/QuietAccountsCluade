@@ -343,4 +343,36 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     const { guaranteeCheck } = await import("../src/reports/owner.ts");
     expect(guaranteeCheck(st, ASOF)!.asked.map((x) => x.id)).toContain(r.id);
   });
+
+  it("a reply in the request answer's own thread stays with the request, however old the follow-up before it", async () => {
+    const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1", { name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"] })] }), `${ago(50)}T08:00:00`);
+    st.touches.push({ id: "fq1", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ago(50)}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
+    markSent(st, "fq1", `${ago(50)}T08:00:00`, "msg-fence");
+    takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ago(20)}T10:05:00`, `${ago(20)}T10:05:00`);
+    answerNewRequests(st, `${ago(20)}T10:06:00`);
+    const answer = st.touches.find((t) => t.track === "new_request")!;
+    markSent(st, answer.id, `${ago(20)}T10:07:00`, "msg-req");
+    const r = receiveReply(st, { from: "karen.whitfield@gmail.com", text: "Still haven't heard from anyone. How much would it cost to take the oak down?", inReplyTo: "msg-req", receivedAt: `${ASOF}T11:00:00` });
+    expect(r.touchId).toBe(answer.id);
+    expect(r.opportunityId).toBe(answer.opportunityId);
+    const { guaranteeCheck } = await import("../src/reports/owner.ts");
+    expect(guaranteeCheck(st, ASOF)!.asked).toHaveLength(0);
+  });
+
+  it("two records sharing one address: the thread says which one wrote", async () => {
+    const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });
+    const both = ["c0", "c1"].map((id) => customer(id, { name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"] }));
+    const st = emptyState(dataset({ business: paying, customers: both }), `${ago(45)}T08:00:00`);
+    st.touches.push({ id: "fq0", opportunityId: "o-fence", customerId: "c0", channel: "email", step: 1, angle: "check_in", dueAt: `${ago(45)}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
+    markSent(st, "fq0", `${ago(45)}T08:00:00`, "msg-fence");
+    st.touches.push({ id: "rq1", opportunityId: "req:r1", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ASOF}T09:00`, status: "approved", body: "Thanks for reaching out", flags: [], track: "new_request", instant: true } as never);
+    markSent(st, "rq1", `${ASOF}T09:00:00`, "msg-req");
+    const r = receiveReply(st, { from: "karen.whitfield@gmail.com", text: "Sounds good, thanks!", inReplyTo: "msg-req", receivedAt: `${ASOF}T10:00:00` });
+    expect(r.customerId).toBe("c1");
+    expect(r.followUpOf).toBe("req:r1");
+    expect(r.touchId).toBe("rq1");
+  });
 });

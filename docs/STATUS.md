@@ -80,8 +80,18 @@ Updated every loop iteration. Newest first.
   Claude guess; quote statuses where the leading yes/no decides ("Accepted - not booked" is a yes,
   "Not sold yet" is open). Engine 1,085 tests, server 246.
 
+- Fifth adversarial review: 14 reported, 6 confirmed, all fixed and tested. The big one predated it: the
+  wait for the owner's OK, the "before we started" quiet rate and what a CANCEL stopped lived only in
+  memory, so a deploy lost them (UNDO said "nothing to undo", Restore plan refused, an OK was ignored).
+  They're saved with the account now, with a restart test. Also: a reply in the request answer's own
+  thread stays with the request (only a no-thread reply with a follow-up sent lately moves to that note),
+  and the thread decides between two records sharing an address; while a first note waits, only a bare
+  outcome ("no", "done", "booked 2400") or a whole-text yes acts on another lead or plan ("won't" is never
+  a win, and a year is never an amount in a note edit); "Sent - not sold - lost to competitor" is a no.
+  Engine 1,101 tests, server 247.
+
 **Next**
-- A fifth review pass on the fourth review's fixes; stop when a pass finds nothing material.
+- A sixth review pass on the fifth review's fixes; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

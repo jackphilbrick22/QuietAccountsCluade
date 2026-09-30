@@ -229,6 +229,11 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX inbound_review_open ON inbound_review(status, at);
   `,
+  `
+  -- Account state that isn't records: the wait for the owner's OK, the quiet rate before we started, and what a CANCEL
+  -- stopped (so UNDO and Restore plan still work after a restart). JSON.
+  ALTER TABLE businesses ADD COLUMN extra TEXT;
+  `,
 ];
 
 export class Db {

@@ -215,6 +215,8 @@ const LEADS_WITH = String.raw`^\W*(?:(?:customer|client)\s+)?`;
 /** A yes, or a no, from the customer. "Won't" is not a win. */
 const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received))\b`;
 const SAID_NO = String.raw`(?:lost|declined|rejected|closed[\s-]*lost)\b`;
+/** A no written anywhere in the status: "Sent - not sold - went with a competitor". */
+const SAID_NO_ANYWHERE = String.raw`(?:\blost\b|declin|reject|not interested|went (?:with|elsewhere)|hired (?:someone|another)|chose (?:another|someone)|closed[\s-]*lost)`;
 /** "Not booked", "not yet scheduled", "unconverted": the work isn't on the calendar. Says nothing about the answer. */
 const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed?|closed)\b`;
 
@@ -240,8 +242,9 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [new RegExp(`${LEADS_WITH}${SAID_YES}.*${NOT_ON_CALENDAR}`, "i"), "approved"],
   [new RegExp(`${LEADS_WITH}${SAID_NO}.*${NOT_ON_CALENDAR}`, "i"), "declined"],
   // "Sold / Not sold" sheets: a sale that didn't happen is a no. One that hasn't happened yet is still open: "Not sold
-  // yet", "Pending - not sold", "Sent, not sold".
-  [new RegExp(`\\b(?:not[\\s-]+sold|no[\\s-]+sale)\\W+yet\\b|\\b(?:pending|awaiting|waiting|open(?:ed)?|sent|viewed)\\b.*(?:${NOT}sold\\b|\\bno[\\s-]+sale\\b)`, "i"), "awaiting_response"],
+  // yet", "Pending - not sold", "Sent, not sold". Unless a no is written anywhere in it: "Sent - not sold - lost to
+  // competitor" is a no.
+  [new RegExp(`^(?!.*${SAID_NO_ANYWHERE})(?:.*\\b(?:not[\\s-]+sold|no[\\s-]+sale)\\W+yet\\b|.*\\b(?:pending|awaiting|waiting|open(?:ed)?|sent|viewed)\\b.*(?:${NOT}sold\\b|\\bno[\\s-]+sale\\b))`, "i"), "awaiting_response"],
   [/\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b/i, "declined"],
   // With no answer in front, not yet sold, or not booked, converted, completed or closed, is still open. Neither is a
   // yes, whatever word follows the "not".

@@ -51,6 +51,10 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
     expect(readLeadText("no problem")).toBeUndefined();
     expect(readLeadText("sent her a price")).toEqual({ outcome: "quoted", amount: 0 });
     expect(readLeadText("called")).toEqual({ outcome: undefined, amount: 0 });
+    // "won't" is never a win
+    expect(readLeadText("She won't go above 1200")).toBeUndefined();
+    expect(readLeadText("He won't pick up")).toEqual({ outcome: "no_answer", amount: 0 });
+    expect(readLeadText("won it, 3200")).toEqual({ outcome: "booked", amount: 3200 });
   });
 });
 
@@ -81,12 +85,21 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     await h.d.accounts.withAccount("aaa-tree", (s) => {
       s.awaitingOwnerOk = "2026-09-29T09:00:00";
     });
-    for (const text of ["No, say Hey instead of Hi", "Hold on, can you change the greeting to Hey AAA", "Free quote, not free estimate AAA", "Go with Hey instead of Hi AAA"])
+    for (const text of ["No, say Hey instead of Hi", "Hold on, can you change the greeting to Hey AAA", "Free quote, not free estimate AAA", "Go with Hey instead of Hi AAA", "Add that we won Best of Concord 2025", "Say we won't email them again", "Say we sent them an estimate last year"])
       expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
     expect(reply(h, "bbb-tree", "r-bbb-old").status).toBe("handed_off");
+    expect(state(h, "bbb-tree").recoveries).toEqual([]);
     expect(h.d.accounts.peek("aaa-tree")!.paused).toBe(false);
-    // a lead that just came in: a booking is about it, not the note
+    // a lead that just came in: a short "no" with more after it is still about the note; a booking is about the lead
     await addLead(h, "bbb-tree", "r-bbb-new", "Al Moss", "2026-09-29T09:20:00");
+    for (const text of ["No, say Hey", "No, too pushy"]) expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
+    expect(reply(h, "bbb-tree", "r-bbb-new").status).toBe("handed_off");
+    // the close is out for BBB: "Ok but…" is a change to AAA's note, never a yes to BBB's plan
+    await h.d.accounts.withAccount("bbb-tree", (s) => {
+      s.ownerMessages.push({ id: "om-close-bbb", at: "2026-09-25T09:00:00", kind: "close", text: "Your free round is done…" });
+    });
+    for (const text of ["Ok but say Hey instead of Hi", "Sure, change the sign-off to Mike"]) expect(await h.sms(text), text).toMatch(/^AAA Tree: Got it — we'll make that change/);
+    expect(state(h, "bbb-tree").events.some((e) => /said yes to keep going/.test(e.title))).toBe(false);
     expect(await h.sms(`booked 2400 #${leadCode("r-bbb-new")}`)).toContain("Booked: Al Moss, $2,400");
     expect(await h.sms("booked 1800")).not.toMatch(/make that change/);
   });
@@ -308,6 +321,29 @@ describe("owner messages never vanish into a log (n46)", () => {
 });
 
 describe("reminders survive a restart (n17, n53)", () => {
+  it("the wait for the OK, the quiet rate before we started and a CANCEL all survive a deploy", async () => {
+    const h = make();
+    await h.business("ridge");
+    const before = { rate: 0.42, quiet: 21, quotes: 50, value: 61200, on: "2026-09-29" } as never;
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.awaitingOwnerOk = "2026-09-29T09:00:00";
+      s.quietBefore = before;
+    });
+    const a = h.restart();
+    open.push(a);
+    expect(a.d.accounts.peek("ridge")!.state).toMatchObject({ awaitingOwnerOk: "2026-09-29T09:00:00", quietBefore: before });
+    expect(await a.sms("OK")).toContain("the first notes go out");
+    expect(await a.sms("CANCEL")).toMatch(/Done — cancelled/);
+    const b = a.restart();
+    open.push(b);
+    expect(b.d.accounts.peek("ridge")!.state.cancelled?.stageBefore).toBe("trial");
+    expect(await b.sms("UNDO")).toMatch(/^Back on\./);
+    expect(b.d.accounts.peek("ridge")!.state.dataset.business.plan.stage).toBe("trial");
+    const c = b.restart();
+    open.push(c);
+    expect(c.d.accounts.peek("ridge")!.state.cancelled).toBeUndefined();
+  });
+
   it("a lead nudged twice is never nudged again after a deploy, however many texts came since", async () => {
     const h = make();
     const notifier = h.d.notifier as LogNotifier;

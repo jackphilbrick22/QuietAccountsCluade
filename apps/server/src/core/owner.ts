@@ -54,6 +54,10 @@ const APPROVE = new RegExp(`^${APPROVE_WORD}( ${APPROVE_TAIL})*$`);
 /** CANCEL on its own (or "cancel the service"); "cancel the note to Karen" is not cancelling the service. */
 const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it|all|quiet|accounts|account|yes|confirm|please|now))*$/;
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
+/** The whole text is a yes (matched against the words only): "Keep it going", "I'm in, thanks". Not "Ok but…". */
+const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls))*$/;
+/** The whole text is a lead outcome with nothing after it: "No", "Nope", "Done", "Not a fit", "Called him". */
+const BARE_OUTCOME = /^(no|nope|lost|pass|passed|dead|not a fit|no go|not interested|no thanks|went with someone else|done|called|reached|talked|spoke)( (him|her|them|it|already|today))?$/;
 
 const HELP_TEXT =
   'About a lead: BOOKED 2400 #code, DONE, NO or QUOTED (the #code is on the lead text). About a person: SKIP and their name takes them off the list. About the service: PAUSE, RESUME, BUSY until Nov 15, OPEN, STATUS, CANCEL. STOP turns off our texts (your follow-ups keep running); START turns them back on.';
@@ -79,9 +83,9 @@ export function shortNames(bizs: { id: string; profile: { name: string } }[]): M
 /* ------------------------------ reading a text about a lead ------------------------------ */
 
 const CODE = /#\s?([a-z0-9]{3})\b/i;
-const NO_ANSWER = /\b(no answer|didn'?t answer|did not answer|no response|voice ?mail|vm|left (a )?(message|msg|vm|voice ?mail)|not picking up|didn'?t pick up|no pick ?up)\b/;
+const NO_ANSWER = /\b(no answer|didn'?t answer|did not answer|no response|voice ?mail|vm|left (a )?(message|msg|vm|voice ?mail)|not picking up|didn'?t pick up|won['’]?t (pick up|answer)|no pick ?up)\b/;
 const NOT_BOOKED = /\b(not|didn'?t|did not|never|no)\s+(book|booked|sold|won|buy|bought|go)\b/;
-const BOOKED = /\b(booked|book it|sold|won|got the job|closed (it|the deal))\b/;
+const BOOKED = /\b(booked|book it|sold|won(?!['’])|got the job|closed (it|the deal))\b/;
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
 const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|went with|going with|no go|not interested|no thanks|too expensive|chose someone)\b/;
 const REACHED = /\b(done|called|talked|reached|spoke|spoken|texted|emailed|contacted|handled|got (a )?hold of)\b/;
@@ -169,16 +173,18 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // something else on this phone an "ok" or a "yes" could be answering: a lead waiting on a call, the close, the renewal
   // (a lead handed off more than a week ago is the operator's to chase, not something a text is likely answering)
   const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id, true) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id, true));
-  // While a first note waits, a text is about something else only when it reads like an answer to it: a lead outcome
-  // ("booked 2400", "no answer") with a lead waiting, a short "no" or "done" with one handed over this week, or a yes
-  // with the close or renewal out.
+  // While a first note waits, a text is about something else only when it reads like an answer to it: a short lead
+  // outcome ("booked 2400", "no answer") with a lead waiting, a bare "no" or "done" with one handed over this week, or
+  // a yes and nothing more with the close or renewal out. "No, say Hey", "Ok but change the sign-off" and "Add that we
+  // won Best of Concord 2025" are changes to the note.
   // "No, say Hey instead of Hi" is a change to the note, whatever else is open on the phone.
   const aboutOther = () => {
     const scope = named ? [named] : all;
     const lead = readLeadText(text);
-    const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted");
-    const short = !!lead && bare.split(" ").length <= 3;
-    return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (short && scope.some((x) => hasWaitingLead(d, x.id, true))) || (AFFIRM.test(t) && scope.some((x) => outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal")));
+    // words as the owner typed them, less the #code and the business's name ("Booked $2,400 for the oak" is five)
+    const typed = text.replace(CODE, " ").trim().split(/\s+/).filter((w) => !named || w.toLowerCase().replace(/[^a-z0-9]/g, "") !== tags.get(named.id)!.toLowerCase()).length;
+    const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted") && typed <= 5;
+    return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (BARE_OUTCOME.test(bare) && scope.some((x) => hasWaitingLead(d, x.id, true))) || (WHOLE_YES.test(bare) && scope.some((x) => outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal")));
   };
   if (waitingOk.length && !hasCode && APPROVE.test(bare)) {
     if (waitingOk.length > 1) return askWhich();

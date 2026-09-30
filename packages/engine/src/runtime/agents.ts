@@ -444,8 +444,10 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   const reading = override
     ? { ...base, intent: override.intent, confidence: override.confidence, summary: override.summary ?? base.summary, extracted: { ...base.extracted, ...override.extracted } }
     : base;
-  const sender = customerByEmail(state.dataset, email);
   const answered = msg.inReplyTo ? state.touches.find((t) => t.providerId === msg.inReplyTo) : undefined;
+  // Two records can share an address (Jobber made a new client for a new request): the thread says which one wrote.
+  const threadCustomer = answered ? customerById(state.dataset, answered.customerId) : undefined;
+  const sender = threadCustomer?.emails.some((e) => e.toLowerCase() === email) ? threadCustomer : customerByEmail(state.dataset, email);
   // A bounce comes from the mail system, not the person: find them by the note it answers, or the address it names.
   const bounced =
     reading.intent === "bounce" && !sender
@@ -509,10 +511,10 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   // to the fence quote must not ride on a request answer.
   const followedUpLately = !!c && state.touches.some((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t) && lately(t.sentAt ?? t.dueAt));
   const request = touch && c && touch.customerId === c.id && isRequestAnswer(touch) && lately(touch.sentAt ?? touch.dueAt) && (touch === answered || !followedUpLately) ? touch : undefined;
-  if (c && touch && isRequestAnswer(touch) && !request) {
-    // Not about the request: the words answer the follow-up they last got, so the hand-off, the guarantee and the
-    // ledger read them against that note.
-    const note = state.touches.filter((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t)).sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
+  if (c && touch && !msg.inReplyTo && isRequestAnswer(touch) && touch.customerId === c.id && followedUpLately && !request) {
+    // No thread, and a follow-up went to them lately too: the words answer that note, so the hand-off, the guarantee
+    // and the ledger read them against it. A reply in the request answer's own thread stays with the request.
+    const note = state.touches.filter((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t) && lately(t.sentAt ?? t.dueAt)).sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
     if (note) {
       r.touchId = note.id;
       r.opportunityId = note.opportunityId;

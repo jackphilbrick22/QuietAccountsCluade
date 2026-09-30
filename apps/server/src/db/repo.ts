@@ -93,7 +93,7 @@ export class Repo {
   /* ----------------------------- load ----------------------------- */
 
   load(id: string, opts: { eventLimit?: number } = {}): Loaded | undefined {
-    const row = this.db.get<BusinessRow & { scan_stats: string | null; scan_primary: string | null; trial_completed_on: string | null }>(
+    const row = this.db.get<BusinessRow & { scan_stats: string | null; scan_primary: string | null; trial_completed_on: string | null; extra: string | null }>(
       "SELECT * FROM businesses WHERE id = ?",
       id,
     );
@@ -136,6 +136,7 @@ export class Repo {
       .map((r) => JSON.parse(r.data) as OwnerMessage);
     const primaryIds: string[] = row.scan_primary ? JSON.parse(row.scan_primary) : [];
     const oppById = new Map(opportunities.map((o) => [o.id, o]));
+    const extra = (row.extra ? JSON.parse(row.extra) : {}) as Pick<AccountState, "awaitingOwnerOk" | "quietBefore" | "cancelled">;
     const state: AccountState = {
       dataset: {
         business: JSON.parse(row.profile) as BusinessProfile,
@@ -157,6 +158,9 @@ export class Repo {
       events,
       ownerMessages: messages,
       trialCompletedOn: row.trial_completed_on ?? undefined,
+      ...(extra.awaitingOwnerOk ? { awaitingOwnerOk: extra.awaitingOwnerOk } : {}),
+      ...(extra.quietBefore ? { quietBefore: extra.quietBefore } : {}),
+      ...(extra.cancelled ? { cancelled: extra.cancelled } : {}),
       updatedAt: row.updated_at,
     };
     return {
@@ -281,13 +285,14 @@ export class Repo {
       l.savedOpps = s.scan?.opportunities;
       l.savedOppsLength = s.scan?.opportunities.length;
       this.db.run(
-        "UPDATE businesses SET profile = ?, as_of = ?, summary = ?, scan_stats = ?, scan_primary = ?, trial_completed_on = ?, updated_at = ? WHERE id = ?",
+        "UPDATE businesses SET profile = ?, as_of = ?, summary = ?, scan_stats = ?, scan_primary = ?, trial_completed_on = ?, extra = ?, updated_at = ? WHERE id = ?",
         JSON.stringify(s.dataset.business),
         s.dataset.asOf,
         s.summary ? JSON.stringify(s.summary) : null,
         s.scan ? JSON.stringify(s.scan.stats) : null,
         s.scan ? JSON.stringify(s.scan.primary.map((o) => o.id)) : null,
         s.trialCompletedOn ?? null,
+        JSON.stringify({ awaitingOwnerOk: s.awaitingOwnerOk, quietBefore: s.quietBefore, cancelled: s.cancelled }),
         now,
         bid,
       );
