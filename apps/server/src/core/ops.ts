@@ -11,6 +11,7 @@ import {
   setBookedOut,
   totals,
   customerById,
+  daysBetween,
   detect,
   dueTouches,
   find,
@@ -642,7 +643,7 @@ export async function unsubscribeByToken(d: Deps, token: string): Promise<{ ok: 
 export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ records: number; newRecoveries: number } | undefined> {
   const conn = d.fsm[kind];
   const integ = d.accounts.repo.getIntegration(bid, kind);
-  if (!conn || !integ?.secret || integ.status === "disconnected") return undefined;
+  if (!conn || !integ?.secret || integ.status === "disconnected" || integ.status === "needs_reconnect") return undefined;
   let tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
   if (tokens.expiresAt && Date.parse(tokens.expiresAt) - d.clock().getTime() < 5 * 60000 && tokens.refreshToken) {
     tokens = await conn.refresh(tokens);
@@ -671,9 +672,35 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
     if (answered) await sendDue(d, bid);
     return { records: pulled.customers.length + pulled.quotes.length + pulled.jobs.length + pulled.invoices.length + pulled.requests.length, newRecoveries };
   } catch (e) {
-    d.accounts.repo.putIntegration(bid, kind, { lastError: (e as Error).message });
+    const err = e as ProviderError;
+    const dead = err instanceof ProviderError && !err.retryable && (err.status === 400 || err.status === 401 || /invalid_grant|unauthori[sz]ed|token/i.test(err.message));
+    d.accounts.repo.putIntegration(bid, kind, { lastError: err.message, ...(dead ? { status: "needs_reconnect" } : {}) });
+    if (dead) await askToReconnect(d, bid);
     throw e;
   }
+}
+
+/**
+ * Jobber cut us off (a password change, a revoked app). Nothing stalls quietly: the owner gets a one-tap
+ * reconnect link — at most once a week — and the work carries on from the last sync meanwhile.
+ */
+async function askToReconnect(d: Deps, bid: string): Promise<void> {
+  const link = `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/oauth/jobber/start?state=${encodeURIComponent(sign(d.cfg.APP_SECRET, `oauth|jobber|${bid}`))}`;
+  await d.accounts.withAccount(bid, (state) => {
+    const at = nowLocal(d, state);
+    const recent = state.ownerMessages.some((m) => m.kind === "info" && m.refs?.some((r) => r.kind === "reconnect") && daysBetween(m.at.slice(0, 10), at.slice(0, 10)) < 7);
+    if (recent) return;
+    const b = state.dataset.business;
+    state.ownerMessages.push({
+      id: `om_reconnect_${at}`,
+      at,
+      kind: "info",
+      text: `${b.ownerFirstName}, Jobber logged us out (that happens after a password change). One tap to reconnect — about 10 seconds: ${link}\n\nUntil then we keep working from your last sync.`,
+      refs: [{ kind: "reconnect", id: "jobber" }],
+    });
+    state.events.push({ id: `ev_reconnect_${at}`, at, agent: "guard", kind: "warning", title: "Jobber disconnected — owner sent a reconnect link", detail: "New requests and quote updates pause until they reconnect." });
+  });
+  await deliverOwnerMessages(d, bid);
 }
 
 /* ------------------------- notes back into Jobber ------------------------- */
