@@ -355,6 +355,8 @@ describe("status words from the tools fence and painting quotes live in", () => 
     ["No response", "awaiting_response"],
     // unless a no is written anywhere in it
     ["Sent - Not Sold - Lost to competitor", "declined"],
+    ["Viewed - not signed - went with competitor", "declined"],
+    ["Unsigned - hired someone else", "declined"],
     ["Sent - not sold - went with competitor", "declined"],
     ["Sent - Not sold (declined)", "declined"],
     ["Viewed - not sold - went with another company", "declined"],

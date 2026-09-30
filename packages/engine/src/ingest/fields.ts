@@ -247,6 +247,9 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // When the status starts with a no, the no decides, whatever follows it: "Lost - not signed", "Declined - never
   // opened", "Rejected - not booked". The negations below would otherwise read those as still open.
   [new RegExp(`${LEADS_WITH}${SAID_NO}`, "i"), "declined"],
+  // Gone to someone else, wherever it's written: "Viewed - not signed - went with competitor". Nobody writes "not
+  // went with", so no negation in front of it changes that.
+  [/went (?:with|w\/|elsewhere)|(?:hired|chose|used) (?:an? )?(?:someone|another|competitor)|\blost to\b|closed[\s-]*lost/i, "declined"],
   // Never went out: "Not sent", "Unsent", "Not yet submitted".
   [new RegExp(`${NOT}(?:sent|emailed|delivered|submitted|issued|presented|finali[sz]ed)\\b`, "i"), "draft"],
   // Out, but no yes yet: "Unsigned" is Estimate Rocket's open status, not a signature; "Viewed - not signed".
