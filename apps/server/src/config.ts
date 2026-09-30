@@ -73,9 +73,16 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (c.EMAIL_PROVIDER === "smtp" && !c.SMTP_URL) throw new Error("EMAIL_PROVIDER=smtp needs SMTP_URL");
   if (c.EMAIL_PROVIDER === "instantly" && !c.INSTANTLY_API_KEY) throw new Error("EMAIL_PROVIDER=instantly needs INSTANTLY_API_KEY");
   if (c.SMS_PROVIDER === "twilio" && !(c.TWILIO_ACCOUNT_SID && c.TWILIO_AUTH_TOKEN && c.TWILIO_FROM)) throw new Error("SMS_PROVIDER=twilio needs TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM");
+  // Sending real email or texts with public default secrets would let anyone forge replies and
+  // unsubscribes, and a localhost PUBLIC_URL would break every unsubscribe link. Refuse to start.
+  if ((c.EMAIL_PROVIDER !== "log" || c.SMS_PROVIDER !== "log") && env.ALLOW_DEV_SECRETS !== "true") {
+    const weak = (["OPERATOR_TOKEN", "APP_SECRET", "WEBHOOK_SECRET"] as const).filter((k) => c[k].startsWith("dev-"));
+    if (weak.length) throw new Error(`Refusing to send for real with development secrets: set ${weak.join(", ")}`);
+    if (!/^https:\/\//.test(c.PUBLIC_URL) || /\/\/(localhost|127\.0\.0\.1)\b/.test(c.PUBLIC_URL)) throw new Error("PUBLIC_URL must be the public https address when sending for real (every unsubscribe link points at it)");
+  }
   return c;
 }
 
 export function isProductionLike(c: Config): boolean {
-  return !c.OPERATOR_TOKEN.startsWith("dev-") && !c.APP_SECRET.startsWith("dev-");
+  return !c.OPERATOR_TOKEN.startsWith("dev-") && !c.APP_SECRET.startsWith("dev-") && !c.WEBHOOK_SECRET.startsWith("dev-");
 }
