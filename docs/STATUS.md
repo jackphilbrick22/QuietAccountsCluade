@@ -177,8 +177,13 @@ Updated every loop iteration. Newest first.
   the object; she/he/they only when they booked "us/me/it"; one amount, last, and at least $50. Anything
   else goes to Claude or Jack. Engine 1,232, server 261.
 
+- Sixteenth adversarial review: 1 reported, 1 confirmed, fixed: a time without a colon or a year was
+  still taken as the price ("Booked her for Thursday at 1030" recorded $1,030). An amount is plain only with
+  no day, date or time word anywhere in the text, and "at" no longer leads into an amount. Engine 1,232,
+  server 261.
+
 **Next**
-- A sixteenth review pass; stop when a pass finds nothing material.
+- A seventeenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

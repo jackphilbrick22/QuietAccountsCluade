@@ -163,15 +163,21 @@ const BOOKED_WHEN = "(today|tonight|tomorrow|this week|next week|this month|next
  * often as ours. The amount comes last, alone: "for 10 tomorrow" is a time.
  */
 const PLAIN_BOOKING = new RegExp(
-  `^((we|i) )?(just )?(booked|book it|sold|closed|closed it|got the job|got it|landed it|signed|won)( ${BOOKED_WHAT})?( ${BOOKED_WHEN})?( (for|at))?( ${AMT})?$` +
+  `^((we|i) )?(just )?(booked|book it|sold|closed|closed it|got the job|got it|landed it|signed|won)( ${BOOKED_WHAT})?( ${BOOKED_WHEN})?( for)?( ${AMT})?$` +
     `|^${AMT}( (booked|sold))?$` +
-    `|^(she|he|they) (just )?(booked|hired|signed with|went with|picked|chose|signed) (us|me|it)( ${BOOKED_WHEN})?( (for|at))?( ${AMT})?$`,
+    `|^(she|he|they) (just )?(booked|hired|signed with|went with|picked|chose|signed) (us|me|it)( ${BOOKED_WHEN})?( for)?( ${AMT})?$`,
 );
-/** At most one number, and a real job's worth if any: "Booked for 11" is an appointment, not an $11 job. */
+/** A day, a time or a date anywhere in it: a number next to one may be "at 1030" or "March 2027", not a price. */
+const TIMEY = /\b(at|today|tonight|tomorrow|week|month|monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|january|february|march|april|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|am|pm|morning|afternoon|evening|noon)\b/;
+/**
+ * At most one number, a real job's worth, and no day or time beside it: "Booked for 11" and "Booked her for Thursday
+ * at 1030" are appointments, not an $11 or $1,030 job.
+ */
 function plainAmount(words: string): boolean {
   const nums = words.match(/\$?\d+(\.\d+)?k?/g) ?? [];
   if (nums.length > 1) return false;
   if (!nums.length) return true;
+  if (TIMEY.test(words)) return false;
   const n = nums[0]!.replace("$", "");
   return Number(n.replace(/k$/, "")) * (n.endsWith("k") ? 1000 : 1) >= 50;
 }
