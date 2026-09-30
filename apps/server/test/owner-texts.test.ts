@@ -159,9 +159,10 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       await addLead(h, "ridge", rid, "Kim Tran", "2026-09-29T08:00:00");
       return h.sms(`${text} #${leadCode(rid)}`);
     };
-    // no Claude: a person reads it, and nothing is marked
+    // no Claude: a person reads it, nothing is marked, and the lead isn't nudged as if nobody had called
     expect(await texts("Another tree service had a better price and won the job, 1800", "c0")).toMatch(/^Thanks — that one could go either way/);
     expect(reply(h, "ridge", "c0").status).toBe("handed_off");
+    expect(reply(h, "ridge", "c0").nudges).toBe(2);
     h.d.llm = { model: "stub", structured: async (_s: unknown, o: { user: string }) => (said.push(o.user), answer) } as never;
     try {
       expect(await texts("Another tree service had a better price and won the job, 1800", "c1")).toMatch(/^Got it — Kim Tran marked not a fit\./);
@@ -176,7 +177,13 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       expect(await texts("Beat the other guy's price, she booked us for 2400", "c5")).toMatch(/^Booked: Kim Tran, \$2,400\./);
       answer = { outcome: "unclear", amount: null };
       expect(await texts("Someone else already quoted her 1800 and she booked them", "c6")).toMatch(/^Thanks — that one could go either way/);
-      expect(said.length).toBe(6);
+      // everyday shorthand for someone else's win reaches Claude too, never the booking patterns
+      answer = { outcome: "lost", amount: null };
+      for (const [i, t] of ["Other guy got the job, 1800", "Someone cheaper got the job for 1500", "Another plumber won the bid at 2100", "Competition got the job, 1900", "She booked Bartlett for 1800", "Her regular guy got the job"].entries())
+        expect(await texts(t, `d${i}`), t).toMatch(/^Got it — Kim Tran marked not a fit\./);
+      expect(said.length).toBe(12);
+      // only the booking Claude read as ours, at the amount written in it
+      expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400]);
     } finally {
       h.d.llm = null;
     }

@@ -156,8 +156,15 @@ Updated every loop iteration. Newest first.
   "unclear", an error or no Claude key sends it to a person. Plain commands still go through the rules.
   Engine 1,232, server 260.
 
+- Thirteenth adversarial review: 2 confirmed, fixed. The gate that sends a text to Claude was too narrow:
+  "Other guy got the job, 1800" (no "the"), "Someone cheaper got the job", "Competition got the job", "She
+  booked Bartlett" still hit the booking patterns. It is now broad on purpose (any other/another/different
+  + word, someone cheaper, competition, "her regular guy", a name after a hiring word): a text sent to Claude
+  costs nothing, someone else's win read as ours costs the owner's ledger. A text that goes to Jack as
+  unclear also stops the "still waiting" nudges for that lead. Engine 1,232, server 260.
+
 **Next**
-- A thirteenth review pass; stop when a pass finds nothing material.
+- A fourteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 
