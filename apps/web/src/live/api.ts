@@ -98,6 +98,8 @@ export interface Overview {
   week?: WeekNumbers;
   lift?: LiftReport;
   quiet?: QuietRates;
+  /** The welcome text showed the owner the first note; nothing goes out until they reply OK. */
+  awaitingOwnerOk?: string;
   health?: SendHealth;
   guarantee?: GuaranteeCheck;
   counts?: { customers: number; quotes: number; jobs: number; invoices: number; requests: number; queued: number; sent: number };
@@ -169,6 +171,8 @@ export interface PlanResult {
   firstDay?: string;
   lastDay?: string;
   personalized: number;
+  /** The first batch waits for the owner to reply OK to the first note. */
+  awaitingOk?: boolean;
 }
 
 export interface Health {

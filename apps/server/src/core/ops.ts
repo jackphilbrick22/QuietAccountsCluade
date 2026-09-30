@@ -25,6 +25,7 @@ import {
   dueTouches,
   find,
   importTable,
+  kickoff,
   ledgerPass,
   leadCode,
   makeId,
@@ -211,15 +212,20 @@ export async function rescan(d: Deps, bid: string): Promise<void> {
 /* Writer + Sender: plan                                               */
 /* ------------------------------------------------------------------ */
 
-export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit?: number; approve?: boolean } = {}): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number }> {
+export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit?: number; approve?: boolean } = {}): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number; awaitingOk?: boolean }> {
   let planned: Touch[] = [];
+  let firstRound = false;
+  let approved = true;
   const result = await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     const b = state.dataset.business;
     const startOn = opts.startOn ?? nextSendDay(state, at.slice(0, 10));
     const limit = opts.limit ?? (b.plan.stage === "trial" ? Math.max(0, b.plan.trialSize - startedPeople(state)) : undefined);
     if (limit === 0) return { people: 0, notes: 0, personalized: 0 };
-    const p = planBatch(state, at, { startOn, limitPeople: limit, approve: opts.approve ?? true });
+    // The free round's first batch waits for the owner's OK to the first note (by text); later batches don't.
+    firstRound = b.plan.stage === "trial" && !state.touches.some((t) => t.status !== "cancelled");
+    approved = opts.approve ?? !firstRound;
+    const p = planBatch(state, at, { startOn, limitPeople: limit, approve: approved, kickoff: false });
     planned = state.touches.filter((t) => p.touches.some((x) => x.id === t.id));
     return { people: p.people.length, notes: p.touches.length, firstDay: p.firstDay, lastDay: p.lastDay, personalized: 0 };
   });
@@ -254,7 +260,12 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
     }
     result.personalized = rewrites.size;
   }
-  return result;
+  // The welcome text is written last, so the first note in it is exactly the one that goes out.
+  if (firstRound && result.people)
+    await d.accounts.withAccount(bid, (state) => {
+      kickoff(state, nowLocal(d, state), { awaitOk: !approved });
+    });
+  return { ...result, awaitingOk: firstRound && !approved && result.people > 0 };
 }
 
 function startedPeople(state: AccountState): number {

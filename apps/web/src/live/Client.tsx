@@ -53,7 +53,11 @@ export function LiveClient({ id }: { id: string }) {
 
   const doPlan = () =>
     run("plan", () => api<PlanResult>("POST", `${path}/plan`, trial ? {} : { limit: b.weeklyNewContacts * 4 }), (r) =>
-      r.people ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}` : trial ? "Nothing to plan: the free round is already full." : "Nobody new to plan right now.",
+      r.people
+        ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}${r.awaitingOk ? ". The owner gets the first note by text; it starts when they reply OK." : ""}`
+        : trial
+          ? "Nothing to plan: the free round is already full."
+          : "Nobody new to plan right now.",
     );
 
   return (
@@ -64,6 +68,7 @@ export function LiveClient({ id }: { id: string }) {
         sub={
           <span className="flex flex-wrap items-center gap-2">
             <Pill tone={st.tone}>{st.label}</Pill>
+            {o.awaitingOwnerOk && <Pill tone="warn">Waiting for the owner's OK</Pill>}
             <span>
               {tradeLabel(b.trade)}
               {b.city ? ` · ${b.city}${b.state ? `, ${b.state}` : ""}` : ""} · owner {b.ownerName || "—"} · signs as {b.signerName || "—"}
@@ -80,7 +85,7 @@ export function LiveClient({ id }: { id: string }) {
             </Btn>
             {waitingApproval > 0 && (
               <Btn variant="primary" disabled={!!busy} onClick={() => void run("approve", () => api<{ approved: number }>("POST", `${path}/approve`), (r) => (r.approved ? `Approved ${plural(r.approved, "note")}` : "Nothing was waiting"))}>
-                <CheckCheck size={15} /> Approve {waitingApproval.toLocaleString("en-US")} planned
+                <CheckCheck size={15} /> {o.awaitingOwnerOk ? "Owner said OK: approve" : "Approve"} {waitingApproval.toLocaleString("en-US")} planned
               </Btn>
             )}
             {started && (

@@ -121,6 +121,17 @@ describe("end to end", () => {
     const r = await api("POST", `/api/businesses/${bid}/plan`, {});
     expect(r.json.people).toBe(150);
     expect(r.json.firstDay).toBe("2026-09-30");
+    expect(r.json.awaitingOk).toBe(true);
+    // one tap: the welcome text shows the owner the first note word for word; nothing goes until they say OK
+    const msgs = await api("GET", `/api/businesses/${bid}/owner-messages`);
+    const welcome = (msgs.json as unknown as { kind: string; text: string }[]).find((m) => m.kind === "kickoff")!;
+    expect(welcome.text).toMatch(/% of your quotes never got a yes or a no/);
+    expect(welcome.text).toContain("Here's the first note, going out from Sarah:");
+    expect(welcome.text).toContain("Reply OK and the first");
+    expect(welcome.text).not.toContain('Reply "stop"'); // the footer is the same on every note, so it's left off
+    expect(((await api("GET", `/api/businesses/${bid}/touches?status=approved&limit=10`)).json.items as unknown[]).length).toBe(0);
+    const ok = await app.request(`/webhooks/sms/${WH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ From: "+16035550199", Body: "OK" }) });
+    expect(await ok.text()).toContain("the first notes go out");
     const t = await api("GET", `/api/businesses/${bid}/touches?status=approved&limit=1000`);
     const items = t.json.items as { flags: string[]; body: string; step: number }[];
     expect(items.length).toBeGreaterThan(300);

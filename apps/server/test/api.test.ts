@@ -75,7 +75,7 @@ beforeAll(async () => {
   expect(r.status).toBe(201);
   const imp = await api("POST", `/api/businesses/${bid}/imports`, { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
   expect(imp.status).toBe(200);
-  const p = await api("POST", `/api/businesses/${bid}/plan`, {});
+  const p = await api("POST", `/api/businesses/${bid}/plan`, { approve: true });
   expect((p.json as { people: number }).people).toBe(150);
 });
 

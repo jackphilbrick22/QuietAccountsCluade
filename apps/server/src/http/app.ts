@@ -176,6 +176,7 @@ export function overview(state: AccountState, paused: boolean) {
     week: weekNumbers(state, mondayOf(state.dataset.asOf)),
     lift: lift(state.outreach, state.recoveries),
     quiet: quietRates(state),
+    awaitingOwnerOk: state.awaitingOwnerOk,
     health: sendHealth(state),
     guarantee: b.plan.paidOn ? guaranteeCheck(state, state.dataset.asOf) : undefined,
     counts: {

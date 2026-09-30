@@ -1,4 +1,4 @@
-import { addDays, counted, daysBetween, leadCode, markContacted, renewPlan, round2, setBookedOut, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, counted, daysBetween, leadCode, markContacted, ownerApproves, renewPlan, round2, setBookedOut, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
@@ -39,6 +39,8 @@ interface Biz {
 const OPT_OUT = /^(stop|stop ?all|unsubscribe|end|quit|revoke|opt ?out)$/;
 const OPT_IN = /^(start|unstop)$/;
 const HELP = /^(help|info|commands)$/;
+/** An OK to the first note in the welcome text. */
+const APPROVE = /^(ok|okay|k|yes|yep|yeah|yup|go|go ahead|send|send it|send them|start it|looks good|sounds good|good to go|approved?|do it|let'?s go|perfect|great)\b/;
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
 
 const HELP_TEXT =
@@ -149,6 +151,20 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   }
   if (HELP.test(bare)) return { businessId: fallback().id, reply: HELP_TEXT, handled: "help" };
 
+  /* ---- the first note: nothing goes out until the owner says OK ---- */
+  const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk);
+  if (waitingOk.length && APPROVE.test(bare)) {
+    if (waitingOk.length > 1) return askWhich();
+    const b = waitingOk[0]!;
+    if (bare === "yes") await setOwnerTexts(d, fromPhone, undefined); // YES is a carrier opt-in word too
+    let r: { approved: number; firstDay?: string } = { approved: 0 };
+    await d.accounts.withAccount(b.id, (state) => {
+      r = ownerApproves(state, nowLocal(d, state));
+    });
+    const when = r.firstDay ? fmtDay(r.firstDay) : "your next send day";
+    return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone wants a price or a date, you'll get a text with their name and number.`, handled: "approved_first_note" };
+  }
+
   /* ---- the service (one client at a time) ---- */
   if (/^(pause|stop sending|hold)\b/.test(bare)) {
     if (!one) return askWhich();
@@ -258,6 +274,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack" };
   }
 
+  // While the first note waits for their OK, anything else is a change they want made to it.
+  if (waitingOk.length === 1)
+    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
   return { businessId: fallback().id, reply: `Thanks — Jack will read this and get back to you. For a lead, text BOOKED + amount + the #code, DONE, or NO. Text HELP for everything else.`, handled: "unrecognized", needsPerson: true };
 }
 

@@ -59,7 +59,7 @@ describe("owner texts BUSY / OPEN", () => {
     const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
     await api("POST", "/api/businesses", { id: "ridge-tree", name: "Ridgeline Tree Co.", trade: "tree", ownerName: "Dave Ridge", ownerPhone: "+16035550199", signerName: "Sarah", mailingAddress: "14 Mill Rd, Concord, NH 03301", city: "Concord", state: "NH", timezone: "America/New_York" });
     await api("POST", "/api/businesses/ridge-tree/imports", { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
-    await api("POST", "/api/businesses/ridge-tree/plan", {});
+    await api("POST", "/api/businesses/ridge-tree/plan", { approve: true });
   });
   afterAll(() => {
     d.accounts.repo.db.close();
@@ -117,5 +117,66 @@ describe("owner texts BUSY / OPEN", () => {
     expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
     expect(ov.paused).toBe(true);
     expect((ov.counts as { queued: number }).queued).toBe(0);
+  });
+});
+
+describe("the owner OKs the first note by text", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qa-ok-"));
+  const dbPath = join(dir, "qa.db");
+  const TOKEN = "test-operator-token-123";
+  const WH = "test-webhook-secret";
+  const now = new Date("2026-09-29T14:00:00Z");
+  let d: HttpDeps;
+  let app: ReturnType<typeof createApp>;
+  const api = async (method: string, path: string, body?: unknown) => {
+    const res = await app.request(path, { method, headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return (await res.json()) as Record<string, unknown>;
+  };
+  const sms = async (body: string) => {
+    const res = await app.request(`/webhooks/sms/${WH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ From: "+16035550199", Body: body }) });
+    return res.text();
+  };
+  const approved = async () => ((await api("GET", "/api/businesses/ridge-tree/touches?status=approved&limit=5000")).items as unknown[]).length;
+
+  beforeAll(async () => {
+    const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: TOKEN, APP_SECRET: "test-app-secret-0123456789", WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false" });
+    d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email: new LogEmailProvider({ quiet: true }), notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: {} };
+    app = createApp(d);
+    const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
+    await api("POST", "/api/businesses", { id: "ridge-tree", name: "Ridgeline Tree Co.", trade: "tree", ownerName: "Dave Ridge", ownerPhone: "+16035550199", signerName: "Sarah", mailingAddress: "14 Mill Rd, Concord, NH 03301", city: "Concord", state: "NH", timezone: "America/New_York" });
+    await api("POST", "/api/businesses/ridge-tree/imports", { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
+  });
+  afterAll(() => {
+    d.accounts.repo.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("plans the free round but sends nothing until the owner says OK", async () => {
+    const p = await api("POST", "/api/businesses/ridge-tree/plan", {});
+    expect(p.awaitingOk).toBe(true);
+    expect(await approved()).toBe(0);
+    const ov = await api("GET", "/api/businesses/ridge-tree");
+    expect(ov.awaitingOwnerOk).toBeTruthy();
+  });
+
+  it("takes anything but OK as a change request and still sends nothing", async () => {
+    const reply = await sms("Can you say we're in Concord not Bow");
+    expect(reply).toContain("we'll make that change");
+    expect(reply).toContain("Nothing goes out until you say OK");
+    expect(await approved()).toBe(0);
+    const inbox = await api("GET", "/api/review");
+    expect(JSON.stringify(inbox)).toContain("first_note_change");
+  });
+
+  it("starts on OK, once", async () => {
+    const reply = await sms("Looks good");
+    expect(reply).toContain("the first notes go out");
+    const n = await approved();
+    expect(n).toBeGreaterThan(0);
+    const ov = await api("GET", "/api/businesses/ridge-tree");
+    expect(ov.awaitingOwnerOk).toBeFalsy();
+    // a second OK is just an OK now, not a second start
+    expect(await sms("ok")).not.toContain("the first notes go out");
+    expect(await approved()).toBe(n);
   });
 });

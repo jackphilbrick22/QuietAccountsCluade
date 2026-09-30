@@ -111,7 +111,7 @@ export function find(state: AccountState, now: ISODateTime): AccountState {
 /* Writer + Sender: plan a batch                                       */
 /* ------------------------------------------------------------------ */
 
-export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean }): Plan {
+export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean; kickoff?: boolean }): Plan {
   if (!state.scan) find(state, now);
   const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped").map((t) => t.customerId));
   // the comparison group waits ~60 days, then gets worked too (nobody's quote is held back for good)
@@ -131,13 +131,37 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
     if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true, releaseOn: addDays(opts.startOn, HOLDOUT_DAYS) });
   const flagged = plan.touches.filter((t) => t.flags.length).length;
   event(state, now, "writer", "action", `Wrote ${plural(plan.touches.length, "note")} for ${plural(plan.people.length, "person", "people")}`, `Each one about their own job, signed by ${state.dataset.business.signerName}. ${flagged ? `${flagged} need a second look.` : "All passed the quality check."}`);
-  if (plan.firstDay && isTrial && firstEver && !state.ownerMessages.some((m) => m.kind === "kickoff")) ownerMsg(state, now, "kickoff", kickoffText(state, plan.firstDay, plan.people.length));
+  if (plan.firstDay && isTrial && firstEver && opts.kickoff !== false) kickoff(state, now, { awaitOk: !opts.approve });
   if (plan.firstDay) event(state, now, "sender", "action", `Scheduled ${plan.firstDay} → ${plan.lastDay}`, `${state.dataset.business.weeklyNewContacts} new people a week, on your send days, inside your hours.${plan.holdout.length ? ` ${plan.holdout.length} held back to measure true lift.` : ""}`);
   state.updatedAt = now;
   return plan;
 }
 
+/**
+ * The welcome text for the free round: their quiet rate, the first note word for word, and (when
+ * awaitOk) "Reply OK" — nothing goes out until they do. Once only.
+ */
+export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: boolean }): OwnerMessage | undefined {
+  if (state.ownerMessages.some((m) => m.kind === "kickoff")) return undefined;
+  const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
+  if (!firsts.length) return undefined;
+  const firstDay = firsts.map((t) => t.dueAt.slice(0, 10)).sort()[0]!;
+  const people = new Set(firsts.map((t) => t.customerId)).size;
+  if (opts.awaitOk) state.awaitingOwnerOk = now;
+  return ownerMsg(state, now, "kickoff", kickoffText(state, firstDay, people, { awaitOk: opts.awaitOk }));
+}
+
+/** The owner texted OK to the first note: the batch is approved and goes out on schedule. */
+export function ownerApproves(state: AccountState, now: ISODateTime): { approved: number; firstDay?: string } {
+  state.awaitingOwnerOk = undefined;
+  const approved = approveAll(state, now);
+  const firstDay = state.touches.filter((t) => t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort()[0];
+  event(state, now, "sender", "action", "The owner said OK by text", approved ? `${plural(approved, "note")} approved; the first go out ${firstDay}.` : "Nothing was waiting.");
+  return { approved, firstDay };
+}
+
 export function approveAll(state: AccountState, now: ISODateTime): number {
+  state.awaitingOwnerOk = undefined;
   let n = 0;
   for (const t of state.touches) if (t.status === "planned") {
     t.status = "approved";

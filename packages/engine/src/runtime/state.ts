@@ -19,6 +19,8 @@ export interface AccountState {
   ownerMessages: OwnerMessage[];
   /** When the free round's last note went out. */
   trialCompletedOn?: string;
+  /** The welcome text showed the owner the first note; nothing goes out until they reply OK (or the operator approves). */
+  awaitingOwnerOk?: ISODateTime;
   updatedAt: ISODateTime;
 }
 

@@ -151,15 +151,28 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
  * The first text an owner gets, when the free round is scheduled. It's their whole manual: what we found
  * (their own numbers), when notes start, that they don't have to do anything, and the only replies they need.
  */
-export function kickoffText(state: AccountState, firstDay: ISODate, people: number): string {
+export function kickoffText(state: AccountState, firstDay: ISODate, people: number, opts: { awaitOk?: boolean } = { awaitOk: true }): string {
   const b = state.dataset.business;
   const a = state.summary?.audit;
-  const found = a && a.silent.count ? `We found ${a.silent.count.toLocaleString("en-US")} quotes nobody ever said yes or no to (${fmtMoney(a.silent.value, { compact: true })}), plus past customers who are due.` : `We went through everything you sent and found the people worth a note.`;
+  // Their own number first: the share of quotes that never got an answer, and what it's worth.
+  const found =
+    a && a.silent.count && a.sent.count
+      ? `${Math.round((a.silent.count / a.sent.count) * 100)}% of your quotes never got a yes or a no — ${a.silent.count.toLocaleString("en-US")} of them, ${fmtMoney(a.silent.value, { compact: true })}. Nobody said no to that money; nobody asked.`
+      : `We went through everything you sent and found the people worth a note.`;
   const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
+  const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
+  const onDay = firsts.filter((t) => t.dueAt.slice(0, 10) === firstDay).length;
+  // The note they'll see first, word for word (the footer is the same on every note, so it's left off).
+  const sample = [...firsts].sort((x, y) => (x.dueAt < y.dueAt ? -1 : x.dueAt > y.dueAt ? 1 : 0))[0];
+  const cut = sample ? sample.body.lastIndexOf(`\n\n${b.name}`) : -1;
+  const body = sample ? (cut > 0 ? sample.body.slice(0, cut) : sample.body).trim() : "";
   return [
     `${b.ownerFirstName}, it's Quiet Accounts. ${found}`,
     ``,
-    `Starting ${day}, ${b.signerName}'s notes go to the ${people} most likely to answer — each one about their own job, from ${b.name.replace(/\.$/, "")}. You don't have to do anything.`,
+    ...(body ? [b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase() ? `Here's the first note, going out in your name:` : `Here's the first note, going out from ${b.signerName}:`, ``, body, ``] : []),
+    opts.awaitOk === false
+      ? `Starting ${day}, the first ${onDay || people} go out, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. You don't have to do anything.`
+      : `Reply OK and the first ${onDay || people} go out ${day}, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
     ``,
     `When someone wants a price or a date, I'll text you their name, number and what they said. Just reply:`,
     `BOOKED 2400 (the amount) when you book one`,
