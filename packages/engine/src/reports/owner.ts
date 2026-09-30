@@ -52,7 +52,7 @@ export function handoffText(state: AccountState, r: Reply): string {
   const street = c?.address?.street ? `, ${c.address.street}` : "";
   const lines = [
     `${tradeMark(b)} NEW — ${name}${street}`,
-    o ? `Original: ${o.anchorDate ? spokenWhen(o.anchorDate, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
+    o ? `${o.lastDoneOn ? "Last done" : "Original"}: ${(o.lastDoneOn ?? o.anchorDate) ? spokenWhen((o.lastDoneOn ?? o.anchorDate)!, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
     staleNote(b, o, r.receivedAt.slice(0, 10)),
     r.ack ? `We already wrote back that ${r.ack.promise}.` : "",
     `They said: “${oneLine(r.text, 160)}”`,
@@ -385,14 +385,18 @@ function feesThisArrangement(b: BusinessProfile, asOf: ISODate): { total: Money;
   return { total: round2(months * b.plan.monthlyPrice), months, freeMonths: free };
 }
 
+/**
+ * The next monthly charge that closes a period, on or after `asOf - 3 days`. The day they started paying is
+ * the first charge, not the end of a period, so the guarantee is never judged on an empty month.
+ */
 export function nextCharge(paidOn: ISODate, asOf: ISODate): { chargeOn: ISODate; periodStart: ISODate } {
-  let n = 0;
-  let charge = paidOn;
+  let n = 1;
+  let charge = addMonths(paidOn, 1);
   while (daysBetween(charge, asOf) > 3) {
     n++;
     charge = addMonths(paidOn, n);
   }
-  return { chargeOn: charge, periodStart: n === 0 ? paidOn : addMonths(paidOn, n - 1) };
+  return { chargeOn: charge, periodStart: addMonths(paidOn, n - 1) };
 }
 
 export interface GuaranteeCheck {

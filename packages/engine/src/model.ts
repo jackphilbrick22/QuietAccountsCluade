@@ -394,6 +394,8 @@ export interface Opportunity {
   /** Days since the anchor date (quote sent, last job, etc.). */
   ageDays: number;
   anchorDate?: ISODate;
+  /** For work that comes due: when it was last done (the anchor is when it's due). */
+  lastDoneOn?: ISODate;
   /** Plain-English "why this is money on the table". */
   reason: string;
   evidence: string[];

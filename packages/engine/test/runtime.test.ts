@@ -100,6 +100,15 @@ describe("Writer and Sender: the batch", () => {
     expect(next.people.some((id) => first.has(id))).toBe(false);
     expect(s.touches.filter((t) => t.status === "planned")).toHaveLength(next.touches.length);
   });
+  it("a top-up never doubles the weekly pace: what's already scheduled counts", () => {
+    const s = fresh();
+    s.dataset.business.plan.stage = "paying";
+    planBatch(s, NOW, { startOn: START, limitPeople: 300 });
+    planBatch(s, NOW, { startOn: START });
+    const perWeek = new Map<string, number>();
+    for (const t of s.touches.filter((x) => x.step === 1)) perWeek.set(mondayOf(t.dueAt.slice(0, 10)), (perWeek.get(mondayOf(t.dueAt.slice(0, 10))) ?? 0) + 1);
+    expect(Math.max(...perWeek.values())).toBeLessThanOrEqual(s.dataset.business.weeklyNewContacts);
+  });
   it("a paying account holds out a comparison group and records it", () => {
     const s = fresh();
     s.dataset.business.plan.stage = "paying";
@@ -410,6 +419,13 @@ describe("Ledger and Reporter", () => {
       expect(msg.text).toContain(`• ${sent[0]!.customerName}`);
       expect(msg.text).toContain("booked $2,400");
       expect(s.dataset.business.plan.freeMonths).toEqual([]);
+    });
+    it("never judges the day they start paying, and says nothing once they've cancelled", () => {
+      for (const day of ["2026-09-29", "2026-09-30", "2026-10-01", "2026-10-03"]) expect(billingCheck(paying(fresh()), `${day}T09:00:00`)).toBeUndefined();
+      const s = paying(fresh());
+      expect(s.dataset.business.plan.freeMonths).toEqual([]);
+      s.dataset.business.plan.stage = "cancelled";
+      expect(billingCheck(s, "2026-10-31T09:00:00")).toBeUndefined();
     });
     it("stays quiet away from the charge date, and on the trial", () => {
       expect(billingCheck(paying(fresh()), "2026-10-15T09:00:00")).toBeUndefined();

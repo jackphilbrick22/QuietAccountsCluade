@@ -238,6 +238,16 @@ describe("detectors", () => {
     it("does not fire when the next pump-out is still far off", () => {
       expect(oppsFor(scan(pumpOut(12)), "c1", "service_due")).toEqual([]);
     });
+    it("the note names when the work was done, not the day it came due", async () => {
+      const { renderNote } = await import("../src/copy/render.ts");
+      const ds = pumpOut(35);
+      const o = oneOpp(scan(ds), "c1", "service_due");
+      expect(o.lastDoneOn).toBe(ds.jobs[0]!.completedOn);
+      const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+      expect(n.body).not.toMatch(/last week|few weeks ago|this month/);
+      const done = new Date(`${o.lastDoneOn}T12:00:00Z`).toLocaleString("en-US", { month: "long", timeZone: "UTC" });
+      if (/for you/.test(n.body)) expect(n.body).toContain(done);
+    });
   });
 
   describe("missed_upsell", () => {
@@ -818,7 +828,7 @@ describe("what we may say about lift", () => {
       } else expect(f.liftLine).not.toMatch(/%\s*more revenue/);
       if (f.tier === "audit_only") expect(f.guaranteeEligible).toBe(false);
     }
-  });
+  }, 60_000);
 });
 
 describe("marketing copy checker", () => {

@@ -28,6 +28,8 @@ export interface PlanOptions {
   released?: Set<string>;
   /** People we've already written to at some point (changes what a first note may honestly say). */
   contacted?: Set<string>;
+  /** First-note days already scheduled or sent, so a top-up counts them against the daily and weekly pace. */
+  existingStarts?: ISODate[];
 }
 
 export interface Plan {
@@ -128,6 +130,10 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
   const people: string[] = [];
   const dayCount = new Map<ISODate, number>();
   const weekCount = new Map<ISODate, number>();
+  for (const d of opts.existingStarts ?? []) {
+    dayCount.set(d, (dayCount.get(d) ?? 0) + 1);
+    weekCount.set(mondayOf(d), (weekCount.get(mondayOf(d)) ?? 0) + 1);
+  }
   let nowDay = nextAllowed(ds, opts.startOn);
   // Booked out: new work waits until about three weeks before the schedule opens up, so the leads land
   // when the owner can actually take them (owners let quotes die when they're busy, then regret it).

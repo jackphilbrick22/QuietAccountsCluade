@@ -121,14 +121,16 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
       out.push({ ...rec(r, { kind: "quote", id: src.id }, src.total, (src.convertedOn ?? src.approvedOn)!, "same_record", 1), tier: "traced" });
       continue;
     }
-    // 2) any new job for this customer in the window
-    const job = (jobsBy.get(r.customerId) ?? [])
+    // 2) every new job for this customer in the window: one credit per job, not one per person
+    const jobs = (jobsBy.get(r.customerId) ?? [])
       .filter((j) => j.status !== "cancelled" && !used.has(j.id) && inWindow(j.createdOn ?? j.scheduledOn ?? j.completedOn))
-      .sort((a, b) => ((a.createdOn ?? a.scheduledOn ?? "") < (b.createdOn ?? b.scheduledOn ?? "") ? -1 : 1))[0];
-    if (job) {
-      used.add(job.id);
-      if (job.quoteId) used.add(job.quoteId);
-      out.push({ ...rec(r, { kind: "job", id: job.id }, job.total, (job.createdOn ?? job.scheduledOn ?? job.completedOn)!, "customer_id", 0.9), tier });
+      .sort((a, b) => ((a.createdOn ?? a.scheduledOn ?? "") < (b.createdOn ?? b.scheduledOn ?? "") ? -1 : 1));
+    if (jobs.length) {
+      for (const job of jobs) {
+        used.add(job.id);
+        if (job.quoteId) used.add(job.quoteId);
+        out.push({ ...rec(r, { kind: "job", id: job.id }, job.total, (job.createdOn ?? job.scheduledOn ?? job.completedOn)!, "customer_id", 0.9), tier });
+      }
       continue;
     }
     // 3) a newly approved quote (work agreed, not yet a job in the export)
@@ -164,9 +166,15 @@ function rec(r: OutreachRecord, record: Recovery["record"], value: Money, on: IS
 
 /** Bookings the owner reported from a reply ("booked Mike for $2,400") that the export hasn't shown yet. */
 export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[] {
-  const have = new Set(existing.map((r) => r.customerId));
+  // One per booking the owner told us about (keyed by the reply). Skipped only when that booking is already
+  // on the ledger as a counted job within a month of it; an older or uncounted comeback never blocks it.
+  const have = new Set(existing.map((r) => r.id));
+  const already = (r: Reply) => {
+    const on = (r.ownerContactedAt ?? r.receivedAt).slice(0, 10);
+    return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, on)) <= 30);
+  };
   return replies
-    .filter((r) => r.customerId && r.outcome === "booked" && (r.outcomeValue ?? 0) > 0 && !have.has(r.customerId))
+    .filter((r) => r.customerId && r.outcome === "booked" && (r.outcomeValue ?? 0) > 0 && !have.has(makeId("rec", r.customerId, "reply", r.id)) && !already(r))
     .map((r) => ({
       id: makeId("rec", r.customerId!, "reply", r.id),
       customerId: r.customerId!,

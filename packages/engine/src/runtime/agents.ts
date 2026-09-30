@@ -120,7 +120,9 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
   const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted });
+  // Everything already on the calendar counts against the pace, so a top-up never doubles it.
+  const existingStarts = state.touches.filter((t) => t.step === 1 && ["planned", "approved", "sent", "delivered"].includes(t.status)).map((t) => t.dueAt.slice(0, 10));
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   state.touches.push(...plan.touches.map((t) => ({ ...t, status })));
   for (const id of plan.holdout)
@@ -410,10 +412,18 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
   const found = attribute(state.dataset, state.outreach, { replied });
   // someone who came back quietly and then wrote to us is now traced
   for (const r of state.recoveries) if (r.tier === "after_note" && replied.has(r.customerId)) r.tier = "traced";
-  const known = new Set(state.recoveries.map((r) => r.customerId));
+  // One credit per record (job, quote, invoice), not per person.
+  const known = new Set(state.recoveries.map((r) => `${r.record.kind}:${r.record.id}`));
   let added = 0;
   for (const r of found) {
-    if (known.has(r.customerId)) continue;
+    if (known.has(`${r.record.kind}:${r.record.id}`)) continue;
+    // The export now shows the job the owner told us about: the invoiced figure replaces the owner's.
+    const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30) : undefined;
+    if (told) {
+      Object.assign(told, { record: r.record, value: r.value, match: r.match, confidence: r.confidence, cameBackOn: r.cameBackOn });
+      known.add(`${r.record.kind}:${r.record.id}`);
+      continue;
+    }
     state.recoveries.push(r);
     added++;
     const name = state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? "A customer";
@@ -460,6 +470,8 @@ export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLin
 }
 
 export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  // Only a paying account is charged; a cancelled or paused one gets no billing texts at all.
+  if (state.dataset.business.plan.stage !== "paying") return undefined;
   const g = guaranteeCheck(state, now.slice(0, 10));
   if (!g) return undefined;
   const until = daysBetween(now.slice(0, 10), g.chargeOn);

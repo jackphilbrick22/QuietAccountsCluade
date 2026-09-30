@@ -57,7 +57,9 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   const svc = findService(o.serviceId)?.service;
   const climate = climateOf(b.state);
   const anchor = o.anchorDate;
-  const when = anchor ? spokenWhen(anchor, rc.sendOn) : "a while back";
+  // "We did {job} for you {when}" is about their job, not the day it came due.
+  const doneOn = o.lastDoneOn ?? anchor;
+  const when = doneOn ? spokenWhen(doneOn, rc.sendOn) : "a while back";
   const quoteFamily = ["unanswered_quote", "archived_quote", "changes_requested", "declined_quote"].includes(o.type);
   const stale = quoteFamily && !!anchor && daysBetween(anchor, rc.sendOn) > (b.voice.staleQuoteDays ?? STALE_QUOTE_DAYS);
   // out-of-season work that would do harm (oaks in summer) never gets offered a near-term slot
@@ -80,7 +82,7 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     timingLine: svc?.timingLine?.[climate] ?? "",
     interval: svc?.reserviceMonths ? intervalWords(svc.reserviceMonths) : "",
     service: svc?.label.toLowerCase() ?? "",
-    years: anchor ? humanAge(daysBetween(anchor, rc.sendOn)) : "",
+    years: doneOn ? humanAge(daysBetween(doneOn, rc.sendOn)) : "",
     phoneLine: b.businessPhone ? fmtPhone(b.businessPhone) : "",
     // "split it into two visits" only makes sense on a big job
     bigJob: b.voice.offerOptions && o.value >= Math.max(1500, playbookTicket(b) * 1.5) ? "yes" : "",

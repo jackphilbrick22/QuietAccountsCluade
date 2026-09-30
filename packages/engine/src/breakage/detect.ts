@@ -396,6 +396,7 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : "due next month"} — every ${svc.reserviceMonths >= 24 ? `${Math.round(svc.reserviceMonths / 12)} years` : `${svc.reserviceMonths} months`} is the rule of thumb.`,
       [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
     if (o) {
+      o.lastDoneOn = w.date;
       out.push(o);
       dueFound = true;
     }

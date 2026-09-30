@@ -206,6 +206,11 @@ describe("ownerReported", () => {
     );
     expect(out.map((r) => r.customerId)).toEqual(["c2"]);
   });
+  it("an earlier small comeback we don't count never blocks the real booking", () => {
+    const quiet: Recovery[] = [{ id: "x", customerId: "c1", record: { kind: "job", id: "j1" }, value: 250, cameBackOn: "2026-09-20", match: "customer_id", confidence: 0.9, tier: "after_note" }];
+    const out = ownerReported([reply({ id: "big", outcome: "booked", outcomeValue: 6500 })], quiet);
+    expect(out.map((r) => r.value)).toEqual([6500]);
+  });
 });
 
 describe("lift", () => {
