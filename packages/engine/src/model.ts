@@ -316,6 +316,8 @@ export interface PlanState {
   yearsPaidOn?: ISODate[];
   /** Fees paid under an earlier billing arrangement (a year before going month to month). */
   priorFees?: Money;
+  /** A paid year whose traced jobs didn't cover what was paid: the difference we refunded. */
+  yearRefunds?: { yearStart: ISODate; amount: Money }[];
 }
 
 export interface ImportRecord {

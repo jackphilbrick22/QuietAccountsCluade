@@ -21,6 +21,7 @@ import {
 } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
+import { quietRates } from "../src/breakage/quiet.ts";
 import { emptyDataset, toCSV } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
@@ -337,6 +338,21 @@ describe("Ledger and Reporter", () => {
     return { s, sent, yes, a };
   }
 
+  it("the quiet rate: what their software showed before, and old quotes answered since", () => {
+    const before = quietRates(fresh());
+    expect(before.startedOn).toBeUndefined();
+    expect(before.before.quotes).toBeGreaterThan(50);
+    expect(before.before.rate).toBeGreaterThan(0.2);
+    const { s } = week1();
+    s.dataset.asOf = "2026-10-09";
+    const q = quietRates(s);
+    expect(q.startedOn).toBe(START);
+    // the out-of-office is not an answer; the yes and the stop are
+    if (q.backlog) expect(q.backlog.answered).toBeLessThanOrEqual(2);
+    const text = reportWeek(s, "2026-10-09T16:00:00").text;
+    if (q.backlog) expect(text).toContain(`Old quotes answered so far: ${q.backlog.answered} of ${q.backlog.followed}`);
+  });
+
   it("the owner texts back BOOKED: an owner-reported recovery", () => {
     const { s, yes, a } = week1();
     markContacted(s, yes.id, `${START}T17:30:00`, "booked", 2400);
@@ -488,6 +504,27 @@ describe("Ledger and Reporter", () => {
       expect(renewPlan(m, "monthly", "2027-09-10T09:00:00")).toContain("month to month from October 1");
       expect(m.dataset.business.plan).toMatchObject({ billing: "monthly", paidOn: "2027-10-01", stage: "paying" });
       expect(feesPaid(m.dataset.business, "2027-10-15").total).toBe(4970 + 497);
+    });
+    it("at the year's end, a year that didn't pay for itself refunds the difference, automatically", () => {
+      const s = yearly(fresh());
+      // no traced jobs this year
+      renewalIfDue(s, "2027-10-01T09:00:00");
+      const floorMsg = s.ownerMessages.find((m) => m.refs?.some((r) => r.kind === "year_floor"))!;
+      expect(floorMsg.text).toMatch(/didn't pay for itself, so \$4,970\.00 goes back to your card/);
+      expect(s.dataset.business.plan.yearRefunds).toEqual([{ yearStart: "2026-10-01", amount: 4970 }]);
+      expect(feesPaid(s.dataset.business, "2027-10-02").total).toBe(0);
+      // said once
+      renewalIfDue(s, "2027-10-02T09:00:00");
+      expect(s.ownerMessages.filter((m) => m.refs?.some((r) => r.kind === "year_floor"))).toHaveLength(1);
+    });
+    it("a year whose traced jobs beat the fee refunds nothing and says so", () => {
+      const s = yearly(fresh());
+      const c = s.dataset.customers[0]!;
+      s.recoveries.push({ id: "big", customerId: c.id, record: { kind: "job", id: "j-big" }, value: 7200, cameBackOn: "2027-03-01", match: "customer_id", confidence: 0.9, tier: "traced" });
+      renewalIfDue(s, "2027-10-01T09:00:00");
+      const floorMsg = s.ownerMessages.find((m) => m.refs?.some((r) => r.kind === "year_floor"))!;
+      expect(floorMsg.text).toContain("$7,200 in jobs traced to our notes, against $4,970 you paid");
+      expect(s.dataset.business.plan.yearRefunds ?? []).toEqual([]);
     });
     it("the close offers the year only when the owner's own numbers make it an easy yes", () => {
       const s = fresh();

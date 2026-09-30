@@ -2,6 +2,7 @@ import type { BusinessProfile, ISODate, Money, Opportunity, Recovery, Reply } fr
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, humanAge, isoWeekKey, mondayOf, monthName, round2, spokenWhen, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { pct, quietRates } from "../breakage/quiet.ts";
 import { counted } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
 
@@ -239,6 +240,15 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     `Wrote back: ${w.replied}`,
     `Want a price or a date: ${w.wants}`,
     `Booked: ${w.booked}${w.bookedValue ? ` · ${fmtMoney(w.bookedValue)}` : ""}`,
+    (() => {
+      // the number the whole service drives toward zero
+      const q = quietRates(state);
+      const parts = [
+        q.since && q.since.quotes >= 5 ? `Quotes that went quiet: ${pct(q.since.rate)} (was ${pct(q.before.rate)} before we started)` : "",
+        q.backlog?.followed ? `Old quotes answered so far: ${q.backlog.answered} of ${q.backlog.followed}` : "",
+      ].filter(Boolean);
+      return parts.join("\n");
+    })(),
     w.avgHoursToCall !== undefined ? `Your average time to call them back: ${w.avgHoursToCall}h` : "",
     w.waiting.length ? `\nStill waiting on a call from you: ${w.waiting.slice(0, 6).join(", ")}${w.waiting.length > 6 ? ` +${w.waiting.length - 6} more` : ""}` : "",
     (() => {
@@ -320,7 +330,7 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
     `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list and every new quote you write. Cancel by text, any time.`,
     `And the guarantee: any month nobody asks for a price or a date, you don't pay.`,
     offerYear(state, t.bookedValue)
-      ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. Your price is locked, a quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), and nothing renews without your yes.`
+      ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. If the jobs we trace to our notes don't add up to what you paid, we refund the difference. A quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), your price is locked, and nothing renews without your yes.`
       : "",
     opts.sayYesBy ? `Say yes by ${opts.sayYesBy} and the next batch goes out next week.` : "",
     opts.payLink ?? "",
@@ -336,6 +346,8 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
 export function offerYear(state: AccountState, bookedValue: Money): boolean {
   const b = state.dataset.business;
   const year = annualPrice(b);
+  // The year promises to pay for itself, so it's only offered where that's already near certain.
+  if (state.summary && state.summary.fit.tier === "audit_only" && bookedValue < year) return false;
   return bookedValue >= year || (state.summary?.yearOne.conservative ?? 0) >= year * 5;
 }
 
@@ -354,8 +366,12 @@ export function renewalNotice(state: AccountState, asOf: ISODate): { yearEnds: I
   const value = sum(won, (r) => r.value);
   const asked = state.replies.filter((r) => WANTS.has(r.intent) && inYear(r.receivedAt)).length;
   const refunded = b.plan.freeMonths.filter((d) => inYear(d)).length;
+  const floor = yearFloor(state, started);
   const text = [
     `${b.ownerFirstName}, your year with us ends ${monthName(yearEnds)} ${Number(yearEnds.slice(8))}. Nothing renews unless you say so.`,
+    floor.refund > 0
+      ? `So far the jobs we traced (${fmtMoney(floor.traced)}) haven't covered what you paid (${fmtMoney(floor.paid)}). If it ends that way, the difference comes back to you.`
+      : `The year has paid for itself: ${fmtMoney(floor.traced)} traced to our notes against ${fmtMoney(floor.paid)} paid.`,
     `This year: ${asked} ${asked === 1 ? "person" : "people"} asked for a price or a date, ${won.length} booked, ${fmtMoney(value)} traced to our notes.${refunded ? ` ${refunded} quiet ${refunded === 1 ? "month" : "months"} refunded.` : ""}`,
     `Reply RENEW to keep ${fmtMoney(annualPrice(b))} for another year, MONTHLY to go month to month at ${fmtMoney(b.plan.monthlyPrice)}, or nothing and it simply ends.`,
   ].join("\n\n");
@@ -381,16 +397,37 @@ export function annualRefund(b: BusinessProfile): Money {
   return round2(annualPrice(b) / 12);
 }
 
-/** What the owner has actually been charged so far, net of guarantee months (skipped monthly, refunded yearly). */
+/** What the owner has actually been charged so far, net of quiet months and any year that didn't pay for itself. */
 export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
+  const f = grossFees(b, asOf);
+  const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
+  return { ...f, total: round2(f.total - refunded) };
+}
+
+/** Everything charged across billing arrangements, before year-end refunds. */
+export function grossFees(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
   const f = feesThisArrangement(b, asOf);
   return { ...f, total: round2(f.total + (b.plan.priorFees ?? 0)) };
+}
+
+/**
+ * The yearly promise: if the jobs we traced in a paid year don't add up to what was paid for it (after any
+ * quiet-month refunds), the difference comes back. Traced jobs only — "came back after our note" never counts.
+ */
+export function yearFloor(state: AccountState, yearStart: ISODate): { paid: Money; traced: Money; refund: Money; yearEnds: ISODate } {
+  const b = state.dataset.business;
+  const yearEnds = addMonths(yearStart, 12);
+  const quiet = b.plan.freeMonths.filter((d) => d >= yearStart && d < yearEnds).length;
+  const paid = round2(annualPrice(b) - quiet * annualRefund(b));
+  const traced = round2(sum(counted(state.recoveries).filter((r) => r.cameBackOn >= yearStart && r.cameBackOn < yearEnds), (r) => r.value));
+  return { paid, traced, refund: round2(Math.max(0, paid - traced)), yearEnds };
 }
 
 function feesThisArrangement(b: BusinessProfile, asOf: ISODate): { total: Money; months: number; freeMonths: number } {
   if (!b.plan.paidOn || b.plan.paidOn > asOf) return { total: 0, months: 0, freeMonths: 0 };
   if (b.plan.billing === "annual") {
-    const years = (b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn]).filter((d) => d <= asOf).length;
+    // Only the years of this arrangement; earlier ones are in priorFees.
+    const years = (b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn]).filter((d) => d >= b.plan.paidOn! && d <= asOf).length;
     const free = b.plan.freeMonths.filter((d) => d <= asOf).length;
     let months = 0;
     while (months < 240 && addMonths(b.plan.paidOn, months) <= asOf) months++;

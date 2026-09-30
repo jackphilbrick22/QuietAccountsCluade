@@ -6,7 +6,7 @@ import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, feesPaid, guaranteeCheck, handoffText, kickoffText, renewalNotice, slaNudge, weeklyReport } from "../reports/owner.ts";
+import { ackFor, closeMessage, grossFees, guaranteeCheck, handoffText, kickoffText, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
@@ -495,18 +495,41 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
 export function renewalIfDue(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
   const b = state.dataset.business;
   const today = now.slice(0, 10);
+  // Settle any year that just ended first (its text goes out on its own); the renewal or pause follows.
+  const settled = settleYears(state, now);
   const r = renewalNotice(state, today);
   if (r && !state.ownerMessages.some((m) => m.kind === "renewal" && m.refs?.some((x) => x.id === r.yearEnds))) {
     event(state, now, "reporter", "action", "Asked about renewing the year", `The year ends ${r.yearEnds}; nothing renews without a yes.`);
     return ownerMsg(state, now, "renewal", r.text, [{ kind: "year_end", id: r.yearEnds }]);
   }
-  if (b.plan.billing !== "annual" || b.plan.stage !== "paying" || !b.plan.paidOn) return undefined;
+  if (b.plan.billing !== "annual" || b.plan.stage !== "paying" || !b.plan.paidOn) return settled;
   const started = [...(b.plan.yearsPaidOn?.length ? b.plan.yearsPaidOn : [b.plan.paidOn])].sort().pop()!;
   const yearEnds = addMonths(started, 12);
-  if (today < yearEnds) return undefined;
+  if (today < yearEnds) return settled;
   b.plan.stage = "paused";
   event(state, now, "guard", "warning", "The year ended without a renewal — sending paused", "Nothing renews without the owner's yes.");
   return ownerMsg(state, now, "info", `${b.ownerFirstName}, your year's up and nothing renewed, so everything is paused. Text MONTHLY to pick back up at ${fmtMoney(b.plan.monthlyPrice)} a month, or RENEW for another year.`, [{ kind: "year_end", id: yearEnds }]);
+}
+
+/** At the end of each paid year: did the traced jobs cover what was paid? If not, the difference goes back. */
+function settleYears(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  const b = state.dataset.business;
+  const plan = b.plan;
+  const today = now.slice(0, 10);
+  const years = plan.yearsPaidOn?.length ? plan.yearsPaidOn : plan.billing === "annual" && plan.paidOn ? [plan.paidOn] : [];
+  for (const y of [...years].sort()) {
+    const f = yearFloor(state, y);
+    if (today < f.yearEnds) continue;
+    if (state.ownerMessages.some((m) => m.refs?.some((r) => r.kind === "year_floor" && r.id === y))) continue;
+    if (f.refund > 0 && !(plan.yearRefunds ?? []).some((r) => r.yearStart === y)) plan.yearRefunds = [...(plan.yearRefunds ?? []), { yearStart: y, amount: f.refund }];
+    event(state, now, "guard", "action", f.refund > 0 ? "The year didn't pay for itself — refunding the difference" : "The year paid for itself", `${fmtMoney(f.traced)} traced vs ${fmtMoney(f.paid)} paid.`);
+    const text =
+      f.refund > 0
+        ? `${b.ownerFirstName}, your year's numbers: ${fmtMoney(f.traced)} in jobs traced to our notes, against ${fmtMoney(f.paid)} you paid. It didn't pay for itself, so ${fmtMoney(f.refund, { cents: true })} goes back to your card, like I promised. Nothing for you to do.`
+        : `${b.ownerFirstName}, your year's numbers: ${fmtMoney(f.traced)} in jobs traced to our notes, against ${fmtMoney(f.paid)} you paid.`;
+    return ownerMsg(state, now, f.refund > 0 ? "free_month" : "info", text, [{ kind: "year_floor", id: y }]);
+  }
+  return undefined;
 }
 
 /** The owner's answer to the renewal (or a switch any time): another year, or month to month from the year's end. */
@@ -519,16 +542,16 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
   const from = yearEnds > today ? yearEnds : today;
   if (choice === "year") {
     if (plan.billing !== "annual") {
-      plan.priorFees = feesPaid(b, today).total;
+      plan.priorFees = grossFees(b, today).total;
       plan.billing = "annual";
       plan.paidOn = from;
-      plan.yearsPaidOn = [from];
+      plan.yearsPaidOn = [...(plan.yearsPaidOn ?? []), from];
     } else plan.yearsPaidOn = [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : [started]), from];
   } else {
-    if (plan.billing === "annual") plan.priorFees = feesPaid(b, from).total;
+    if (plan.billing === "annual") plan.priorFees = grossFees(b, from).total;
     plan.billing = "monthly";
     plan.paidOn = from;
-    plan.yearsPaidOn = undefined;
+    // yearsPaidOn stays as history so the last year is still settled at its end
   }
   plan.stage = "paying";
   const when = `${monthName(from)} ${Number(from.slice(8))}`;
