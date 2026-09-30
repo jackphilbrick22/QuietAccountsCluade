@@ -55,6 +55,24 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
 });
 
 describe("one owner, two businesses on one cell (n4, n48)", () => {
+  it("SKIP searches the name as written first, even when a word in it is also a business's short name", async () => {
+    const h = make();
+    await h.business("aaa-tree", { name: "AAA Tree" });
+    await h.business("bbb-tree", { name: "BBB Tree" });
+    await addLead(h, "aaa-tree", "r-a", "John Bbb", "2026-09-29T08:00:00");
+    await addLead(h, "bbb-tree", "r-b", "John Doe", "2026-09-29T09:00:00");
+    expect(await h.sms("SKIP John Bbb")).toBe("AAA Tree: Done — John Bbb is off the list. We won't write to them again.");
+    expect(state(h, "bbb-tree").dataset.customers.find((c) => c.name === "John Doe")!.doNotContact).toBeFalsy();
+  });
+
+  it("a #code with CANCEL is about the lead, never the whole service", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r1", "Kim Tran", "2026-09-29T08:00:00");
+    expect(await h.sms(`Cancel #${leadCode("r1")}`)).toContain("To cancel the whole service, text CANCEL on its own");
+    expect(state(h, "ridge").dataset.business.plan.stage).not.toBe("cancelled");
+  });
+
   it("books by the #code in the text, pauses and cancels only the one named, and asks instead of guessing", async () => {
     const h = make();
     await h.business("aaa-tree", { name: "AAA Tree" });
@@ -91,7 +109,7 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
     expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
     expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: Done — cancelled\..*Text UNDO BBB by .* tomorrow/);
     // UNDO puts a (non-yearly) cancel back by itself, the same day
-    expect(await h.sms("undo")).toMatch(/^BBB Tree: Back on — nothing was lost\./);
+    expect(await h.sms("undo")).toMatch(/^BBB Tree: Back on\. Nothing was lost\./);
     expect(state(h, "bbb-tree").dataset.business.plan.stage).toBe("trial");
     expect(await h.sms("cancel BBB")).toMatch(/^BBB Tree: Done — cancelled/);
     expect(state(h, "bbb-tree").dataset.business.plan.stage).toBe("cancelled");

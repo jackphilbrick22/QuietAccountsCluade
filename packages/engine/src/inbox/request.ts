@@ -128,6 +128,10 @@ export function readRequestEmail(input: {
   // A forward (or a forward of a forward): the person is in the innermost message. The forwarder's own words and
   // signature above it, and every forwarded header block (To:, Cc:), are the business's, never the lead's.
   const blocks = headerBlocks(all);
+  // Two or more people (not the business, not a platform) in the chain: a property manager forwarding a tenant, an
+  // office forwarding a customer from a personal address. Which one is asking is a person's call, never a guess.
+  const people = [...new Set(blocks.map((b) => extractEmails(b.from)[0]).filter((e): e is string => !!e && !NOT_A_PERSON.test(e) && !isBusinessAddress(e, input) && !(input.ignore ?? []).some((x) => x.toLowerCase() === e)))];
+  if (people.length > 1) return { why: `This forward has more than one person in it (${people.slice(0, 3).join(", ")}). Check who's asking and answer them by hand.` };
   const innermost = blocks.at(-1);
   const inner = innermost?.from;
   const lines = innermost ? all.slice(innermost.end) : all;

@@ -28,6 +28,7 @@ import {
   type TradeId,
   type SourceSystem,
   fmtMoney,
+  undoCancel,
   htmlToText,
   quietRates,
 } from "@qa/engine";
@@ -48,6 +49,7 @@ import {
   holdSending,
   importFiles,
   takeForwardedRequest,
+  finishCancelWithdrawals,
   linkToken,
   ownerLink,
   plan,
@@ -358,6 +360,30 @@ export function createApp(d: HttpDeps): Hono<Env> {
   });
 
   op.post("/businesses/:id/approve", async (c) => c.json({ approved: await approve(d, c.req.param("id")) }));
+
+  // The owner wanted to undo a cancel that set up a yearly refund (or the platform was down): a person restores it.
+  // Refused once a refund text went out, since money may already be back with them.
+  op.post("/businesses/:id/restore-plan", async (c) => {
+    const id = c.req.param("id");
+    const l = d.accounts.peek(id);
+    if (!l) throw new NotFound("No such business");
+    const cancelled = l.state.cancelled;
+    if (!cancelled) return c.json({ error: "Nothing to restore: they aren't cancelled by text." }, 409);
+    const sent = repo.ownerMessages(id).some((m) => m.kind === "refund" && m.delivery === "sent" && m.at >= cancelled.at.slice(0, 19));
+    if (sent) return c.json({ error: "The refund text already went out. Settle the refund with them first, then set the plan up by hand." }, 409);
+    if (!(await finishCancelWithdrawals(d, id))) return c.json({ error: "The sending platform didn't take back the cancelled notes yet. Try again in a few minutes." }, 409);
+    let res: ReturnType<typeof undoCancel>;
+    await d.accounts.withAccount(id, (state) => {
+      res = undoCancel(state, localIso(d.clock(), state.dataset.business.timezone), { override: true, platform: d.email.kind === "sequencer" });
+    });
+    const r = res!;
+    if (!r || "refused" in r) return c.json({ error: "Couldn't restore it." }, 409);
+    // the refund was never issued: its text is withdrawn
+    repo.db.run("UPDATE owner_messages SET delivery = 'cancelled' WHERE business_id = ? AND kind = 'refund' AND delivery IN ('review','pending','failed')", id);
+    if (!r.paused) await holdSending(d, id, "resume");
+    repo.audit(id, "operator", "restore-plan", r);
+    return c.json({ ok: true, ...r });
+  });
 
   op.post("/businesses/:id/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());

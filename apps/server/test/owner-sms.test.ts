@@ -122,8 +122,16 @@ describe("owner texts BUSY / OPEN", () => {
     // money may already be on its way, so UNDO is a person's job
     const undo = await sms("undo");
     expect(undo).toContain("Jack will put everything back himself");
-    ov = await api("GET", "/api/businesses/ridge-tree");
-    expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
+    // the operator restores it (the refund was never issued): plan back, refund withdrawn, the year floor intact
+    const restore = await app.request("/api/businesses/ridge-tree/restore-plan", { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(restore.status).toBe(200);
+    const after = await api("GET", "/api/businesses/ridge-tree");
+    expect((after.business as { plan: { stage: string; yearRefunds?: unknown[] } }).plan.stage).toBe("paying");
+    expect((after.business as { plan: { yearRefunds?: unknown[] } }).plan.yearRefunds ?? []).toHaveLength(0);
+    expect(((await api("GET", "/api/businesses/ridge-tree/owner-messages?delivery=review")) as unknown as { kind: string }[]).some((m) => m.kind === "refund")).toBe(false);
+    // and a second restore finds nothing to do
+    expect((await app.request("/api/businesses/ridge-tree/restore-plan", { method: "POST", headers: { authorization: `Bearer ${TOKEN}` } })).status).toBe(409);
+    await sms("cancel");
     const review = (await api("GET", "/api/review")).items as { kind: string; alertKind?: string }[];
     expect(review.some((i) => i.kind === "alert" && i.alertKind === "undo_refund")).toBe(true);
     // "cancel the note to Karen" is never read as cancelling the service
@@ -234,7 +242,7 @@ describe("the owner OKs the first note by text", () => {
   });
 
   it("an OK with a change in it is a change, never a start", async () => {
-    for (const text of ["OK but don't email Karen Whitfield, she's my neighbor", "Looks good but change 'free estimate' to 'free quote'", "Send me the full list first", "No, say Hey instead of Hi", "cancel the note to the Smiths"]) {
+    for (const text of ["OK but don't email Karen Whitfield, she's my neighbor", "Looks good but change 'free estimate' to 'free quote'", "Send me the full list first", "No, say Hey instead of Hi", "cancel the note to the Smiths", "Hold on, can you change the greeting to Hey", "How many people is this going to?", "Free quote, not free estimate"]) {
       const reply = await sms(text);
       expect(reply, text).toMatch(/we'll make that change|Text CANCEL on its own/);
       expect(await approved(), text).toBe(0);
@@ -242,7 +250,7 @@ describe("the owner OKs the first note by text", () => {
   });
 
   it("starts on OK, once", async () => {
-    const reply = await sms("Looks good");
+    const reply = await sms("Go for it");
     expect(reply).toContain("the first notes go out");
     const n = await approved();
     expect(n).toBeGreaterThan(0);

@@ -193,7 +193,7 @@ export interface DueTouch {
 }
 
 /** Why a held note will never go: the Sender cancels these for good. Anything else only waits. */
-export const HELD_FOR_GOOD = /No sendable email|They replied|Do not contact|Note 1 never went|No longer needed/;
+export const HELD_FOR_GOOD = /No sendable email|They replied|Do not contact|Note \d+ never went|No longer needed/;
 /** Lint flags for what the law or honesty requires (opt-out, address, no fake "Re:", no made-up stats): the note waits for a fix. */
 export const REQUIRED_FLAG = /Missing the|Unfilled blank|Fake Re:|unsourced stat/;
 /** "Dave will call you today" is only true for a while: past this, an unsent answer to a request is dropped. */
@@ -265,7 +265,8 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
     }
     const prev = t.step > 2 && !t.instant ? steps.get(`${t.opportunityId}|${t.step - 1}`) : t.step === 2 ? first : undefined;
     if (prev && t.step > 2 && prev.status !== "sent" && prev.status !== "delivered") {
-      held.push({ touch: t, why: `Waiting for note ${t.step - 1}` });
+      // the note before it can still go: wait for it; it never will (cancelled, skipped, bounced): the rest stops
+      held.push({ touch: t, why: ["approved", "planned", "sending"].includes(prev.status) ? `Waiting for note ${t.step - 1}` : `Note ${t.step - 1} never went out — the rest of the sequence stops` });
       continue;
     }
     // never closer to the note before it than planned (a late start doesn't bunch the sequence up)
@@ -523,7 +524,10 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     }
     // An answer to our answer to their NEW request ("Sounds good, thanks"): the owner already has that lead (the NEW
     // REQUEST text) and they've been told he'll call. Their words join it; no second answer, no second hand-off.
-    const request = touch && c && touch.customerId === c.id && (touch.track === "new_request" || touch.opportunityId.startsWith("req:")) && lately(touch.sentAt ?? touch.dueAt) ? touch : undefined;
+    // Only when the thread says so, or nothing but request answers went to them lately: a platform reply with no
+    // thread falls back to their newest note, and a "yes" to the fence quote must not ride on a request answer.
+    const followedUpLately = !!c && state.touches.some((t) => t.customerId === c.id && t.track !== "new_request" && !t.opportunityId.startsWith("req:") && (t.status === "sent" || t.status === "delivered") && lately(t.sentAt ?? t.dueAt));
+    const request = touch && c && touch.customerId === c.id && (touch.track === "new_request" || touch.opportunityId.startsWith("req:")) && lately(touch.sentAt ?? touch.dueAt) && (touch === answered || !followedUpLately) ? touch : undefined;
     if (request) {
       r.followUpOf = request.opportunityId;
       r.status = "done";
@@ -828,18 +832,28 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
  * the sending platform had is pushed again), the plan and the wait for the owner's OK as they were. A cancel that
  * set up a yearly refund is never undone by software: money may already be on its way, so a person does it.
  */
-export function undoCancel(state: AccountState, now: ISODateTime): { restored: number; paused: boolean } | { refused: "late" | "refund" } | undefined {
+export function undoCancel(state: AccountState, now: ISODateTime, opts: { platform?: boolean; override?: boolean } = {}): { restored: number; stopped: number; paused: boolean } | { refused: "late" | "refund" } | undefined {
   const c = state.cancelled;
   const plan = state.dataset.business.plan;
   if (!c || plan.stage !== "cancelled") return undefined;
-  if (Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return { refused: "late" };
-  if (c.refund) return { refused: "refund" };
+  if (!opts.override && Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return { refused: "late" };
+  if (c.refund && !opts.override) return { refused: "refund" };
+  // an operator restoring the plan withdraws the refund that was never issued
+  if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
   plan.stage = c.stageBefore;
   const before = new Map(c.touches.map((x) => [x.id, x.status]));
+  // On a sending platform the cancel took each person's copy back; a sequence can only be pushed again from its
+  // first note, so one already under way stays stopped (and the owner is told), never "back in line" and stuck.
+  const started = new Set(state.touches.filter((t) => t.step === 1 && (t.status === "sent" || t.status === "delivered")).map((t) => t.opportunityId));
   let restored = 0;
+  const stoppedPeople = new Set<string>();
   for (const t of state.touches) {
     const was = before.get(t.id);
     if (!was || t.status !== "cancelled") continue;
+    if (opts.platform && !t.instant && started.has(t.opportunityId)) {
+      stoppedPeople.add(t.customerId);
+      continue;
+    }
     t.status = was;
     // the cancel took the platform's copy back; the next sync pushes it again
     t.providerId = undefined;
@@ -847,9 +861,9 @@ export function undoCancel(state: AccountState, now: ISODateTime): { restored: n
   }
   if (c.awaitingOwnerOk) state.awaitingOwnerOk = c.awaitingOwnerOk;
   state.cancelled = undefined;
-  event(state, now, "guard", "action", "Owner undid the cancel", `${plural(restored, "note")} back in line.${c.paused ? " Still paused, as before." : ""}`);
+  event(state, now, "guard", "action", opts.override ? "The plan was restored after a cancel" : "Owner undid the cancel", `${plural(restored, "note")} back in line.${stoppedPeople.size ? ` ${plural(stoppedPeople.size, "person was", "people were")} part-way through their notes; those follow-ups stay stopped.` : ""}${c.paused ? " Still paused, as before." : ""}`);
   state.updatedAt = now;
-  return { restored, paused: !!c.paused };
+  return { restored, stopped: stoppedPeople.size, paused: !!c.paused };
 }
 
 /**

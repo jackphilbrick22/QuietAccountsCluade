@@ -575,7 +575,9 @@ export interface GuaranteeCheck {
 export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeCheck | undefined {
   const b = state.dataset.business;
   if (!b.plan.paidOn) return undefined;
-  const { chargeOn, periodStart } = nextCharge(b.plan.paidOn, asOf);
+  // inside a paid year, its months are judged on the year's own dates, even after MONTHLY (which starts at the year's end)
+  const year = paidYearOn(b, asOf);
+  const { chargeOn, periodStart } = nextCharge(year ?? b.plan.paidOn, asOf);
   const inPeriod = (d: string) => d.slice(0, 10) >= periodStart && d.slice(0, 10) < chargeOn;
   // Only people we followed up with count. Someone answering our reply to their own new request was asking
   // anyway; counting them would let requests the owner gets regardless cancel his free month.
@@ -595,7 +597,7 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const t = totals(state);
   // a date, never "since a few weeks ago"
   const since = `${monthName(periodStart)} ${Number(periodStart.slice(8))}`;
-  const annual = b.plan.billing === "annual";
+  const annual = !!year || b.plan.billing === "annual";
   const text = free
     ? `${b.ownerFirstName}, nobody we followed up with asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
     : [

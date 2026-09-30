@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
 import { ackFor, closeMessage, earlyLeaveRefund, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
-import { cancelPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
+import { billingCheck, cancelPlan, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
 import { ASOF, ago, customer, dataset, job, oneOpp, quote, request } from "./fixtures.ts";
@@ -199,7 +199,7 @@ describe("cancel and undo put back exactly what they changed", () => {
     cancelPlan(st, "2026-09-29T11:00:00", { paused: true });
     expect(st.awaitingOwnerOk).toBeUndefined();
     const r = undoCancel(st, "2026-09-29T15:00:00") as { restored: number; paused: boolean };
-    expect(r).toEqual({ restored: 2, paused: true });
+    expect(r).toEqual({ restored: 2, stopped: 0, paused: true });
     expect(st.touches.map((t) => t.status)).toEqual(["planned", "approved"]);
     // the platform's copy was taken back at the cancel: pushed again on the next sync
     expect(st.touches[1]!.providerId).toBeUndefined();
@@ -213,5 +213,29 @@ describe("cancel and undo put back exactly what they changed", () => {
     const m = account();
     cancelPlan(m, "2026-09-15T10:00:00");
     expect(undoCancel(m, "2026-09-16T10:30:00")).toEqual({ refused: "late" });
+  });
+});
+
+describe("review 4: the paid year and a platform undo", () => {
+  it("after MONTHLY mid-year, the paid year's last month is still judged, and a quiet one comes back", () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2026-10-01", yearsPaidOn: ["2026-10-01"], freeMonths: [] };
+    renewPlan(st, "monthly", "2027-09-05T10:00:00");
+    expect(st.dataset.business.plan.paidOn).toBe("2027-10-01");
+    expect(guaranteeCheck(st, "2027-09-29")!.chargeOn).toBe("2027-10-01");
+    const m = billingCheck(st, "2027-09-29T09:00:00");
+    expect(m?.kind).toBe("free_month");
+    expect(m!.text).toContain("goes back to your card");
+    expect(st.dataset.business.plan.freeMonths).toEqual(["2027-10-01"]);
+  });
+  it("UNDO on a sending platform restores sequences from their first note and says which stay stopped", () => {
+    const st = account();
+    const n = (id: string, opp: string, step: number, status: Touch["status"], customerId: string): Touch => ({ id, opportunityId: opp, customerId, channel: "email", step, angle: "check_in", dueAt: "2026-10-01T09:00", status, body: "", flags: [], providerId: `instantly:c:${id}` }) as Touch;
+    st.touches = [n("a1", "oa", 1, "sent", "c1"), n("a2", "oa", 2, "approved", "c1"), n("b1", "ob", 1, "approved", "c2")];
+    cancelPlan(st, "2026-09-29T10:00:00");
+    const r = undoCancel(st, "2026-09-29T11:00:00", { platform: true }) as { restored: number; stopped: number };
+    expect(r).toMatchObject({ restored: 1, stopped: 1 });
+    expect(st.touches.map((t) => t.status)).toEqual(["sent", "cancelled", "approved"]);
+    expect(st.touches[2]!.providerId).toBeUndefined();
   });
 });

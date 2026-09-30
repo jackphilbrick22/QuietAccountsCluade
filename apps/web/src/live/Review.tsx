@@ -263,7 +263,25 @@ function Item({ it }: { it: ReviewItem }) {
           <div className="text-[14px] font-semibold">{it.title}</div>
           {it.detail && <p className="text-[13px] text-ink-2">{it.detail}</p>}
           <div className="flex flex-wrap gap-2">
-            <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
+            {(it.alertKind === "undo_refund" || it.alertKind === "undo_platform") && (
+              <Btn
+                variant="primary"
+                disabled={!!busy}
+                onClick={() =>
+                  void run(
+                    "restore",
+                    async () => {
+                      await api("POST", `/businesses/${encodeURIComponent(bid)}/restore-plan`);
+                      await api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`);
+                    },
+                    "Plan restored; the refund text was withdrawn. Text them it's back on.",
+                  )
+                }
+              >
+                Restore plan
+              </Btn>
+            )}
+            <Btn variant={it.alertKind === "undo_refund" || it.alertKind === "undo_platform" ? "ghost" : "primary"} disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
             <Btn variant="ghost" onClick={() => open("activity")}>

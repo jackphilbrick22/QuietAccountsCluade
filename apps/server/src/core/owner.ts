@@ -1,6 +1,6 @@
 import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { deliverOwnerMessages, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -46,8 +46,10 @@ const SKIP = /^(skip|remove|take off|leave off|leave out|do not (email|write|con
  * An OK to the first note in the welcome text: the whole text has to be an approval ("OK", "Looks good, thanks").
  * "OK but don't email Karen" is a change, not an OK. Matched against the words only (punctuation dropped).
  */
-const APPROVE_WORD = "(ok|okay|k|kk|yes|yep|yeah|yup|ya|sure|go|go ahead|send|send it|send them|start|start it|looks good|look good|sounds good|good to go|approve|approved|do it|lets go|let s go|perfect|great|fine|all good|thats fine|that s fine|love it|good)";
-const APPROVE_TAIL = "(thanks|thank you|thx|ty|jack|man|please|pls|first note|the first note|go ahead|send it|looks good|sounds good|perfect|great|good|all good|lets go|let s go)";
+const APPROVE_WORD = "(ok|okay|k|kk|yes|yep|yeah|yup|ya|sure|go|go ahead|go for it|send|send it|send them|start|start it|looks good|look good|sounds good|good to go|approve|approved|do it|lets go|let s go|perfect|great|fine|all good|thats fine|that s fine|love it|good)";
+const APPROVE_TAIL = "(thanks|thank you|thx|ty|jack|man|please|pls|first note|the first note|go ahead|go for it|send it|send them|and send it|and send them|looks good|sounds good|perfect|great|good|all good|lets go|let s go)";
+/** Commands that still work, as themselves, while the first note waits for the OK (anything else is about the note). */
+const WHILE_WAITING = /^(pause|resume|status|cancel|undo|open|help|renew|monthly|yearly|(busy|booked out|booked solid|slammed|full)( (until|till|thru|through|for) [a-z0-9 ]{1,20}| \d{1,2} (days?|weeks?|months?))?|(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don t (email|write|contact)) .+)$/;
 const APPROVE = new RegExp(`^${APPROVE_WORD}( ${APPROVE_TAIL})*$`);
 /** CANCEL on its own (or "cancel the service"); "cancel the note to Karen" is not cancelling the service. */
 const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it|all|quiet|accounts|account|yes|confirm|please|now))*$/;
@@ -181,6 +183,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone wants a price or a date, you'll get a text with their name and number.`, handled: "approved_first_note" };
   }
 
+  // While one business waits for the OK and nothing else is open, only exact commands act; anything else
+  // ("Hold on, change the greeting", "How many people is this going to?") is about the first note.
+  if (waitingOk.length === 1 && !hasCode && !otherOpen() && !WHILE_WAITING.test(bare))
+    return { businessId: waitingOk[0]!.id, reply: `${tag(waitingOk[0]!)}Got it — we'll make that change and text you the note again. Nothing goes out until you say OK.`, handled: "first_note_change", needsPerson: true };
+
   /* ---- the service (one client at a time) ---- */
   if (/^(pause|stop sending|hold)\b/.test(bare)) {
     if (!one) return askWhich();
@@ -218,6 +225,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: one.id, reply: `${tag(one)}${choice === "year" ? `${reply} Jack will text you the payment link.` : reply}`, handled: `renew_${choice}` };
   }
   // Month to month, cancel by text: one text does it (a yearly plan gets back what it didn't use). UNDO within a day puts it all back.
+  if (/^(cancel|undo)\b/.test(bare) && hasCode)
+    return { businessId: fallback().id, reply: `${one ? tag(one) : ""}About that lead: text NO and the #code if it's off, or BOOKED + amount + the #code. To cancel the whole service, text CANCEL on its own. Jack will read this too.`, handled: "cancel_code", needsPerson: true };
   if (/^cancel\b/.test(bare) && !CANCEL_ALL.test(bare))
     return { businessId: fallback().id, reply: `${one ? tag(one) : ""}Did you mean to cancel the whole service? Text CANCEL on its own for that. To take one person off, text SKIP and their name. Jack will read this too.`, handled: "cancel_unclear", needsPerson: true };
   if (CANCEL_ALL.test(bare)) {
@@ -248,15 +257,21 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (pool.length > 1) return askWhich();
     const b = pool[0];
     if (!b) return { businessId: fallback().id, reply: "There's nothing to undo. Text HELP for what you can text us.", handled: "undo_nothing" };
+    // the cancel's platform withdrawals run now, before anything is pushed again; if the platform refuses, a person does it
+    const cleared = d.accounts.peek(b.id)?.state.cancelled?.refund ? true : await finishCancelWithdrawals(d, b.id);
+    if (!cleared) {
+      await raiseAlert(d, b.id, { kind: "undo_platform", title: `${b.profile.name} wants to undo their cancel`, detail: "The sending platform didn't take back the cancelled notes yet, so nothing was restored. Try the restore once it's reachable." });
+      return { businessId: b.id, reply: `${tag(b)}Glad you're staying. Jack will put everything back himself today and text you.`, handled: "undo_platform", needsPerson: true };
+    }
     let r: ReturnType<typeof undoCancel>;
     await d.accounts.withAccount(b.id, (state) => {
-      r = undoCancel(state, nowLocal(d, state));
+      r = undoCancel(state, nowLocal(d, state), { platform: d.email.kind === "sequencer" });
     });
     const res = r!;
     if (!res || "refused" in res) {
       // a yearly refund may already be on its way: a person puts it back, never the software
       if (res && res.refused === "refund")
-        await raiseAlert(d, b.id, { kind: "undo_refund", title: `${b.profile.name} wants to undo their cancel`, detail: "A yearly refund was set up when they cancelled. If it's already issued, settle that first; then set them back to paying and text them." });
+        await raiseAlert(d, b.id, { kind: "undo_refund", title: `${b.profile.name} wants to undo their cancel`, detail: "A yearly refund was set up when they cancelled. If you haven't issued it, use Restore plan (it withdraws the refund). If you have, settle that with them first." });
       return {
         businessId: b.id,
         reply: res && res.refused === "refund" ? `${tag(b)}Glad you're staying. A refund was already set up for your year, so Jack will put everything back himself today and text you.` : `${tag(b)}It's been more than a day, so Jack will set you back up himself. He'll text you.`,
@@ -264,12 +279,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
         needsPerson: true,
       };
     }
-    // a withdrawal still queued from the cancel would delete the notes we're about to push again
-    d.accounts.repo.dropQueuedWithdrawals(b.id);
     // the owner had paused before cancelling: it stays paused
     if (!res.paused) await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
     d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: res.restored });
-    return { businessId: b.id, reply: `${tag(b)}Back on — nothing was lost. ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel" };
+    const lost = res.stopped ? ` ${res.stopped} ${res.stopped === 1 ? "person was" : "people were"} part-way through their notes; those follow-ups stay stopped.` : "";
+    return { businessId: b.id, reply: `${tag(b)}Back on.${res.stopped ? "" : " Nothing was lost."} ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${lost}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel" };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(bare) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
@@ -304,10 +318,17 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (skip) {
     // The name is what comes before any reason: "don't email the Johnsons, they're family".
     const said = text.replace(CODE, " ").trim().toLowerCase().replace(/^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don'?t (email|write|contact))\s+/, "");
+    const full = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.trim() || skip[4]!;
+    // "SKIP John Smith" where SMITH is also a business's short name: the name as written is searched everywhere
+    // first; only when it finds nobody is the short name taken as naming the business
     const short = named ? tags.get(named.id)!.toLowerCase() : "";
-    const who = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.split(/\s+/).filter((w) => !short || w !== short).join(" ").trim() || skip[4]!;
-    const pool = one ? [one] : all;
-    const hits = pool.flatMap((b) => peopleNamed(d.accounts.peek(b.id)!.state, who).map((c) => ({ b, c })));
+    const stripped = short ? full.split(/\s+/).filter((w) => w !== short).join(" ").trim() : full;
+    let who = full;
+    let hits = all.flatMap((b) => peopleNamed(d.accounts.peek(b.id)!.state, full).map((c) => ({ b, c })));
+    if (!hits.length && named && stripped && stripped !== full) {
+      who = stripped;
+      hits = peopleNamed(d.accounts.peek(named.id)!.state, stripped).map((c) => ({ b: named, c }));
+    }
     if (!hits.length)
       return { businessId: fallback().id, reply: `I couldn't find "${who}" in your records. Jack will check and take them off by hand.`, handled: "skip_unknown", needsPerson: true };
     if (hits.length > 1) {
@@ -331,7 +352,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
 
   const lead = readLeadText(text);
   // a #code names the lead on its own; a business name mentioned in passing never overrides it
-  if (lead) return leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags);
+  if (lead) return leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags, named);
 
   /* ---- "yes": the answer to the close (or the renewal), never a booking ---- */
   if (AFFIRM.test(t)) {
@@ -358,7 +379,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   return { businessId: fallback().id, reply: `Thanks — Jack will read this and get back to you. For a lead, text BOOKED + amount + the #code, DONE, or NO. Text HELP for everything else.`, handled: "unrecognized", needsPerson: true };
 }
 
-async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outcome"]; amount: number }, pool: Biz[], multi: boolean, tags: Map<string, string>): Promise<OwnerCommandResult> {
+async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outcome"]; amount: number }, pool: Biz[], multi: boolean, tags: Map<string, string>, named?: Biz): Promise<OwnerCommandResult> {
   const code = text.match(CODE)?.[1]?.toUpperCase();
   const { outcome, amount } = lead;
   const waiting = (r: Reply) => r.status === "handed_off" && !r.ownerContactedAt;
@@ -379,6 +400,8 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
     for (const h of newest(hits)) if (!perBiz.has(h.biz.id)) perBiz.set(h.biz.id, h);
     picks = [...perBiz.values()];
   }
+  // a code that fits leads in two businesses: the business the owner names breaks the tie
+  if (code && named && picks.length > 1 && picks.some((p) => p.biz.id === named.id)) picks = picks.filter((p) => p.biz.id === named.id);
   const who = (h: (typeof hits)[number]) => `${h.name}${multi ? ` (${h.biz.profile.name})` : ""} #${leadCode(h.reply.id)}`;
   const example = text.replace(CODE, " ").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "").toUpperCase().slice(0, 30) || "BOOKED 2400";
   const fallbackBiz = pool.length === 1 ? pool[0]! : pool.find((b) => hits.some((h) => h.biz.id === b.id)) ?? pool[0]!;
@@ -398,6 +421,8 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
         ? `#${code} matches more than one lead: ${list.map(who).join(", ")}. Text it again with the business name, like "${example} #${code} ${tags.get(list[0]!.biz.id)}".`
         : `Which one? ${picks.length} are waiting: ${list.map(who).join(", ")}. Text it again with the code, like "${example} #${leadCode(list[0]!.reply.id)}".`,
       handled: "ask_lead",
+      // a booking must never be lost to a question: a person sees it too
+      needsPerson: !!code,
     };
   }
   const target = picks[0]!;

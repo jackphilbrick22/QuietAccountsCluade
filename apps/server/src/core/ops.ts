@@ -703,7 +703,7 @@ function leadsFrom(d: Deps, providerIds: string[]): { campaignId: string; email:
 }
 
 /** Take notes back from the platform (never blocklisting): the first few now, the rest by the worker. */
-async function withdrawLeads(d: Deps, bid: string, providerIds: string[], opts: { inline: number }): Promise<void> {
+async function withdrawLeads(d: Deps, bid: string, providerIds: string[], opts: { inline: number; reason?: "cancel" }): Promise<void> {
   if (d.email.kind !== "sequencer" || !providerIds.length) return;
   const leads = leadsFrom(d, providerIds);
   const b = d.accounts.peek(bid)?.state.dataset.business;
@@ -721,7 +721,7 @@ async function withdrawLeads(d: Deps, bid: string, providerIds: string[], opts: 
     }
   }
   // no business id on the task: it must outlive a deleted client
-  if (later.length) d.accounts.repo.enqueue("sequencer.withdraw", { bid, profile: { id: bid, name: b?.name ?? bid }, leads: later }, { runAt: d.clock().toISOString() });
+  if (later.length) d.accounts.repo.enqueue("sequencer.withdraw", { bid, profile: { id: bid, name: b?.name ?? bid }, leads: later, ...(opts.reason ? { reason: opts.reason } : {}) }, { runAt: d.clock().toISOString() });
 }
 
 /** Unsent notes this business handed the platform. */
@@ -774,7 +774,33 @@ export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume"
     });
   const l = d.accounts.peek(bid)!;
   if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : "a pause");
-  if (mode === "cancel") await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0 });
+  if (mode === "cancel") await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0, reason: "cancel" });
+}
+
+/**
+ * UNDO after a CANCEL: the cancel's platform withdrawals still waiting in the queue run now, before anything is
+ * pushed again (a late one would delete the fresh copy). Other queued withdrawals (a SKIP's retry) are left alone.
+ * False when the platform refused: the rest stay queued and a person picks it up.
+ */
+export async function finishCancelWithdrawals(d: Deps, bid: string): Promise<boolean> {
+  if (d.email.kind !== "sequencer") return true;
+  const b = d.accounts.peek(bid)?.state.dataset.business;
+  const tasks = d.accounts.repo.queuedWithdrawals(bid, "cancel");
+  for (const t of tasks) {
+    const left = [...t.leads];
+    try {
+      while (left.length) {
+        const l = left[0]!;
+        await d.email.stopLead(b ?? ({ id: bid, name: bid } as BusinessProfile), l.campaignId, l.email, "withdrawn");
+        left.shift();
+      }
+      d.accounts.repo.finishTask(t.seq, true);
+    } catch (e) {
+      d.log(`[sequencer] undo: withdraw failed for ${bid}: ${(e as Error).message}`);
+      return false;
+    }
+  }
+  return true;
 }
 
 /** The owner moved queued work (BUSY / OPEN): notes the platform already holds are taken back, and pushed again when due. */

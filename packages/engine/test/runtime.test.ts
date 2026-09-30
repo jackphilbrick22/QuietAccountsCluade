@@ -665,3 +665,16 @@ describe("a late start never bunches the notes up", () => {
     expect(held.find((h) => h.touch.id === note2.id)?.why).toBe("Too soon after note 1");
   });
 });
+
+describe("a sequence whose note was pulled", () => {
+  it("stops the rest instead of waiting forever for it", () => {
+    const s = fresh();
+    const n3 = s.touches.find((t) => t.step === 3 && t.status === "approved")!;
+    const n1 = s.touches.find((t) => t.opportunityId === n3.opportunityId && t.step === 1)!;
+    const n2 = s.touches.find((t) => t.opportunityId === n3.opportunityId && t.step === 2)!;
+    markSent(s, n1.id, `${n1.dueAt.slice(0, 10)}T09:00:00`, "msg-1");
+    n2.status = "cancelled";
+    const { held } = dueTouches(s, `${n3.dueAt.slice(0, 10)}T09:30`);
+    expect(held.find((h) => h.touch.id === n3.id)?.why).toBe("Note 2 never went out — the rest of the sequence stops");
+  });
+});

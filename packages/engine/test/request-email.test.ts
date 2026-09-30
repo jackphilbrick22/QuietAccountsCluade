@@ -220,11 +220,22 @@ describe("a forwarded request: the person is the innermost message, never the bu
   it("a forward of a forward (office manager, then the owner): the homeowner, not the office manager", () => {
     const inner = forwarded("Rachel Moore <rachel.moore@outlook.com>", "Mon, Sep 28, 2026", "Stump grinding?", "<sarah@ridgelinetree.com>", "Hi, do you grind stumps? We have three in the back yard from last year. Thanks, Rachel", "Dave, can you call her back? She sounds keen.\nSarah | office (603) 224-8800");
     const nested = forwarded("Sarah Office <sarah@ridgelinetree.com>", "Tue, Sep 29, 2026 at 9:02 AM", "Fwd: Stump grinding?", "Dave <dave@ridgelinetree.com>", inner, "FYI see below\n\nDave\n(603) 224-8811");
-    const r = readRequestEmail({ subject: "Fwd: Fwd: Stump grinding?", text: nested, from: "dave@ridgelinetree.com", ignore: ["dave@ridgelinetree.com"] });
+    // the server always passes the business's own domain (from its addresses): the office manager is the business
+    const r = readRequestEmail({ subject: "Fwd: Fwd: Stump grinding?", text: nested, from: "dave@ridgelinetree.com", ignore: ["dave@ridgelinetree.com"], ignoreDomains: ["ridgelinetree.com"] });
     expect(r.lead).toMatchObject({ name: "Rachel Moore", email: "rachel.moore@outlook.com" });
     expect(r.lead!.phone).toBeUndefined();
     expect(r.lead!.job).toContain("do you grind stumps");
     expect(r.lead!.job).not.toMatch(/call her back|From:/);
+  });
+});
+
+describe("a chain with two people in it", () => {
+  it("a property manager forwarding a tenant: who's asking is a person's call, never a guess", () => {
+    const tenant = forwarded("Jamie Lee <jamie.lee88@gmail.com>", "Mon, Sep 28, 2026", "Leak under sink", "Pat Morgan <pat@harborprops.com>", "Hi Pat, the kitchen sink in 4B is leaking again. Jamie 603-555-0142", "Can you get someone out to 14 Harbor St 4B? Bill us as usual.\nPat Morgan, 603-555-0199");
+    const chain = forwarded("Pat Morgan <pat@harborprops.com>", "Tue, Sep 29, 2026", "Fwd: Leak under sink", "Dave <dave@acmeplumbing.com>", tenant, "");
+    const r = readRequestEmail({ subject: "Fwd: Fwd: Leak under sink", text: chain, from: "dave@acmeplumbing.com", ignore: ["dave@acmeplumbing.com"], ignoreDomains: ["acmeplumbing.com"] });
+    expect(r.lead).toBeUndefined();
+    expect(r.why).toContain("more than one person");
   });
 });
 
@@ -309,5 +320,21 @@ describe("a reply to our answer to a new request", () => {
     expect(r.intent).toBe("stop");
     expect(st.suppressions["karen.whitfield@gmail.com"]).toBe("unsubscribed");
     expect(r.followUpOf).toBeUndefined();
+  });
+});
+
+describe("a yes to a follow-up is never taken for a thanks to a request answer", () => {
+  it("with no thread (a platform reply) and a follow-up sent lately, it's a normal hand-off", async () => {
+    const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } });
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1", { name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"] })] }), `${ASOF}T10:00:00`);
+    st.touches.push({ id: "fq1", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ASOF}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
+    markSent(st, "fq1", `${ASOF}T08:00:00`, "msg-fence");
+    takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`);
+    markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ASOF}T10:07:00`, "msg-req");
+    const r = receiveReply(st, { from: "Karen Whitfield <karen.whitfield@gmail.com>", text: "Yes, let's go ahead with the fence quote. When can you start?", receivedAt: `${ASOF}T11:00:00` });
+    expect(r.followUpOf).toBeUndefined();
+    expect(r.status).toBe("handed_off");
   });
 });
