@@ -719,6 +719,9 @@ describe("parseInstantlyWebhook", () => {
       receivedAt: "2026-10-06T14:03:11.000Z",
       replyEmailId: "0199b1a2-reply",
       toAccount: base.email_account,
+      // no thread headers from Instantly: our lead variable names the record, the step the note
+      customerId: "cus_1",
+      inReplyTo: "instantly:camp-2:pat.lee@example.com:1",
     });
     expect(isInstantlyAutoReply(body)).toBe(false);
   });

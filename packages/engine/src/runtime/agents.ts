@@ -6,7 +6,7 @@ import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../caden
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
@@ -127,6 +127,15 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const existingStarts = state.touches.filter((t) => t.step === 1 && ["planned", "approved", "sent", "delivered"].includes(t.status)).map((t) => t.dueAt.slice(0, 10));
   const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
+  // Someone planned again after their notes were cancelled or skipped: the same opportunity and step give the same
+  // id, and two notes with one id collide in the database (one is kept) and in every lookup by id.
+  const taken = new Set(state.touches.map((t) => t.id));
+  for (const t of plan.touches) {
+    let id = t.id;
+    for (let n = 2; taken.has(id); n++) id = `${t.id}.${n}`;
+    taken.add(id);
+    t.id = id;
+  }
   state.touches.push(...plan.touches.map((t) => ({ ...t, status })));
   for (const id of plan.holdout)
     if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true, releaseOn: addDays(opts.startOn, HOLDOUT_DAYS) });
@@ -224,7 +233,10 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   const due: DueTouch[] = [];
   const held: { touch: Touch; why: string }[] = [];
   // an out-of-office or a bounce isn't the person writing back
-  const replied = new Set(state.replies.filter((r) => r.customerId && r.intent !== "auto_reply" && r.intent !== "bounce").map((r) => r.customerId!));
+  const wrote = state.replies.filter((r) => r.intent !== "auto_reply" && r.intent !== "bounce");
+  const replied = new Set(wrote.filter((r) => r.customerId).map((r) => r.customerId!));
+  // by address too: another record with the same address is the same person
+  const repliedFrom = new Set(wrote.map((r) => r.from.toLowerCase()));
   const health = sendHealth(state);
   // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
   const firsts = new Map<string, Touch>();
@@ -248,7 +260,7 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
       continue;
     }
     // an instant answer to a NEW request goes even if they wrote to us about something else before
-    if (!t.instant && replied.has(c.id)) {
+    if (!t.instant && (replied.has(c.id) || c.emails.some((e) => repliedFrom.has(e.toLowerCase())))) {
       held.push({ touch: t, why: "They replied — the sequence stops" });
       continue;
     }
@@ -422,6 +434,8 @@ export interface InboundEmail {
   receivedAt: ISODateTime;
   /** Provider thread/message id of the note being replied to, when known. */
   inReplyTo?: string;
+  /** The record the sending platform filed this lead under (its lead variables), when there's no thread. */
+  customerId?: string;
 }
 
 /** A second opinion on a reply (e.g. from the AI Inbox agent) that replaces the rule-based reading. */
@@ -445,19 +459,25 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     ? { ...base, intent: override.intent, confidence: override.confidence, summary: override.summary ?? base.summary, extracted: { ...base.extracted, ...override.extracted } }
     : base;
   const answered = msg.inReplyTo ? state.touches.find((t) => t.providerId === msg.inReplyTo) : undefined;
-  // Two records can share an address (Jobber made a new client for a new request): the thread says which one wrote.
-  const threadCustomer = answered ? customerById(state.dataset, answered.customerId) : undefined;
-  const sender = threadCustomer?.emails.some((e) => e.toLowerCase() === email) ? threadCustomer : customerByEmail(state.dataset, email);
+  const newestSent = (ids: Set<string>) => state.touches.filter((t) => ids.has(t.customerId) && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
+  // Every record at this address (Jobber makes a new client for a new request, so one person can be two).
+  const sharing = state.dataset.customers.filter((x) => x.emails.some((e) => e.toLowerCase() === email));
+  // Which one wrote: the thread says, or the record the sending platform filed the lead under; with neither, the
+  // one we wrote to last, never simply the first on file.
+  const threadCustomer = answered ? customerById(state.dataset, answered.customerId) : msg.customerId ? customerById(state.dataset, msg.customerId) : undefined;
+  const lastWritten = sharing.length > 1 ? newestSent(new Set(sharing.map((x) => x.id))) : undefined;
+  const sender = threadCustomer?.emails.some((e) => e.toLowerCase() === email) ? threadCustomer : ((lastWritten && customerById(state.dataset, lastWritten.customerId)) ?? customerByEmail(state.dataset, email));
   // A bounce comes from the mail system, not the person: find them by the note it answers, or the address it names.
   const bounced =
     reading.intent === "bounce" && !sender
       ? (answered && customerById(state.dataset, answered.customerId)) || extractEmails(msg.text).map((e) => customerByEmail(state.dataset, e)).find(Boolean)
       : undefined;
-  // A spouse or a forward answering our note is still about the person we wrote to.
-  const c = sender ?? bounced ?? (reading.intent !== "bounce" && answered ? customerById(state.dataset, answered.customerId) : undefined);
-  const touch = msg.inReplyTo
-    ? answered
-    : state.touches.filter((t) => t.customerId === c?.id && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
+  // A spouse or a forward answering our note is still about the person we wrote to, even when the spouse has a
+  // record of their own: the reply is credited to the note it answers.
+  const c = reading.intent === "bounce" ? (sender ?? bounced) : (threadCustomer ?? sender);
+  const touch = msg.inReplyTo ? answered : c ? newestSent(new Set([c.id])) : undefined;
+  // everyone this reply speaks for: the person we wrote to, the one who wrote, and every record at their address
+  const household = [...new Map([c, sender, ...sharing].filter((x): x is Customer => !!x).map((x) => [x.id, x])).values()];
   const r: Reply = {
     id,
     customerId: c?.id,
@@ -479,9 +499,9 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   if (r.intent === "stop" || r.intent === "complaint") {
     const why = r.intent === "complaint" ? "complained" : "unsubscribed";
     state.suppressions[email] = why;
-    // from another address in our thread (an alias, a spouse): the address we wrote to is done too
-    if (c && !sender) for (const e of c.emails) state.suppressions[e] = why;
-    if (c) stopSequence(state, c.id);
+    // from another address in our thread (an alias, a spouse, known or not): the address we wrote to is done too
+    if (c && c !== sender) for (const e of c.emails) state.suppressions[e] = why;
+    for (const x of household) stopSequence(state, x.id);
     r.status = "done";
     event(state, now, "guard", r.intent === "complaint" ? "warning" : "action", `${name} asked to stop — removed everywhere`, reading.summary, c ? [{ kind: "customer", id: c.id }] : undefined);
     if (r.intent === "complaint") ownerMsg(state, now, "info", `Heads up: ${name} was unhappy about the note. We removed them from everything. What they said: “${r.text.slice(0, 160)}”`);
@@ -501,7 +521,8 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     event(state, now, "inbox", "info", `${name}: out-of-office reply`, "Sequence continues as planned.");
     return r;
   }
-  if (c) stopSequence(state, c.id);
+  // they wrote back: nothing more goes to anyone this reply speaks for
+  for (const x of household) stopSequence(state, x.id);
 
   const lately = (at?: string) => !!at && daysBetween(at.slice(0, 10), now.slice(0, 10)) <= 14;
   const isRequestAnswer = (t: Touch) => t.track === "new_request" || t.opportunityId.startsWith("req:");
@@ -915,7 +936,9 @@ export function peopleNamed(state: AccountState, text: string): Customer[] {
 export function skipPerson(state: AccountState, customerId: string, now: ISODateTime, by: string): { cancelled: number; withdrawn: string[] } {
   const c = customerById(state.dataset, customerId);
   if (!c) return { cancelled: 0, withdrawn: [] };
-  c.doNotContact = true;
+  // New records and new lists, never an edit in place: saving skips lists it has already seen, and a flag that
+  // never reached the database would put them back on the list after a restart.
+  state.dataset.customers = state.dataset.customers.map((x) => (x.id === customerId ? { ...x, doNotContact: true } : x));
   const withdrawn: string[] = [];
   let cancelled = 0;
   for (const t of state.touches) {
@@ -924,7 +947,16 @@ export function skipPerson(state: AccountState, customerId: string, now: ISODate
     cancelled++;
     if (t.providerId && !withdrawn.includes(t.providerId)) withdrawn.push(t.providerId);
   }
-  for (const o of state.scan?.opportunities ?? []) if (o.customerId === customerId) o.suppressed = "do_not_contact";
+  if (state.scan) {
+    const swapped = new Map<Opportunity, Opportunity>();
+    const opportunities = state.scan.opportunities.map((o) => {
+      if (o.customerId !== customerId) return o;
+      const n = { ...o, suppressed: "do_not_contact" as const };
+      swapped.set(o, n);
+      return n;
+    });
+    state.scan = { ...state.scan, opportunities, primary: state.scan.primary.map((o) => swapped.get(o) ?? o) };
+  }
   event(state, now, "guard", "action", `${c.name} taken off the list`, `${by}.${cancelled ? ` ${plural(cancelled, "queued note")} stopped.` : ""}`);
   state.updatedAt = now;
   return { cancelled, withdrawn };
@@ -1159,8 +1191,15 @@ export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt:
     };
     ds.customers.push(c);
   } else {
-    if (email && !c.emails.includes(email)) c.emails.push(email);
-    if (lead.phone && !c.phones.some((p) => digits(p) === digits(lead.phone!))) c.phones.push(lead.phone);
+    const was = c;
+    const emails = email && !c.emails.includes(email) ? [...c.emails, email] : c.emails;
+    const phones = lead.phone && !c.phones.some((p) => digits(p) === digits(lead.phone!)) ? [...c.phones, lead.phone] : c.phones;
+    // a new record and a new list, never an edit in place: saving skips lists it has already seen
+    if (emails !== c.emails || phones !== c.phones) {
+      c = { ...c, emails, phones };
+      const next = c;
+      ds.customers = ds.customers.map((x) => (x === was ? next : x));
+    }
   }
   const title = (lead.job ?? "").replace(/\s+/g, " ").trim().slice(0, 200) || "New request";
   const requestId = makeId("r", "fwd", c.id, title.toLowerCase(), receivedAt.slice(0, 10));

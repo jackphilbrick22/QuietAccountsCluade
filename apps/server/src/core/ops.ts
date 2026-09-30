@@ -1028,7 +1028,7 @@ async function applyReply(d: Deps, bid: string, ev: ReplyEvent, email: string | 
     // the engine reasons in the business's local time ("call you today" depends on it)
     const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
     const before = state.replies.length;
-    reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: answered }, override);
+    reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: answered, customerId: ev.customerId }, override);
     fresh = state.replies.length > before;
     if (!fresh) return;
     reply.thread = { subject: ev.subject, messageId: ev.messageId, replyEmailId: ev.replyEmailId, toAccount: ev.toAccount };

@@ -104,6 +104,16 @@ describe("Writer and Sender: the batch", () => {
     expect(next.people.some((id) => first.has(id))).toBe(false);
     expect(s.touches.filter((t) => t.status === "planned")).toHaveLength(next.touches.length);
   });
+  it("people planned again after their notes were cancelled get new note ids, never a second note with the same id", () => {
+    const s = fresh();
+    for (const t of s.touches) t.status = "cancelled";
+    const again = planBatch(s, NOW, { startOn: "2026-11-03" });
+    expect(again.people.length).toBeGreaterThan(0);
+    expect(new Set(s.touches.map((t) => t.id)).size).toBe(s.touches.length);
+    // the plan the caller gets back names the notes as they were saved
+    const ids = new Set(s.touches.map((t) => t.id));
+    expect(again.touches.every((t) => ids.has(t.id))).toBe(true);
+  });
   it("a top-up never doubles the weekly pace: what's already scheduled counts", () => {
     const s = fresh();
     s.dataset.business.plan.stage = "paying";

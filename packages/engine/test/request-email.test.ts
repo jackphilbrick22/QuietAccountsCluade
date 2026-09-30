@@ -361,6 +361,55 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     expect(guaranteeCheck(st, ASOF)!.asked).toHaveLength(0);
   });
 
+  it("two records sharing one address, no thread: the one we wrote to last, or the one the platform names", async () => {
+    const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });
+    const setup = () => {
+      const both = ["c0", "c1"].map((id) => customer(id, { name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"] }));
+      const st = emptyState(dataset({ business: paying, customers: both }), `${ago(45)}T08:00:00`);
+      st.touches.push({ id: "fq0", opportunityId: "o-fence", customerId: "c0", channel: "email", step: 1, angle: "check_in", dueAt: `${ago(45)}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
+      markSent(st, "fq0", `${ago(45)}T08:00:00`, "msg-fence");
+      st.touches.push({ id: "fq0b", opportunityId: "o-fence", customerId: "c0", channel: "email", step: 2, angle: "check_in", dueAt: `${ago(-2)}T08:00`, status: "approved", body: "Fence, again", flags: [] } as never);
+      st.touches.push({ id: "rq1", opportunityId: "req:r1", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ASOF}T09:00`, status: "approved", body: "Thanks for reaching out", flags: [], track: "new_request", instant: true } as never);
+      markSent(st, "rq1", `${ASOF}T09:00:00`, "msg-req");
+      return st;
+    };
+    let st = setup();
+    let r = receiveReply(st, { from: "karen.whitfield@gmail.com", text: "Thanks! How much would it cost to take the oak down?", receivedAt: `${ASOF}T10:00:00` });
+    expect(r.customerId).toBe("c1");
+    expect(r.followUpOf).toBe("req:r1");
+    // and she wrote back: the other record's queued fence note stops too
+    expect(st.touches.find((t) => t.id === "fq0b")!.status).toBe("cancelled");
+    st = setup();
+    r = receiveReply(st, { from: "karen.whitfield@gmail.com", text: "Yes, let's go ahead with the fence. When can you start?", receivedAt: `${ASOF}T10:00:00`, customerId: "c0" });
+    expect(r.customerId).toBe("c0");
+    expect(r.touchId).toBe("fq0");
+    expect(r.status).toBe("handed_off");
+  });
+
+  it("a spouse with a record of their own answering our note: credited to the person we wrote to, and a stop stops them", async () => {
+    const { markSent, receiveReply, dueTouches } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });
+    const setup = () => {
+      const jane = customer("c1", { name: "Jane Roberts", firstName: "Jane", emails: ["jane.roberts@gmail.com"] });
+      const john = customer("c2", { name: "John Roberts", firstName: "John", emails: ["john.roberts@gmail.com"] });
+      const st = emptyState(dataset({ business: paying, customers: [jane, john] }), `${ago(10)}T08:00:00`);
+      st.touches.push({ id: "fq1", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ago(10)}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
+      markSent(st, "fq1", `${ago(10)}T08:00:00`, "msg-fence");
+      st.touches.push({ id: "fq2", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 2, angle: "check_in", dueAt: `${ago(-2)}T08:00`, status: "approved", body: "Fence, again", flags: [] } as never);
+      return st;
+    };
+    let st = setup();
+    receiveReply(st, { from: "john.roberts@gmail.com", text: "Please stop emailing us.", inReplyTo: "msg-fence", receivedAt: `${ASOF}T10:00:00` });
+    expect(st.suppressions["jane.roberts@gmail.com"]).toBe("unsubscribed");
+    expect(st.touches.find((t) => t.id === "fq2")!.status).toBe("cancelled");
+    st = setup();
+    const r = receiveReply(st, { from: "john.roberts@gmail.com", text: "Yes, go ahead with the fence. Call me.", inReplyTo: "msg-fence", receivedAt: `${ASOF}T10:00:00` });
+    expect(r.customerId).toBe("c1");
+    expect(r.touchId).toBe("fq1");
+    expect(dueTouches(st, `${ago(-2)}T08:30:00`).due.map((x) => x.touch.id)).not.toContain("fq2");
+  });
+
   it("two records sharing one address: the thread says which one wrote", async () => {
     const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
     const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });

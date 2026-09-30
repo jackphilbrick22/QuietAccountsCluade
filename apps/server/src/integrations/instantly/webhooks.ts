@@ -169,7 +169,15 @@ export function parseInstantlyWebhook(body: unknown, now: Date = new Date()): In
 
   if (REPLY_EVENTS.has(type)) {
     const text = str(p.reply_text) ?? (str(p.reply_html) ? htmlToText(p.reply_html!) : undefined) ?? str(p.reply_text_snippet) ?? "";
-    return { type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at, replyEmailId: str(p.email_id), toAccount: str(p.email_account) };
+    // Instantly sends no thread headers: our own lead variables say which record we wrote to, and the step (when
+    // it's there) which note, so two records sharing one address never get each other's replies.
+    const step = num(p.step);
+    const customerId = leadVar(p, VAR.customerId);
+    return {
+      type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at, replyEmailId: str(p.email_id), toAccount: str(p.email_account),
+      ...(customerId ? { customerId } : {}),
+      ...(campaignId && step !== undefined ? { inReplyTo: `instantly:${campaignId}:${email}:${step}` } : {}),
+    };
   }
   switch (type) {
     case "email_sent": {

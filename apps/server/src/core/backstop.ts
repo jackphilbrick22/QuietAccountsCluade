@@ -38,6 +38,8 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
   const since = rec?.cursor ?? new Date(now.getTime() - FIRST_LOOKBACK_MS).toISOString();
   const out = { checked: 0, processed: 0, unmatched: 0 };
   let newest = since;
+  // the oldest email left for a later poll because this one ran out of thread lookups: the cursor stays before it
+  let deferred: string | undefined;
   let lookups = 0;
   try {
     for (const folder of ["primary", "others"] as const) {
@@ -48,6 +50,10 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
         const key = replyEmailKey(seq.name, e.id);
         if (e.sentByUs || repo.hasWebhook(key) || unmatched.has(key)) continue;
         const match = await matchEmail(d, seq, e, () => lookups++ < MAX_THREAD_LOOKUPS);
+        if (match === "later") {
+          if (!deferred || e.createdAt < deferred) deferred = e.createdAt;
+          continue;
+        }
         if (!match) {
           out.unmatched++;
           if (unmatched.size > 5000) unmatched.clear();
@@ -86,7 +92,8 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
     repo.putIntegration(WORKSPACE, seq.name, { lastSyncAt: now.toISOString(), lastError: `Reply check failed: ${(err as Error).message}` });
     throw err;
   }
-  const cursor = new Date(Math.max(Date.parse(since), Date.parse(newest) - OVERLAP_MS)).toISOString();
+  const upTo = deferred ? Math.min(Date.parse(newest) - OVERLAP_MS, Date.parse(deferred) - 1) : Date.parse(newest) - OVERLAP_MS;
+  const cursor = new Date(Math.max(Date.parse(since), upTo)).toISOString();
   repo.putIntegration(WORKSPACE, seq.name, { cursor, lastSyncAt: now.toISOString(), lastError: null });
   if (out.processed) d.log(`[backstop] read ${out.processed} ${out.processed === 1 ? "reply" : "replies"} no webhook announced`);
   return out;
@@ -99,7 +106,7 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
  * named ({}): the inbound router honors a stop everywhere and leaves anything else to a person. Undefined: nobody
  * we know at all (a newsletter in the shared inbox).
  */
-async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, mayLookUp: () => boolean): Promise<{ businessId?: string; inReplyTo?: string } | undefined> {
+async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, mayLookUp: () => boolean): Promise<{ businessId?: string; inReplyTo?: string } | "later" | undefined> {
   const repo = d.accounts.repo;
   const inCampaign = e.campaignId ? repo.businessesForProvider(`${seq.name}:${e.campaignId}:`) : [];
   const among = inCampaign.length === 1 ? inCampaign[0] : undefined;
@@ -110,7 +117,9 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
   }
   let lead = e.lead ? whoIs(d, e.lead, among) : undefined;
   let ambiguous = !lead && known(e.lead);
-  if (!lead && !ambiguous && e.threadId && seq.threadEmails && mayLookUp()) {
+  if (!lead && !ambiguous && e.threadId && seq.threadEmails) {
+    // out of lookups for this poll: "later", never "nobody", so a spouse's reply isn't written off for good
+    if (!mayLookUp()) return "later";
     for (const t of await seq.threadEmails(e.threadId)) {
       for (const addr of [t.lead, ...(t.sentByUs ? t.to : [t.from])]) {
         lead = addr ? whoIs(d, addr, among) : undefined;

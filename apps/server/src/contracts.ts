@@ -131,6 +131,8 @@ export type InboundEvent =
       /** Sequencer: the provider's id for their reply email, and our mailbox that received it. */
       replyEmailId?: string;
       toAccount?: string;
+      /** Sequencer: the record the lead was uploaded for (our lead variable), when there's no thread to go by. */
+      customerId?: string;
     }
   | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string; touchId?: string }
   | { type: "bounce"; businessId?: string; campaignId?: string; email: string; at: string; detail?: string }

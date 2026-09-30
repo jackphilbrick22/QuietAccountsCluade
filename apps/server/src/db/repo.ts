@@ -127,9 +127,9 @@ export class Repo {
       .reverse();
     const messages = this.db
       .all<{ data: string }>(
-        // Billing texts and SLA nudges always load: "already sent?" is decided from them, and a nudge that fell out
-        // of the window would otherwise go out again after every restart.
-        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge') OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
+        // Billing, renewal, kickoff and refund texts and SLA nudges always load: "already sent?" is decided from them,
+        // and one that fell out of the window would otherwise go out again after every restart.
+        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge','renewal','kickoff','refund') OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
         id,
         id,
       )

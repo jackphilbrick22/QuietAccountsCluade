@@ -321,6 +321,30 @@ describe("owner messages never vanish into a log (n46)", () => {
 });
 
 describe("reminders survive a restart (n17, n53)", () => {
+  it("SKIP survives a deploy: the person stays off the list", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r-erin", "Erin Grant", "2026-09-29T08:00:00");
+    // one more save first, so the lists are ones the database has already seen
+    await h.d.accounts.withAccount("ridge", () => {});
+    expect(await h.sms("Don't email Erin Grant, they're family")).toContain("Erin Grant is off the list");
+    const a = h.restart();
+    open.push(a);
+    expect(a.d.accounts.peek("ridge")!.state.dataset.customers.find((c) => c.id === "c-r-erin")!.doNotContact).toBe(true);
+  });
+
+  it("a renewal ask is never asked twice after a deploy, however many texts came since", async () => {
+    const h = make();
+    await h.business("ridge");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-renewal", at: "2026-09-20T09:00:00", kind: "renewal", text: "Your year with us ends Oct 20.", refs: [{ kind: "year_end", id: "2026-10-20" }] });
+    });
+    for (let i = 0; i < 320; i++) h.d.accounts.repo.db.run("INSERT INTO owner_messages (business_id, id, at, kind, text, delivery, data) VALUES (?, ?, ?, 'handoff', 'x', 'sent', ?)", "ridge", `om-h-${i}`, `2026-09-2${1 + (i % 8)}T10:00:00`, JSON.stringify({ id: `om-h-${i}`, at: "2026-09-21T10:00:00", kind: "handoff", text: "x" }));
+    const a = h.restart();
+    open.push(a);
+    expect(a.d.accounts.peek("ridge")!.state.ownerMessages.some((m) => m.id === "om-renewal")).toBe(true);
+  });
+
   it("the wait for the OK, the quiet rate before we started and a CANCEL all survive a deploy", async () => {
     const h = make();
     await h.business("ridge");

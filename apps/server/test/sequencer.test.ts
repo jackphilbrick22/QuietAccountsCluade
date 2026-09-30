@@ -204,6 +204,20 @@ describe("the reply backstop", () => {
     const acks = d.accounts.repo.db.all<{ run_at: string }>("SELECT run_at FROM tasks WHERE type = 'reply.ack'");
     expect(acks.map((t) => t.run_at)).toEqual(["2026-10-01T11:00:00.000Z"]); // 7:00 New York
   });
+
+  it("an email left over when a poll runs out of thread lookups is read next time, never written off", async () => {
+    now = new Date("2026-10-01T03:10:00Z");
+    const junk = (n: number) => email(`em-n${n}`, { from_address_email: `news${n}@shop.example`, lead: null, thread_id: `th-n${n}`, timestamp_created: `2026-10-01T03:0${n}:00.000Z`, body: { text: "Big sale" } });
+    const husband = email("em-r5", { from_address_email: "Sam Ng <sam.ng@gmail.com>", lead: null, thread_id: "th-kim", timestamp_created: "2026-10-01T03:05:00.000Z", body: { text: "Kim's husband here. Yes, we'd like it done, call 603-555-0188." } });
+    inbox.primary = [];
+    inbox.others = [junk(1), junk(2), junk(3), husband];
+    inbox.threads["th-kim"] = [email("em-ours-kim", { from_address_email: MAILBOX, to_address_email_list: KIM, i_sent: true, lead: null, thread_id: "th-kim" })];
+    inbox.byId["em-r5"] = husband;
+    expect(await pollReplies(d)).toEqual({ checked: 4, processed: 0, unmatched: 3 });
+    now = new Date(now.getTime() + REPLY_POLL_MS);
+    expect(await pollReplies(d)).toMatchObject({ processed: 1 });
+    expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r5")).toMatchObject({ from: "sam.ng@gmail.com", customerId: "c2" });
+  });
 });
 
 describe("keeping Instantly's side healthy", () => {
