@@ -170,7 +170,8 @@ const CLIENT_HILL = {
   receivesFollowUps: true,
   receivesQuoteFollowUps: true,
   emails: [{ address: "board@hillsidehoa.org", primary: true }],
-  phones: [],
+  // the office line with an extension, and a placeholder someone typed in
+  phones: [{ number: "603-224-1234 ext. 12", primary: true }, { number: "555-555-5555", primary: false }],
   billingAddress: ADDR_HILL,
   tags: { nodes: [{ label: "Commercial" }] },
   clientProperties: { nodes: [{ address: ADDR_HILL }] },
@@ -596,6 +597,8 @@ describe("Jobber pull", () => {
     expect(hill.isCommercial).toBe(true);
     expect(hill).toMatchObject({ name: "Hillside HOA", companyName: "Hillside HOA", firstName: "Pat", lastName: "Moore" });
     expect(hill.address?.street).toBe("1 Hillside Common Clubhouse");
+    // the extension is dropped (it used to be glued on: +603224123412) and the placeholder rejected
+    expect(hill.phones).toEqual(["+16032241234"]);
 
     // the approved quote with an optional item the customer left off
     const q1042 = pulled.quotes.find((q) => q.number === "1042")!;

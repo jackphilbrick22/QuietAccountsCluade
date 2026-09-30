@@ -13,7 +13,8 @@
  * Wiring: createInstantlyProvider({ apiKey: INSTANTLY_API_KEY, sendingAccounts: INSTANTLY_SENDING_ACCOUNTS split on
  * commas, dailyLimit: INSTANTLY_DAILY_LIMIT }). On boot, call provider.ensureWebhooks(webhookUrlFor(PUBLIC_URL,
  * WEBHOOK_SECRET)). Mount POST `${INSTANTLY_WEBHOOK_PATH}/:secret`, check it with webhookSecretMatches, dedupe with
- * instantlyWebhookKey, then call parseInstantlyWebhook.
+ * instantlyWebhookKey, then call parseInstantlyWebhook. The worker (core/backstop.ts) also reads received emails
+ * the webhooks missed and resumes webhooks Instantly disabled.
  */
 export { InstantlyClient, INSTANTLY_API_BASE, type InstantlyClientOptions, type RequestOptions, type Sleep } from "./client.ts";
 export {
@@ -23,12 +24,16 @@ export {
   MAX_LEADS_PER_REQUEST,
   VAR,
   buildCampaignBody,
+  buildInstantCampaignBody,
+  buildInstantSchedule,
   buildSchedule,
   buildSteps,
   campaignName,
   dailyNewLeads,
+  instantCampaignName,
   toInstantlyHtml,
   toInstantlyLead,
+  toReplyHtml,
   type CreateCampaignBody,
   type InstantlyLeadInput,
 } from "./campaign.ts";
@@ -42,9 +47,11 @@ export {
   instantlyWebhookKey,
   isInstantlyAutoReply,
   parseInstantlyWebhook,
+  resumeDisabledWebhooks,
   webhookSecretMatches,
   webhookUrlFor,
   type EnsureWebhooksResult,
   type InstantlyWebhookPayload,
 } from "./webhooks.ts";
+export { addressesIn, recipientsOf, toPlatformEmail, type InstantlyEmail } from "./emails.ts";
 export { createInstantlyProvider, type InstantlyProvider, type InstantlyProviderOptions } from "./provider.ts";

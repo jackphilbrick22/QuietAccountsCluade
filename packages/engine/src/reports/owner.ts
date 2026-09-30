@@ -3,6 +3,7 @@ import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, humanAge, isoWeekKey, mondayOf, monthName, round2, spokenWhen, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { counted } from "../ledger/attribution.ts";
+import { answerTime, promiseTonight } from "../copy/render.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
 
@@ -54,13 +55,20 @@ export function handoffText(state: AccountState, r: Reply): string {
     `${tradeMark(b)} NEW — ${name}${street}`,
     o ? `${o.lastDoneOn ? "Last done" : "Original"}: ${(o.lastDoneOn ?? o.anchorDate) ? spokenWhen((o.lastDoneOn ?? o.anchorDate)!, r.receivedAt.slice(0, 10)).replace(/^back in /, "") : "—"} · ${o.value ? fmtMoney(o.value) : "—"} · ${o.jobPhrase.replace(/^the /, "")}` : "",
     staleNote(b, o, r.receivedAt.slice(0, 10)),
-    r.ack ? `We already wrote back that ${r.ack.promise}.` : "",
+    r.ack ? ackLine(r.ack.promise, r.receivedAt) : "",
     `They said: “${oneLine(r.text, 160)}”`,
     `Best contact: ${r.extracted.phone ? fmtPhone(r.extracted.phone) : c?.phones[0] ? fmtPhone(c.phones[0]) : c?.emails[0] ?? r.from}${r.extracted.bestTime ? ` (${r.extracted.bestTime})` : ""}`,
     `Wants: ${wantsLine(r)}`,
     `Text back BOOKED + amount, DONE, or NO · #${leadCode(r.id)}`,
   ].filter(Boolean);
   return lines.join("\n");
+}
+
+/** What the owner is told about the instant answer: sent already, or (at night) going at 7am. */
+function ackLine(promise: string, receivedAt: string): string {
+  const sendAt = answerTime(receivedAt);
+  if (sendAt === receivedAt.slice(0, 19)) return `We already wrote back that ${promise}.`;
+  return `At 7am we'll write back that ${promiseTonight(promise, receivedAt, sendAt)}.`;
 }
 
 const WEEKDAY = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -76,8 +84,10 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
   const c = state.dataset.customers.find((x) => x.id === r.customerId);
   if (!c) return undefined;
   const first = c.firstName && !/^(customer|client|owner|resident|homeowner)$/i.test(c.firstName) ? c.firstName : "";
-  const hour = Number(r.receivedAt.slice(11, 13));
-  const today = r.receivedAt.slice(0, 10);
+  // worded for when it goes: a reply at 11pm is answered at 7am, when "today" means the next day
+  const sendAt = answerTime(r.receivedAt);
+  const hour = Number(sendAt.slice(11, 13));
+  const today = sendAt.slice(0, 10);
   let when = "today";
   if (hour >= 15 || [0, 6].includes(new Date(`${today}T12:00:00Z`).getUTCDay())) {
     let d = addDays(today, 1);
@@ -189,6 +199,14 @@ export function weekNumbers(state: AccountState, monday: ISODate): WeekNumbers {
   };
 }
 
+/** An answer to a new request sent this soon after it reached us counts as "within minutes". */
+const FAST_ANSWER_MINUTES = 30;
+
+/** Minutes between two local wall-clock times ("2026-10-06T08:17"). */
+function minutesBetween(from: string, to: string): number {
+  return (Date.parse(`${to.slice(0, 16)}:00Z`) - Date.parse(`${from.slice(0, 16)}:00Z`)) / 60_000;
+}
+
 /** Friday report: what came back leads, then the counts. */
 export function weeklyReport(state: AccountState, monday: ISODate): string {
   const b = state.dataset.business;
@@ -209,10 +227,14 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
       const end = addDays(mondayOf(monday), 7);
       const inWk = (t: { sentAt?: string; dueAt: string }) => { const d = (t.sentAt ?? t.dueAt).slice(0, 10); return d >= mondayOf(monday) && d < end; };
       const sentT = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && inWk(t));
-      const reqs = sentT.filter((t) => t.track === "new_request").length;
+      const answers = sentT.filter((t) => t.track === "new_request");
+      const reqs = answers.length;
+      // "within minutes" only for answers whose recorded send time says so (night requests wait for 7am)
+      const fast = answers.filter((t) => minutesBetween(t.askedAt ?? t.dueAt, t.sentAt ?? t.dueAt) <= FAST_ANSWER_MINUTES).length;
       const fresh = new Set(sentT.filter((t) => t.track === "fresh_quote").map((t) => t.customerId)).size;
       if (!reqs && !fresh) return "";
-      return `Always on: ${[reqs ? `answered ${reqs} new ${reqs === 1 ? "request" : "requests"} within minutes` : "", fresh ? `followed up ${fresh} new ${fresh === 1 ? "quote" : "quotes"}` : ""].filter(Boolean).join(", ")}`;
+      const answered = `answered ${reqs} new ${reqs === 1 ? "request" : "requests"}${fast === reqs ? " within minutes" : fast ? ` (${fast} within minutes)` : ""}`;
+      return `Always on: ${[reqs ? answered : "", fresh ? `followed up ${fresh} new ${fresh === 1 ? "quote" : "quotes"}` : ""].filter(Boolean).join(", ")}`;
     })(),
     `Wrote back: ${w.replied}`,
     `Want a price or a date: ${w.wants}`,

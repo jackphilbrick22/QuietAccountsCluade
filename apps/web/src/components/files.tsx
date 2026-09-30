@@ -1,7 +1,7 @@
 /** Drop zone + "is this right?" preview for exported CSV/TSV files. Shared by onboarding and Settings → Data. */
 import { useRef, useState } from "react";
 import { FileSpreadsheet, Upload, X } from "lucide-react";
-import { previewFile, type FileIn, type RecordKind, type SourceSystem } from "@qa/engine";
+import { decodeText, previewFile, type FileIn, type RecordKind, type SourceSystem } from "@qa/engine";
 import { cx, Pill } from "./ui";
 import { selectCls } from "./table";
 
@@ -59,7 +59,8 @@ async function stage(f: File): Promise<StagedFile> {
   const base: StagedFile = { key: `${f.name}-${f.size}-${f.lastModified}`, name: f.name, text: "", size: f.size, rows: 0, columns: 0, mapped: 0, confidence: 0, warnings: [] };
   if (!okName(f.name)) return { ...base, error: "Not a CSV/TSV file. In Excel use File → Save As → CSV." };
   try {
-    const text = await f.text();
+    // not f.text(): that is always UTF-8, and Excel's classic CSV is Windows-1252
+    const text = decodeText(new Uint8Array(await f.arrayBuffer()));
     const { table, detection } = previewFile(text, f.name);
     return {
       ...base,

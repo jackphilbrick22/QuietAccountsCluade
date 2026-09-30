@@ -5,6 +5,7 @@ import {
   bannedStatIn,
   playbook,
   answerNewRequests,
+  answerTime,
   approveAll,
   counted,
   sendableEmail,
@@ -43,7 +44,7 @@ import { draftAnswer, readReplyWithClaude } from "../agents/replies.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
 import { suggestMapping } from "../agents/mapping.ts";
 import type { Accounts } from "./accounts.ts";
-import { localHour, localIso } from "./clock.ts";
+import { localIso } from "./clock.ts";
 import { decrypt, encrypt } from "./crypto.ts";
 
 export interface Deps {
@@ -298,7 +299,11 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
   return { sent, failed, held };
 }
 
-/** Sequencer mode: push people whose first note is due within a week, with all their notes. */
+/**
+ * Sequencer mode: push people whose first note is due within a week, with all their notes. An instant answer to
+ * a new request goes to the business's instant campaign instead: the nurture campaign puts follow-ups first,
+ * caps new leads a day and sends on weekdays only, so an evening request could wait days for its "thanks".
+ */
 export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider): Promise<{ sent: number; failed: number; held: number }> {
   const loaded = d.accounts.peek(bid);
   if (!loaded) return { sent: 0, failed: 0, held: 0 };
@@ -306,21 +311,28 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const b = state.dataset.business;
   const at = nowLocal(d, state);
   const horizon = new Date(Date.parse(`${at.slice(0, 10)}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
-  const byCustomer = new Map<string, Touch[]>();
+  const byLead = new Map<string, Touch[]>();
   for (const t of state.touches) {
     if (t.status !== "approved" || t.providerId) continue;
-    (byCustomer.get(t.customerId) ?? byCustomer.set(t.customerId, []).get(t.customerId)!).push(t);
+    const key = `${t.instant ? "instant" : "nurture"}|${t.customerId}`;
+    (byLead.get(key) ?? byLead.set(key, []).get(key)!).push(t);
   }
-  const groups = new Map<number, SequencedLead[]>();
-  for (const [cid, ts] of byCustomer) {
-    ts.sort((x, y) => x.step - y.step);
+  const groups = new Map<string, { instant: boolean; steps: number; leads: SequencedLead[] }>();
+  // One person, one answer: a second request in the same sync doesn't get a second "thanks".
+  const extra: string[] = [];
+  for (const [key, all] of byLead) {
+    const instant = key.startsWith("instant|");
+    all.sort((x, y) => x.step - y.step || x.dueAt.localeCompare(y.dueAt));
+    const inFlight = instant && state.touches.some((x) => x.instant && x.customerId === all[0]!.customerId && x.status === "approved" && x.providerId);
+    const ts = inFlight ? [] : instant ? all.slice(0, 1) : all;
+    if (instant) extra.push(...all.slice(ts.length).map((t) => t.id));
     if (!ts[0] || ts[0].step !== 1 || ts[0].dueAt.slice(0, 10) > horizon) continue;
-    const c = customerById(state.dataset, cid);
+    const c = customerById(state.dataset, ts[0].customerId);
     const email = c ? sendableEmail(c.emails, state.suppressions) : undefined;
     if (!c || !email) continue;
     if (!(await deliverable(d, bid, email))) continue;
     const lead: SequencedLead = {
-      customerId: cid,
+      customerId: c.id,
       opportunityId: ts[0].opportunityId,
       email,
       firstName: c.firstName,
@@ -328,60 +340,110 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
       companyName: c.companyName,
       notes: ts.map((t) => ({ touchId: t.id, step: t.step, subject: t.subject ?? "", body: t.body, dueAt: t.dueAt })),
     };
-    (groups.get(ts.length) ?? groups.set(ts.length, []).get(ts.length)!).push(lead);
+    const gk = instant ? "instant" : String(ts.length);
+    (groups.get(gk) ?? groups.set(gk, { instant, steps: ts.length, leads: [] }).get(gk)!).leads.push(lead);
   }
   if (!groups.size || loaded.paused) return { sent: 0, failed: 0, held: 0 };
   let pushed = 0;
+  let answers = 0;
   let failed = 0;
   const done = new Map<string, string>();
-  for (const [steps, leads] of groups) {
+  for (const g of groups.values()) {
     try {
-      const { campaignId } = await seq.ensureCampaign(b, { maxSteps: steps });
-      const res = await seq.upsertLeads(b, campaignId, leads);
+      const { campaignId } = await seq.ensureCampaign(b, g.instant ? { maxSteps: 1, instant: true } : { maxSteps: g.steps });
+      const res = await seq.upsertLeads(b, campaignId, g.leads);
       const skipped = new Set(res.skipped.map((s) => s.email));
-      for (const l of leads) if (!skipped.has(l.email)) for (const n of l.notes) done.set(n.touchId, `${seq.name}:${campaignId}:${l.email}:${n.step}`);
-      pushed += leads.length - skipped.size;
+      for (const l of g.leads) if (!skipped.has(l.email)) for (const n of l.notes) done.set(n.touchId, `${seq.name}:${campaignId}:${l.email}:${n.step}`);
+      if (g.instant) answers += g.leads.length - skipped.size;
+      else pushed += g.leads.length - skipped.size;
     } catch (e) {
-      failed += leads.length;
+      failed += g.leads.length;
       d.log(`[sequencer] ${bid} push failed: ${(e as Error).message}`);
     }
   }
-  if (done.size)
+  if (done.size || extra.length)
     await d.accounts.withAccount(bid, (s) => {
       for (const t of s.touches) {
         const p = done.get(t.id);
         if (p && !t.providerId) t.providerId = p;
+        if (extra.includes(t.id) && t.status === "approved") t.status = "cancelled";
       }
-      s.events.push({ id: `ev_push_${at}`, at, agent: "sender", kind: "action", title: `Handed ${pushed} people to the sending platform`, detail: `Their notes go out on your schedule from your warmed-up mailboxes.` });
+      if (pushed) s.events.push({ id: `ev_push_${at}`, at, agent: "sender", kind: "action", title: `Handed ${pushed} people to the sending platform`, detail: `Their notes go out on your schedule from your warmed-up mailboxes.` });
+      if (answers) s.events.push({ id: `ev_push_instant_${at}`, at, agent: "sender", kind: "action", title: `Sent ${answers} ${answers === 1 ? "answer" : "answers"} to new requests to the sending platform`, detail: "They go out within minutes, 7am–8pm any day." });
     });
-  return { sent: pushed, failed, held: 0 };
+  return { sent: pushed + answers, failed, held: 0 };
 }
 
 /* ------------------------------------------------------------------ */
 /* Inbox: inbound events                                               */
 /* ------------------------------------------------------------------ */
 
+/** Which business (and customer) an address belongs to; among several, the one that has written to them. */
+export function whoIs(d: Deps, email: string): { businessId: string; customerId: string } | undefined {
+  const hits = d.accounts.repo.businessesForEmail(email);
+  if (hits.length <= 1) return hits[0];
+  return hits.find((h) => d.accounts.peek(h.businessId)?.state.touches.some((t) => t.customerId === h.customerId && t.status === "sent")) ?? hits[0];
+}
+
+/**
+ * Something about the sending platform needs a person (a broken mailbox, a webhook it switched off). It becomes a
+ * warning in the activity of each client it affects — where the console already shows warnings — once a day.
+ * Returns the clients warned; with none sending through the platform yet, it is only logged.
+ */
+export async function alertOperator(d: Deps, a: { key: string; title: string; detail: string; campaignId?: string; businessId?: string }): Promise<string[]> {
+  d.log(`[alert] ${a.title} ${a.detail}`);
+  const repo = d.accounts.repo;
+  let bids = a.businessId && repo.exists(a.businessId) ? [a.businessId] : a.campaignId ? repo.businessesForProvider(`${d.email.name}:${a.campaignId}:`) : [];
+  if (!bids.length) bids = repo.businessesForProvider(`${d.email.name}:`);
+  for (const bid of bids)
+    await d.accounts.withAccount(bid, (state) => {
+      const at = nowLocal(d, state);
+      const id = `ev_alert_${a.key}_${at.slice(0, 10)}`;
+      if (!state.events.some((e) => e.id === id)) state.events.push({ id, at, agent: "guard", kind: "warning", title: a.title, detail: a.detail });
+    });
+  return bids;
+}
+
 /** Route a normalized inbound event to the right business and apply it. Returns the business id. */
 export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string | undefined> {
+  if (ev.type === "account_error") {
+    const who = ev.account ?? "a sending mailbox";
+    await alertOperator(d, {
+      key: `acct_${ev.account ?? "unknown"}`,
+      title: `Instantly: ${who} has an error`,
+      detail: `${ev.detail ? `${ev.detail} ` : ""}Notes from ${who} may not go out until it's fixed in Instantly.`,
+      campaignId: ev.campaignId,
+      businessId: ev.businessId,
+    });
+    return ev.businessId;
+  }
   const email = (ev.type === "reply" ? ev.from : ev.email).toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0];
   let bid = ev.businessId;
-  if (!bid && email) {
-    const hits = d.accounts.repo.businessesForEmail(email);
-    bid = hits.length === 1 ? hits[0]!.businessId : hits.find((h) => d.accounts.peek(h.businessId)?.state.touches.some((t) => t.customerId === h.customerId && t.status === "sent"))?.businessId ?? hits[0]?.businessId;
-  }
+  if (!bid && email) bid = whoIs(d, email)?.businessId;
   if (!bid) {
     d.log(`[inbound] no business for ${email ?? "?"} (${ev.type})`);
     return undefined;
   }
   if (ev.type === "sent") {
     await d.accounts.withAccount(bid, (state) => {
-      const c = state.dataset.customers.find((x) => x.emails.includes(email!));
-      if (!c) return;
-      const t = state.touches
-        .filter((x) => x.customerId === c.id && (x.status === "approved" || x.status === "planned"))
-        .sort((a, b) => a.step - b.step)
-        .find((x) => (ev.step ? x.step === ev.step : true));
-      if (t) markSent(state, t.id, ev.sentAt.slice(0, 19), ev.providerId ?? t.providerId);
+      const open = (x: Touch) => x.status === "approved" || x.status === "planned";
+      // The exact note: our qa_touch id, else the campaign + step we pushed it to, else their next queued note.
+      let t = ev.touchId ? state.touches.find((x) => x.id === ev.touchId && open(x)) : undefined;
+      if (!t && ev.campaignId && ev.step) t = state.touches.find((x) => open(x) && x.providerId === `${d.email.name}:${ev.campaignId}:${email}:${ev.step}`);
+      if (!t) {
+        const c = state.dataset.customers.find((x) => x.emails.includes(email!));
+        if (!c) return;
+        t = state.touches
+          .filter((x) => x.customerId === c.id && open(x))
+          .sort((a, b) => a.step - b.step)
+          .find((x) => (ev.step ? x.step === ev.step : true));
+      }
+      if (!t) return;
+      // When it actually went, per the platform, in local time: the weekly "answered within minutes" is measured on it.
+      const at = localIso(new Date(ev.sentAt), state.dataset.business.timezone);
+      // A sequencer's placeholder id names the campaign (pause and stop use it), so it stays.
+      const keep = t.providerId?.startsWith(`${d.email.name}:`);
+      markSent(state, t.id, at, keep ? t.providerId : (ev.providerId ?? t.providerId));
     });
     return bid;
   }
@@ -428,17 +490,25 @@ export async function handleInbound(d: Deps, ev: InboundEvent): Promise<string |
     if (hot?.ack && !hot.ack.sentAt) {
       const task = { replyId: hot.id, to: email ?? ev.from, subject: ev.subject ?? "", messageId: ev.messageId ?? "", replyEmailId: ev.replyEmailId ?? "", toAccount: ev.toAccount ?? "" };
       const tz = d.accounts.peek(bid)?.state.dataset.business.timezone ?? "America/New_York";
-      const hour = localHour(d.clock(), tz);
-      if (hour >= 7 && hour < 20) await sendAck(d, bid, task);
+      const local = localIso(d.clock(), tz);
+      const at = answerTime(local);
+      if (at === local) await sendAck(d, bid, task);
       else {
-        // nobody wants a 2am "thanks" — send it at 7:30 local
-        const wait = ((24 - hour + 7) % 24) * 3600_000 + 30 * 60_000;
+        // nobody wants a 2am "thanks": it goes at 7:00 local, like the answer to a new request
+        const wait = Date.parse(`${at}Z`) - Date.parse(`${local}Z`);
         d.accounts.repo.enqueue("reply.ack", task, { businessId: bid, runAt: new Date(d.clock().getTime() + wait).toISOString() });
       }
     }
     if (reply && d.email.kind === "sequencer" && email) {
-      const reason = reply.intent === "stop" ? "unsubscribed" : reply.intent === "complaint" ? "complained" : reply.intent === "bounce" ? "bounced" : "replied";
+      const r = reply as Reply;
+      const reason = r.intent === "stop" ? "unsubscribed" : r.intent === "complaint" ? "complained" : r.intent === "bounce" ? "bounced" : "replied";
       await stopEverywhere(d, bid, email, reason);
+      // A spouse or a forward answered: Instantly saw no reply from the lead, so their own sequence is stopped too.
+      if (r.intent !== "auto_reply" && r.intent !== "bounce") {
+        const st = d.accounts.peek(bid)?.state;
+        const lead = st ? customerById(st.dataset, r.customerId) : undefined;
+        for (const other of lead?.emails ?? []) if (other !== email) await stopEverywhere(d, bid, other, "replied");
+      }
     }
     await deliverOwnerMessages(d, bid);
     return bid;

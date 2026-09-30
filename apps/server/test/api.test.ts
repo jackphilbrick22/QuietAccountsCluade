@@ -189,3 +189,43 @@ describe("sorting an unclear reply", () => {
     expect(bad.status).toBe(404);
   });
 });
+
+describe("emailed exports", () => {
+  it("reads Excel's Windows-1252 CSV without mangling names", async () => {
+    const r = await api("POST", "/api/businesses", { id: "excel-shop", name: "Excel Shop Tree", ownerName: "Dave Oakley", signerName: "Sarah", mailingAddress: "9 Elm Rd, Hopkinton, NH 03229" });
+    const token = (r.json as { importAddressToken: string }).importAddressToken;
+    // "José O’Brien" as Excel's "CSV (Comma delimited)" writes it: é = 0xE9, ’ = 0x92
+    const csv = Buffer.concat([Buffer.from("Client name,Client email,Title,Total,Sent date\nJos"), Buffer.from([0xe9]), Buffer.from(" O"), Buffer.from([0x92]), Buffer.from("Brien,jose@gmail.com,Oak removal,1200,2025-06-03\n")]);
+    const res = await app.request("/webhooks/inbound-email/test-webhook-secret", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ MessageID: "m-export-1", From: "dave@excelshop.com", To: `import+${token}@in.qa.test`, Subject: "quotes", TextBody: "", Attachments: [{ Name: "quotes.csv", Content: csv.toString("base64"), ContentType: "text/csv" }] }),
+    });
+    expect(res.status).toBe(200);
+    expect(d.accounts.peek("excel-shop")!.state.dataset.customers.map((c) => c.name)).toEqual(["José O’Brien"]);
+  });
+});
+
+describe("the owner's cell (Twilio's To)", () => {
+  const create = (id: string, ownerPhone: string) =>
+    api("POST", "/api/businesses", { id, name: "Oak & Sons Tree", ownerName: "Dave Oakley", ownerPhone, signerName: "Sarah", mailingAddress: "9 Elm Rd, Hopkinton, NH 03229" });
+  const stored = (id: string) => d.accounts.peek(id)!.state.dataset.business.ownerPhone;
+
+  it("is stored as E.164, whatever way it was typed", async () => {
+    expect((await create("oak-sons", "(603) 224-1234")).status).toBe(201);
+    expect(stored("oak-sons")).toBe("+16032241234");
+    expect((await api("PATCH", "/api/businesses/oak-sons", { ownerPhone: "603.555.0142 ext. 9" })).status).toBe(200);
+    expect(stored("oak-sons")).toBe("+16035550142");
+  });
+
+  it("is refused with a plain 400 when it can't be a real number", async () => {
+    const r = await create("oak-bad", "555-555-5555");
+    expect(r.status).toBe(400);
+    expect((r.json as { error: string }).error).toMatch(/cell number doesn't look right/);
+    expect(d.accounts.repo.exists("oak-bad")).toBe(false);
+    const p = await api("PATCH", "/api/businesses/oak-sons", { ownerPhone: "123-456-7890" });
+    expect(p.status).toBe(400);
+    expect((p.json as { issues: { path: string[] }[] }).issues[0]!.path).toEqual(["ownerPhone"]);
+    expect(stored("oak-sons")).toBe("+16035550142");
+  });
+});

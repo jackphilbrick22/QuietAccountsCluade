@@ -29,6 +29,9 @@
  *  - Our lead custom variables (qa_business_id...) come back as top-level payload keys, per "lead data fields may
  *    appear as extra keys". We also look inside a nested `payload` object. When neither has it, businessId is
  *    undefined and the caller resolves the business from campaign_id.
+ *    The same goes for qa_touch_N, which names the exact note an email_sent was for.
+ *  - account_error names the broken mailbox in email_account; its reason, if any, is in error / error_message /
+ *    message / reason. It carries no lead_email.
  *  - A custom label named like "complaint"/"spam" maps to a complaint. This only fires if someone creates such a label.
  *  - The secret travels in the URL path (config WEBHOOK_SECRET is "embedded in inbound webhook URLs"). The route
  *    must be mounted at INSTANTLY_WEBHOOK_PATH + "/:secret".
@@ -153,19 +156,28 @@ export function parseInstantlyWebhook(body: unknown, now: Date = new Date()): In
   const p = asPayload(body);
   if (!p) return undefined;
   const type = p.event_type!.trim();
-  const email = str(p.lead_email)?.toLowerCase();
-  if (!email) return undefined;
   const at = isoTime(p.timestamp, now);
   const campaignId = str(p.campaign_id);
   const businessId = leadVar(p, VAR.businessId);
+  // About a mailbox, not a lead: no lead_email.
+  if (type === "account_error") {
+    const detail = str(p.error) ?? str(p.error_message) ?? str(p.message) ?? str(p.reason);
+    return { type: "account_error", businessId, campaignId, account: str(p.email_account)?.toLowerCase(), detail, at };
+  }
+  const email = str(p.lead_email)?.toLowerCase();
+  if (!email) return undefined;
 
   if (REPLY_EVENTS.has(type)) {
     const text = str(p.reply_text) ?? (str(p.reply_html) ? htmlToText(p.reply_html!) : undefined) ?? str(p.reply_text_snippet) ?? "";
     return { type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at, replyEmailId: str(p.email_id), toAccount: str(p.email_account) };
   }
   switch (type) {
-    case "email_sent":
-      return { type: "sent", businessId, campaignId, email, step: num(p.step), providerId: str(p.email_id), sentAt: at };
+    case "email_sent": {
+      const step = num(p.step);
+      // our own qa_touch_N variable names the exact note, even when the person is in two campaigns
+      const touchId = step !== undefined ? leadVar(p, VAR.touch(step)) : undefined;
+      return { type: "sent", businessId, campaignId, email, step, providerId: str(p.email_id), sentAt: at, ...(touchId ? { touchId } : {}) };
+    }
     case "email_bounced":
       return { type: "bounce", businessId, campaignId, email, at, detail: num(p.step) !== undefined ? `bounced on step ${num(p.step)}` : undefined };
     case "lead_unsubscribed":
@@ -244,4 +256,12 @@ export async function ensureWebhooks(
     result.created.push({ id: created?.id ?? "", eventType });
   }
   return result;
+}
+
+/** Resume every webhook in the workspace that Instantly disabled (status -1) after failed deliveries. */
+export async function resumeDisabledWebhooks(client: InstantlyClient): Promise<{ id: string; url: string; eventType?: string }[]> {
+  const disabled: InstantlyWebhook[] = [];
+  for await (const w of client.paginate<InstantlyWebhook>("/webhooks")) if (w?.id && w.status === -1) disabled.push(w);
+  for (const w of disabled) await client.post(`/webhooks/${encodeURIComponent(w.id)}/resume`, undefined, { idempotent: true });
+  return disabled.map((w) => ({ id: w.id, url: w.target_hook_url, ...(w.event_type ? { eventType: w.event_type } : {}) }));
 }

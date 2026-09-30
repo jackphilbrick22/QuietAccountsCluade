@@ -12,9 +12,11 @@ import {
   readiness,
   relabelReply,
   COUNTING_RULES,
+  decodeText,
   disputeRecovery,
   ledgerCSV,
   ledgerRows,
+  normalizePhone,
   type AccountState,
   type BusinessProfile,
   type FileIn,
@@ -26,6 +28,7 @@ import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
 import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
 import { NotFound } from "../core/accounts.ts";
+import { replyEmailKey } from "../core/backstop.ts";
 import { localIso } from "../core/clock.ts";
 import { answerInThread, approve, deliverOwnerMessages, handleInbound, importFiles, ownerCommand, plan, rescan, sign, syncFsm, unsubscribeByToken, verifySigned, type Deps } from "../core/ops.ts";
 import { verifyTwilioSignature } from "../providers/sms.ts";
@@ -203,9 +206,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.post("/businesses", async (c) => {
     const input = CreateBusiness.parse(await c.req.json());
+    const cell = ownerCell(input.ownerPhone);
+    if (cell === null) return badCell(c);
     const id = input.id ?? `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32)}-${createHash("sha1").update(input.name + d.clock().toISOString()).digest("hex").slice(0, 5)}`;
     const today = localIso(d.clock(), input.timezone).slice(0, 10);
-    await d.accounts.create(defaultProfile(input, id, today), today);
+    await d.accounts.create(defaultProfile({ ...input, ownerPhone: cell }, id, today), today);
     repo.audit(id, "operator", "business.create", { name: input.name });
     return c.json({ id, ownerLink: `${d.cfg.PUBLIC_URL}/o/${sign(d.cfg.APP_SECRET, `owner|${id}`)}`, importAddressToken: sign(d.cfg.APP_SECRET, `import|${id}`) }, 201);
   });
@@ -218,6 +223,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   op.patch("/businesses/:id", async (c) => {
     const patch = ProfilePatch.parse(await c.req.json());
+    if (patch.ownerPhone !== undefined) {
+      const cell = ownerCell(patch.ownerPhone);
+      if (cell === null) return badCell(c);
+      patch.ownerPhone = cell;
+    }
     const id = c.req.param("id");
     await d.accounts.withAccount(id, (state) => {
       const b = state.dataset.business;
@@ -562,9 +572,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
       repo.finishWebhook(id, "ignored");
       return c.json({ ok: true, ignored: true });
     }
+    // One reply, one reading: the reply backstop claims the same key when it reads this email first.
+    const emailKey = ev.type === "reply" && ev.replyEmailId ? replyEmailKey("instantly", ev.replyEmailId) : undefined;
+    if (emailKey && !repo.logWebhook(emailKey, "instantly", raw, d.clock().toISOString())) {
+      repo.finishWebhook(id, "ignored", undefined, "already read by the reply check");
+      return c.json({ ok: true, duplicate: true });
+    }
     try {
       const bid = await handleInbound(d, ev);
       repo.finishWebhook(id, "processed", bid);
+      if (emailKey) repo.finishWebhook(emailKey, "processed", bid);
     } catch (e) {
       repo.finishWebhook(id, "failed", undefined, (e as Error).message);
       repo.enqueue("inbound.retry", { event: JSON.stringify(ev) }, { runAt: new Date(d.clock().getTime() + 60000).toISOString() });
@@ -599,7 +616,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
         return c.json({ ok: true, ignored: true });
       }
       const bid = payload.slice("import|".length);
-      const files = attachments.map((a) => ({ name: a.Name, text: Buffer.from(a.Content, "base64").toString("utf8") }));
+      // Excel's classic CSV is Windows-1252, not UTF-8
+      const files = attachments.map((a) => ({ name: a.Name, text: decodeText(Buffer.from(a.Content, "base64")) }));
       const res = await importFiles(d, bid, files);
       repo.finishWebhook(id, "processed", bid);
       return c.json({ ok: true, imported: res });
@@ -665,6 +683,18 @@ export function createApp(d: HttpDeps): Hono<Env> {
   });
 
   return app;
+}
+
+/** The owner's cell is Twilio's To, so it is stored as E.164. Undefined: none given; null: not a number we can text. */
+function ownerCell(raw: string | undefined): string | undefined | null {
+  if (raw === undefined || !raw.trim()) return undefined;
+  return normalizePhone(raw) ?? null;
+}
+
+const BAD_CELL = "That owner's cell number doesn't look right. Use their real 10-digit mobile number, like 603-555-0142.";
+
+function badCell(c: Context<Env>) {
+  return c.json({ error: BAD_CELL, issues: [{ path: ["ownerPhone"], message: BAD_CELL }] }, 400);
 }
 
 function safeJson(s: string): unknown {

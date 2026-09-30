@@ -305,6 +305,24 @@ describe("Inbox and Dispatcher", () => {
     const r = receiveReply(s, { from: from(e), text: "Can you send me a new price?", receivedAt: `${START}T18:00:00`, inReplyTo: `msg-${e.touch.id}` });
     expect(r).toMatchObject({ intent: "wants_price", touchId: e.touch.id, status: "handed_off" });
   });
+  it("a yes at 11pm is answered at 7am, and both the answer and the owner's text say the right day", () => {
+    const g = sent[7]!;
+    const r = receiveReply(s, { from: from(g), text: "Yes please, call me.", receivedAt: `${START}T23:10:00` });
+    expect(r.intent).toBe("wants_it");
+    // read at 7am Wednesday: "today"
+    expect(r.ack!.text).toMatch(/give you a call today/);
+    // the owner reads it Tuesday night: Wednesday is "tomorrow", and nothing has gone yet
+    const msg = s.ownerMessages.at(-1)!.text;
+    expect(msg).toContain("At 7am we'll write back that you'll call them tomorrow.");
+    expect(msg).not.toContain("We already wrote back");
+  });
+  it("a spouse answering our note from their own address is still that customer's reply", () => {
+    const f = sent[5]!;
+    const r = receiveReply(s, { from: "Pat's husband <someone.else@example.net>", text: "Yes, we still want it done. Call me.", receivedAt: `${START}T18:05:00`, inReplyTo: `msg-${f.touch.id}` });
+    expect(r).toMatchObject({ intent: "wants_it", customerId: f.touch.customerId, touchId: f.touch.id, from: "someone.else@example.net", status: "handed_off" });
+    expect(later(f).every((t) => t.status === "cancelled")).toBe(true);
+    expect(s.ownerMessages.at(-1)!.text).toContain(f.customerName);
+  });
 });
 
 describe("Ledger and Reporter", () => {

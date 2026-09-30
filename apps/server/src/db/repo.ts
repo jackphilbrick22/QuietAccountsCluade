@@ -294,6 +294,12 @@ export class Repo {
     return this.db.get<{ business_id: string }>("SELECT business_id FROM touches WHERE provider_id = ?", providerId)?.business_id;
   }
 
+  /** Businesses with notes handed to a provider, e.g. "instantly:" or "instantly:<campaign id>:". */
+  businessesForProvider(prefix: string): string[] {
+    const like = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    return this.db.all<{ business_id: string }>("SELECT DISTINCT business_id FROM touches WHERE provider_id LIKE ? ESCAPE '\\'", like).map((r) => r.business_id);
+  }
+
   /* ----------------------------- owner message delivery ----------------------------- */
 
   pendingOwnerMessages(limit = 50): { business_id: string; id: string; kind: string; text: string }[] {
@@ -349,6 +355,10 @@ export class Repo {
   logWebhook(id: string, source: string, body: string, at: string): boolean {
     const r = this.db.run("INSERT OR IGNORE INTO webhook_log (id, source, received_at, status, body) VALUES (?, ?, ?, 'received', ?)", id, source, at, body.slice(0, 200_000));
     return Number(r.changes) > 0;
+  }
+
+  hasWebhook(id: string): boolean {
+    return !!this.db.get("SELECT 1 FROM webhook_log WHERE id = ?", id);
   }
 
   finishWebhook(id: string, status: "processed" | "ignored" | "failed", businessId?: string, error?: string): void {

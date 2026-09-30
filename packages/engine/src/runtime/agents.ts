@@ -7,12 +7,14 @@ import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, closeMessage, feesPaid, guaranteeCheck, handoffText, kickoffText, renewalNotice, slaNudge, weeklyReport } from "../reports/owner.ts";
-import { renderRequestAck } from "../copy/render.ts";
+import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
+
+export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
 
 function outreachFor(state: AccountState, customerId: string) {
   // outreach is append-only per customer; a Map keyed by the array keeps markSent O(1)
@@ -294,7 +296,8 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     reading.intent === "bounce" && !sender
       ? (answered && customerById(state.dataset, answered.customerId)) || extractEmails(msg.text).map((e) => customerByEmail(state.dataset, e)).find(Boolean)
       : undefined;
-  const c = sender ?? bounced;
+  // A spouse or a forward answering our note is still about the person we wrote to.
+  const c = sender ?? bounced ?? (reading.intent !== "bounce" && answered ? customerById(state.dataset, answered.customerId) : undefined);
   const touch = msg.inReplyTo
     ? answered
     : state.touches.filter((t) => t.customerId === c?.id && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
@@ -638,9 +641,9 @@ export function disputeRecovery(state: AccountState, recoveryId: string, reason:
 }
 
 /**
- * Always-on: every request that came in during the last day gets an answer within minutes, any hour —
- * "Thanks for reaching out, Dave will call you today" — and the owner gets the lead by text. If no visit
- * or quote follows, the unquoted-request follow-up takes over after two days.
+ * Always-on: every request that came in during the last day gets an answer within minutes (7am–8pm; one that
+ * lands at night is answered at 7am) — "Thanks for reaching out, Dave will call you today" — and the owner gets the
+ * lead by text. If no visit or quote follows, the unquoted-request follow-up takes over after two days.
  */
 export function answerNewRequests(state: AccountState, now: ISODateTime): number {
   const ds = state.dataset;
@@ -662,19 +665,23 @@ export function answerNewRequests(state: AccountState, now: ISODateTime): number
     const to = sendableEmail(c.emails, state.suppressions);
     const quotedSince = ds.quotes.some((q) => q.customerId === c.id && (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999"));
     if (quotedSince) continue;
-    const ack = renderRequestAck(ds, r, c, now);
+    // A request that lands at night is answered at 7:00, and the promise ("I'll call you today") is worded for then.
+    const at = answerTime(now);
+    const waits = at !== now.slice(0, 19);
+    const ack = renderRequestAck(ds, r, c, at);
     if (to && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f)))
-      state.touches.push({ id, opportunityId: `req:${r.id}`, customerId: c.id, channel: "email", step: 1, angle: "check_in", dueAt: now.slice(0, 16), status: "approved", subject: ack.subject, body: ack.body, flags: ack.flags, instant: true, track: "new_request" });
+      state.touches.push({ id, opportunityId: `req:${r.id}`, customerId: c.id, channel: "email", step: 1, angle: "check_in", dueAt: at.slice(0, 16), status: "approved", subject: ack.subject, body: ack.body, flags: ack.flags, instant: true, track: "new_request", askedAt: now.slice(0, 16) });
     const street = c.address?.street ? `, ${c.address.street}` : "";
     const phone = c.phones[0] ? fmtPhone(c.phones[0]) : c.emails[0] ?? "no phone on file";
+    const promise = promiseTonight(ack.promise, now, at);
     ownerMsg(
       state,
       now,
       "handoff",
-      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, to ? `We already wrote back that ${ack.promise}.` : `No email on file, so we couldn't answer them — call soon.`, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
+      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, to ? (waits ? `At 7am we'll write back that ${promise}.` : `We already wrote back that ${promise}.`) : `No email on file, so we couldn't answer them — call soon.`, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
       [{ kind: "customer", id: c.id }],
     );
-    event(state, now, "inbox", "action", `New request from ${c.name} — answered${to ? " in minutes" : " (no email: owner texted)"}`, r.title, [{ kind: "customer", id: c.id }]);
+    event(state, now, "inbox", "action", `New request from ${c.name} — ${to ? (waits ? "answer goes at 7am" : "answered in minutes") : "answered (no email: owner texted)"}`, r.title, [{ kind: "customer", id: c.id }]);
     n++;
   }
   if (n) state.updatedAt = now;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
-import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
-import { parseDate, parseMoney, splitName, greetingName, normalizePhone } from "../src/util.ts";
+import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
+import { parseDate, parseMoney, splitName, greetingName, normalizePhone, extractPhones } from "../src/util.ts";
 import type { BusinessProfile } from "../src/model.ts";
 
 const biz: BusinessProfile = {
@@ -42,7 +42,70 @@ describe("util parsing", () => {
   it("normalizes phones", () => {
     expect(normalizePhone("(603) 555-0142")).toBe("+16035550142");
     expect(normalizePhone("1-603-555-0142")).toBe("+16035550142");
+    expect(normalizePhone("603.224.1234")).toBe("+16032241234");
+    expect(normalizePhone("6032241234")).toBe("+16032241234");
+    expect(normalizePhone(6032241234)).toBe("+16032241234");
+    expect(normalizePhone("+44 20 7946 0958")).toBe("+442079460958");
     expect(normalizePhone("555-0142")).toBeUndefined();
+    expect(normalizePhone("")).toBeUndefined();
+    expect(normalizePhone(undefined)).toBeUndefined();
+  });
+  it("drops extensions instead of gluing them onto the number", () => {
+    // used to come back as +603224123412 (a Malaysian-looking number)
+    expect(normalizePhone("603-224-1234 ext. 12")).toBe("+16032241234");
+    expect(normalizePhone("(603)224-1234x12")).toBe("+16032241234");
+    expect(normalizePhone("603-224-1234 x 12")).toBe("+16032241234");
+    expect(normalizePhone("Cell: 603-224-1234 (office)")).toBe("+16032241234");
+    expect(extractPhones("603-224-1234 (ext 12)")).toEqual(["+16032241234"]);
+    expect(extractPhones("603-224-1234 ext. 12")).toEqual(["+16032241234"]);
+    // used to be dropped entirely
+    expect(extractPhones("(603) 224-1234 ext 5 (office)")).toEqual(["+16032241234"]);
+  });
+  it("rejects placeholder and impossible numbers", () => {
+    expect(normalizePhone("555-555-5555")).toBeUndefined();
+    expect(normalizePhone("123-456-7890")).toBeUndefined();
+    expect(normalizePhone("000-000-0000")).toBeUndefined();
+    expect(normalizePhone("999-999-9999")).toBeUndefined();
+    expect(extractPhones("555-555-5555")).toEqual([]);
+    expect(extractPhones("123-456-7890; 603-224-1234")).toEqual(["+16032241234"]);
+  });
+  it("reads every real number in a cell, in order", () => {
+    expect(extractPhones("603-224-1234; 603-555-0100 / 978-224-1111")).toEqual(["+16032241234", "+16035550100", "+19782241111"]);
+    expect(extractPhones("home 603 224 1234 or cell (603) 555-0100")).toEqual(["+16032241234", "+16035550100"]);
+    expect(extractPhones("603-224-1234, 603-224-1234")).toEqual(["+16032241234"]);
+    expect(extractPhones("")).toEqual([]);
+    expect(extractPhones(null)).toEqual([]);
+  });
+});
+
+describe("decodeText", () => {
+  const ascii = (s: string) => [...s].map((c) => c.charCodeAt(0));
+  // "José O’Brien" in each encoding Excel writes
+  const UTF8 = [...ascii("Jos"), 0xc3, 0xa9, ...ascii(" O"), 0xe2, 0x80, 0x99, ...ascii("Brien")];
+  const CP1252 = [...ascii("Jos"), 0xe9, ...ascii(" O"), 0x92, ...ascii("Brien")];
+  const UTF16LE = [0xff, 0xfe, ...[..."José O’Brien"].flatMap((c) => [c.charCodeAt(0) & 0xff, c.charCodeAt(0) >> 8])];
+  const UTF16BE = [0xfe, 0xff, ...[..."José O’Brien"].flatMap((c) => [c.charCodeAt(0) >> 8, c.charCodeAt(0) & 0xff])];
+
+  it("reads UTF-8, with or without a BOM", () => {
+    expect(decodeText(new Uint8Array(UTF8))).toBe("José O’Brien");
+    expect(decodeText(new Uint8Array([0xef, 0xbb, 0xbf, ...UTF8]))).toBe("José O’Brien");
+    expect(decodeText(new Uint8Array(ascii("Name,Email\nBob,bob@x.com\n")))).toBe("Name,Email\nBob,bob@x.com\n");
+    expect(decodeText(new Uint8Array([]))).toBe("");
+  });
+  it("falls back to Windows-1252 for Excel's classic CSV instead of producing �", () => {
+    expect(decodeText(new Uint8Array(CP1252))).toBe("José O’Brien");
+    // "Façade – 2 cedars" with 1252's en dash (0x96)
+    expect(decodeText(new Uint8Array([...ascii("Fa"), 0xe7, ...ascii("ade "), 0x96, ...ascii(" 2 cedars")]))).toBe("Façade – 2 cedars");
+  });
+  it("reads UTF-16 by its BOM (Excel's Unicode Text)", () => {
+    expect(decodeText(new Uint8Array(UTF16LE))).toBe("José O’Brien");
+    expect(decodeText(new Uint8Array(UTF16BE))).toBe("José O’Brien");
+  });
+  it("gives the importer the real name, so the greeting reads 'Hi José'", () => {
+    const csv = new Uint8Array([...ascii("Client name,Client email,Title,Total,Sent date\n"), ...CP1252, ...ascii(",jose@example.com,Oak removal,1200,2025-06-03\n")]);
+    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), decodeText(csv), "quotes.csv", "2026-09-29T12:00:00Z");
+    expect(dataset.customers[0]!.name).toBe("José O’Brien");
+    expect(greetingName(dataset.customers[0]!.firstName)).toBe("José");
   });
 });
 

@@ -222,6 +222,25 @@ export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step:
   return { subject, body, angle: chosen.angle, templateId: chosen.id, flags: lint(subject, body, { firstName: t.first!, job: t.job!, step, commercial: o.type !== "unpaid_invoice", requireJob: step === 1 && ["quote", "fresh", "changes", "approved", "request", "declined", "due"].includes(seq.family) }) };
 }
 
+/** Answers we send on the spot (new requests, hot replies) go 7:00–20:00 local; at night they wait for 7:00. */
+export const ANSWER_HOURS = [7, 20] as const;
+
+/** When an answer written at `now` may go: now, or the next 7:00 when it's night. */
+export function answerTime(now: ISODateTime): ISODateTime {
+  const hour = Number(now.slice(11, 13));
+  if (hour >= ANSWER_HOURS[0] && hour < ANSWER_HOURS[1]) return now.slice(0, 19);
+  const day = hour < ANSWER_HOURS[0] ? now.slice(0, 10) : addDays(now.slice(0, 10), 1);
+  return `${day}T${String(ANSWER_HOURS[0]).padStart(2, "0")}:00:00`;
+}
+
+/**
+ * The promise as the owner reads it at `now`, when the answer (worded for `sendAt`) waits for the morning:
+ * the homeowner's "today" at 7am is the owner's "tomorrow" tonight.
+ */
+export function promiseTonight(promise: string, now: ISODateTime, sendAt: ISODateTime): string {
+  return sendAt.slice(0, 10) > now.slice(0, 10) ? promise.replace(/ today$/, " tomorrow") : promise;
+}
+
 /** "Today" before 3pm, else the next weekday — a call-back window an owner can actually keep. */
 export function callbackWhen(localNow: ISODateTime): string {
   const hour = Number(localNow.slice(11, 13));
@@ -234,7 +253,7 @@ export function callbackWhen(localNow: ISODateTime): string {
 }
 
 /**
- * The answer to a brand-new request, sent within minutes at any hour. Homeowners ask several companies and
+ * The answer to a brand-new request, sent within minutes (7am–8pm local). Homeowners ask several companies and
  * most hire whoever answers first; only about 1 in 5 pros answer within the hour. It promises a call-back
  * window only — never a price or a date.
  */

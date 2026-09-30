@@ -65,7 +65,7 @@ function sniffRatio(values: string[], kind: Sniff): number {
         if (extractEmails(v).length) hit++;
         break;
       case "phone":
-        if (normalizePhone(v.replace(/(ext|x)\.?\s*\d+$/i, "")) && !/@/.test(v)) hit++;
+        if (normalizePhone(v) && !/@/.test(v)) hit++;
         break;
       case "money": {
         const n = parseMoney(v);
