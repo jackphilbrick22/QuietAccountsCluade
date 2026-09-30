@@ -188,8 +188,12 @@ Updated every loop iteration. Newest first.
   "she booked us for 2400". Any other booking text goes to Claude, or to Jack with no key. Engine 1,232,
   server 261.
 
+- Eighteenth adversarial review: 2 confirmed, fixed. "@" is read as "at" ("Booked @ 1030" is a time, never
+  $1,030), and a business's short name is never a word with a digit in it ("360 Tree Care" is CARE, so
+  "BOOKED #K7Q 360" means $360, not the business). Engine 1,232, server 262.
+
 **Next**
-- An eighteenth review pass; stop when a pass finds nothing material.
+- A nineteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

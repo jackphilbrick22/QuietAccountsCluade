@@ -83,7 +83,8 @@ export function shortNames(bizs: { id: string; profile: { name: string } }[]): M
   const out = new Map<string, string>();
   for (const b of bizs) {
     const others = new Set(bizs.filter((o) => o.id !== b.id).flatMap((o) => words(o.profile.name)));
-    const w = words(b.profile.name).find((x) => x.length >= 2 && !NAME_NOISE.has(x) && !COMMAND_WORDS.has(x) && !others.has(x));
+    // never a word with a digit in it: "360" in "360 Tree Care" would be read as $360 as well as the business
+    const w = words(b.profile.name).find((x) => x.length >= 2 && !/\d/.test(x) && !NAME_NOISE.has(x) && !COMMAND_WORDS.has(x) && !others.has(x));
     out.set(b.id, (w ?? b.id.split("-").pop() ?? b.id).toUpperCase());
   }
   return out;
@@ -148,7 +149,8 @@ export function mentionsCompetitor(text: string): boolean {
 }
 /** The words of a text, lowercased, without the #code, the business's short name or punctuation ("$2,400" stays whole). */
 function plainWords(text: string, shortName?: string): string {
-  const t = text.replace(APOSTROPHE, "'").replace(/#\s?[a-z0-9]{3}\b/gi, " ").toLowerCase().replace(/(\d),(\d{3})/g, "$1$2").replace(/[^a-z0-9$.'\s]/g, " ").replace(/\.(?!\d)/g, " ");
+  // "@" is "at": "Booked @ 1030" is a time, never $1,030
+  const t = text.replace(APOSTROPHE, "'").replace(/#\s?[a-z0-9]{3}\b/gi, " ").replace(/@/g, " at ").toLowerCase().replace(/(\d),(\d{3})/g, "$1$2").replace(/[^a-z0-9$.'\s]/g, " ").replace(/\.(?!\d)/g, " ");
   return t.split(/\s+/).filter((w) => w && (!shortName || w !== shortName.toLowerCase())).join(" ");
 }
 const AMT = "\\$?\\d+(\\.\\d+)?k?";
