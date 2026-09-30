@@ -120,6 +120,60 @@ describe("owner texts BUSY / OPEN", () => {
   });
 });
 
+describe("the owner texts SKIP and a name", () => {
+  const dir = mkdtempSync(join(tmpdir(), "qa-skip-"));
+  const dbPath = join(dir, "qa.db");
+  const TOKEN = "test-operator-token-123";
+  const WH = "test-webhook-secret";
+  const now = new Date("2026-09-29T14:00:00Z");
+  let d: HttpDeps;
+  let app: ReturnType<typeof createApp>;
+  const api = async (method: string, path: string, body?: unknown) => {
+    const res = await app.request(path, { method, headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return (await res.json()) as Record<string, unknown>;
+  };
+  const sms = async (body: string) => {
+    const res = await app.request(`/webhooks/sms/${WH}`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ From: "+16035550199", Body: body }) });
+    return res.text();
+  };
+
+  beforeAll(async () => {
+    const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: TOKEN, APP_SECRET: "test-app-secret-0123456789", WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false" });
+    d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email: new LogEmailProvider({ quiet: true }), notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: {} };
+    app = createApp(d);
+    const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
+    await api("POST", "/api/businesses", { id: "ridge-tree", name: "Ridgeline Tree Co.", trade: "tree", ownerName: "Dave Ridge", ownerPhone: "+16035550199", signerName: "Sarah", mailingAddress: "14 Mill Rd, Concord, NH 03301", city: "Concord", state: "NH", timezone: "America/New_York" });
+    await api("POST", "/api/businesses/ridge-tree/imports", { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
+    await api("POST", "/api/businesses/ridge-tree/plan", { approve: true });
+  });
+  afterAll(() => {
+    d.accounts.repo.db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("takes one person off every list and stops what's queued for them", async () => {
+    const st = d.accounts.peek("ridge-tree")!.state;
+    const queued = st.touches.filter((t) => t.status === "approved");
+    const target = queued.map((t) => st.dataset.customers.find((c) => c.id === t.customerId)!).find((c) => st.dataset.customers.filter((x) => x.name === c.name).length === 1)!;
+    const reply = await sms(`Skip ${target.name}`);
+    expect(reply).toContain(`${target.name} is off the list`);
+    const after = d.accounts.peek("ridge-tree")!.state;
+    expect(after.dataset.customers.find((c) => c.id === target.id)!.doNotContact).toBe(true);
+    expect(after.touches.filter((t) => t.customerId === target.id && (t.status === "approved" || t.status === "planned"))).toHaveLength(0);
+    expect(after.events.at(-1)!.title).toBe(`${target.name} taken off the list`);
+  });
+
+  it("asks when a name fits more than one person, and hands an unknown name to a person", async () => {
+    const st = d.accounts.peek("ridge-tree")!.state;
+    const last = st.dataset.customers.map((c) => c.lastName).find((ln) => ln && st.dataset.customers.filter((c) => c.lastName === ln && !c.doNotContact).length > 1)!;
+    const ask = await sms(`SKIP ${last}`);
+    expect(ask).toMatch(/That fits \d+:/);
+    expect(ask).toContain("Text SKIP with the full name");
+    const none = await sms("skip Zebediah Quackenbush");
+    expect(none).toContain("couldn't find");
+  });
+});
+
 describe("the owner OKs the first note by text", () => {
   const dir = mkdtempSync(join(tmpdir(), "qa-ok-"));
   const dbPath = join(dir, "qa.db");

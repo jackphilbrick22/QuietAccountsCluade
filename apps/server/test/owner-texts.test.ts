@@ -160,11 +160,13 @@ describe("one owner, one business: what a text does (n12, n38, n48)", () => {
   it("a text we can't read goes to the operator with a reply that says so", async () => {
     const h = make();
     await h.business("ridge");
-    expect(await h.sms("don't email the Johnsons, they're family")).toMatch(/^Thanks — Jack will read this and get back to you\./);
+    expect(await h.sms("my truck broke down, call me when you can")).toMatch(/^Thanks — Jack will read this and get back to you\./);
     const items = (await h.api("GET", "/api/review")).json.items as { kind: string; text: string; handled: string }[];
-    expect(items).toEqual([expect.objectContaining({ kind: "owner_text", text: "don't email the Johnsons, they're family", handled: "unrecognized" })]);
+    expect(items).toEqual([expect.objectContaining({ kind: "owner_text", text: "my truck broke down, call me when you can", handled: "unrecognized" })]);
     const log = (await h.api("GET", "/api/businesses/ridge/owner-texts")).json as { body: string }[];
-    expect(log[0]!.body).toBe("don't email the Johnsons, they're family");
+    expect(log[0]!.body).toBe("my truck broke down, call me when you can");
+    // "don't email the Johnsons" is a skip; with no Johnsons on file it goes to the operator too, and says so
+    expect(await h.sms("don't email the Johnsons, they're family")).toBe(`I couldn't find "the johnsons" in your records. Jack will check and take them off by hand.`);
   });
 });
 

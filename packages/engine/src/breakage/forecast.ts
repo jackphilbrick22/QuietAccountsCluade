@@ -4,6 +4,7 @@ import { BREAKAGE_LABEL, rangeFactor, RECOVERY_PRIOR, SALES_TYPES } from "./assu
 import { averageJob, type ScanResult } from "./detect.ts";
 import { shopProfile, type ShopProfile } from "./profile.ts";
 import { callList, type CallList } from "./calllist.ts";
+import { quietRateOf } from "./quiet.ts";
 
 export interface TypeSummary {
   type: BreakageType;
@@ -31,6 +32,8 @@ export interface SilentAudit {
   byAge: { label: string; count: number; value: Money }[];
   /** Share of the quotes that didn't become work that never got an answer. */
   silentShareOfLost: number;
+  /** The quiet rate (0..1): the last two years' quotes that never got a yes or a no — the same number the Friday report starts from. */
+  rate: number;
   headline: string;
 }
 
@@ -72,7 +75,7 @@ export function silentAudit(ds: Dataset): SilentAudit {
   const headline = a.silent.count
     ? `Of ${lost.toLocaleString("en-US")} quotes that didn't turn into work, ${a.silent.count.toLocaleString("en-US")} (${Math.round(silentShareOfLost * 100)}%) never got a yes or a no — ${fmtMoney(a.silent.value, { compact: true })} that wasn't lost on price. Nobody answered.`
     : "Every quote got an answer. That's rare.";
-  return { sent: r(a.sent), won: r(a.won), declined: r(a.declined), changesIgnored: r(a.changesIgnored), silent: r(a.silent), byAge: ages.map(r).map((x, i) => ({ label: ages[i]!.label, ...x })), silentShareOfLost, headline };
+  return { sent: r(a.sent), won: r(a.won), declined: r(a.declined), changesIgnored: r(a.changesIgnored), silent: r(a.silent), byAge: ages.map(r).map((x, i) => ({ label: ages[i]!.label, ...x })), silentShareOfLost, rate: quietRateOf(ds, ds.asOf).rate, headline };
 }
 
 /**

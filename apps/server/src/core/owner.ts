@@ -1,4 +1,4 @@
-import { addDays, counted, daysBetween, leadCode, markContacted, ownerApproves, renewPlan, round2, setBookedOut, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, counted, daysBetween, leadCode, markContacted, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
@@ -7,6 +7,7 @@ import { fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, 
  *
  *   About a lead:      BOOKED 2400 #K7Q · DONE · NO · QUOTED · NO ANSWER   (the #code is on every hand-off text)
  *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · RENEW · MONTHLY · CANCEL, then CANCEL YES
+ *   About a person:    SKIP Karen Whitfield — off every list (already won it, said no on the phone, a friend)
  *   About our texts:   STOP turns them off (the follow-ups keep running; hand-offs go by email) · START turns them on
  *
  * Carrier keywords. STOP, STOPALL, UNSUBSCRIBE, END, QUIT, REVOKE and OPTOUT opt a number out at the carrier, so they
@@ -39,15 +40,17 @@ interface Biz {
 const OPT_OUT = /^(stop|stop ?all|unsubscribe|end|quit|revoke|opt ?out)$/;
 const OPT_IN = /^(start|unstop)$/;
 const HELP = /^(help|info|commands)$/;
+/** "SKIP Karen Whitfield", "remove the Whitfields", "don't email Karen Whitfield". */
+const SKIP = /^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don t (email|write|contact))\s+(.+)$/;
 /** An OK to the first note in the welcome text. */
 const APPROVE = /^(ok|okay|k|yes|yep|yeah|yup|go|go ahead|send|send it|send them|start it|looks good|sounds good|good to go|approved?|do it|let'?s go|perfect|great)\b/;
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
 
 const HELP_TEXT =
-  'About a lead: BOOKED 2400 #code, DONE, NO or QUOTED (the #code is on the lead text). About the service: PAUSE, RESUME, BUSY until Nov 15, OPEN, STATUS, CANCEL. STOP turns off our texts (your follow-ups keep running); START turns them back on.';
+  'About a lead: BOOKED 2400 #code, DONE, NO or QUOTED (the #code is on the lead text). About a person: SKIP and their name takes them off the list. About the service: PAUSE, RESUME, BUSY until Nov 15, OPEN, STATUS, CANCEL. STOP turns off our texts (your follow-ups keep running); START turns them back on.';
 
 /** Words that are commands, never a business's short name. */
-const COMMAND_WORDS = new Set(["pause", "resume", "open", "busy", "booked", "book", "done", "no", "status", "cancel", "yes", "stop", "start", "renew", "monthly", "yearly", "quoted", "sold", "won", "lost", "full", "free", "hold", "go", "help"]);
+const COMMAND_WORDS = new Set(["skip", "remove", "pause", "resume", "open", "busy", "booked", "book", "done", "no", "status", "cancel", "yes", "stop", "start", "renew", "monthly", "yearly", "quoted", "sold", "won", "lost", "full", "free", "hold", "go", "help"]);
 const NAME_NOISE = new Set(["the", "and", "co", "company", "inc", "llc", "ltd", "services", "service", "of"]);
 
 const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
@@ -249,6 +252,30 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     });
     await withdrawMoved(d, one.id, pulled);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "open" };
+  }
+
+  /* ---- a person: off every list ---- */
+  const skip = bare.match(SKIP);
+  if (skip) {
+    // The name is what comes before any reason: "don't email the Johnsons, they're family".
+    const said = text.replace(CODE, " ").trim().toLowerCase().replace(/^(skip|remove|take off|leave off|leave out|do not (email|write|contact)|don'?t (email|write|contact))\s+/, "");
+    const who = said.split(/[,.;!?()]| - | — | because | they | she | he | we /)[0]!.trim() || skip[4]!;
+    const pool = one ? [one] : all;
+    const hits = pool.flatMap((b) => peopleNamed(d.accounts.peek(b.id)!.state, who).map((c) => ({ b, c })));
+    if (!hits.length)
+      return { businessId: fallback().id, reply: `I couldn't find "${who}" in your records. Jack will check and take them off by hand.`, handled: "skip_unknown", needsPerson: true };
+    if (hits.length > 1) {
+      const shown = hits.slice(0, 4).map((h) => `${h.c.name}${h.c.address?.street ? ` (${h.c.address.street})` : ""}${multi ? `, ${h.b.profile.name}` : ""}`);
+      return { businessId: hits[0]!.b.id, reply: `That fits ${hits.length}: ${shown.join("; ")}${hits.length > 4 ? "; …" : ""}. Text SKIP with the full name, or the name and street.`, handled: "skip_which" };
+    }
+    const { b, c } = hits[0]!;
+    let r = { cancelled: 0, withdrawn: [] as string[] };
+    await d.accounts.withAccount(b.id, (state) => {
+      r = skipPerson(state, c.id, nowLocal(d, state), `The owner texted "${text.trim().slice(0, 80)}"`);
+    });
+    await withdrawMoved(d, b.id, r.withdrawn);
+    d.accounts.repo.audit(b.id, "owner-sms", "skip", { customerId: c.id });
+    return { businessId: b.id, reply: `${tag(b)}Done — ${c.name} is off the list. We won't write to them again.`, handled: "skip" };
   }
 
   /* ---- a lead ---- */

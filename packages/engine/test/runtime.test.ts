@@ -22,6 +22,8 @@ import {
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
 import { quietRates } from "../src/breakage/quiet.ts";
+import { summarize } from "../src/breakage/forecast.ts";
+import { scan } from "../src/breakage/detect.ts";
 import { emptyDataset, toCSV } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
@@ -341,6 +343,9 @@ describe("Ledger and Reporter", () => {
   it("the quiet rate: what their software showed before, and old quotes answered since", () => {
     const before = quietRates(fresh());
     expect(before.startedOn).toBeUndefined();
+    // one definition everywhere: the site's audit and the welcome text show the same rate the report starts from
+    const st = fresh();
+    expect(summarize(st.dataset, scan(st.dataset)).audit.rate).toBe(before.before.rate);
     expect(before.before.quotes).toBeGreaterThan(50);
     expect(before.before.rate).toBeGreaterThan(0.2);
     const { s } = week1();

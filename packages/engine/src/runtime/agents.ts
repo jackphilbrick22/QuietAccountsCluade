@@ -5,7 +5,7 @@ import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../caden
 import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
 import { ackFor, closeMessage, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
@@ -714,6 +714,47 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
   return choice === "year"
     ? `Done — another year from ${when}, same price. The guarantee still runs every month.`
     : `Done — month to month from ${when}, ${fmtMoney(plan.monthlyPrice)} a month, cancel by text any time.`;
+}
+
+/**
+ * People in the owner's records a free-text name points to ("Karen Whitfield", "Whitfield Oak Ln"). Every word
+ * has to be in their name, company or street, and at least one has to be in the name, so a street alone never
+ * picks someone.
+ */
+export function peopleNamed(state: AccountState, text: string): Customer[] {
+  const norm = (x: string | undefined) => (x ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter((w) => w.length > 1);
+  const want = norm(text).filter((w) => !["the", "and", "mr", "mrs", "ms", "at", "on", "from", "please", "thanks"].includes(w));
+  if (!want.length) return [];
+  // "the Johnsons" means the Johnson household
+  const forms = (w: string) => [w, ...(w.length > 3 && w.endsWith("es") ? [w.slice(0, -2)] : []), ...(w.length > 3 && w.endsWith("s") ? [w.slice(0, -1)] : [])];
+  return state.dataset.customers.filter((c) => {
+    const name = new Set([...norm(c.name), ...norm(c.firstName), ...norm(c.lastName), ...norm(c.companyName)]);
+    const all = new Set([...name, ...norm(c.address?.street)]);
+    return want.every((w) => forms(w).some((f) => all.has(f))) && want.some((w) => forms(w).some((f) => name.has(f)));
+  });
+}
+
+/**
+ * The owner texted "SKIP Karen Whitfield": already won it, said no on the phone, a friend. They're off every
+ * list for good — nothing queued goes, nothing new gets planned — and `withdrawn` names the copies a sending
+ * platform already holds, for the caller to pull.
+ */
+export function skipPerson(state: AccountState, customerId: string, now: ISODateTime, by: string): { cancelled: number; withdrawn: string[] } {
+  const c = customerById(state.dataset, customerId);
+  if (!c) return { cancelled: 0, withdrawn: [] };
+  c.doNotContact = true;
+  const withdrawn: string[] = [];
+  let cancelled = 0;
+  for (const t of state.touches) {
+    if (t.customerId !== customerId || (t.status !== "approved" && t.status !== "planned")) continue;
+    t.status = "cancelled";
+    cancelled++;
+    if (t.providerId && !withdrawn.includes(t.providerId)) withdrawn.push(t.providerId);
+  }
+  for (const o of state.scan?.opportunities ?? []) if (o.customerId === customerId) o.suppressed = "do_not_contact";
+  event(state, now, "guard", "action", `${c.name} taken off the list`, `${by}.${cancelled ? ` ${plural(cancelled, "queued note")} stopped.` : ""}`);
+  state.updatedAt = now;
+  return { cancelled, withdrawn };
 }
 
 /**

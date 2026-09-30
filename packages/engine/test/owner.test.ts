@@ -105,4 +105,20 @@ describe("the guarantee text", () => {
     expect(g.text).toMatch(/since August 29\b/);
     expect(g.text).not.toMatch(/since (a few weeks ago|last week|earlier)/);
   });
+  it("counts only people we followed up with, not answers to their own new request", () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", paidOn: "2026-08-29" };
+    const note = (id: string, customerId: string, track?: Touch["track"]): Touch => ({ id, opportunityId: track === "new_request" ? `req:${id}` : `o-${id}`, customerId, channel: "email", step: 1, angle: "check_in", dueAt: "2026-09-02T09:00", sentAt: "2026-09-02T09:00", status: "sent", body: "", flags: [], ...(track ? { track } : {}) });
+    st.touches = [note("t1", "c1"), note("t2", "c2", "new_request")];
+    const wants = (id: string, customerId: string, touchId?: string): Reply => ({ id, customerId, touchId, from: `${customerId}@x.com`, receivedAt: "2026-09-10T10:00:00Z", text: "Yes, can you come out?", intent: "wants_it", extracted: {}, status: "handed_off" }) as Reply;
+    // the new-request person wrote back: still a free month
+    st.replies = [wants("r2", "c2", "t2")];
+    expect(guaranteeCheck(st, "2026-09-29")!.free).toBe(true);
+    expect(guaranteeCheck(st, "2026-09-29")!.text).toContain("nobody we followed up with asked");
+    // someone from the follow-ups asked: the month is earned
+    st.replies.push(wants("r1", "c1", "t1"));
+    const g = guaranteeCheck(st, "2026-09-29")!;
+    expect(g.free).toBe(false);
+    expect(g.asked.map((r) => r.id)).toEqual(["r1"]);
+  });
 });

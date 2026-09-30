@@ -156,8 +156,8 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
   const a = state.summary?.audit;
   // Their own number first: the share of quotes that never got an answer, and what it's worth.
   const found =
-    a && a.silent.count && a.sent.count
-      ? `${Math.round((a.silent.count / a.sent.count) * 100)}% of your quotes never got a yes or a no — ${a.silent.count.toLocaleString("en-US")} of them, ${fmtMoney(a.silent.value, { compact: true })}. Nobody said no to that money; nobody asked.`
+    a && a.silent.count && a.rate > 0
+      ? `In the last two years, ${Math.round(a.rate * 100)}% of your quotes never got a yes or a no. All told, ${a.silent.count.toLocaleString("en-US")} quotes, ${fmtMoney(a.silent.value, { compact: true })}, are sitting quiet. Nobody said no to that money; nobody asked.`
       : `We went through everything you sent and found the people worth a note.`;
   const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
@@ -529,7 +529,17 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   if (!b.plan.paidOn) return undefined;
   const { chargeOn, periodStart } = nextCharge(b.plan.paidOn, asOf);
   const inPeriod = (d: string) => d.slice(0, 10) >= periodStart && d.slice(0, 10) < chargeOn;
-  const asked = state.replies.filter((r) => WANTS.has(r.intent) && inPeriod(r.receivedAt));
+  // Only people we followed up with count. Someone answering our reply to their own new request was asking
+  // anyway; counting them would let requests the owner gets regardless cancel his free month.
+  const touchById = new Map(state.touches.map((t) => [t.id, t]));
+  const followedUp = new Set(state.touches.filter((t) => t.track !== "new_request" && (t.status === "sent" || t.status === "delivered")).map((t) => t.customerId));
+  const fromFollowUp = (r: (typeof state.replies)[number]) => {
+    const t = r.touchId ? touchById.get(r.touchId) : undefined;
+    if (t) return t.track !== "new_request";
+    if (r.opportunityId?.startsWith("req:")) return false;
+    return !!r.customerId && followedUp.has(r.customerId);
+  };
+  const asked = state.replies.filter((r) => WANTS.has(r.intent) && inPeriod(r.receivedAt) && fromFollowUp(r));
   const booked = counted(state.recoveries).filter((r) => inPeriod(r.cameBackOn));
   const free = asked.length === 0;
   const notesInPeriod = state.touches.filter((t) => (t.status === "sent" || t.status === "delivered") && inPeriod(t.sentAt ?? t.dueAt)).length;
@@ -539,7 +549,7 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const since = `${monthName(periodStart)} ${Number(periodStart.slice(8))}`;
   const annual = b.plan.billing === "annual";
   const text = free
-    ? `${b.ownerFirstName}, nobody asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
+    ? `${b.ownerFirstName}, nobody we followed up with asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
     : [
         `${b.ownerFirstName}, here's who came back since ${since}:`,
         ...asked.slice(0, 8).map((r) => {

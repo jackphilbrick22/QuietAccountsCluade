@@ -29,6 +29,8 @@ export interface QuietRates {
 }
 
 const WAIT_DAYS = 14;
+/** The window the headline rate looks at: two years of quotes, the same everywhere it's shown. */
+const WINDOW_DAYS = 730;
 const ANSWERED = new Set(["approved", "converted", "declined", "changes_requested"]);
 const NOT_AN_ANSWER = new Set(["auto_reply", "bounce"]);
 
@@ -45,15 +47,24 @@ function rateOf(quotes: Quote[], answered: (q: Quote) => boolean): QuietRate {
   return { quotes: n, answered: a, quiet: n - a, rate: n ? round2((n - a) / n) : 0, quietValue: round2(quietValue) };
 }
 
+/**
+ * The quiet rate straight from the owner's records, as of a day: quotes sent in the two years before it that
+ * had two weeks to get an answer (no drafts, no $0), and the share that never got a yes or a no. The site's
+ * audit, the welcome text and the Friday report's "before" all use this one definition.
+ */
+export function quietRateOf(ds: AccountState["dataset"], end: ISODate): QuietRate {
+  const cut = addDays(end, -WAIT_DAYS);
+  const from = addDays(end, -WINDOW_DAYS);
+  const inWindow = ds.quotes.filter((q) => { const d = sentOn(q); return !!d && q.status !== "draft" && q.total > 0 && d >= from && d <= cut; });
+  return rateOf(inWindow, (q) => ANSWERED.has(q.status));
+}
+
 export function quietRates(state: AccountState): QuietRates {
   const ds = state.dataset;
   const cut = addDays(ds.asOf, -WAIT_DAYS);
   const sent = state.touches.filter((t) => t.status === "sent" || t.status === "delivered");
   const startedOn = sent.map((t) => (t.sentAt ?? t.dueAt).slice(0, 10)).sort()[0];
-  const end = startedOn ?? ds.asOf;
-  const beforeCut = addDays(end, -WAIT_DAYS);
-  const inBefore = ds.quotes.filter((q) => { const d = sentOn(q); return !!d && q.status !== "draft" && d >= addDays(end, -365) && d <= beforeCut; });
-  const before = rateOf(inBefore, (q) => ANSWERED.has(q.status));
+  const before = quietRateOf(ds, startedOn ?? ds.asOf);
   if (!startedOn) return { before };
 
   // First real reply per person, so "answered" means they wrote back after the quote went out.
@@ -65,7 +76,7 @@ export function quietRates(state: AccountState): QuietRates {
     if (!prev || d > prev) replied.set(r.customerId, d);
   }
   const answeredSince = (q: Quote) => ANSWERED.has(q.status) || (replied.get(q.customerId) ?? "") >= (sentOn(q) ?? "9999");
-  const inSince = ds.quotes.filter((q) => { const d = sentOn(q); return !!d && q.status !== "draft" && d >= startedOn && d <= cut; });
+  const inSince = ds.quotes.filter((q) => { const d = sentOn(q); return !!d && q.status !== "draft" && q.total > 0 && d >= startedOn && d <= cut; });
   const since = inSince.length ? rateOf(inSince, answeredSince) : undefined;
 
   // The backlog: people whose old quote we followed up, and whether that got them talking.
