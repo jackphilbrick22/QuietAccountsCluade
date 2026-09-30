@@ -31,6 +31,18 @@ const schema = z.object({
 
   JOBBER_CLIENT_ID: z.string().optional(),
   JOBBER_CLIENT_SECRET: z.string().optional(),
+  /**
+   * What to read from Jobber besides clients and quotes: any of jobs, invoices, requests (comma-separated).
+   * The listed app is read-only on clients and quotes, so the default is none. Add one only after the app's
+   * scopes in the Jobber Developer Center include it.
+   */
+  JOBBER_READ: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean))
+    .pipe(z.array(z.enum(["jobs", "invoices", "requests"]))),
+  /** Leave a note on the Jobber quote when someone replies or books. Needs a write scope the listed app doesn't ask for. */
+  JOBBER_WRITE_NOTES: z.enum(["off", "on"]).default("off"),
 
   /** Claude powers the second-opinion reply reader, note personalization and column mapping. Optional. */
   ANTHROPIC_API_KEY: z.string().optional(),

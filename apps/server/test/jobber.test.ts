@@ -12,6 +12,7 @@ import {
   estimateQueryCost,
   FOLLOW_UPS_OFF_TAG,
   INVOICES_QUERY,
+  JOBBER_EXTRAS,
   JOBBER_GRAPHQL_URL,
   JOBBER_GRAPHQL_VERSION,
   JOBBER_TOKEN_URL,
@@ -554,7 +555,7 @@ describe("Jobber pull", () => {
     const ck = clock();
     const { fetch, calls } = mockFetch(fullAccountHandler);
     const progress: string[] = [];
-    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now });
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, read: JOBBER_EXTRAS });
     const pulled = await c.pull(TOKENS, { onProgress: (m) => progress.push(m) });
     return { pulled, calls, progress };
   }
@@ -720,7 +721,7 @@ describe("Jobber pull", () => {
       if (c.op === "QaRequests") return gql({ requests: conn([]) });
       throw new Error(c.op);
     });
-    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now });
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, read: JOBBER_EXTRAS });
     const pulled = await c.pull(TOKENS, { since });
     expect(calls.filter((x) => x.op === "QaJobs")).toHaveLength(1);
     expect(pulled.jobs.map((j) => j.number)).toEqual(["310"]);
@@ -741,6 +742,25 @@ describe("Jobber pull", () => {
     expect(dana.emails).toEqual(["dana@whitfieldhome.net", "d.whitfield@gmail.com"]); // stand-in didn't wipe anything
   });
 
+  it("the listed app reads clients and quotes only, unless more is allowed", async () => {
+    const ck = clock();
+    const { fetch, calls } = mockFetch(fullAccountHandler);
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now });
+    const pulled = await c.pull(TOKENS, {});
+    expect([...new Set(calls.map((x) => x.op))]).toEqual(["QaClients", "QaQuotes"]);
+    expect(pulled.stats.counts).toMatchObject({ quotes: 4, jobs: 0, invoices: 0, requests: 0 });
+    expect(pulled.warnings).toEqual([]);
+  });
+
+  it("skips a resource Jobber won't share, without failing the sync or asking to reconnect", async () => {
+    const ck = clock();
+    const { fetch } = mockFetch((x) => (x.op === "QaJobs" ? { body: { data: null, errors: [{ message: "Access denied: missing read_jobs scope", path: ["jobs"] }], extensions: cost() } } : fullAccountHandler(x)));
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, read: JOBBER_EXTRAS });
+    const pulled = await c.pull(TOKENS, {});
+    expect(pulled.stats.counts).toMatchObject({ quotes: 4, jobs: 0, invoices: 3, requests: 3 });
+    expect(pulled.warnings.join(" ")).toMatch(/didn't share jobs/);
+  });
+
   it("stops at maxPages, warns, and doesn't advance the watermark", async () => {
     const ck = clock();
     const { fetch, calls } = mockFetch((c) => {
@@ -748,7 +768,7 @@ describe("Jobber pull", () => {
       const node = { QaClients: CLIENT_DANA, QaQuotes: Q1042, QaJobs: J310, QaInvoices: I5001, QaRequests: R11 }[c.op!];
       return gql({ [key]: conn([node], `next-${c.op}`) });
     });
-    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now });
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, read: JOBBER_EXTRAS });
     const pulled = await c.pull(TOKENS, { maxPages: 1, since: "2026-01-01T00:00:00.000Z" });
     expect(calls).toHaveLength(5);
     expect(pulled.warnings.filter((w) => /maxPages/.test(w))).toHaveLength(5);
@@ -768,7 +788,7 @@ describe("Jobber pull", () => {
       return r;
     });
     const saved: OAuthTokens[] = [];
-    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, onTokens: (t) => void saved.push(t) });
+    const c = createJobberConnector({ clientId: CLIENT_ID, clientSecret: SECRET, fetch, sleep: ck.sleep, now: ck.now, onTokens: (t) => void saved.push(t), read: JOBBER_EXTRAS });
     const pulled = await c.pull(TOKENS, {});
     expect(expired).toBe(true);
     expect(pulled.tokens).toMatchObject({ accessToken: "access-2", refreshToken: "refresh-2", accountId: TOKENS.accountId });

@@ -102,7 +102,16 @@ export interface JobberConnectorOptions {
    * the previous refresh token is dead the moment a new one is issued. `prev.accountId` identifies the account.
    */
   onTokens?: (next: OAuthTokens, prev: OAuthTokens) => void | Promise<void>;
+  /**
+   * What else to read besides clients and quotes. The listed app asks only for read access to clients and quotes,
+   * so the default is nothing more; jobs, invoices and requests are read only when the app's scopes allow it.
+   * A resource Jobber refuses is skipped with a warning; it never fails the sync or looks like a dead connection.
+   */
+  read?: JobberExtra[];
 }
+
+export type JobberExtra = "jobs" | "invoices" | "requests";
+export const JOBBER_EXTRAS: JobberExtra[] = ["jobs", "invoices", "requests"];
 
 export interface JobberPullStats {
   pages: number;
@@ -272,6 +281,18 @@ export function createJobberConnector(opts: JobberConnectorOptions): JobberConne
 
       progress(since ? `Jobber: reading changes since ${since}` : "Jobber: reading everything (first sync)");
 
+      const extras = new Set(opts.read ?? []);
+      /** Read an optional resource; if this app isn't allowed to see it, say so and carry on. */
+      async function optional(label: JobberExtra, run: () => Promise<unknown>) {
+        if (!extras.has(label)) return;
+        try {
+          await run();
+        } catch (err) {
+          if (!(err instanceof ProviderError) || err.retryable || err.status === 401 || !/GraphQL error/.test(err.message)) throw err;
+          warn(`Jobber didn't share ${label} with this app, so they were skipped: ${err.message.slice(0, 160)}`);
+        }
+      }
+
       await walk<ApiClient, { clients: Connection<ApiClient> }>("clients", "QaClients", CLIENTS_QUERY, { first: PAGE_SIZE, filter: updatedFilter }, (d) => d.clients, (c) => {
         seen(c.updatedAt);
         customers.set(customerRef(c.id), mapClient(c));
@@ -284,36 +305,42 @@ export function createJobberConnector(opts: JobberConnectorOptions): JobberConne
         if (m) quotes.push(m);
       });
 
-      await walk<ApiJob, { jobs: Connection<ApiJob> }>(
-        "jobs",
-        "QaJobs",
-        JOBS_QUERY,
-        // jobs can't be filtered by updatedAt: newest-first and stop at `since`
-        { first: PAGE_SIZE, sort: sinceMs !== undefined ? [{ key: "UPDATED_AT", direction: "DESCENDING" }] : undefined },
-        (d) => d.jobs,
-        (j) => {
-          const t = j.updatedAt ? Date.parse(j.updatedAt) : Number.NaN;
-          if (sinceMs !== undefined && Number.isFinite(t) && t < sinceMs) return false;
-          seen(j.updatedAt);
-          noteRef(j.client);
-          const m = mapJob(j, warn);
-          if (m) jobs.push(m);
-        },
+      await optional("jobs", () =>
+        walk<ApiJob, { jobs: Connection<ApiJob> }>(
+          "jobs",
+          "QaJobs",
+          JOBS_QUERY,
+          // jobs can't be filtered by updatedAt: newest-first and stop at `since`
+          { first: PAGE_SIZE, sort: sinceMs !== undefined ? [{ key: "UPDATED_AT", direction: "DESCENDING" }] : undefined },
+          (d) => d.jobs,
+          (j) => {
+            const t = j.updatedAt ? Date.parse(j.updatedAt) : Number.NaN;
+            if (sinceMs !== undefined && Number.isFinite(t) && t < sinceMs) return false;
+            seen(j.updatedAt);
+            noteRef(j.client);
+            const m = mapJob(j, warn);
+            if (m) jobs.push(m);
+          },
+        ),
       );
 
-      await walk<ApiInvoice, { invoices: Connection<ApiInvoice> }>("invoices", "QaInvoices", INVOICES_QUERY, { first: PAGE_SIZE, filter: updatedFilter }, (d) => d.invoices, (inv) => {
-        seen(inv.updatedAt);
-        noteRef(inv.client);
-        const m = mapInvoice(inv, warn);
-        if (m) invoices.push(m);
-      });
+      await optional("invoices", () =>
+        walk<ApiInvoice, { invoices: Connection<ApiInvoice> }>("invoices", "QaInvoices", INVOICES_QUERY, { first: PAGE_SIZE, filter: updatedFilter }, (d) => d.invoices, (inv) => {
+          seen(inv.updatedAt);
+          noteRef(inv.client);
+          const m = mapInvoice(inv, warn);
+          if (m) invoices.push(m);
+        }),
+      );
 
-      await walk<ApiRequest, { requests: Connection<ApiRequest> }>("requests", "QaRequests", REQUESTS_QUERY, { first: PAGE_SIZE, filter: updatedFilter }, (d) => d.requests, (r) => {
-        seen(r.updatedAt);
-        noteRef(r.client);
-        const m = mapRequest(r, warn);
-        if (m) requests.push(m);
-      });
+      await optional("requests", () =>
+        walk<ApiRequest, { requests: Connection<ApiRequest> }>("requests", "QaRequests", REQUESTS_QUERY, { first: PAGE_SIZE, filter: updatedFilter }, (d) => d.requests, (r) => {
+          seen(r.updatedAt);
+          noteRef(r.client);
+          const m = mapRequest(r, warn);
+          if (m) requests.push(m);
+        }),
+      );
 
       // Clients referenced by records but not pulled (unchanged since `since`): add link-only stand-ins.
       for (const [id, ref] of clientRefs) if (!customers.has(customerRef(id))) customers.set(customerRef(id), mapClientRef(ref));

@@ -43,6 +43,7 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
           jobber: createJobberConnector({
             clientId: cfg.JOBBER_CLIENT_ID,
             clientSecret: cfg.JOBBER_CLIENT_SECRET,
+            read: cfg.JOBBER_READ,
             // Jobber rotates refresh tokens: save every new pair or the connection dies on the next refresh.
             onTokens: (next, prev) => {
               const bid = prev.accountId ? accounts.repo.businessForIntegrationAccount("jobber", prev.accountId) : undefined;

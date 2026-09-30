@@ -30,6 +30,16 @@ export const RECOVERY_PRIOR: Record<BreakageType, number> = {
  */
 export const STALE_QUOTE_DAYS = 180;
 
+/**
+ * Quotes at or over this amount are never emailed; they go on the owner's call list. A job that size
+ * deserves a phone call from the owner, and the Jobber app listing promises it ("skips quotes over
+ * $10,000"). Per business via \`callOverAmount\`; 0 turns it off.
+ */
+export const CALL_OVER_AMOUNT = 10_000;
+
+/** Never more than this many notes to one person about one quote or job. */
+export const MAX_NOTES_PER_THREAD = 3;
+
 /** Multipliers applied to the prior. */
 export const ADJUST = {
   /** Hazard work (dead trees, backups, leaks) — the problem keeps asking. */

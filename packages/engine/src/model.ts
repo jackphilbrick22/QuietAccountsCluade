@@ -259,6 +259,8 @@ export interface BusinessProfile {
    * three weeks before it, so replies arrive when there's room on the schedule.
    */
   bookedOutUntil?: ISODate;
+  /** Quotes at or over this go on the owner's call list instead of being emailed (default $10,000; 0 = off). */
+  callOverAmount?: Money;
   /** What a lead costs them, in their own words (ads, Angi, their time to quote). Used only to show waste. */
   leadCost?: Money;
   /** Answer hot replies right away on the owner's behalf (default on). */

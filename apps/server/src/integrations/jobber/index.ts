@@ -7,11 +7,13 @@ export {
   tokenExpiry,
   DEFAULT_MAX_PAGES,
   JOBBER_AUTHORIZE_URL,
+  JOBBER_EXTRAS,
   JOBBER_SIGNATURE_HEADER,
   JOBBER_TOKEN_URL,
   JOBBER_WEBHOOK_TOPICS,
   type JobberConnector,
   type JobberConnectorOptions,
+  type JobberExtra,
   type JobberPulledRecords,
   type JobberPullStats,
 } from "./connector.ts";

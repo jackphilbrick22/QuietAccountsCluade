@@ -756,7 +756,8 @@ export function fsmNote(state: AccountState, customerId: string | undefined, opp
 
 /** Queued so webhooks stay fast; the worker writes it (and retries) when Jobber is connected. */
 export function queueFsmNote(d: Deps, bid: string, note: FsmNote): void {
-  if (!d.fsm.jobber?.writeNote) return;
+  // Read-only unless the app has been granted a write scope and the operator turned notes on.
+  if (d.cfg.JOBBER_WRITE_NOTES !== "on" || !d.fsm.jobber?.writeNote) return;
   const integ = d.accounts.repo.getIntegration(bid, "jobber");
   if (!integ?.secret || integ.status !== "connected") return;
   d.accounts.repo.enqueue("jobber.note", { ...note }, { businessId: bid });
@@ -765,7 +766,7 @@ export function queueFsmNote(d: Deps, bid: string, note: FsmNote): void {
 export async function writeFsmNote(d: Deps, bid: string, note: FsmNote): Promise<void> {
   const conn = d.fsm.jobber;
   const integ = d.accounts.repo.getIntegration(bid, "jobber");
-  if (!conn?.writeNote || !integ?.secret || integ.status !== "connected") return;
+  if (d.cfg.JOBBER_WRITE_NOTES !== "on" || !conn?.writeNote || !integ?.secret || integ.status !== "connected") return;
   const tokens = JSON.parse(decrypt(d.cfg.APP_SECRET, integ.secret)) as OAuthTokens;
   await conn.writeNote(tokens, { kind: note.kind, sourceId: note.sourceId }, note.text);
 }

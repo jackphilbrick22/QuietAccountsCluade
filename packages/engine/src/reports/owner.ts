@@ -1,7 +1,7 @@
 import type { BusinessProfile, ISODate, Money, Opportunity, Recovery, Reply } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, humanAge, isoWeekKey, mondayOf, monthName, round2, spokenWhen, sum } from "../util.ts";
-import { STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { CALL_OVER_AMOUNT, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { counted } from "../ledger/attribution.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
@@ -118,8 +118,18 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
     `BUSY until Nov 15 if you're slammed — we'll wait`,
     `PAUSE to stop everything`,
     ``,
+    ...callListLines(state),
     `The first ${b.plan.trialSize} are free.`,
   ].join("\n");
+}
+
+/** The people we won't email — big quotes and phone-only — handed over once, biggest first. */
+function callListLines(state: AccountState): string[] {
+  const cl = state.summary?.callList;
+  if (!cl?.people) return [];
+  const parts = [cl.bigQuotes ? `${cl.bigQuotes} quote${cl.bigQuotes === 1 ? "" : "s"} over ${fmtMoney(state.dataset.business.callOverAmount ?? CALL_OVER_AMOUNT)}` : "", cl.phoneOnly ? `${cl.phoneOnly} with only a phone number` : ""].filter(Boolean);
+  const top = cl.top.slice(0, 3).map((x) => `${x.name} ${x.phone}${x.job ? ` (${x.job}, ${fmtMoney(x.value, { compact: true })})` : ""}`);
+  return [`Worth a call from you (we don't email these): ${parts.join(" and ")}, ${fmtMoney(cl.value, { compact: true })} in all. Biggest first: ${top.join("; ")}.`, ``];
 }
 
 /** Old quotes get re-priced, not honored by accident. */

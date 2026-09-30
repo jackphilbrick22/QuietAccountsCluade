@@ -28,7 +28,7 @@ import {
   round2,
   spokenWhen,
 } from "../util.ts";
-import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
+import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, CALL_OVER_AMOUNT, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
 import { quoteById } from "../lookup.ts";
 
 /** What we already know about outreach, from our own records. */
@@ -134,10 +134,10 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
     requestsBy: bucket(ds.requests),
     contact,
     avgJob: averageJob(ds),
-    caution: { medianByService: new Map(), typicalJob: 0 },
+    caution: { medianByService: new Map(), typicalJob: 0, callOver: 0 },
     alwaysOn: alwaysOnFor(ds.business),
   };
-  ctx.caution = { medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id), typicalJob: ctx.avgJob };
+  ctx.caution = { medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id), typicalJob: ctx.avgJob, callOver: ds.business.callOverAmount ?? CALL_OVER_AMOUNT };
 
   const opps: Opportunity[] = [];
   for (const q of ds.quotes) {

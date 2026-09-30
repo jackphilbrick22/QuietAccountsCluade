@@ -3,6 +3,7 @@ import { addDays, daysBetween, fmtMoney, round2, sum } from "../util.ts";
 import { BAND, BREAKAGE_LABEL, RECOVERY_PRIOR, SALES_TYPES } from "./assumptions.ts";
 import { averageJob, type ScanResult } from "./detect.ts";
 import { shopProfile, type ShopProfile } from "./profile.ts";
+import { callList, type CallList } from "./calllist.ts";
 
 export interface TypeSummary {
   type: BreakageType;
@@ -164,6 +165,8 @@ export interface DrawerSummary {
   audit: SilentAudit;
   /** The money-on-the-table reveal, in the owner's own numbers only. */
   onTheTable: OnTheTable;
+  /** Big quotes and phone-only people the owner should call himself — never emailed by us. */
+  callList: CallList;
   fit: FitCheck;
 }
 
@@ -280,6 +283,7 @@ export function summarize(ds: Dataset, result: ScanResult): DrawerSummary {
     audit: silentAudit(ds),
     onTheTable: { silentNow: { count: 0, value: 0 }, perMonth: { quotes: 0, value: 0, shareOfQuoted: 0 }, requestsNeverPriced: 0, pastCustomersNotBack: 0, line: "" },
     fit: { score: 0, verdict: "not_yet", guaranteeEligible: false, checks: [], headline: "", liftLine: "", canSay15: false },
+    callList: callList(ds, result),
   };
   summary.fit = fitCheck(ds, result, summary);
   summary.onTheTable = onTheTable(ds, result, summary);

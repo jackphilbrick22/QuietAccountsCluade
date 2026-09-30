@@ -129,19 +129,21 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       body: "{first}, any thoughts on the quote for {job}?\n\nIf you'd like to go ahead, just reply \"yes\" and I'll get you on the schedule. If something doesn't fit, tell me and I'll rework it.\n\n{signer}",
     },
   ],
-  "fresh.revise": [
+  // The last note asks for an answer either way, and offers another option in the same breath: a fresh
+  // quote that goes unanswered is usually the price, the timing or the scope, and "no" closes the file.
+  "fresh.close_file": [
     {
       id: "f3o",
-      angle: "revise",
+      angle: "close_file",
       subject: "Re: {job}",
       needs: ["bigJob"],
-      body: "{first}, if the number on {job} is the sticking point, there's usually another way to do it, like splitting it into two visits or doing the most important part first.\n\nTell me what would work and I'll price it that way.\n\n{signer}",
+      body: "{first}, last note from me on {job}.\n\nIf the number is the sticking point, there's usually another way to do it, like splitting it into two visits or doing the most important part first. Tell me what would work and I'll price it that way.\n\nIf you've gone another way, no problem. A one-word reply lets me close it out.\n\n{signer}",
     },
     {
       id: "f3r",
-      angle: "revise",
+      angle: "close_file",
       subject: "Re: {job}",
-      body: "{first}, if something about the quote for {job} isn't working, like the price, the timing or part of the work, tell me and I'll put together another option.\n\nOne line back is plenty.\n\n{signer}",
+      body: "{first}, last note from me on {job}.\n\nIf something about it isn't working, like the price, the timing or part of the work, tell me and I'll put together another option. If you've gone another way, that's fine too. One line back lets me close it out.\n\n{signer}",
     },
   ],
 
@@ -330,15 +332,13 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
   ],
 };
 
-/** Which template families and steps each breakage type uses. */
 /** The always-on sequence for a quote sent in the last few weeks (replaces the FSM's two canned reminders). */
 export const FRESH_SEQUENCE: { family: string; steps: StepPlan[] } = {
   family: "fresh",
   steps: [
     { step: 1, day: 0, angles: ["check_in"] },
-    { step: 2, day: 5, angles: ["crew_nearby", "timing", "problem_grows", "easy_yes"] },
-    { step: 3, day: 11, angles: ["revise"] },
-    { step: 4, day: 19, angles: ["close_file"] },
+    { step: 2, day: 5, angles: ["easy_yes", "crew_nearby", "timing", "problem_grows"] },
+    { step: 3, day: 12, angles: ["close_file"] },
   ],
 };
 
@@ -352,6 +352,7 @@ export function sequenceFor(o: { type: BreakageType; ageDays: number }, alwaysOn
 }
 const FRESH_SEQUENCE_MAX_AGE = 30;
 
+/** Which template families and steps each breakage type uses. Never more than three notes to one person. */
 export const SEQUENCES: Record<BreakageType, { family: string; steps: StepPlan[] }> = {
   unanswered_quote: {
     family: "quote",
@@ -447,7 +448,6 @@ export function templateKey(family: string, angle: MessageAngle, step = 1): stri
     "fresh.crew_nearby": ["quote.crew_nearby"],
     "fresh.timing": ["quote.timing"],
     "fresh.problem_grows": ["quote.problem_grows"],
-    "fresh.close_file": ["quote.close_file"],
     "changes.timing": ["quote.timing"],
     "request.timing": ["quote.timing"],
     "request.easy_yes": ["quote.easy_yes"],

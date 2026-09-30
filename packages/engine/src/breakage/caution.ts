@@ -1,4 +1,5 @@
 import type { Customer, Opportunity, Quote } from "../model.ts";
+import { fmtMoney } from "../util.ts";
 
 /**
  * Quotes an owner may NOT want chased — and customers they never want contacted.
@@ -28,11 +29,21 @@ export interface CautionContext {
   medianByService: Map<string, { p50: number; p90: number }>;
   /** The shop's typical (median) job. */
   typicalJob: number;
+  /** Quotes at or over this go to the owner's call list, never email (0 = off). */
+  callOver: number;
+}
+
+/** The caution line for a quote big enough that the owner should call. The call list keys on its prefix. */
+export const CALL_LIST_REASON = "Over ";
+export function isCallListReason(r: string): boolean {
+  return r.startsWith(CALL_LIST_REASON) && r.includes("call list");
 }
 
 /** Reasons to hold this opportunity for a look before anyone writes to them. Empty = fine to send. */
 export function cautionReasons(o: Opportunity, c: Customer | undefined, q: Quote | undefined, cc: CautionContext): string[] {
   const out: string[] = [];
+  if (q && cc.callOver > 0 && q.total >= cc.callOver)
+    out.push(`${CALL_LIST_REASON}${fmtMoney(cc.callOver)} — on your call list, not emailed`);
   if (q && ["unanswered_quote", "archived_quote", "declined_quote", "changes_requested"].includes(o.type)) {
     // Far outside this service's own normal range — not just a big job of a kind that varies a lot.
     const m = cc.medianByService.get(o.serviceId);
