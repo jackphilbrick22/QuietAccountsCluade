@@ -74,7 +74,7 @@ const ProfilePatch = CreateBusiness.partial().extend({
   maxQuoteAgeMonths: z.number().int().min(1).max(120).optional(),
   blackoutWeeks: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
   openCrewWeeks: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
-  voice: z.object({ mentionPrice: z.boolean(), offerOptions: z.boolean(), wordSwaps: z.array(z.tuple([z.string(), z.string()])) }).partial().optional(),
+  voice: z.object({ mentionPrice: z.boolean(), offerOptions: z.boolean(), freeLook: z.boolean(), wordSwaps: z.array(z.tuple([z.string(), z.string()])) }).partial().optional(),
   persistence: z.object({ seasonalCheckIn: z.boolean(), maxNotesPerYear: z.number().int().min(1).max(12), holdoutPct: z.number().min(0).max(0.3) }).partial().optional(),
   plan: z
     .object({

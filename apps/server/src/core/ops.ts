@@ -179,7 +179,7 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
     // big-ticket fence shop; only the bigger jobs on a small-ticket lawn route).
     const above = snapshot.summary?.profile?.strategy.personalizeAbove ?? 0;
     const firsts = planned.filter((t) => t.step === 1 && (oppById(snapshot.scan?.opportunities, t.opportunityId)?.value ?? 0) >= above);
-    const rewrites = new Map<string, { subject: string; body: string }>();
+    const rewrites = new Map<string, { subject: string; body: string; flags: string[] }>();
     for (const t of firsts.slice(0, 500)) {
       const o = oppById(snapshot.scan?.opportunities, t.opportunityId);
       if (!o) continue;
@@ -193,6 +193,7 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
           if (r && (t.status === "approved" || t.status === "planned")) {
             t.subject = r.subject;
             t.body = r.body;
+            t.flags = r.flags;
             t.writer = "ai";
             // keep the thread subject consistent for follow-ups
             for (const f of state.touches) if (f.opportunityId === t.opportunityId && f.step > 1 && f.status !== "sent") f.subject = `Re: ${r.subject}`;

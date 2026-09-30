@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
 import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
-import { parseDate, parseMoney, splitName, greetingName, normalizePhone, extractPhones } from "../src/util.ts";
+import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones } from "../src/util.ts";
 import type { BusinessProfile } from "../src/model.ts";
 
 const biz: BusinessProfile = {
@@ -36,8 +36,29 @@ describe("util parsing", () => {
     expect(splitName("Mr. John Q. Smith Jr.")).toEqual({ first: "John", last: "Smith" });
     expect(splitName("John & Mary Smith")).toEqual({ first: "John", last: "Smith" });
     expect(greetingName("J")).toBe("there");
+    // households and initials have no first name to greet
+    expect(splitName("Mr. and Mrs. Evans")).toEqual({ first: "", last: "Evans" });
+    expect(splitName("Mr. & Mrs. John Evans")).toEqual({ first: "John", last: "Evans" });
+    expect(splitName("Dr. Patel")).toEqual({ first: "", last: "Patel" });
+    expect(splitName("J. Grant")).toEqual({ first: "", last: "Grant" });
+    expect(splitName("J. Robert Grant")).toEqual({ first: "Robert", last: "Grant" });
+    expect(splitName("Miller Family")).toEqual({ first: "", last: "Miller" });
+    expect(splitName("The Smiths")).toEqual({ first: "", last: "Smiths" });
+    for (const f of ["And", "&", "J.", "Mr.", "Mrs", "Mr. and Mrs.", "Dr.", "Family", "The"]) expect(greetingName(f)).toBe("there");
+    expect(greetingName("Mr. John")).toBe("John");
     expect(greetingName("ACME LLC")).toBe("there");
     expect(greetingName("mike")).toBe("Mike");
+  });
+  it("says ages and intervals the way people do", () => {
+    expect(humanAge(880)).toBe("2½ years");
+    expect(humanAge(760)).toBe("2 years");
+    expect(humanAge(1050)).toBe("3 years");
+    expect(humanAge(500)).toBe("16 months");
+    expect(humanAge(370)).toBe("a year");
+    expect(intervalWords(12)).toBe("Once a year");
+    expect(intervalWords(36)).toBe("Every 3 years");
+    expect(intervalWords(30)).toBe("Every 2½ years");
+    expect(intervalWords(6)).toBe("Every 6 months");
   });
   it("normalizes phones", () => {
     expect(normalizePhone("(603) 555-0142")).toBe("+16035550142");
@@ -152,6 +173,16 @@ describe("ingest", () => {
     expect(tom.firstName).toBe("Tom");
     expect(tom.address?.city).toBe("Bow");
     expect(dataset.business.software).toBe("jobber");
+  });
+
+  it("households and initials come through with no first name, so notes say 'Hi there'", () => {
+    const CSV = `Quote #,Client name,Client email,Property,Title,Status,Sent date,Total ($)
+2001,Mr. and Mrs. Evans,evans@gmail.com,"4 Ash St, Concord, NH 03301",Spruce out back,Awaiting response,2026-06-02,1400
+2002,J. Grant,jgrant@gmail.com,"5 Ash St, Concord, NH 03301",Birch by driveway,Awaiting response,2026-06-02,1400
+2003,Miller Family,miller@gmail.com,"6 Ash St, Concord, NH 03301",Oak removal,Awaiting response,2026-06-02,1400
+`;
+    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), CSV, "Quotes Report.csv", "2026-09-29T12:00:00Z");
+    expect(dataset.customers.map((c) => [c.firstName, greetingName(c.firstName)])).toEqual([["", "there"], ["", "there"], ["", "there"]]);
   });
 
   it("merges a second file into the same customers and links jobs to quotes", () => {

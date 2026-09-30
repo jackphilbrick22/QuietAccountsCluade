@@ -154,8 +154,26 @@ export function spokenWhen(d: ISODate, asOf: ISODate): string {
 export function humanAge(days: number): string {
   if (days < 14) return `${days} day${days === 1 ? "" : "s"}`;
   if (days < 60) return `${Math.round(days / 7)} weeks`;
-  if (days < 365 * 2) return `${Math.round(days / 30.44)} months`;
-  return `${(days / 365.25).toFixed(1).replace(/\.0$/, "")} years`;
+  if (days < 365 * 2) {
+    const months = Math.round(days / 30.44);
+    return months === 12 ? "a year" : `${months} months`;
+  }
+  // people say "2½ years", never "2.4 years"
+  const years = days / 365.25;
+  const whole = Math.floor(years);
+  const part = years - whole;
+  return part < 0.25 ? `${whole} years` : part < 0.75 ? `${whole}½ years` : `${whole + 1} years`;
+}
+
+/** How often, said the way a person would: 12 → "Once a year", 36 → "Every 3 years", 30 → "Every 2½ years". */
+export function intervalWords(months: number): string {
+  if (months === 12) return "Once a year";
+  if (months === 1) return "Once a month";
+  if (months < 24) return `Every ${months} months`;
+  const y = months / 12;
+  if (Number.isInteger(y)) return `Every ${y} years`;
+  if (Number.isInteger(y * 2)) return `Every ${Math.floor(y)}½ years`;
+  return `Every ${months} months`;
 }
 
 /* ----------------------------- money ------------------------------ */
@@ -295,7 +313,8 @@ export function looksCommercial(name: string): boolean {
   return COMPANY_WORDS.test(name);
 }
 
-const HONORIFICS = /^(mr|mrs|ms|miss|dr|rev|prof)\.?\s+/i;
+const HONORIFICS = /^((mr|mrs|ms|dr)\.?\s*(&|and)\s*(mr|mrs|ms|dr)\.?|mr|mrs|ms|miss|dr|rev|prof)\.?\s+/i;
+const INITIAL = /^[a-z]\.?$/i;
 
 /** Split "Smith, John", "John & Mary Smith", "Mr. John Q. Smith Jr." into first/last. */
 export function splitName(full: string): { first: string; last: string } {
@@ -305,13 +324,19 @@ export function splitName(full: string): { first: string; last: string } {
     const [last, first] = s.split(",").map((x) => x.trim());
     s = `${first ?? ""} ${last ?? ""}`.trim();
   }
+  // "The Smiths", "Miller Family": a household, no first name to greet
+  if (/^the\s/i.test(s) || /\bfamily$/i.test(s)) return { first: "", last: titleCase(s.replace(/^the\s+/i, "").replace(/\s*family$/i, "")) };
+  const titled = HONORIFICS.test(s);
   s = s.replace(HONORIFICS, "");
   // "John & Mary Smith" / "John and Mary Smith" -> first John, last Smith
   const pair = s.match(/^([A-Za-z'-]+)\s+(?:&|and)\s+[A-Za-z'-]+\s+(.+)$/);
   if (pair) return { first: titleCase(pair[1]!), last: titleCase(pair[2]!) };
   const parts = s.split(" ").filter((p) => !/^(jr|sr|ii|iii|iv)\.?$/i.test(p));
-  if (parts.length === 1) return { first: titleCase(parts[0]!), last: "" };
-  return { first: titleCase(parts[0]!), last: titleCase(parts[parts.length - 1]!) };
+  // "Mr. Evans", "Mr. and Mrs. Evans": the one word left is the surname
+  if (parts.length === 1) return titled ? { first: "", last: titleCase(parts[0]!) } : { first: titleCase(parts[0]!), last: "" };
+  // "J. Grant" has no first name to use; "J. Robert Grant" goes by Robert
+  const first = parts.slice(0, -1).find((p) => !INITIAL.test(p)) ?? "";
+  return { first: titleCase(first), last: titleCase(parts[parts.length - 1]!) };
 }
 
 export function titleCase(s: string): string {
@@ -326,8 +351,9 @@ export function titleCase(s: string): string {
 
 /** A greeting-safe first name: "there" when we don't have a real one. */
 export function greetingName(first: string | undefined): string {
-  const f = (first || "").trim();
-  if (f.length < 2 || /^(the|a|an|mr|mrs|ms|dr|customer|client|owner|resident|homeowner|unknown|n\/a)$/i.test(f)) return "there";
+  // "Mr. and Mrs." or "Dr." in the first-name column is a title, not a name
+  const f = `${(first || "").trim()} `.replace(HONORIFICS, "").trim();
+  if (f.length < 2 || INITIAL.test(f) || /^(the|a|an|and|&|mr|mrs|ms|miss|dr|family|customer|client|owner|resident|homeowner|unknown|n\/a)\.?$/i.test(f)) return "there";
   if (looksCommercial(f)) return "there";
   return titleCase(f);
 }

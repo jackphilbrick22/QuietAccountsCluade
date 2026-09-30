@@ -59,6 +59,10 @@ export function findService(serviceId: string): { trade: TradeId; service: Servi
 
 function pluralize(phrase: string, matched: string): string {
   const m = matched.toLowerCase();
+  const lastWord = (x: string) => (x.toLowerCase().split(/\s+/).pop() ?? "").replace(/[^a-z]/g, "");
+  // only the object word itself takes the plural: "the oaks", never "the house washs"
+  if (!lastWord(m).startsWith(lastWord(phrase).replace(/y$/, ""))) return phrase;
+  if (/ies$/.test(m) && /y$/.test(phrase)) return phrase.slice(0, -1) + "ies";
   if (/(ches|shes|xes|sses)$/.test(m) && !/(ches|shes|xes|sses)$/.test(phrase)) return phrase + "es";
   if (/[^s]s$/.test(m) && !/s$/.test(phrase)) return phrase + "s";
   return phrase;
@@ -70,7 +74,8 @@ function pluralize(phrase: string, matched: string): string {
  */
 export function jobPhrase(title: string, trade: TradeId, lineItems: LineItem[] = [], custom: [RegExp, string][] = []): string {
   const pb = playbook(trade);
-  const text = [title, ...lineItems.slice(0, 3).map((l) => l.name)].join(" ");
+  // items stay apart, so "AC replacement - 3 ton" + "AC replacement" never reads as "3 ton AC"
+  const text = [title, ...lineItems.slice(0, 3).map((l) => l.name)].join(" · ");
   for (const [re, phrase] of custom) if (re.test(text)) return phrase;
   let object: string | undefined;
   for (const [re, phrase] of pb.objects) {
@@ -78,9 +83,9 @@ export function jobPhrase(title: string, trade: TradeId, lineItems: LineItem[] =
     if (m) {
       object = pluralize(phrase, m[0]);
       const counted =
-        new RegExp(`\\b(two|three|four|five|six|several|multiple|[2-9]|1[0-9]|2[0-9])\\s+(?!(?:gal|gallons?|ft|foot|feet|sq|yds?|yards?|in|inch|lf|x)\\b)(\\w+\\s+)?${m[0]}`, "i").test(text) ||
+        new RegExp(`\\b(two|three|four|five|six|several|multiple|[2-9]|1[0-9]|2[0-9])\\s+(?!(?:gal|gallons?|ft|foot|feet|sq|yds?|yards?|in|inch|lf|x|tons?|acres?|sections?|zones?|panels?|posts?|stor(?:y|ies)|br|bed(?:room)?s?|bath(?:room)?s?|hours?|hrs?|visits?|weeks?|months?|years?)\\b)(\\w+\\s+)?${m[0]}`, "i").test(text) ||
         /\bx\s?[2-9]\b|\(\s*(qty:?\s*)?[2-9]\s*\)|\bqty:?\s*[2-9]\b/i.test(text);
-      if (counted && !/s$/.test(object)) object = pluralize(phrase, /(ch|sh|x|ss)$/i.test(m[0]) ? m[0] + "es" : m[0] + "s");
+      if (counted && !/s$/.test(object)) object = pluralize(phrase, /(ch|sh|x|ss)$/i.test(m[0]) ? m[0] + "es" : /[^aeiou]y$/i.test(m[0]) ? m[0].slice(0, -1) + "ies" : m[0] + "s");
       break;
     }
   }

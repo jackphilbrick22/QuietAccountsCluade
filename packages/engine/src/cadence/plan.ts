@@ -158,9 +158,12 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     const notes: Touch[] = [];
     let lastSend = day;
     let ok = true;
+    let threadSubject: string | undefined;
     for (const st of seq.steps) {
       const sendOn = st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
-      const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id) }, st.step);
+      // follow-ups reply in note 1's thread, so they carry its exact subject
+      const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id), threadSubject }, st.step);
+      if (st.step === 1 && n) threadSubject = n.subject;
       if (!n) {
         if (st.step === 1) ok = false;
         continue;

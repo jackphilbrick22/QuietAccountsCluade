@@ -24,6 +24,22 @@ describe("trade playbooks", () => {
     expect(classifyService("Fall aeration & overseed", [], ["lawn"]).service.id).toBe("lawn.aerate");
     expect(classifyService("House wash + gutters", [], ["pressure_washing"]).service.id).toBe("pw.house");
   });
+  it("never counts across line items or units: a line item repeating the title stays singular", () => {
+    const li = (name: string) => [{ name, total: 0 }];
+    expect(jobPhrase("AC replacement - 3 ton", "hvac", li("AC replacement"))).toBe("the AC");
+    expect(jobPhrase("Lot clearing 1/2 acre", "tree", li("Lot clearing 1/2 acre"))).toBe("the lot");
+    expect(jobPhrase("Fence repair - 2 sections", "fence", li("Fence repair - 2 sections"))).toBe("the fence");
+    expect(jobPhrase("Replace 2 AC units", "hvac")).toBe("the ACs");
+    expect(jobPhrase("Remove 2 cherry trees", "tree")).toBe("the cherries");
+    // a service phrase never takes an "s": "the house washs"
+    expect(jobPhrase("2 house washes", "pressure_washing")).toBe("the house wash");
+  });
+  it("deadwood and limb removal are pruning, not a take-down", () => {
+    expect(classifyService("Deadwood removal - large oak", [], ["tree"]).service.id).toBe("tree.prune_oak");
+    expect(classifyService("Dead limb removal over roof", [], ["tree"]).service.id).toBe("tree.prune");
+    expect(classifyService("Branch removal - maple", [], ["tree"]).service.id).toBe("tree.prune");
+    expect(classifyService("Dead ash removal", [], ["tree"]).service.id).toBe("tree.removal");
+  });
   it("knows seasons by climate", () => {
     const aer = playbook("lawn").services.find((s) => s.id === "lawn.aerate")!;
     expect(seasonFit(aer, "cold", 9)).toBe("now");

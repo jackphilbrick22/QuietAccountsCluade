@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { AGENTS, fmtMoney, plural, type AgentId, type BusinessProfile, type Reply, type Touch } from "@qa/engine";
+import { AGENTS, fmtMoney, playbook, plural, type AgentId, type BusinessProfile, type Reply, type Touch } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -583,6 +583,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
       <Group title="Voice and follow-up">
         <Toggle id="ls-price" checked={d.voice.mentionPrice} onChange={(v) => set("voice", { ...d.voice, mentionPrice: v })} label="Mention the original price" sub="Off by default: the old number can bring back the sticker shock." />
         <Toggle id="ls-options" checked={d.voice.offerOptions} onChange={(v) => set("voice", { ...d.voice, offerOptions: v })} label="Offer smaller options" />
+        <Toggle id="ls-freelook" checked={d.voice.freeLook ?? playbook(d.trade).freeLook} onChange={(v) => set("voice", { ...d.voice, freeLook: v })} label={'Say "No charge to look"'} sub="Only if the owner never charges to come out (off by default for HVAC, septic, pest, cleaning)." />
         <Toggle id="ls-seasonal" checked={d.persistence.seasonalCheckIn} onChange={(v) => set("persistence", { ...d.persistence, seasonalCheckIn: v })} label="Seasonal check-in" sub="One more note when the job's season comes back around." />
         <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
           <NumField id="ls-maxnotes" label="Most notes to one person per year" value={d.persistence.maxNotesPerYear} onChange={(v) => set("persistence", { ...d.persistence, maxNotesPerYear: num(v, 1, 12, d.persistence.maxNotesPerYear) })} />
@@ -634,7 +635,7 @@ function diff(a: BusinessProfile, b: BusinessProfile): Patch {
     if (JSON.stringify(v) === JSON.stringify(a[k])) continue;
     if (typeof v === "string") v = v.trim();
     if (v === "" || v === undefined) continue; // the API can't clear optional fields; leave them
-    if (k === "voice") v = { mentionPrice: b.voice.mentionPrice, offerOptions: b.voice.offerOptions };
+    if (k === "voice") v = { mentionPrice: b.voice.mentionPrice, offerOptions: b.voice.offerOptions, ...(b.voice.freeLook !== undefined ? { freeLook: b.voice.freeLook } : {}) };
     if (k === "plan") v = { stage: b.plan.stage, trialSize: b.plan.trialSize, monthlyPrice: b.plan.monthlyPrice, ...(b.plan.paidOn ? { paidOn: b.plan.paidOn } : {}) };
     out[k] = v;
   }
