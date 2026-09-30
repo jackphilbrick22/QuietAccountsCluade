@@ -111,11 +111,16 @@ async function matchEmail(d: Deps, seq: SequencerProvider, e: PlatformEmail, may
   const inCampaign = e.campaignId ? repo.businessesForProvider(`${seq.name}:${e.campaignId}:`) : [];
   const among = inCampaign.length === 1 ? inCampaign[0] : undefined;
   const known = (addr?: string) => !!addr && repo.businessesForEmail(addr).length > 0;
+  const bareAddr = (s?: string) => s?.match(/[^\s<>]+@[^\s<>]+/)?.[0]?.toLowerCase();
+  let lead = e.lead ? whoIs(d, e.lead, among) : undefined;
   if (known(e.from)) {
     const sender = whoIs(d, e.from, among);
-    return sender ? { businessId: sender.businessId } : {};
+    // A spouse with a record of their own answering our note to someone else: it's about the note we sent that
+    // person, so the reply goes in with that note (and a stop stops them too).
+    const other = lead && bareAddr(e.lead) !== bareAddr(e.from) && (!sender || lead.businessId === sender.businessId) ? lead : undefined;
+    if (!other) return sender ? { businessId: sender.businessId } : {};
+    lead = other;
   }
-  let lead = e.lead ? whoIs(d, e.lead, among) : undefined;
   let ambiguous = !lead && known(e.lead);
   if (!lead && !ambiguous && e.threadId && seq.threadEmails) {
     // out of lookups for this poll: "later", never "nobody", so a spouse's reply isn't written off for good

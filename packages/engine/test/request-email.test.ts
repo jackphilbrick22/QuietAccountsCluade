@@ -410,6 +410,23 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     expect(dueTouches(st, `${ago(-2)}T08:30:00`).due.map((x) => x.touch.id)).not.toContain("fq2");
   });
 
+  it("a platform id reused by a second answer (the lead re-added to its campaign): the reply goes with the newest", async () => {
+    const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
+    const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(200) } });
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1", { name: "Pat Lee", firstName: "Pat", emails: ["pat.lee@gmail.com"] })] }), `${ago(180)}T08:00:00`);
+    const pid = "instantly:camp-now:pat.lee@gmail.com:1";
+    for (const [id, opp, day] of [["rq1", "req:r1", ago(180)], ["rq2", "req:r2", ASOF]] as const) {
+      st.touches.push({ id, opportunityId: opp, customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${day}T09:00`, status: "approved", body: "Thanks for reaching out", flags: [], track: "new_request", instant: true } as never);
+      markSent(st, id, `${day}T09:00:00`, pid);
+    }
+    const r = receiveReply(st, { from: "pat.lee@gmail.com", text: "Sounds good, thanks. Call me after 5.", inReplyTo: pid, receivedAt: `${ASOF}T10:00:00` });
+    expect(r.touchId).toBe("rq2");
+    expect(r.followUpOf).toBe("req:r2");
+    // and the note the platform names outright wins over its id
+    const r2 = receiveReply(st, { from: "pat.lee@gmail.com", text: "Also, the side gate is unlocked.", inReplyTo: pid, touchId: "rq1", receivedAt: `${ASOF}T10:05:00` });
+    expect(r2.touchId).toBe("rq1");
+  });
+
   it("two records sharing one address: the thread says which one wrote", async () => {
     const { markSent, receiveReply } = await import("../src/runtime/agents.ts");
     const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(60) } });

@@ -726,6 +726,11 @@ describe("parseInstantlyWebhook", () => {
     expect(isInstantlyAutoReply(body)).toBe(false);
   });
 
+  it("reply_received names the exact note through our qa_touch_N variable", () => {
+    const body = { ...base, event_type: "reply_received", step: 1, email_id: "0199b1a2-reply", reply_text: "Yes please", qa_touch_1: "t_req_2" };
+    expect(parseInstantlyWebhook(body, now)).toMatchObject({ type: "reply", touchId: "t_req_2", customerId: "cus_1" });
+  });
+
   it("auto_reply_received → reply, text taken from reply_html when there is no reply_text", () => {
     const body = {
       ...base,

@@ -99,16 +99,20 @@ const NO_ANSWER = /\b(no answer|didn'?t answer|did not answer|no response|voice 
  * above 1200" is haggling, not a no.
  */
 const NOT_BOOKED = /\b(not|didn'?t|did not|never|no)\s+(even |end up |ended up |actually |really )?(book|booked|booking|sold|won|buy|bought|go)\b|\b(won'?t|will not|wouldn'?t|would not|not gonna|not going to|isn'?t gonna|isn'?t going to|doesn'?t want to|does not want to|don'?t want to)\s+(book|buy|sign|hire|do it|go ahead|go with (us|me|it|our))\b|\b(hasn'?t|has not|haven'?t|have not|hadn'?t|had not|isn'?t|is not|aren'?t|are not)\s+(\w+ )?(booked|bought|sold|signed|decided|committed)\b/;
+const NOT_BOOKED_ALL = new RegExp(NOT_BOOKED.source, "g");
 /** ...but not over: "hasn't booked yet", "not sold yet", "won't book unless we come down to 1800". Never a loss either. */
 const NOT_YET = /\b(yet|unless|until|till|til)\b|\b(hasn'?t|has not|haven'?t|have not)\b/;
 /**
- * Someone else got the job, or there's no job to get: "booked someone else", "went with someone cheaper", "lost it",
- * "sold the house". The booking in it is theirs, never ours. (Global: it's cut out of the text before BOOKED looks.)
+ * Someone else got the job, or there's no job to get: "booked someone else", "went with another company", "lost it",
+ * "sold the house". Another company only counts when someone was hired: "getting a price from another company too"
+ * is still our lead. (Global: it's cut out of the text before BOOKED looks.)
  */
-const ELSEWHERE = /\b((booked|book|hired|chose|picked|used|went|going|go|gone|signed|gave it|gave the job)( with| to)? )?((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other) (company|guy|contractor|crew|outfit|service|tree service|landscaper))\b|\b(sold|selling) (the|his|her|their) (house|home|place|property)\b|\b(went|going) with\b|\blost (it|the job|that one|out)\b/g;
+const ELSEWHERE_VERB = "(booked|book|hired|hire|hiring|chose|choose|picked|pick|used|use|using|went|going|go|gone|signed|getting|gave it|gave the job)";
+const ELSEWHERE_WHO = "((someone|somebody) (else|cheaper)|(another|a different|the other|a cheaper|some other) (company|guy|contractor|crew|outfit|service|tree service|landscaper|painter|fence company|cleaner|bid|quote)|a competitor|the competition)";
+const ELSEWHERE = new RegExp(`\\b${ELSEWHERE_VERB}( with| to| w/)? ${ELSEWHERE_WHO}\\b|\\b(sold|selling) (the|his|her|their) (house|home|place|property)\\b|\\bwent elsewhere\\b|\\blost (it|the job|that one|out)\\b`, "g");
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
-const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|went with|going with|no go|not interested|no thanks|too expensive|chose someone)\b/;
+const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|no go|not interested|no thanks|too expensive|chose someone)\b/;
 const REACHED = /\b(done|called|talked|reached|spoke|spoken|texted|emailed|contacted|handled|got (a )?hold of)\b/;
 
 /**
@@ -136,13 +140,17 @@ export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount
   const t = body.toLowerCase().replace(APOSTROPHE, "'").replace(/\s+/g, " ").trim();
   const amount = readAmount(body);
   if (NO_ANSWER.test(t)) return { outcome: "no_answer", amount: 0 };
-  // not booked yet is still open: they were reached, with a price if the owner gave one
-  if (NOT_BOOKED.test(t)) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };
+  // what's left once someone else's booking and every negated phrase are cut out: a booking there is ours
   const ours = t.replace(ELSEWHERE, " ");
   const elsewhere = ours !== t;
-  const booked = BOOKED.test(ours) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
-  if (booked && elsewhere) return { amount: 0, unclear: true };
+  const positive = ours.replace(NOT_BOOKED_ALL, " ");
+  const negated = positive !== ours;
+  const booked = BOOKED.test(positive) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
+  // "Booked 2400, she won't sign up for the maintenance plan": a booking and a no in one text is a person's call
+  if (booked && (elsewhere || negated)) return { amount: 0, unclear: true };
   if (booked) return { outcome: "booked", amount };
+  // not booked yet is still open: they were reached, with a price if the owner gave one
+  if (negated) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };
   if (elsewhere) return { outcome: "lost", amount: 0 };
   if (QUOTED.test(t)) return { outcome: "quoted", amount: 0 };
   if (LOST.test(t)) return { outcome: "lost", amount: 0 };
@@ -504,6 +512,10 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
   }
   const target = picks[0]!;
   const bid = target.biz.id;
+  // Taking a booking back moves its dollars off the ledger: a plain "NO #K7Q" does it; anything longer ("#K7Q she won't
+  // sign up for the monthly plan though") is more likely about something else, so a person reads it first.
+  if (target.reply.outcome === "booked" && outcome !== "booked" && text.replace(CODE, " ").trim().split(/\s+/).length > 3)
+    return { businessId: bid, reply: `${multi ? `${target.biz.profile.name}: ` : ""}${target.name} is booked on your results. To take that back, text NO #${leadCode(target.reply.id)}. Jack will read this too.`, handled: "booked_kept", needsPerson: true };
   let reply = "";
   let note: FsmNote | undefined;
   await d.accounts.withAccount(bid, (state) => {

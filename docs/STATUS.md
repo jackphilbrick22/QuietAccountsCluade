@@ -102,8 +102,19 @@ Updated every loop iteration. Newest first.
   BOOKED takes its dollars back off the ledger. Statuses: one no-vocabulary for every rule, open words on
   either side of "not sold", a leading no or "went with someone else" decides. Engine 1,154, server 252.
 
+- Seventh adversarial review: 15 reported, 13 confirmed, all fixed and tested. Mostly the edges of the last
+  round's wider word lists, so the rule now is: a text or status that reads two ways goes to a person or
+  keeps its leading answer, never a guess. A booking with a "won't/hasn't" in the same text goes to Jack;
+  another company only counts when someone was hired; a booking on the ledger is taken back only by a
+  plain NO. Re-booking after a NO never double-counts a job already synced; a skipped person leaves the
+  scan's plan list. Instantly replies name the exact note (qa_touch_N), a spouse's reply in someone else's
+  thread goes with that note, a reply stops every record at the address on Instantly too, and an
+  out-of-office stops nothing. Statuses: a leading yes keeps its yes ("Sold - went w/ black vinyl"),
+  revision requests stay open, price reasons after "not sold" are a no, postponements stay open.
+  Engine 1,190, server 255.
+
 **Next**
-- A seventh review pass on the sixth review's fixes; stop when a pass finds nothing material.
+- An eighth review pass on the seventh review's fixes; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 

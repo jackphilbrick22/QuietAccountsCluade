@@ -436,6 +436,8 @@ export interface InboundEmail {
   inReplyTo?: string;
   /** The record the sending platform filed this lead under (its lead variables), when there's no thread. */
   customerId?: string;
+  /** The exact note, when the platform names it (our qa_touch_N lead variable). Wins over `inReplyTo`. */
+  touchId?: string;
 }
 
 /** A second opinion on a reply (e.g. from the AI Inbox agent) that replaces the rule-based reading. */
@@ -458,7 +460,15 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   const reading = override
     ? { ...base, intent: override.intent, confidence: override.confidence, summary: override.summary ?? base.summary, extracted: { ...base.extracted, ...override.extracted } }
     : base;
-  const answered = msg.inReplyTo ? state.touches.find((t) => t.providerId === msg.inReplyTo) : undefined;
+  // The note they answered. A platform id can be on several notes (a lead re-added to a campaign gets the same one
+  // again): the note named outright wins, then the one to the record the platform names, then the newest sent.
+  const named = msg.touchId ? state.touches.find((t) => t.id === msg.touchId) : undefined;
+  const byProvider = !named && msg.inReplyTo ? state.touches.filter((t) => t.providerId === msg.inReplyTo) : [];
+  const answered =
+    named ??
+    (byProvider.length > 1
+      ? [...byProvider].sort((a, b) => Number(b.customerId === msg.customerId) - Number(a.customerId === msg.customerId) || ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0]
+      : byProvider[0]);
   const newestSent = (ids: Set<string>) => state.touches.filter((t) => ids.has(t.customerId) && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
   // Every record at this address (Jobber makes a new client for a new request, so one person can be two).
   const sharing = state.dataset.customers.filter((x) => x.emails.some((e) => e.toLowerCase() === email));
@@ -475,7 +485,7 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   // A spouse or a forward answering our note is still about the person we wrote to, even when the spouse has a
   // record of their own: the reply is credited to the note it answers.
   const c = reading.intent === "bounce" ? (sender ?? bounced) : (threadCustomer ?? sender);
-  const touch = msg.inReplyTo ? answered : c ? newestSent(new Set([c.id])) : undefined;
+  const touch = msg.inReplyTo || named ? answered : c ? newestSent(new Set([c.id])) : undefined;
   // everyone this reply speaks for: the person we wrote to, the one who wrote, and every record at their address
   const household = [...new Map([c, sender, ...sharing].filter((x): x is Customer => !!x).map((x) => [x.id, x])).values()];
   const r: Reply = {
@@ -532,7 +542,7 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   // to the fence quote must not ride on a request answer.
   const followedUpLately = !!c && state.touches.some((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t) && lately(t.sentAt ?? t.dueAt));
   const request = touch && c && touch.customerId === c.id && isRequestAnswer(touch) && lately(touch.sentAt ?? touch.dueAt) && (touch === answered || !followedUpLately) ? touch : undefined;
-  if (c && touch && !msg.inReplyTo && isRequestAnswer(touch) && touch.customerId === c.id && followedUpLately && !request) {
+  if (c && touch && !msg.inReplyTo && !named && isRequestAnswer(touch) && touch.customerId === c.id && followedUpLately && !request) {
     // No thread, and a follow-up went to them lately too: the words answer that note, so the hand-off, the guarantee
     // and the ledger read them against it. A reply in the request answer's own thread stays with the request.
     const note = state.touches.filter((t) => t.customerId === c.id && !isRequestAnswer(t) && sentOut(t) && lately(t.sentAt ?? t.dueAt)).sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
@@ -609,6 +619,9 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
   if (outcome === "booked")
     for (const rec of state.recoveries)
       if (rec.match === "owner_reported" && rec.record.id === r.id && rec.disputed?.by === "owner") {
+        // unless the job itself reached the ledger meanwhile (their export shows it): that one counts, and only once
+        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && Math.abs(daysBetween(x.cameBackOn, rec.cameBackOn)) <= 30);
+        if (shown) continue;
         rec.disputed = undefined;
         if (value) rec.value = round2(value);
       }
@@ -967,7 +980,8 @@ export function skipPerson(state: AccountState, customerId: string, now: ISODate
       swapped.set(o, n);
       return n;
     });
-    state.scan = { ...state.scan, opportunities, primary: state.scan.primary.map((o) => swapped.get(o) ?? o) };
+    // off the primary list too: it's what gets planned
+    state.scan = { ...state.scan, opportunities, primary: state.scan.primary.filter((o) => !swapped.has(o)) };
   }
   event(state, now, "guard", "action", `${c.name} taken off the list`, `${by}.${cancelled ? ` ${plural(cancelled, "queued note")} stopped.` : ""}`);
   state.updatedAt = now;

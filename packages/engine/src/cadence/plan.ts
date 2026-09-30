@@ -93,6 +93,8 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     if (!o.channels.includes("email")) continue;
     if (opts.types && !opts.types.includes(o.type)) continue;
     if (opts.skipCustomers?.has(o.customerId)) continue;
+    // taken off the list since the scan (SKIP): never planned again, whatever the scan still holds
+    if (o.suppressed || byId.get(o.customerId)?.doNotContact) continue;
     if (o.caution?.length && !opts.includeCaution) {
       skipped.push({ customerId: o.customerId, why: `Held for a look: ${o.caution.join("; ")}` });
       continue;

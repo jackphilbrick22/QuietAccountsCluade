@@ -133,6 +133,8 @@ export type InboundEvent =
       toAccount?: string;
       /** Sequencer: the record the lead was uploaded for (our lead variable), when there's no thread to go by. */
       customerId?: string;
+      /** Sequencer: the exact note answered (our qa_touch_N lead variable). */
+      touchId?: string;
     }
   | { type: "sent"; businessId?: string; campaignId?: string; email: string; step?: number; providerId?: string; sentAt: string; touchId?: string }
   | { type: "bounce"; businessId?: string; campaignId?: string; email: string; at: string; detail?: string }

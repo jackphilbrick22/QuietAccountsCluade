@@ -218,6 +218,20 @@ describe("the reply backstop", () => {
     expect(await pollReplies(d)).toMatchObject({ processed: 1 });
     expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r5")).toMatchObject({ from: "sam.ng@gmail.com", customerId: "c2" });
   });
+
+  it("a spouse with a record of their own answering our note to someone else: it goes in with that note", async () => {
+    await d.accounts.withAccount(BID, (s) => {
+      s.dataset.customers = [...s.dataset.customers, { ...s.dataset.customers[0]!, id: "c3", sourceIds: ["c3"], name: "Jo Lee", firstName: "Jo", emails: ["jo.lee@gmail.com"] }];
+    });
+    now = new Date("2026-10-01T03:30:00Z");
+    const jo = email("em-r6", { from_address_email: "Jo Lee <jo.lee@gmail.com>", lead: PAT, thread_id: "th-pat", timestamp_created: "2026-10-01T03:25:00.000Z", body: { text: "This is Pat's wife. Please stop emailing him." } });
+    inbox.primary = [];
+    inbox.others = [jo];
+    inbox.byId["em-r6"] = jo;
+    expect(await pollReplies(d, { force: true })).toMatchObject({ processed: 1 });
+    expect(state().replies.find((x) => x.thread?.replyEmailId === "em-r6")).toMatchObject({ from: "jo.lee@gmail.com", customerId: "c1", intent: "stop" });
+    expect(state().suppressions[PAT]).toBe("unsubscribed");
+  });
 });
 
 describe("keeping Instantly's side healthy", () => {

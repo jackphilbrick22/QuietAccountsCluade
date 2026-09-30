@@ -173,9 +173,12 @@ export function parseInstantlyWebhook(body: unknown, now: Date = new Date()): In
     // it's there) which note, so two records sharing one address never get each other's replies.
     const step = num(p.step);
     const customerId = leadVar(p, VAR.customerId);
+    // our qa_touch_N variable names the exact note (a lead re-added to a campaign reuses the platform's own ids)
+    const touchId = step !== undefined ? leadVar(p, VAR.touch(step)) : undefined;
     return {
       type: "reply", businessId, campaignId, from: email, subject: str(p.reply_subject), text, receivedAt: at, replyEmailId: str(p.email_id), toAccount: str(p.email_account),
       ...(customerId ? { customerId } : {}),
+      ...(touchId ? { touchId } : {}),
       ...(campaignId && step !== undefined ? { inReplyTo: `instantly:${campaignId}:${email}:${step}` } : {}),
     };
   }

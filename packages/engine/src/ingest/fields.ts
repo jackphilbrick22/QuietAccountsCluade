@@ -215,18 +215,25 @@ const LEADS_WITH = String.raw`^\W*(?:(?:customer|client)\s+)?`;
 /** A yes from the customer. "Won't" is not a win. */
 const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received))\b`;
 /**
+ * Gone to someone else: "Went with another company", "Hired a competitor", "Lost to ABC Fence", "Closed lost". Only
+ * when the other side is a someone: "Went w/ black vinyl" and "Chose another color" are the option they bought.
+ */
+const COMPETITOR = String.raw`(?:went (?:with|w/)\s+(?:an?\s+|the\s+)?(?:other|another|someone|somebody|competitor|competition|different (?:company|contractor|guy|bid|quote))\b|went elsewhere|(?:hired|chose|used|picked) (?:an?\s+|the\s+)?(?:someone|somebody|competitor|competition|(?:another|other|different) (?:company|contractor|guy|bid|quote|crew))\b|\blost to\b|closed[\s-]*lost)`;
+/**
  * A no from the customer, including the reasons owners type for one: "Declined", "Closed lost", "HOA denied", "Wife
  * said no", "Went w/ competitor", "Price too high", "Not moving forward". One list for every rule that listens for a
  * no, so a no that one rule hears can't slip past another.
  */
-const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b|closed[\s-]*lost|\bdid(?:\s+not|n['’]?t)\s+win\b|went (?:with|w/|elsewhere)|(?:hired|chose|used) (?:an? )?(?:someone|another|competitor)|too expensive|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|not (?:moving forward|proceeding))`;
+const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|(?:quoted|priced|bid|estimated)\s+(?:\w+\s+)?(?:lower|less|cheaper|too high)|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
 /** Closed out by the software or the office, not answered by the customer: "Expired", "Cancelled", "No go". */
 const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|abandon|stale|cancel|\bvoid|delet|duplicate|disqualif)`;
 /**
  * Still waiting on the customer: "Sent", "Quoted", "No response", "Following up", "On hold". Matched inside words, so
  * "Resent" and "Reopened" count too.
  */
-const STILL_OPEN = String.raw`(?:awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow(?:ing|ed)?[\s-]*up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented|emailed)`;
+const STILL_OPEN = String.raw`(?:awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow(?:ing|ed)?[\s-]*up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented|emailed|not (?:moving forward|proceeding) (?:yet|until|till|til|for now|before|this))`;
+/** Waiting on the customer, as a reason written after a "not sold": "Not sold - pending", "Not sold (no response)". */
+const WAITING = String.raw`(?:pending|awaiting|waiting|on hold|follow(?:ing|ed)?[\s-]*up|no (?:response|answer|reply)|thinking|undecided|call ?back|postponed|deferred|nurtur)`;
 /** "Not sold", "unsold", "no sale": a sale that hasn't happened, yet or at all. */
 const NOT_SOLD = String.raw`(?:${NOT}sold\b|\bno[\s-]+sale\b)`;
 /** "Not booked", "not yet scheduled", "unconverted": the work isn't on the calendar. Says nothing about the answer. */
@@ -244,12 +251,16 @@ const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed
  * a leading no.
  */
 export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
+  // Asked for a new price, or got one: "Too expensive - revision requested", "Price too high - sent revised quote".
+  // Still open, whatever objection came first; the answer they gave was "not at that price".
+  [/changes? requested|\brequest(?:ed)? changes\b|\brevisions? (?:requested|needed)\b|\bneeds? (?:changes|revisions?)\b/i, "changes_requested"],
+  [/\b(?:sent|emailed) (?:a |the )?revised\b|\brevised (?:quote|estimate|price|proposal|bid) sent\b|\bre-?quoted\b/i, "awaiting_response"],
   // When the status starts with a no, the no decides, whatever follows it: "Lost - not signed", "Declined - never
   // opened", "Rejected - not booked". The negations below would otherwise read those as still open.
   [new RegExp(`${LEADS_WITH}${SAID_NO}`, "i"), "declined"],
   // Gone to someone else, wherever it's written: "Viewed - not signed - went with competitor". Nobody writes "not
   // went with", so no negation in front of it changes that.
-  [/went (?:with|w\/|elsewhere)|(?:hired|chose|used) (?:an? )?(?:someone|another|competitor)|\blost to\b|closed[\s-]*lost/i, "declined"],
+  [new RegExp(COMPETITOR, "i"), "declined"],
   // Never went out: "Not sent", "Unsent", "Not yet submitted".
   [new RegExp(`${NOT}(?:sent|emailed|delivered|submitted|issued|presented|finali[sz]ed)\\b`, "i"), "draft"],
   // Out, but no yes yet: "Unsigned" is Estimate Rocket's open status, not a signature; "Viewed - not signed".
@@ -263,7 +274,7 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // side of the "not sold" the waiting is written on: "Not sold yet", "Pending - not sold", "Not sold (no response)",
   // "No response - not sold". Unless a no is written anywhere in it ("Sent - not sold - customer said no"), or it was
   // closed out ("Sent - not sold - cancelled"): nobody is waiting on those.
-  [new RegExp(`^(?!.*(?:${SAID_NO}|${CLOSED_OUT}))(?=.*${NOT_SOLD}).*(?:${STILL_OPEN}|\\byet\\b)`, "i"), "awaiting_response"],
+  [new RegExp(`^(?!.*(?:${SAID_NO}|${CLOSED_OUT}))(?:.*${STILL_OPEN}.*${NOT_SOLD}|.*${NOT_SOLD}.*${WAITING}|(?=.*${NOT_SOLD}).*\\byet\\b)`, "i"), "awaiting_response"],
   [/\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b/i, "declined"],
   // With no answer in front, not yet sold, or not booked, converted, completed or closed, is still open. Neither is a
   // yes, whatever word follows the "not".
@@ -276,7 +287,8 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [/\b(?:estimate|appointment|appt|consult\w*|site visit|walk-?through|measure\w*|assessment|bid) (?:is )?(?:scheduled|booked|set|needed|requested)\b|\bneeds? (?:an? )?(?:estimate|quote|bid|measure\w*)\b|\bincomplete\b/i, "draft"],
   [/changes? requested|\brequest(?:ed)? changes\b|^\s*changes?\s*$|\brevisions? (?:requested|needed)\b|\bneeds? (?:changes|revisions?)\b/i, "changes_requested"],
   // A real "no" from the customer, including CRM stages: "Rejected", "Lost", "Closed lost", "Went with someone else".
-  [new RegExp(SAID_NO, "i"), "declined"],
+  // Unless it starts with a yes: "Approved - said no to the gate", "Sold - no thanks on sealer" turned down an add-on.
+  [new RegExp(`^(?!${LEADS_WITH}${SAID_YES}).*${SAID_NO}`, "i"), "declined"],
   // Said yes: "Won", "Closed won". A win is a yes, not a job: nobody knows it's on the calendar until a job says so.
   // "Won't proceed" is not a win, typed on a keyboard or with a phone's curly apostrophe
   [/\bclosed[\s-]*won\b|\bwon\b(?!['’])/i, "approved"],

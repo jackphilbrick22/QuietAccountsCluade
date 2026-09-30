@@ -80,7 +80,16 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
       ["He won’t pick up", { outcome: "no_answer", amount: 0 }],
       ["Didn’t answer", { outcome: "no_answer", amount: 0 }],
       // both ways at once: a person reads it
-      ["Booked 2400, beat the other guy's price", { amount: 0, unclear: true }],
+      ["Booked 2400, she won't sign up for the maintenance plan", { amount: 0, unclear: true }],
+      ["Booked the oak 2400, she hasn't decided on the maple yet", { amount: 0, unclear: true }],
+      ["Sold 3200, not gonna buy the stump grinding", { amount: 0, unclear: true }],
+      ["Booked 2400 but they hired someone else for the stump", { amount: 0, unclear: true }],
+      // another company mentioned is not another company hired
+      ["Booked 2400, beat the other guy's price", { outcome: "booked", amount: 2400 }],
+      ["Quoted her 2400, she's going with it", { outcome: "quoted", amount: 0 }],
+      ["Quoted 2400, she's getting a price from another company too", { outcome: "quoted", amount: 0 }],
+      ["Talked to her, she's getting quotes from another company", open],
+      ["Called her, the other guy never showed up", open],
       // busy, not a booking
       ["We're booked solid till spring", undefined],
       ["Sold out till spring", undefined],
@@ -113,10 +122,17 @@ describe("reading an owner's text about a lead (n12, n38)", () => {
     expect(state(h, "ridge").events.some((e) => /^Booked/.test(e.title))).toBe(false);
     // it says both ways: the lead waits for a person, who sees the text
     await addLead(h, "ridge", "r-both", "Al Moss", "2026-09-29T08:00:00");
-    expect(await h.sms(`Booked 2400, beat the other guy's price #${leadCode("r-both")}`)).toMatch(/^Thanks — that one could go either way, so Jack will read it and mark the lead himself\./);
+    expect(await h.sms(`Booked 2400, she won't sign up for the maintenance plan #${leadCode("r-both")}`)).toMatch(/^Thanks — that one could go either way, so Jack will read it and mark the lead himself\./);
     expect(reply(h, "ridge", "r-both").status).toBe("handed_off");
     expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "unclear_lead", needs_person: 1 });
     expect(state(h, "ridge").recoveries).toEqual([]);
+    // a booking on the ledger is only taken back by a plain NO; a longer text about it goes to a person
+    await addLead(h, "ridge", "r-kept", "Bea Cole", "2026-09-29T08:00:00");
+    expect(await h.sms(`Booked 2400 #${leadCode("r-kept")}`)).toContain("Booked: Bea Cole, $2,400");
+    expect(await h.sms(`#${leadCode("r-kept")} she won't sign up for the monthly plan though`)).toMatch(/Bea Cole is booked on your results\. To take that back, text NO #/);
+    expect(state(h, "ridge").recoveries.filter((r) => !r.disputed).map((r) => r.value)).toEqual([2400]);
+    expect(await h.sms(`NO #${leadCode("r-kept")}`)).toContain("Bea Cole marked not a fit");
+    expect(state(h, "ridge").recoveries.filter((r) => !r.disputed)).toEqual([]);
   });
 });
 

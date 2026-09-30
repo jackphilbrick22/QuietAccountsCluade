@@ -280,4 +280,15 @@ describe("the owner takes a booking back", () => {
     markContacted(st, r.id, `${ASOF}T13:00:00`, "booked", 2600);
     expect(counted(st.recoveries).map((x) => x.value)).toEqual([2600]);
   });
+  it("booked again after the job already reached the ledger from their export: counted once", () => {
+    const st = account();
+    const r = reply(st, "c1", "unanswered_quote");
+    st.replies.push(r);
+    markContacted(st, r.id, `${ASOF}T11:00:00`, "booked", 2400);
+    markContacted(st, r.id, `${ASOF}T12:00:00`, "lost");
+    // the job shows up in their export and the ledger records it
+    st.recoveries.push({ id: "rec-j9", customerId: "c1", record: { kind: "job", id: "j9" }, value: 2600, cameBackOn: ASOF, match: "customer_id", confidence: 0.95, tier: "traced" } as Recovery);
+    markContacted(st, r.id, `${ASOF}T13:00:00`, "booked", 2600);
+    expect(counted(st.recoveries).map((x) => x.value)).toEqual([2600]);
+  });
 });

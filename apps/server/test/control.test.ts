@@ -180,6 +180,22 @@ describe("stopping a business reaches Instantly", () => {
     expect(done).not.toContain("it all picks back up");
   });
 
+  it("a reply stops every record at that address on Instantly too; an out-of-office stops nothing there", async () => {
+    await pushed("alder", "Alder Tree", ["jen.lee@gmail.com", "mike.lee@gmail.com"]);
+    // Mike's record also carries the family address Jen writes from; his lead went up under his own address
+    await d.accounts.withAccount("alder", (s) => {
+      s.dataset.customers = s.dataset.customers.map((c) => (c.id === "c-mike" ? { ...c, emails: [...c.emails, "jen.lee@gmail.com"] } : c));
+    });
+    const hook = (body: Record<string, unknown>) => app.request(`/webhooks/instantly/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ timestamp: "2026-09-30T14:00:00.000Z", campaign_id: campaignsOf("alder")[0], ...body }) });
+    await hook({ event_type: "auto_reply_received", lead_email: "jen.lee@gmail.com", email_id: "em-ooo", reply_text: "I am out of the office until October 12." });
+    await runTasks(d);
+    expect(leadsIn("alder")).toEqual(["jen.lee@gmail.com", "mike.lee@gmail.com"]);
+    await hook({ event_type: "reply_received", lead_email: "jen.lee@gmail.com", email_id: "em-stop", reply_text: "Please stop emailing us." });
+    await runTasks(d);
+    expect(leadsIn("alder")).toEqual([]);
+    expect(st("alder").touches.filter((t) => t.status === "approved")).toEqual([]);
+  });
+
   it("Settings: stage Paused or Cancelled stops sending there too; back to paying turns it on", async () => {
     await pushed("spruce", "Spruce Tree", ["ed.lee@gmail.com"]);
     await op("PATCH", "/api/businesses/spruce", { plan: { stage: "paused" } });

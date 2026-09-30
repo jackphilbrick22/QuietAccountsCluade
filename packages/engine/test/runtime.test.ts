@@ -114,6 +114,16 @@ describe("Writer and Sender: the batch", () => {
     const ids = new Set(s.touches.map((t) => t.id));
     expect(again.touches.every((t) => ids.has(t.id))).toBe(true);
   });
+  it("someone taken off the list is never planned again, even from the scan made before", async () => {
+    const { skipPerson } = await import("../src/runtime/agents.ts");
+    const s = fresh();
+    const who = s.touches[0]!.customerId;
+    skipPerson(s, who, NOW, "The owner texted SKIP");
+    expect(s.scan!.primary.some((o) => o.customerId === who)).toBe(false);
+    s.scan = { ...s.scan!, primary: [...s.scan!.primary, ...s.scan!.opportunities.filter((o) => o.customerId === who)] };
+    const again = planBatch(s, NOW, { startOn: "2026-11-03" });
+    expect(again.people).not.toContain(who);
+  });
   it("a top-up never doubles the weekly pace: what's already scheduled counts", () => {
     const s = fresh();
     s.dataset.business.plan.stage = "paying";

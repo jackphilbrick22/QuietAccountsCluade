@@ -1028,7 +1028,7 @@ async function applyReply(d: Deps, bid: string, ev: ReplyEvent, email: string | 
     // the engine reasons in the business's local time ("call you today" depends on it)
     const local = localIso(new Date(ev.receivedAt), state.dataset.business.timezone).slice(0, 19);
     const before = state.replies.length;
-    reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: answered, customerId: ev.customerId }, override);
+    reply = receiveReply(state, { from: ev.from, subject: ev.subject, text: ev.text, receivedAt: local, inReplyTo: answered, customerId: ev.customerId, touchId: ev.touchId }, override);
     fresh = state.replies.length > before;
     if (!fresh) return;
     reply.thread = { subject: ev.subject, messageId: ev.messageId, replyEmailId: ev.replyEmailId, toAccount: ev.toAccount };
@@ -1067,16 +1067,19 @@ async function applyReply(d: Deps, bid: string, ev: ReplyEvent, email: string | 
       d.accounts.repo.enqueue("reply.ack", task, { businessId: bid, runAt: new Date(d.clock().getTime() + wait).toISOString() });
     }
   }
-  if (reply && d.email.kind === "sequencer" && email) {
+  // An out-of-office isn't them writing back: the platform keeps its sequence going, like we do.
+  if (reply && d.email.kind === "sequencer" && email && (reply as Reply).intent !== "auto_reply") {
     const r = reply as Reply;
     const reason = r.intent === "stop" ? "unsubscribed" : r.intent === "complaint" ? "complained" : r.intent === "bounce" ? "bounced" : "replied";
     await stopEverywhere(d, bid, email, reason);
-    // A spouse or a forward answered: Instantly saw no reply from the lead, so their own sequence is stopped too.
-    if (r.intent !== "auto_reply" && r.intent !== "bounce") {
+    // A spouse or a forward answered, or another record shares the address: Instantly saw no reply from those leads,
+    // so every address the reply speaks for is stopped there too, as the engine stopped their notes.
+    if (r.intent !== "bounce") {
       const st = d.accounts.peek(bid)?.state;
-      const lead = st ? customerById(st.dataset, r.customerId) : undefined;
+      const household = st ? st.dataset.customers.filter((c) => c.id === r.customerId || c.emails.some((e) => e.toLowerCase() === email)) : [];
+      const others = new Set(household.flatMap((c) => c.emails.map((e) => e.toLowerCase())).filter((e) => e !== email));
       // an address the stop suppressed (an alias said stop in our thread) is blocklisted there too; others just stop
-      for (const other of lead?.emails ?? []) if (other !== email) await stopEverywhere(d, bid, other, st?.suppressions[other] ?? "replied");
+      for (const other of others) await stopEverywhere(d, bid, other, st?.suppressions[other] ?? "replied");
     }
   }
   await deliverOwnerMessages(d, bid);
