@@ -223,7 +223,14 @@ export type ReviewItem =
   | (ReviewBase & { kind: "owner_message"; messageId: string; messageKind: string; delivery: string; text: string })
   | (ReviewBase & { kind: "owner_text"; seq: number; text: string; reply: string; handled: string })
   | (ReviewBase & { kind: "alert"; seq: number; alertKind: string; title: string; detail: string })
-  | (ReviewBase & { kind: "ready"; quotes: number; customers: number; headline: string });
+  | (ReviewBase & { kind: "ready"; quotes: number; customers: number; headline: string })
+  /** A reply nobody could place (businessId is ""): a person says whose it is. */
+  | (ReviewBase & { kind: "unmatched_reply"; id: string; from: string; subject: string; text: string; reason: string; candidates: { businessId: string; businessName: string }[] })
+  | (ReviewBase & { kind: "brake"; reason: string; queued: number })
+  | (ReviewBase & { kind: "unsure_send"; touchId: string; customerId: string; name: string; step: number; subject: string; error: string })
+  | (ReviewBase & { kind: "not_taken"; touchId: string; customerId: string; name: string; reason: string })
+  /** The sending platform itself (businessId is ""). */
+  | (ReviewBase & { kind: "platform"; title: string; detail: string });
 
 export interface ReviewQueue {
   now: string;

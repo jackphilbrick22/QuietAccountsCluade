@@ -58,10 +58,14 @@ export class SmtpEmailProvider implements DirectProvider {
       });
       return { providerId: info.messageId, messageId: info.messageId };
     } catch (e) {
-      const err = e as { responseCode?: number; message?: string };
+      const err = e as { responseCode?: number; message?: string; response?: string; command?: string };
       const code = err.responseCode ?? 0;
+      // No reply code: the connection broke. Before the message was handed over (connect, login, envelope) it
+      // surely didn't go; anywhere else (DATA, a timeout waiting for the 250) the server may already have it.
+      const before = /^(CONN|EHLO|HELO|STARTTLS|AUTH|MAIL FROM|RCPT TO)/i.test(err.command ?? "");
+      const message = err.response && !(err.message ?? "").includes(err.response) ? `${err.message ?? "SMTP send failed"}: ${err.response}` : (err.message ?? "SMTP send failed");
       // 4xx SMTP replies are temporary; 5xx are permanent (bad address, policy block)
-      throw new ProviderError(err.message ?? "SMTP send failed", "smtp", code, code === 0 || (code >= 400 && code < 500));
+      throw new ProviderError(message, "smtp", code, code === 0 || (code >= 400 && code < 500), code === 0 && !before);
     }
   }
 }

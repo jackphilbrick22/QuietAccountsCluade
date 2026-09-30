@@ -419,6 +419,10 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     ensureWebhooks(url, events, webhookOpts) {
       return ensureWebhooks(client, url, events, webhookOpts);
     },
+
+    registerWebhooks(url) {
+      return ensureWebhooks(client, url);
+    },
   };
   return provider;
 }

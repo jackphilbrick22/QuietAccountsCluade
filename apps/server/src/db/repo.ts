@@ -476,4 +476,39 @@ export class Repo {
     else if (retryAt) this.db.run("UPDATE tasks SET attempts = attempts + 1, last_error = ?, run_at = ? WHERE seq = ?", error ?? null, retryAt, seq);
     else this.db.run("UPDATE tasks SET status = 'failed', attempts = attempts + 1, last_error = ?, dedupe_key = NULL WHERE seq = ?", error ?? null, seq);
   }
+
+  /**
+   * Take a webhook delivery for processing. Only one that went through (processed/ignored) is a duplicate: a failed
+   * one is taken again, and so is one whose processing died mid-way (still "received" after `staleMs`). "busy" means
+   * another delivery of it is being processed right now.
+   */
+  claimWebhook(id: string, source: string, body: string, at: string, staleMs = 2 * 60_000): "new" | "again" | "duplicate" | "busy" {
+    if (this.logWebhook(id, source, body, at)) return "new";
+    const row = this.db.get<{ status: string; received_at: string }>("SELECT status, received_at FROM webhook_log WHERE id = ?", id);
+    if (!row || row.status === "processed" || row.status === "ignored") return "duplicate";
+    if (row.status === "received" && Date.parse(at) - Date.parse(row.received_at) < staleMs) return "busy";
+    this.db.run("UPDATE webhook_log SET status = 'received', received_at = ?, error = NULL WHERE id = ?", at, id);
+    return "again";
+  }
+
+  /* ----------------------------- inbound mail nobody could place ----------------------------- */
+
+  queueInboundReview(r: { id: string; at: string; reason: string; candidates: string[]; event: unknown }): void {
+    this.db.run("INSERT OR IGNORE INTO inbound_review (id, at, reason, candidates, event) VALUES (?, ?, ?, ?, ?)", r.id, r.at, r.reason, JSON.stringify(r.candidates), JSON.stringify(r.event));
+  }
+
+  inboundReviews(opts: { status?: string; limit?: number } = {}): { id: string; at: string; reason: string; candidates: string[]; event: Record<string, unknown>; status: string }[] {
+    return this.db
+      .all<{ id: string; at: string; reason: string; candidates: string; event: string; status: string }>("SELECT id, at, reason, candidates, event, status FROM inbound_review WHERE status = ? ORDER BY at LIMIT ?", opts.status ?? "open", opts.limit ?? 200)
+      .map((r) => ({ ...r, candidates: JSON.parse(r.candidates) as string[], event: JSON.parse(r.event) as Record<string, unknown> }));
+  }
+
+  inboundReview(id: string): { id: string; event: Record<string, unknown>; status: string; candidates: string[] } | undefined {
+    const r = this.db.get<{ id: string; event: string; status: string; candidates: string }>("SELECT id, event, status, candidates FROM inbound_review WHERE id = ?", id);
+    return r ? { id: r.id, status: r.status, event: JSON.parse(r.event) as Record<string, unknown>, candidates: JSON.parse(r.candidates) as string[] } : undefined;
+  }
+
+  closeInboundReview(id: string, status: "assigned" | "dismissed", businessId?: string): void {
+    this.db.run("UPDATE inbound_review SET status = ?, business_id = ? WHERE id = ?", status, businessId ?? null, id);
+  }
 }

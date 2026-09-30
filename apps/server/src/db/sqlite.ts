@@ -217,6 +217,17 @@ const MIGRATIONS: string[] = [
   -- A per-business random key inside owner, import and connect links, so one client's links can be rotated.
   ALTER TABLE businesses ADD COLUMN link_key TEXT;
   ALTER TABLE integrations ADD COLUMN last_attempt_at TEXT;
+  -- Replies nobody could place with one business: a person says whose it is.
+  CREATE TABLE inbound_review (
+    id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    candidates TEXT NOT NULL,
+    event TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    business_id TEXT
+  );
+  CREATE INDEX inbound_review_open ON inbound_review(status, at);
   `,
 ];
 

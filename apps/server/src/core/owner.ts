@@ -1,6 +1,6 @@
 import { addDays, counted, daysBetween, leadCode, markContacted, renewPlan, round2, setBookedOut, totals, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { fsmNote, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, type Deps, type FsmNote } from "./ops.ts";
+import { fsmNote, holdSending, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -202,7 +202,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       for (const x of state.touches) if (x.status === "approved" || x.status === "planned") (x.status = "cancelled"), n++;
       state.events.push({ id: `ev_cancel_${at}`, at, agent: "guard", kind: "warning", title: "Owner cancelled by text", detail: `${n} queued notes stopped. No further charges, and no more texts to the owner.` });
     });
-    await pause(d, one.id, true);
+    // cancel everywhere: queued notes stop, the platform's campaigns pause and leads still waiting are taken back
+    await holdSending(d, one.id, "cancel").catch((e) => d.log(`[owner] ${one.id} cancel on the sending platform failed: ${(e as Error).message}`));
     d.accounts.repo.audit(one.id, "owner-sms", "cancel", {});
     return { businessId: one.id, reply: `${tag(one)}Done — cancelled. No more notes, no more charges, and this is our last text. Your ledger link keeps working, and your data is yours to take. Thanks for giving us a shot.`, handled: "cancel" };
   }
@@ -210,21 +211,27 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(bare) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
     if (!one) return askWhich();
     let reply = "";
+    let pulled: string[] = [];
     await d.accounts.withAccount(one.id, (state) => {
       const today = nowLocal(d, state).slice(0, 10);
       const until = parseBusyUntil(t, today);
       const r = setBookedOut(state, until, nowLocal(d, state));
+      pulled = r.withdrawn;
       reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
     });
+    await withdrawMoved(d, one.id, pulled);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "busy" };
   }
   if (/^(open|not busy|free|room|slow)\b/.test(bare)) {
     if (!one) return askWhich();
     let reply = "";
+    let pulled: string[] = [];
     await d.accounts.withAccount(one.id, (state) => {
       const r = setBookedOut(state, undefined, nowLocal(d, state));
+      pulled = r.withdrawn;
       reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us on your next send day.` : ""}`;
     });
+    await withdrawMoved(d, one.id, pulled);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "open" };
   }
 

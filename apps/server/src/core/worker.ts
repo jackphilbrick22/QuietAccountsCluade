@@ -1,7 +1,7 @@
-import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek } from "@qa/engine";
+import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { localIso } from "./clock.ts";
-import { deliverOwnerMessages, handleInbound, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
+import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
 /**
  * The heartbeat. Every minute, for every business, in its own local time:
@@ -175,7 +175,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
         }
       });
       if (daily) d.accounts.repo.setMark(bid, "daily", today);
-      if (lapsed) d.accounts.setPaused(bid, true);
+      if (lapsed) await holdSending(d, bid, "pause");
     }
     report.ownerMessages += await deliverOwnerMessages(d, bid);
   });
@@ -226,6 +226,17 @@ export async function runTasks(d: Deps, report?: TickReport): Promise<void> {
         else if (t.type === "sequencer.stop" && d.email.kind === "sequencer" && p.bid) {
           const state = d.accounts.peek(p.bid)?.state;
           if (state) await d.email.stopLead(state.dataset.business, p.campaignId!, p.email!, p.reason as "replied");
+        } else if (t.type === "sequencer.withdraw" && d.email.kind === "sequencer") {
+          // notes taken back from the platform (a cancel, a delete, a move); the client may be gone by now
+          const w = JSON.parse(t.payload) as { bid: string; profile: Pick<BusinessProfile, "id" | "name">; leads: { campaignId: string; email: string }[] };
+          const b = d.accounts.peek(w.bid)?.state.dataset.business ?? (w.profile as BusinessProfile);
+          for (const l of w.leads) await d.email.stopLead(b, l.campaignId, l.email, "withdrawn");
+        } else if (t.type === "sequencer.pause" && d.email.kind === "sequencer") {
+          // a campaign pause/restart that failed: do what's wanted now (a deleted client stays paused)
+          const w = JSON.parse(t.payload) as { bid: string; campaignId: string; profile: Pick<BusinessProfile, "id" | "name"> };
+          const l = d.accounts.peek(w.bid);
+          const paused = !l || !!holdReason(l) || !!l.state.dataset.business.platformPaused;
+          await d.email.pauseCampaign(l?.state.dataset.business ?? (w.profile as BusinessProfile), w.campaignId, paused);
         }
         d.accounts.repo.finishTask(t.seq, true);
       } catch (e) {

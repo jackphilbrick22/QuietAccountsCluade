@@ -70,8 +70,11 @@ export interface SequencerProvider {
   ensureCampaign(business: BusinessProfile, opts: { maxSteps: number; instant?: boolean }): Promise<{ campaignId: string }>;
   /** Add or update leads (idempotent by email). */
   upsertLeads(business: BusinessProfile, campaignId: string, leads: SequencedLead[]): Promise<{ added: number; skipped: { email: string; why: string }[] }>;
-  /** Stop everything for one address (reply, stop, bounce) and blocklist it where supported. */
-  stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained"): Promise<void>;
+  /**
+   * Stop everything for one address (reply, stop, bounce) and blocklist it where supported. "withdrawn" is us taking
+   * back notes that shouldn't go (the owner cancelled, moved them, or marked the person do-not-contact): no blocklist.
+   */
+  stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained" | "withdrawn"): Promise<void>;
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
   /** Answer a reply in its own thread, from the mailbox it came in on. Refuses when the thread isn't addressed to `to`. */
   replyTo?(business: BusinessProfile, thread: { replyEmailId: string; account: string; to: string; subject: string }, text: string): Promise<void>;
@@ -81,6 +84,8 @@ export interface SequencerProvider {
   threadEmails?(threadId: string): Promise<PlatformEmail[]>;
   /** Re-enable webhooks the platform disabled after failed deliveries. Returns the ones resumed. */
   resumeWebhooks?(): Promise<{ id: string; url: string; eventType?: string }[]>;
+  /** Register our webhook with the platform (idempotent). */
+  registerWebhooks?(url: string): Promise<unknown>;
 }
 
 /** One email in the sending platform's inbox. */
@@ -116,6 +121,10 @@ export type InboundEvent =
       text: string;
       receivedAt: string;
       inReplyTo?: string;
+      /** The thread's earlier Message-IDs (References header), oldest first. */
+      references?: string[];
+      /** Who it was addressed to (our reply-to inboxes), when known. */
+      to?: string[];
       providerLeadId?: string;
       /** RFC Message-ID of their reply (direct mail), so our answer threads under it. */
       messageId?: string;
@@ -195,6 +204,8 @@ export class ProviderError extends Error {
     readonly provider: string,
     readonly status?: number,
     readonly retryable = false,
+    /** The provider may have taken the message before failing (a timeout after DATA): never resend blindly. */
+    readonly maybeSent = false,
   ) {
     super(message);
   }

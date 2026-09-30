@@ -6,7 +6,7 @@ import { readReply } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Dataset, ISODateTime, RecordKind, Reply, Touch } from "../model.ts";
-import { ackFor, closeMessage, grossFees, guaranteeCheck, handoffText, kickoffText, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, closeMessage, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
@@ -157,6 +157,30 @@ export interface DueTouch {
   customerName: string;
 }
 
+/** Why a held note will never go: the Sender cancels these for good. Anything else only waits. */
+export const HELD_FOR_GOOD = /No sendable email|They replied|Do not contact|Note 1 never went|No longer needed/;
+/** Lint flags for what the law or honesty requires (opt-out, address, no fake "Re:", no made-up stats): the note waits for a fix. */
+export const REQUIRED_FLAG = /Missing the|Unfilled blank|Fake Re:|unsourced stat/;
+/** "Dave will call you today" is only true for a while: past this, an unsent answer to a request is dropped. */
+export const ANSWER_GOOD_FOR_HOURS = 12;
+
+/** The owner marked them do-not-contact in their own software (their setting wins over ours). */
+export function doNotContact(state: AccountState, t: Touch): boolean {
+  return !!customerById(state.dataset, t.customerId)?.doNotContact || oppById(state.scan?.opportunities, t.opportunityId)?.suppressed === "do_not_contact";
+}
+
+/** Why an answer to a new request should no longer go, if it shouldn't. */
+export function staleAnswer(state: AccountState, t: Touch, now: ISODateTime): string | undefined {
+  if (!t.instant) return undefined;
+  const ds = state.dataset;
+  const r = t.opportunityId.startsWith("req:") ? ds.requests.find((x) => x.id === t.opportunityId.slice(4)) : undefined;
+  if (r && (r.quoteId || r.status === "converted" || r.status === "archived" || ds.quotes.some((q) => q.customerId === t.customerId && (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999"))))
+    return "their request already has a quote or a visit";
+  const late = (Date.parse(`${now.slice(0, 16)}:00Z`) - Date.parse(`${t.dueAt.slice(0, 16)}:00Z`)) / 3_600_000;
+  if (late > ANSWER_GOOD_FOR_HOURS) return `it would have gone ${Math.round(late)} hours late`;
+  return undefined;
+}
+
 /** Everything that should go out at `now`, after the Guard's checks. Pure: marks nothing. */
 export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTouch[]; held: { touch: Touch; why: string }[] } {
   const b = state.dataset.business;
@@ -167,6 +191,9 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   // an out-of-office or a bounce isn't the person writing back
   const replied = new Set(state.replies.filter((r) => r.customerId && r.intent !== "auto_reply" && r.intent !== "bounce").map((r) => r.customerId!));
   const health = sendHealth(state);
+  // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
+  const firsts = new Map<string, Touch>();
+  for (const t of state.touches) if (t.step === 1 && (!firsts.has(t.opportunityId) || t.status === "sent" || t.status === "delivered")) firsts.set(t.opportunityId, t);
   for (const t of state.touches) {
     if (t.status !== "approved" || t.dueAt > local) continue;
     const c = customerById(state.dataset, t.customerId);
@@ -175,12 +202,32 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
       held.push({ touch: t, why: "No sendable email (unsubscribed, bounced or missing)" });
       continue;
     }
+    if (doNotContact(state, t)) {
+      held.push({ touch: t, why: "Do not contact — the owner's setting in their software" });
+      continue;
+    }
     // an instant answer to a NEW request goes even if they wrote to us about something else before
     if (!t.instant && replied.has(c.id)) {
       held.push({ touch: t, why: "They replied — the sequence stops" });
       continue;
     }
+    const required = t.flags.find((f) => REQUIRED_FLAG.test(f));
+    if (required) {
+      held.push({ touch: t, why: `Failed a required check: ${required}` });
+      continue;
+    }
+    // a follow-up only follows a note 1 that went: otherwise its "Re:" would be someone's first contact
+    const first = t.step > 1 && !t.instant ? firsts.get(t.opportunityId) : undefined;
+    if (first && first.status !== "sent" && first.status !== "delivered") {
+      held.push({ touch: t, why: ["approved", "planned", "sending"].includes(first.status) ? "Waiting for note 1" : "Note 1 never went out — the rest of the sequence stops" });
+      continue;
+    }
     if (t.instant) {
+      const stale = staleAnswer(state, t, now);
+      if (stale) {
+        held.push({ touch: t, why: `No longer needed: ${stale}` });
+        continue;
+      }
       if (health.paused) {
         held.push({ touch: t, why: health.reason ?? "Paused" });
         continue;
@@ -239,16 +286,61 @@ export function stopSequence(state: AccountState, customerId: string): number {
   return n;
 }
 
+/**
+ * Answers to new requests that waited too long (sending was paused or braked) or aren't needed any more are
+ * dropped, not sent late, and the owner hears the ones that didn't go. Only notes still with us: a sending
+ * platform's copy is the caller's to pull. Returns what was dropped.
+ */
+export function dropStaleAnswers(state: AccountState, now: ISODateTime): Touch[] {
+  const out: Touch[] = [];
+  for (const t of state.touches) {
+    if (!t.instant || t.status !== "approved" || t.providerId || t.dueAt > now.slice(0, 16)) continue;
+    const why = staleAnswer(state, t, now);
+    if (!why) continue;
+    t.status = "cancelled";
+    t.lastError = `Not sent: ${why}`;
+    out.push(t);
+    const name = customerById(state.dataset, t.customerId)?.name ?? "a new customer";
+    const refs = [{ kind: "customer", id: t.customerId }];
+    event(state, now, "guard", "warning", `Didn't send the answer to ${name}'s request`, `${why[0]!.toUpperCase()}${why.slice(1)}.`, refs as AgentEvent["refs"]);
+    // a quote or visit since means the owner is on it; a late one means nobody answered them
+    if (!/quote or a visit/.test(why)) ownerMsg(state, now, "info", `Heads up: our answer to ${name}'s request didn't go out (sending was held, and ${why}). Call them if you haven't.`, refs);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Guard: reputation                                                   */
 /* ------------------------------------------------------------------ */
 
+function healthCounts(state: AccountState) {
+  return {
+    sent: state.touches.filter((t) => t.status === "sent" || t.status === "delivered" || t.status === "bounced").length,
+    bounces: state.replies.filter((r) => r.intent === "bounce").length + state.touches.filter((t) => t.status === "bounced").length,
+    complaints: state.replies.filter((r) => r.intent === "complaint").length,
+    // "Who is this?" means they don't recognize the sender — the step before a spam click.
+    confused: state.replies.filter((r) => r.intent === "wrong_person").length,
+  };
+}
+
+/**
+ * A person looked at why the brake tripped (cleaned the list, fixed the sender name) and lets sending resume.
+ * The brake then reads only what happens from here on, so it trips again on new problems, not old ones.
+ */
+export function clearBrake(state: AccountState, now: ISODateTime, by: string): void {
+  state.dataset.business.healthBaseline = { at: now, ...healthCounts(state), by };
+  event(state, now, "guard", "action", "Send brake cleared — sending resumes", `Cleared by ${by}. Bounces and complaints are counted afresh from here.`);
+  state.updatedAt = now;
+}
+
 export function sendHealth(state: AccountState): { sent: number; bounces: number; complaints: number; stops: number; bounceRate: number; complaintRate: number; paused: boolean; reason?: string } {
-  const sent = state.touches.filter((t) => t.status === "sent" || t.status === "delivered" || t.status === "bounced").length;
-  const bounces = state.replies.filter((r) => r.intent === "bounce").length + state.touches.filter((t) => t.status === "bounced").length;
-  const complaints = state.replies.filter((r) => r.intent === "complaint").length;
-  // "Who is this?" means they don't recognize the sender — the step before a spam click.
-  const confused = state.replies.filter((r) => r.intent === "wrong_person").length;
+  const all = healthCounts(state);
+  const base = state.dataset.business.healthBaseline;
+  const since = (k: "sent" | "bounces" | "complaints" | "confused") => Math.max(0, all[k] - (base?.[k] ?? 0));
+  const sent = since("sent");
+  const bounces = since("bounces");
+  const complaints = since("complaints");
+  const confused = since("confused");
   const stops = state.replies.filter((r) => r.intent === "stop").length;
   const bounceRate = sent ? bounces / sent : 0;
   const complaintRate = sent ? complaints / sent : 0;
@@ -284,11 +376,15 @@ export interface ReadingOverride {
 
 export function receiveReply(state: AccountState, msg: InboundEmail, override?: ReadingOverride): Reply {
   const now = msg.receivedAt;
+  const email = extractEmails(msg.from)[0] ?? msg.from.toLowerCase();
+  const id = makeId("r", email, now, msg.text.slice(0, 40));
+  // A retried delivery of the same email is read once: no second hand-off, answer or stop.
+  const seen = state.replies.find((x) => x.id === id);
+  if (seen) return seen;
   const base = readReply({ text: msg.text, subject: msg.subject, from: msg.from, asOf: now.slice(0, 10) });
   const reading = override
     ? { ...base, intent: override.intent, confidence: override.confidence, summary: override.summary ?? base.summary, extracted: { ...base.extracted, ...override.extracted } }
     : base;
-  const email = extractEmails(msg.from)[0] ?? msg.from.toLowerCase();
   const sender = customerByEmail(state.dataset, email);
   const answered = msg.inReplyTo ? state.touches.find((t) => t.providerId === msg.inReplyTo) : undefined;
   // A bounce comes from the mail system, not the person: find them by the note it answers, or the address it names.
@@ -302,7 +398,7 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
     ? answered
     : state.touches.filter((t) => t.customerId === c?.id && t.status === "sent").sort((a, b) => ((a.sentAt ?? "") < (b.sentAt ?? "") ? 1 : -1))[0];
   const r: Reply = {
-    id: makeId("r", email, now, msg.text.slice(0, 40)),
+    id,
     customerId: c?.id,
     opportunityId: touch?.opportunityId,
     touchId: touch?.id,
@@ -320,7 +416,10 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
 
   // Guard first: stops and complaints are honored immediately, everywhere.
   if (r.intent === "stop" || r.intent === "complaint") {
-    state.suppressions[email] = r.intent === "complaint" ? "complained" : "unsubscribed";
+    const why = r.intent === "complaint" ? "complained" : "unsubscribed";
+    state.suppressions[email] = why;
+    // from another address in our thread (an alias, a spouse): the address we wrote to is done too
+    if (c && !sender) for (const e of c.emails) state.suppressions[e] = why;
     if (c) stopSequence(state, c.id);
     r.status = "done";
     event(state, now, "guard", r.intent === "complaint" ? "warning" : "action", `${name} asked to stop — removed everywhere`, reading.summary, c ? [{ kind: "customer", id: c.id }] : undefined);
@@ -344,6 +443,26 @@ export function receiveReply(state: AccountState, msg: InboundEmail, override?: 
   if (c) stopSequence(state, c.id);
 
   if (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") {
+    // "Great, thanks" to our instant answer reads as another yes: it joins the lead the owner already has,
+    // instead of a second answer and a second hand-off (which would invite a third).
+    const lately = (at?: string) => !!at && daysBetween(at.slice(0, 10), now.slice(0, 10)) <= 14;
+    const lead = c
+      ? state.replies.find((x) => x.id !== r.id && x.customerId === c.id && !x.followUpOf && ((x.status === "handed_off" && !x.ownerContactedAt && lately(x.handedOffAt ?? x.receivedAt)) || lately(x.ack?.sentAt)))
+      : undefined;
+    if (lead) {
+      r.followUpOf = lead.id;
+      r.status = "done";
+      if (r.extracted.phone && !lead.extracted.phone) lead.extracted.phone = r.extracted.phone;
+      if (r.extracted.bestTime && !lead.extracted.bestTime) lead.extracted.bestTime = r.extracted.bestTime;
+      // someone else in the household writing separately still gets one answer; an answer to our answer gets none
+      const answered = state.replies.some((x) => x.id !== r.id && x.from === r.from && x.ack && (!x.ack.sentAt || lately(x.ack.sentAt)));
+      const ack = answered ? undefined : ackFor(state, r);
+      if (ack) r.ack = ack;
+      ownerMsg(state, now, "info", `${name} wrote again: “${r.text.replace(/\s+/g, " ").slice(0, 200)}” #${leadCode(lead.id)}`, [{ kind: "customer", id: c!.id }, { kind: "reply", id: lead.id }]);
+      event(state, now, "dispatcher", "info", `${name} wrote again — added to their lead`, reading.summary, [{ kind: "customer", id: c!.id }]);
+      state.updatedAt = now;
+      return r;
+    }
     const ack = ackFor(state, r);
     if (ack) r.ack = ack;
     const text = handoffText(state, r);
@@ -468,9 +587,15 @@ export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLin
   if (b.plan.stage !== "trial" || state.ownerMessages.some((m) => m.kind === "close")) return undefined;
   const sent = state.touches.filter((t) => t.status === "sent");
   const pending = state.touches.filter((t) => t.status === "approved" || t.status === "planned");
-  if (!sent.length || pending.length) return undefined;
+  // Notes the Guard's brake is holding don't hold the round open forever: a week after the last send, it ends there.
+  const brake = pending.length ? sendHealth(state) : undefined;
+  if (!sent.length || (pending.length && !brake?.paused)) return undefined;
   const last = sent.map((t) => t.sentAt ?? t.dueAt).sort().pop()!;
   if (daysBetween(last.slice(0, 10), now.slice(0, 10)) < 7) return undefined;
+  if (pending.length) {
+    for (const t of pending) t.status = "cancelled";
+    event(state, now, "guard", "warning", `Free round ended early — the send brake held ${plural(pending.length, "note")}`, brake?.reason);
+  }
   state.trialCompletedOn = last.slice(0, 10);
   const friday = addDays(now.slice(0, 10), (5 - weekday(now.slice(0, 10)) + 7) % 7 || 7);
   const text = closeMessage(state, { ...opts, sayYesBy: `Friday ${Number(friday.slice(8))}` });
@@ -571,8 +696,11 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
  * The owner texted "BUSY until <date>" (or "OPEN"). New-work sequences that haven't started yet move so
  * their first note lands about three weeks before the schedule opens; "OPEN" brings them back.
  * Sequences already under way are left alone — pausing mid-conversation reads strangely.
+ * A moved note a sending platform already holds loses its provider id (it's pushed again on its new date);
+ * `withdrawn` lists those ids so the caller pulls the platform's copy.
  */
-export function setBookedOut(state: AccountState, until: string | undefined, now: ISODateTime): { moved: number } {
+export function setBookedOut(state: AccountState, until: string | undefined, now: ISODateTime): { moved: number; withdrawn: string[] } {
+  const withdrawn: string[] = [];
   const ds = state.dataset;
   const today = now.slice(0, 10);
   ds.business.bookedOutUntil = until;
@@ -602,6 +730,8 @@ export function setBookedOut(state: AccountState, until: string | undefined, now
       const d = nextAllowed(ds, addDays(t.dueAt.slice(0, 10), shift));
       t.dueAt = `${d}${t.dueAt.slice(10)}`;
       t.heldDays = until ? (t.heldDays ?? 0) + shift : undefined;
+      if (t.providerId && !withdrawn.includes(t.providerId)) withdrawn.push(t.providerId);
+      t.providerId = undefined;
     }
     moved++;
   }
@@ -614,7 +744,7 @@ export function setBookedOut(state: AccountState, until: string | undefined, now
     moved ? `${plural(moved, "person", "people")} moved${until ? ` so their first note lands the week of ${mondayOf(addDays(until, -21))}` : " back to the next send day"}.` : undefined,
   );
   state.updatedAt = now;
-  return { moved };
+  return { moved, withdrawn };
 }
 
 /**
@@ -673,11 +803,14 @@ export function disputeRecovery(state: AccountState, recoveryId: string, reason:
  * Always-on: every request that came in during the last day gets an answer within minutes (7am–8pm; one that
  * lands at night is answered at 7am) — "Thanks for reaching out, Dave will call you today" — and the owner gets the
  * lead by text. If no visit or quote follows, the unquoted-request follow-up takes over after two days.
+ * While sending is held (paused, cancelled, the Guard's brake) nothing is queued to go later: the owner gets the
+ * lead and is told to call, never that we wrote back.
  */
-export function answerNewRequests(state: AccountState, now: ISODateTime): number {
+export function answerNewRequests(state: AccountState, now: ISODateTime, opts: { paused?: boolean } = {}): number {
   const ds = state.dataset;
   const b = ds.business;
   if (!alwaysOnFor(b)) return 0;
+  const held = opts.paused || b.plan.stage === "paused" || b.plan.stage === "cancelled" || sendHealth(state).paused;
   const nowMs = Date.parse(`${now.slice(0, 19)}Z`);
   let n = 0;
   for (const r of ds.requests) {
@@ -688,7 +821,8 @@ export function answerNewRequests(state: AccountState, now: ISODateTime): number
     // a day's grace either side absorbs the local/UTC difference between the source's clock and ours
     if (!(ageH >= -14 && ageH <= 36)) continue;
     const id = makeId("t", "req", r.id, 1);
-    if (state.touches.some((t) => t.id === id)) continue;
+    // once per request, whether or not an answer was queued
+    if (state.touches.some((t) => t.id === id) || state.ownerMessages.some((m) => m.refs?.some((x) => x.kind === "request" && x.id === r.id))) continue;
     const c = customerById(ds, r.customerId);
     if (!c || c.doNotContact) continue;
     const to = sendableEmail(c.emails, state.suppressions);
@@ -698,19 +832,29 @@ export function answerNewRequests(state: AccountState, now: ISODateTime): number
     const at = answerTime(now);
     const waits = at !== now.slice(0, 19);
     const ack = renderRequestAck(ds, r, c, at);
-    if (to && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f)))
+    const answering = !!to && !held && !ack.flags.some((f) => /Unfilled blank|Missing the/.test(f));
+    if (answering)
       state.touches.push({ id, opportunityId: `req:${r.id}`, customerId: c.id, channel: "email", step: 1, angle: "check_in", dueAt: at.slice(0, 16), status: "approved", subject: ack.subject, body: ack.body, flags: ack.flags, instant: true, track: "new_request", askedAt: now.slice(0, 16) });
     const street = c.address?.street ? `, ${c.address.street}` : "";
     const phone = c.phones[0] ? fmtPhone(c.phones[0]) : c.emails[0] ?? "no phone on file";
     const promise = promiseTonight(ack.promise, now, at);
+    const answer = answering
+      ? waits
+        ? `At 7am we'll write back that ${promise}.`
+        : `We already wrote back that ${promise}.`
+      : !to
+        ? `No email on file, so we couldn't answer them — call soon.`
+        : held
+          ? `Sending is on hold, so we didn't answer them — call them soon.`
+          : `We couldn't answer them automatically — call them soon.`;
     ownerMsg(
       state,
       now,
       "handoff",
-      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, to ? (waits ? `At 7am we'll write back that ${promise}.` : `We already wrote back that ${promise}.`) : `No email on file, so we couldn't answer them — call soon.`, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
-      [{ kind: "customer", id: c.id }],
+      [`📥 NEW REQUEST — ${c.name}${street}`, `“${(r.title || "no details").replace(/\s+/g, " ").slice(0, 140)}”`, `Call: ${phone}`, answer, `It's in your Jobber as usual — no need to text us about this one.`].join("\n"),
+      [{ kind: "customer", id: c.id }, { kind: "request", id: r.id }],
     );
-    event(state, now, "inbox", "action", `New request from ${c.name} — ${to ? (waits ? "answer goes at 7am" : "answered in minutes") : "answered (no email: owner texted)"}`, r.title, [{ kind: "customer", id: c.id }]);
+    event(state, now, "inbox", "action", `New request from ${c.name} — ${answering ? (waits ? "answer goes at 7am" : "answered in minutes") : !to ? "answered (no email: owner texted)" : held ? "not answered (sending on hold): owner texted" : "not answered: owner texted"}`, r.title, [{ kind: "customer", id: c.id }]);
     n++;
   }
   if (n) state.updatedAt = now;
