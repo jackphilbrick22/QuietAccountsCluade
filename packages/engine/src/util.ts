@@ -1,3 +1,4 @@
+import { findPhoneNumbersInText, parsePhoneNumberFromString } from "libphonenumber-js/max";
 import type { ISODate, Money } from "./model.ts";
 
 /* ----------------------------- dates ------------------------------ */
@@ -243,25 +244,41 @@ export function emailRisk(e: string): { ok: boolean; reason?: string; suggestion
   return ROLE.test(local) ? { ok: true, role: true } : { ok: true };
 }
 
-/** US-centric phone normalization to E.164. Returns undefined for junk. */
+/**
+ * One phone number → E.164 (US unless written with a +country code). The extension is dropped (a text or a
+ * call-back can't dial it), and numbers no carrier could assign — 555-555-5555, 123-456-7890 — are junk.
+ */
 export function normalizePhone(input: unknown): string | undefined {
   if (input == null) return undefined;
-  const digits = String(input).replace(/\D/g, "");
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  if (digits.length > 11 && digits.length <= 15 && !digits.startsWith("1")) return `+${digits}`;
-  return undefined;
+  const s = String(input).trim();
+  if (!s) return undefined;
+  const p = parsePhoneNumberFromString(s, "US");
+  if (p?.isValid()) return p.number;
+  // words around it ("cell: 603-224-1234 (office)")
+  return phonesInText(s)[0];
 }
 
+/** Every real number in a cell, E.164, first-mentioned first. */
 export function extractPhones(input: unknown): string[] {
   if (input == null) return [];
-  const parts = String(input).split(/[;,/|]| or |\n/i);
   const out = new Set<string>();
-  for (const p of parts) {
-    const n = normalizePhone(p.replace(/(ext|x)\.?\s*\d+$/i, ""));
-    if (n) out.add(n);
-  }
+  // Split on list separators first: the finder reads "603-224-1234; 603-555-0100" as one number with an extension.
+  for (const part of String(input).split(/[;,/|\n]| or /i)) for (const n of phonesInText(part)) out.add(n);
   return [...out];
+}
+
+/** A 10-digit run (optional +1) with the usual separators, not glued to other digits, prices or dates. */
+const PHONE_SHAPE = /(?<![\d$.,/])(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?![\d/])/g;
+
+/** Every valid number in free text, E.164, in the order written. Placeholders (555-555-5555) are skipped. */
+export function phonesInText(text: string): string[] {
+  const hits = findPhoneNumbersInText(text, "US").map((m) => ({ at: m.startsAt, n: m.number.number }));
+  // The finder drops a candidate it can't parse whole ("after 5, 603-555-0142"), so plain 10-digit runs are checked too.
+  for (const m of text.matchAll(PHONE_SHAPE)) {
+    const p = parsePhoneNumberFromString(m[0], "US");
+    if (p?.isValid()) hits.push({ at: m.index, n: p.number });
+  }
+  return [...new Set(hits.sort((a, b) => a.at - b.at).map((h) => h.n))];
 }
 
 export function fmtPhone(e164: string | undefined): string {

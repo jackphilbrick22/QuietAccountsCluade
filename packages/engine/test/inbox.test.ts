@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { cleanReplyText } from "../src/inbox/clean.ts";
-import { findTimeExpressions, pickFollowUp, readReply, seasonDate } from "../src/inbox/index.ts";
+import { cleanReplyText, decodeEntities } from "../src/inbox/clean.ts";
+import { extractPhone } from "../src/inbox/classify.ts";
+import { findTimeExpressions, pickFollowUp, readReply, seasonDate, weekdayDate } from "../src/inbox/index.ts";
 import type { ISODate, ReplyIntent } from "../src/model.ts";
 
 const ASOF: ISODate = "2026-09-29";
@@ -72,6 +73,60 @@ describe("cleanReplyText", () => {
     expect(cleanReplyText("On Tue, Sep 22, 2026 at 9:12 AM Sarah <s@x.com> wrote:\n> hi")).toBe("");
     expect(cleanReplyText("")).toBe("");
   });
+  it("cuts Spanish, Portuguese and French quote headers, even when they wrap", () => {
+    expect(cleanReplyText("Sí, por favor. Llámenme.\n\nEl mar, 22 sept 2026 a las 9:12, Sarah Ridge (<sarah@ridgeline.com>) escribió:\n> Hola")).toBe("Sí, por favor. Llámenme.");
+    expect(cleanReplyText("Sim, pode vir.\n\nEm ter., 22 de set. de 2026 às 09:12, Sarah Ridge <sarah@ridgeline.com> escreveu:\n> Oi")).toBe("Sim, pode vir.");
+    expect(cleanReplyText("Oui, merci.\n\nLe mar. 22 sept. 2026 à 09:12, Sarah Ridge <sarah@ridgeline.com> a écrit :\n> Bonjour")).toBe("Oui, merci.");
+    // narrow no-break space before the colon, as French Gmail writes it
+    expect(cleanReplyText("Oui.\n\nLe mar. 22 sept. 2026 à 09:12, Sarah <s@x.com> a écrit\u202f:\n> Bonjour")).toBe("Oui.");
+    expect(cleanReplyText("Sim.\n\nEm ter., 22 de set. de 2026 às 09:12, Sarah Ridge <sarah@\nridgeline.com> escreveu:\n> Oi")).toBe("Sim.");
+    expect(cleanReplyText("Oui.\n\nLe mar. 22 sept. 2026 à 09:12, Sarah Ridge <sarah@\nridgeline.com> a écrit :\n> Bonjour")).toBe("Oui.");
+  });
+  it("cuts Spanish Outlook De:/Enviado:/Para:/Asunto: blocks", () => {
+    const raw = "Ya lo hicimos, gracias.\n\nDe: Sarah Ridge <sarah@ridgeline.com>\nEnviado: martes, 22 de septiembre de 2026 9:12\nPara: Karen <karen@comcast.net>\nAsunto: La cerca\n\nHola Karen, ...";
+    expect(cleanReplyText(raw)).toBe("Ya lo hicimos, gracias.");
+    expect(cleanReplyText("Não, obrigado.\n\nDe: Sarah\nEnviada: terça-feira, 22 de setembro de 2026 09:12\nPara: Ana\nAssunto: A cerca")).toBe("Não, obrigado.");
+    expect(cleanReplyText("Non merci.\n\nDe : Sarah\nEnvoyé : mardi 22 septembre 2026 09:12\nÀ : Luc\nObjet : La clôture")).toBe("Non merci.");
+    // a line that merely starts with "De:" is kept when no header fields follow
+    expect(cleanReplyText("De: nada, gracias por avisar\nLlámenme el viernes")).toBe("De: nada, gracias por avisar\nLlámenme el viernes");
+  });
+  it("removes Spanish, Portuguese and French mobile signatures", () => {
+    expect(cleanReplyText("Sí, adelante\n\nEnviado desde mi iPhone")).toBe("Sí, adelante");
+    expect(cleanReplyText("Sí, adelante Enviado desde mi iPhone")).toBe("Sí, adelante");
+    expect(cleanReplyText("Pode vir\nEnviado do meu iPhone")).toBe("Pode vir");
+    expect(cleanReplyText("D'accord\nEnvoyé de mon iPhone")).toBe("D'accord");
+  });
+  it("decodes Latin-1 named entities, keeping their case", () => {
+    expect(cleanReplyText("<div>Jos&eacute; y Mar&iacute;a Pe&ntilde;a &mdash; s&iacute;, gracias</div>")).toBe("José y María Peña — sí, gracias");
+    expect(decodeEntities("&Eacute;L &Aacute;&Iacute;&Oacute;&Uacute;&Ntilde;&Uuml;&Ccedil; &agrave;&egrave;&aacute;&oacute;&uacute;&uuml;&ccedil;")).toBe("ÉL ÁÍÓÚÑÜÇ àèáóúüç");
+    expect(decodeEntities("&frac12; price &copy; &NBSP;&AMP;")).toBe("½ price ©  &");
+    expect(decodeEntities("&constructor; &bogus; &amp;")).toBe("&constructor; &bogus; &");
+    expect(cleanReplyText("<p>Merci.</p><p>Le mar. 22 sept. 2026, Sarah a &eacute;crit&nbsp;:</p><p>Bonjour</p>")).toBe("Merci.");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Phone numbers                                                       */
+/* ------------------------------------------------------------------ */
+
+describe("phone numbers in replies", () => {
+  it("prefers the real number over a placeholder", () => {
+    expect(extractPhone("call 555-555-5555 or my cell 603-224-1234")).toBe("+16032241234");
+    expect(extractPhone("office 123-456-7890, cell 603-224-1234")).toBe("+16032241234");
+    expect(extractPhone("my number is 555-555-5555")).toBeUndefined();
+  });
+  it("drops extensions and ignores prices and dates", () => {
+    expect(extractPhone("reach me at 603-224-1234 ext. 12")).toBe("+16032241234");
+    expect(extractPhone("(603) 224-1234 ext 5 (office)")).toBe("+16032241234");
+    expect(extractPhone("we paid $1,200 on 10/15/2026")).toBeUndefined();
+    expect(extractPhone("Call me after 5, 603-555-0142.")).toBe("+16035550142");
+    expect(extractPhone("Tuesday 10/6 works, call 603 224-1234")).toBe("+16032241234");
+  });
+  it("puts the real number in the owner's hand-off", () => {
+    const r = readReply({ text: "Yes please come look. Call 555-555-5555 or my cell 603-224-1234", asOf: ASOF });
+    expect(r.extracted.phone).toBe("+16032241234");
+    expect(r.summary).toContain("(603) 224-1234");
+  });
 });
 
 /* ------------------------------------------------------------------ */
@@ -116,6 +171,55 @@ describe("follow-up date math (asOf 2026-09-29)", () => {
     const e = findTimeExpressions("can you do it before winter", ASOF);
     expect(e[0]?.kind).toBe("deadline");
     expect(pickFollowUp(e, ASOF)).toBeUndefined();
+  });
+});
+
+describe("weekday names (asOf Tue 2026-09-29)", () => {
+  const one = (text: string, asOf: ISODate = ASOF) => {
+    const e = findTimeExpressions(text, asOf).filter((x) => x.kind !== "past" || x.phrase);
+    return e.length === 1 ? { phrase: e[0]!.phrase, kind: e[0]!.kind, date: e[0]!.date } : e;
+  };
+  it("resolves a plain weekday to the next one, this week if it's still ahead", () => {
+    expect(one("Friday")).toEqual({ phrase: "friday", kind: "near", date: "2026-10-02" });
+    expect(one("can you come thursday?")).toMatchObject({ kind: "near", date: "2026-10-01" });
+    expect(one("monday works")).toMatchObject({ kind: "near", date: "2026-10-05" });
+    expect(one("sunday")).toMatchObject({ kind: "near", date: "2026-10-04" });
+    // said on a Tuesday, "tuesday" is a week out; "this tuesday" is today
+    expect(one("tuesday")).toMatchObject({ kind: "near", date: "2026-10-06" });
+    expect(one("this tuesday")).toMatchObject({ kind: "near", date: "2026-09-29" });
+  });
+  it("reads abbreviations only where they can't be ordinary words", () => {
+    expect(one("sat morning")).toEqual({ phrase: "sat morning", kind: "near", date: "2026-10-03" });
+    expect(one("this thu")).toEqual({ phrase: "this thu", kind: "near", date: "2026-10-01" });
+    expect(one("on weds")).toMatchObject({ kind: "near", date: "2026-09-30" });
+    expect(one("Fri. afternoon")).toMatchObject({ kind: "near", date: "2026-10-02" });
+    expect(findTimeExpressions("we sat down and talked about it", ASOF)).toEqual([]);
+    expect(findTimeExpressions("the sun hits that side all day", ASOF)).toEqual([]);
+  });
+  it("'next X' is next week's, which is the same day once this week's has passed", () => {
+    expect(one("next friday")).toEqual({ phrase: "next friday", kind: "defer", date: "2026-10-09" });
+    expect(one("next tuesday")).toMatchObject({ kind: "near", date: "2026-10-06" });
+    expect(one("next monday")).toMatchObject({ kind: "near", date: "2026-10-05" });
+    expect(one("next sunday")).toMatchObject({ kind: "defer", date: "2026-10-11" });
+    expect(weekdayDate("2026-10-03", 2, "next")).toBe("2026-10-06"); // Saturday: "next tuesday" is in 3 days
+    expect(weekdayDate("2026-10-04", 1, "next")).toBe("2026-10-05"); // Sunday: tomorrow starts next week
+    expect(weekdayDate("2026-10-05", 5, "next")).toBe("2026-10-16"); // Monday: next week's Friday
+  });
+  it("keeps kinds consistent with dates: deadlines, past days, explicit deferrals", () => {
+    expect(one("by friday")).toMatchObject({ kind: "deadline", date: "2026-10-02" });
+    expect(one("before wed")).toMatchObject({ kind: "deadline", date: "2026-09-30" });
+    expect(one("last friday")).toMatchObject({ kind: "past" });
+    expect(one("another crew came on saturday and took it down")).toMatchObject({ kind: "past" });
+    const until = findTimeExpressions("not until next friday", ASOF)[0]!;
+    expect(until).toMatchObject({ kind: "defer", date: "2026-10-09", explicit: true, label: "next Friday" });
+  });
+  it("sets a follow-up date for 'later' when they name next week's day", () => {
+    const r = readReply({ text: "Not this week, we're away. Try me next friday.", asOf: ASOF });
+    expect(r.intent).toBe("later");
+    expect(r.extracted.followUpOn).toBe("2026-10-09");
+    const soon = readReply({ text: "Yes, can you come Friday?", asOf: ASOF });
+    expect(soon.intent).toBe("wants_it");
+    expect(soon.extracted.timeframe).toBe("friday");
   });
 });
 

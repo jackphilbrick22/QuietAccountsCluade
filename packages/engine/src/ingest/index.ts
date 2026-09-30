@@ -7,6 +7,7 @@ export { parseTable, parseRows, sniffDelimiter, toCSV, type Table } from "./csv.
 export { detect, detectKind, detectSource, mapColumns, normHeader, type ColumnMapping, type Detection } from "./detect.ts";
 export { importTable, linkRecords, mergePulled, parseLineItems, type PulledBatch } from "./normalize.ts";
 export { FIELDS, KIND_FIELDS, type Field } from "./fields.ts";
+export { decodeText } from "./text.ts";
 
 export function emptyDataset(business: BusinessProfile, asOf: string): Dataset {
   return { business, customers: [], quotes: [], jobs: [], invoices: [], requests: [], imports: [], asOf };

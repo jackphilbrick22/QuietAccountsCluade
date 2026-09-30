@@ -11,6 +11,9 @@
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json"
   },
+  "dependencies": {
+    "libphonenumber-js": "^1.13.14"
+  },
   "devDependencies": {
     "typescript": "~5.9.3",
     "vitest": "^3.2.4"

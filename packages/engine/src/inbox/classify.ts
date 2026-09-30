@@ -17,7 +17,7 @@
  *   6. write a one-line summary for the owner's text message
  */
 import type { ISODate, ReplyExtract, ReplyIntent } from "../model.ts";
-import { addDays, addMonths, daysBetween, fmtPhone, monthOf, normalizePhone, toISODate, yearOf } from "../util.ts";
+import { addDays, addMonths, daysBetween, fmtPhone, mondayOf, monthOf, phonesInText, toISODate, weekday, yearOf } from "../util.ts";
 import { cleanReplyText } from "./clean.ts";
 
 export interface ReplyReading {
@@ -471,6 +471,22 @@ const NUMBER_WORDS: Record<string, number> = {
   few: 3, "a few": 3, couple: 2, "a couple": 2, "a couple of": 2, "couple of": 2, several: 4,
 };
 
+const WEEKDAY_NUM: Record<string, number> = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+const WEEKDAY_FULL = new Set(["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]);
+const DAY_FULL = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+/**
+ * "Friday" = the next Friday after asOf (said on a Friday, that's a week out; "this friday" allows today).
+ * "next Friday" = the Friday of next week: a week later than plain "Friday" when that one is still in this
+ * (Monday-start) week, the same day when this week's has already gone.
+ */
+export function weekdayDate(asOf: ISODate, day: number, which: "" | "this" | "next" = ""): ISODate {
+  let ahead = (day - weekday(asOf) + 7) % 7;
+  if (ahead === 0 && which !== "this") ahead = 7;
+  const date = addDays(asOf, ahead);
+  return which === "next" && mondayOf(date) === mondayOf(asOf) ? addDays(date, 7) : date;
+}
+
 /** Next date with this month/day strictly after asOf. */
 export function nextOccurrence(asOf: ISODate, month: number, day: number): ISODate | undefined {
   const y = yearOf(asOf);
@@ -705,10 +721,31 @@ export function findTimeExpressions(text: string, asOf: ISODate): TimeExpr[] {
     pushExpr(out, { phrase: m[0].trim(), index: m.index, end: m.index + m[0].length, kind: "deadline", label: m[0].trim(), spec: 3 });
   }
 
-  // Near-term: "tomorrow", "this week", "next tuesday", "asap"
-  const nearRe = /\b(?:today|tonight|tomorrow|tmrw|tmw|this (?:week|weekend|afternoon|morning|evening|month)|next weekend|(?:this|next|on|by|before|until|thru|through) (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)|monday|tuesday|wednesday|thursday|friday|saturday|sunday|asap|right away|end of (?:the )?(?:week|month)|a day or two)\b/g;
+  // Near-term: "tomorrow", "this week", "asap"
+  const nearRe = /\b(?:today|tonight|tomorrow|tmrw|tmw|this (?:week|weekend|afternoon|morning|evening|month)|next weekend|asap|right away|end of (?:the )?(?:week|month)|a day or two)\b/g;
   while ((m = nearRe.exec(t))) {
     pushExpr(out, { phrase: m[0].trim(), index: m.index, end: m.index + m[0].length, kind: "near", label: m[0].trim(), spec: 1 });
+  }
+
+  // Weekdays: "Friday", "next tuesday", "sat morning", "this thu", "by wed"
+  const dayRe = /\b((?:(?:this|next|coming|last|past|on|by|before|until|till|til|thru|through|after) ){0,2})(sunday|monday|tuesday|wednesday|thursday|friday|saturday|tues|tue|weds|wed|thurs|thur|thu|fri|sat|sun|mon)\b\.?(?: (morning|afternoon|evening|night|am|pm)\b)?/g;
+  while ((m = dayRe.exec(t))) {
+    const pre = m[1] ?? "";
+    const word = m[2] ?? "";
+    // "sat", "sun", "wed" are ordinary words on their own: an abbreviation needs "this/next/on..." or "morning"
+    if (!WEEKDAY_FULL.has(word) && !pre && !m[3]) continue;
+    if (/\b(last|past)\b/.test(pre) || pastBefore(t, m.index)) {
+      pushExpr(out, { phrase: m[0].trim(), index: m.index, end: m.index + m[0].length, kind: "past", label: "", spec: 0 });
+      continue;
+    }
+    const date = weekdayDate(asOf, WEEKDAY_NUM[word.slice(0, 3)]!, /\bnext\b/.test(pre) ? "next" : /\bthis\b/.test(pre) ? "this" : "");
+    const days = daysBetween(asOf, date);
+    pushExpr(out, {
+      ...(EXPLICIT_PREP.test(pre) ? { explicit: true } : {}),
+      phrase: m[0].trim(), index: m.index, end: m.index + m[0].length,
+      kind: DEADLINE_PREP.test(pre) ? "deadline" : days <= 7 ? "near" : "defer",
+      date, label: `${/\bnext\b/.test(pre) ? "next" : "on"} ${DAY_FULL[weekday(date)]}`, spec: 5,
+    });
   }
 
   // Day of month: "til the 15th", "after the 3rd"
@@ -758,15 +795,9 @@ export function fmtShortDate(d: ISODate): string {
 /* Extraction                                                          */
 /* ------------------------------------------------------------------ */
 
-/** First phone number in the reply, E.164 via util.normalizePhone (falls back to util.extractPhones). */
+/** First real phone number in the reply (E.164, no extension). A placeholder like 555-555-5555 is skipped. */
 export function extractPhone(text: string): string | undefined {
-  const re = /(?<![\d$.,/])(?:\+?1[\s.-]?)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]?\d{3}[\s.-]?\d{4}(?![\d/])/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text))) {
-    const n = normalizePhone(m[0]);
-    if (n) return n;
-  }
-  return undefined;
+  return phonesInText(text)[0];
 }
 
 export function extractBestTime(t: string): string | undefined {

@@ -12,6 +12,7 @@ import {
   readiness,
   relabelReply,
   COUNTING_RULES,
+  decodeText,
   disputeRecovery,
   ledgerCSV,
   ledgerRows,
@@ -588,7 +589,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
         return c.json({ ok: true, ignored: true });
       }
       const bid = payload.slice("import|".length);
-      const files = attachments.map((a) => ({ name: a.Name, text: Buffer.from(a.Content, "base64").toString("utf8") }));
+      // Excel's classic CSV is Windows-1252, not UTF-8
+      const files = attachments.map((a) => ({ name: a.Name, text: decodeText(Buffer.from(a.Content, "base64")) }));
       const res = await importFiles(d, bid, files);
       repo.finishWebhook(id, "processed", bid);
       return c.json({ ok: true, imported: res });
