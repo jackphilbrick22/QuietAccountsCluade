@@ -146,6 +146,24 @@ export function mentionsCompetitor(text: string): boolean {
   const t = text.replace(APOSTROPHE, "'").replace(/#\s?[a-z0-9]{3}\b/gi, " ");
   return THIRD_PARTY.test(t) || HIRED_A_NAME.test(t);
 }
+/** The words of a text, lowercased, without the #code, the business's short name or punctuation ("$2,400" stays whole). */
+function plainWords(text: string, shortName?: string): string {
+  const t = text.replace(APOSTROPHE, "'").replace(/#\s?[a-z0-9]{3}\b/gi, " ").toLowerCase().replace(/(\d),(\d{3})/g, "$1$2").replace(/[^a-z0-9$.'\s]/g, " ").replace(/\.(?!\d)/g, " ");
+  return t.split(/\s+/).filter((w) => w && (!shortName || w !== shortName.toLowerCase())).join(" ");
+}
+const AMT = "\\$?\\d+(\\.\\d+)?k?";
+const BOOKED_WHAT = "(it|her|him|them|us|the job|the work|(the|her|his|their) [a-z]+( [a-z]+)?)";
+const BOOKED_WHEN = "(today|tonight|tomorrow|this week|next week|this month|next month)";
+/**
+ * A booking that is plainly the owner's: the word first ("Booked 2400", "Sold it 5k", "Booked the dead oak, 1800"),
+ * the amount alone, or the homeowner booking us ("She booked us for 2400"). Anything else read as a booking goes to
+ * Claude, or to a person.
+ */
+const PLAIN_BOOKING = new RegExp(
+  `^((she|he|they|we|i) )?(just )?(booked|book it|sold|won|closed|closed it|got the job|got it|landed it|signed)( ${BOOKED_WHAT})?( (for|at))?( ${AMT})?( ${BOOKED_WHEN})?( ${AMT})?$` +
+    `|^${AMT}( (booked|sold))?$` +
+    `|^(she|he|they) (booked|hired|signed with|went with|picked|chose) (us|me)( (for|at))?( ${AMT})?$`,
+);
 /** "She went with my quote", "went with us": our booking. */
 const WENT_WITH_US = /\bwent with (me|us|mine|ours|(my|our) (quote|price|bid|estimate))\b/;
 const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?!')|got the job|closed (it|the deal))\b/;
@@ -475,14 +493,18 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   let lead = readLeadText(text);
   // Another company in it ("the other guy had a lower bid and got the job", "she has another guy coming out"): whose
   // win it is, or whether she's only shopping, is Claude's read with a person behind it, never the patterns' alone.
-  if (mentionsCompetitor(text) && (lead || hasCode)) lead = await readLeadTextWithClaude(d.llm, text);
+  // And a booking puts money on the ledger: the patterns record one only when it's plainly the owner's ("booked
+  // 2400", "she booked us for 2400"); "Davey got the job, 1800" is Claude's, or a person's, to read.
+  const plainBooking = lead?.outcome === "booked" && PLAIN_BOOKING.test(plainWords(text, named ? tags.get(named.id) : undefined));
+  if ((mentionsCompetitor(text) && (lead || hasCode)) || (lead?.outcome === "booked" && !plainBooking)) lead = await readLeadTextWithClaude(d.llm, text);
   // it says both ways ("Booked 2400, she won't sign up for the plan"): a person marks it, never a guess. The lead it's
   // about stops getting "still waiting" nudges meanwhile: the owner just told us something happened.
   if (lead?.unclear) {
     const code = text.match(CODE)?.[1]?.toUpperCase();
     const pool = hasCode ? all : named ? [named] : all;
     const hits = pool.flatMap((b) => (d.accounts.peek(b.id)?.state.replies ?? []).filter((r) => r.status === "handed_off" && !r.ownerContactedAt && (!code || leadCode(r.id) === code)).map((r) => ({ b, r })));
-    if (hits.length === 1) {
+    // only when the #code names it: without one, the only lead still waiting may not be the one the text is about
+    if (hits.length === 1 && code) {
       const { b, r } = hits[0]!;
       await d.accounts.withAccount(b.id, (state) => {
         const live = state.replies.find((x) => x.id === r.id);

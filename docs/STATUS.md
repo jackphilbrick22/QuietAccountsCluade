@@ -163,8 +163,15 @@ Updated every loop iteration. Newest first.
   costs nothing, someone else's win read as ours costs the owner's ledger. A text that goes to Jack as
   unclear also stops the "still waiting" nudges for that lead. Engine 1,232, server 260.
 
+- Fourteenth adversarial review: 3 reported, 1 confirmed: "Davey got the job, 1800" and other ways of
+  naming a competitor still slipped past the list of competitor words and booked their price for us. The
+  gate is now the other way round: a booking (money on the ledger) is recorded by the patterns only when
+  it's plainly the owner's ("booked 2400", "Booked the dead oak, 1800", "She booked us for 2400", "SOLD
+  2.4k"); any other text that reads as a booking goes to Claude, or to Jack with no key. An unclear text
+  stops a lead's reminders only when its #code names that lead. Engine 1,232, server 261.
+
 **Next**
-- A fourteenth review pass; stop when a pass finds nothing material.
+- A fifteenth review pass; stop when a pass finds nothing material.
 
 ## 2026-09-30 — iteration 2
 
