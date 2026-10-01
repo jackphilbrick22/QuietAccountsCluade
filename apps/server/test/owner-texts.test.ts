@@ -894,7 +894,8 @@ describe("final review: the plan by text and in Settings", () => {
     expect(lastText(h, "ridge")).toMatchObject({ handled: "resume_plan_paused", needs_person: 1 });
     expect(h.d.accounts.peek("ridge")!.paused).toBe(true);
     // even with the pause flag cleared by hand, the direct sender honors the plan's own pause
-    await h.api("POST", "/api/businesses/ridge/pause", { paused: false });
+    // and the console says so instead of "Sending resumed"
+    expect((await h.api("POST", "/api/businesses/ridge/pause", { paused: false })).json).toMatchObject({ ok: true, held: "plan_paused" });
     expect((await sendDue(h.d, "ridge")).sent).toBe(0);
     expect(state(h, "ridge").touches.filter((t) => t.status === "sent").length).toBe(sentBefore);
     // RENEW after the year ran out waits for the payment; MONTHLY picks back up now

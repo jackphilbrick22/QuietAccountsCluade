@@ -89,7 +89,7 @@ export function LiveClient({ id }: { id: string }) {
               </Btn>
             )}
             {started && (
-              <Btn disabled={!!busy} onClick={() => void run("pause", () => api("POST", `${path}/pause`, { paused: !o.paused }), o.paused ? "Sending resumed" : "Sending paused")}>
+              <Btn disabled={!!busy} onClick={() => void run("pause", () => api<{ held?: "plan_paused" | "plan_cancelled" }>("POST", `${path}/pause`, { paused: !o.paused }), (r) => (r.held === "plan_paused" ? "Pause lifted, but the plan itself is paused: set it in Settings before anything sends" : r.held === "plan_cancelled" ? "Pause lifted, but the plan is cancelled: nothing sends" : o.paused ? "Sending resumed" : "Sending paused"))}>
                 {o.paused ? <Play size={15} /> : <Pause size={15} />} {o.paused ? "Resume" : "Pause"}
               </Btn>
             )}

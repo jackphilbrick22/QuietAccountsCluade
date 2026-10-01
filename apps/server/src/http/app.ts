@@ -403,12 +403,18 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true, ...r });
   });
 
+  // Resume clears the pause flag, but a plan that's paused (a year that ran out) or cancelled still sends nothing: say so
+  // instead of "Sending resumed".
+  const planHold = (bid: string, paused: boolean): { held?: "plan_paused" | "plan_cancelled" } => {
+    const stage = d.accounts.peek(bid)?.state.dataset.business.plan.stage;
+    return !paused && (stage === "paused" || stage === "cancelled") ? { held: stage === "paused" ? "plan_paused" : "plan_cancelled" } : {};
+  };
   op.post("/businesses/:id/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
     if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
     await holdSending(d, c.req.param("id"), paused ? "pause" : "resume");
     repo.audit(c.req.param("id"), "operator", paused ? "pause" : "resume");
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...planHold(c.req.param("id"), paused) });
   });
 
   // The Guard's send brake tripped; an operator looked (cleaned the list, fixed the sender name) and lets sending resume.
@@ -768,7 +774,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
     await holdSending(d, c.get("bid")!, paused ? "pause" : "resume");
     repo.audit(c.get("bid"), "owner", paused ? "pause" : "resume");
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...planHold(c.get("bid")!, paused) });
   });
   // The Recovered Ledger on the owner's private link: every win, checkable against their own books.
   own.get("/:token/ledger", (c) => {
