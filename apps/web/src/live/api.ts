@@ -202,6 +202,14 @@ export interface Health {
   };
 }
 
+/** GET /api/health/setup — the deploy, for the operator: each service's mode, never a key. */
+export interface SetupHealth {
+  instantly: { webhooks: "not_set_up" | "unknown" | "ok" | "failing"; checkedAt?: string | null; error?: string | null; lastEventAt?: string | null };
+  sms: string;
+  stripe: "manual" | "test" | "live" | "unrecognized";
+  backup: { lastAt: string | null; file: string | null; failedAt: string | null; error: string | null; kept: number; dir: string | null };
+}
+
 /** A text the owner sent us, and what we did with it. */
 export interface OwnerTextRow {
   seq: number;

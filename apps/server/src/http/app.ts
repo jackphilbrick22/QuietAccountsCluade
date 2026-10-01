@@ -51,6 +51,7 @@ import { NotFound, NotReady } from "../core/accounts.ts";
 import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
+import { setupHealth } from "../core/health.ts";
 import {
   answerInThread,
   approve,
@@ -764,6 +765,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
    *   GET /api/businesses/:id/people?ids=   names + contact details for customer ids (touches and replies carry ids only)
    *   GET /api/businesses/:id/files         the export files we've read for this business
    *   GET /api/businesses/:id/integrations  field-service connection status (never secrets)
+   *   GET /api/health/setup                 the deploy: Instantly webhooks, SMS and Stripe modes, the last backup
    */
   op.get("/review", (c) => {
     const sla = d.cfg.SLA_FIRST_NUDGE_HOURS;
@@ -880,6 +882,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       jobber: { available: !!d.fsm.jobber, connected: j?.status === "connected" && !!j.secret, status: j?.status ?? "not_connected", lastSyncAt: j?.last_sync_at ?? null, lastError: j?.last_error ?? null },
     });
   });
+  op.get("/health/setup", (c) => c.json(setupHealth(d)));
   /* --------------------------- end operator console reads --------------------------- */
 
   // (mounted after the owner routes below: op's "*" guard would otherwise swallow /api/owner/*)

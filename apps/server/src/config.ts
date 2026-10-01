@@ -5,10 +5,12 @@ import { z } from "zod";
  * Every setting comes from the environment. Anything optional that's missing just turns
  * the matching integration off (log-only providers stand in), so a laptop dev run needs nothing.
  */
-const schema = z.object({
+export const schema = z.object({
   PORT: z.coerce.number().default(8787),
   PUBLIC_URL: z.string().default("http://localhost:8787"),
   DATABASE_PATH: z.string().default("./.data/quiet-accounts.db"),
+  /** Where the nightly database copies go (the newest 14 are kept). Default: a "backups" folder next to DATABASE_PATH. */
+  BACKUP_DIR: z.string().optional(),
   /** Bearer token for the operator API and console. */
   OPERATOR_TOKEN: z.string().min(12).default("dev-operator-token-change-me"),
   /** Signs owner links, OAuth state and encrypts stored tokens. */
@@ -32,6 +34,9 @@ const schema = z.object({
   TWILIO_ACCOUNT_SID: z.string().optional(),
   TWILIO_AUTH_TOKEN: z.string().optional(),
   TWILIO_FROM: z.string().optional(),
+
+  /** Stripe. Without a key, billing is by hand; the health page shows test or live from the key's prefix, never the key. */
+  STRIPE_SECRET_KEY: z.string().optional(),
 
   JOBBER_CLIENT_ID: z.string().optional(),
   JOBBER_CLIENT_SECRET: z.string().optional(),

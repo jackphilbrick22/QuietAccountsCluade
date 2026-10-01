@@ -505,6 +505,11 @@ export class Repo {
     return !!this.db.get("SELECT 1 FROM webhook_log WHERE id = ?", id);
   }
 
+  /** When a delivery from this source last arrived. */
+  lastWebhookAt(source: string): string | undefined {
+    return this.db.get<{ received_at: string }>("SELECT received_at FROM webhook_log WHERE source = ? ORDER BY received_at DESC LIMIT 1", source)?.received_at;
+  }
+
   finishWebhook(id: string, status: "processed" | "ignored" | "failed", businessId?: string, error?: string): void {
     this.db.run("UPDATE webhook_log SET status = ?, business_id = ?, error = ? WHERE id = ?", status, businessId ?? null, error ?? null, id);
   }

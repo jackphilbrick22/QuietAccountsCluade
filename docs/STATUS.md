@@ -161,7 +161,34 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - Left: an engine-written example Friday text on /lawn (now possible with A6's wording), then remove the old
     site's apps/site/src/friday.ts and its server test; the file drop is C1; Lighthouse not run (not available here).
 
+- **A8. Deploy kit, not a deploy.** Nothing was deployed.
+  - A root Dockerfile (Node 22, pnpm from packageManager via corepack) builds the console and runs the server and
+    worker in one process; a .dockerignore. tsx is a server dependency now (it runs the server).
+  - The database is /data/quiet-accounts.db on a mounted volume. The worker backs it up nightly (`VACUUM INTO`
+    /data/backups/quiet-accounts-YYYY-MM-DD.db, once a UTC day from 07:00 UTC, newest 14 kept; BACKUP_DIR moves them)
+    and never fills the disk: it drops the oldest copies first, and if the copy still won't fit it writes nothing and
+    says so on the health page. A failed copy leaves no partial file and retries an hour later.
+  - .env.example lists every setting, marked required, optional or coming, with what happens without it; a test
+    fails if a new setting isn't listed. Updated at merge for A1's flags, A3's removed sending pool and A5's manual.
+  - README.md "Run it": one always-on host with a disk (Fly, Render, Railway with a volume, or a VPS; not
+    serverless; one copy), the settings, the webhook URLs, the volume size (about 16 times the database), backups and
+    restore. The VPS command publishes the port on 127.0.0.1 only, behind Caddy or nginx.
+  - The health page: GET /api/health/setup (operator only) and a Setup box in the console: Instantly webhooks (OK,
+    failing or not set up, and the last delivery), the SMS mode, the Stripe mode (manual, test or live, never the
+    key) and the last backup.
+  - Left: the Dockerfile hasn't run under real Docker (no daemon here; each stage was run by hand and the result
+    booted and backed up); Render's and Railway's proxy hop counts unconfirmed; the Setup box is desktop-only.
+  - Server 389.
+
 **Live steps for Jack**
+- (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about
+  16 times the database or with BACKUP_DIR on a second volume. Run the first real `docker build` on the host (the
+  base image pull and corepack's pnpm download are untested). Fill every required setting from .env.example (an https
+  PUBLIC_URL; OPERATOR_TOKEN, APP_SECRET and WEBHOOK_SECRET from `openssl rand -hex 32`; SIGNUP_ORIGINS;
+  EMAIL_PROVIDER and INSTANTLY_API_KEY). Set TRUSTED_PROXY_HOPS to the proxies every request passes through (usually
+  1, one more for Cloudflare; check your host's docs). On a VPS run with `-p 127.0.0.1:8787:8787` behind Caddy or
+  nginx. After the first boot open the console's Setup box, point the host's health check at /api/health, and turn on
+  volume snapshots or copy a backup off the host now and then.
 - (A7) Either build the site with VITE_SERVER_URL set to the server's https URL (and that site origin in
   SIGNUP_ORIGINS), or leave it unset and turn on Netlify form detection (form "start"). Drag apps/site/dist (or
   dist.zip) to Netlify. The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address

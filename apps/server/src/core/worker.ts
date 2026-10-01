@@ -1,5 +1,6 @@
 import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
+import { backupIfDue } from "./backup.ts";
 import { localIso } from "./clock.ts";
 import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
@@ -15,6 +16,7 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
  *  - Writer: nightly top-up for paying accounts so the list keeps being worked at the weekly pace
  *  - Reader/Ledger: hourly sync from connected software, then match who came back
  *  - Inbox backstop: replies the sending platform never announced by webhook; its disabled webhooks
+ *  - Backup: the nightly copy of the database
  *  - background tasks queue (webhook follow-ups, retries)
  * Each step is isolated: one business failing never stops the others, and one slow business never holds up the
  * rest: each gets a time budget, after which the tick moves on and that business's turn finishes in the background
@@ -101,7 +103,8 @@ export async function tick(d: Deps): Promise<TickReport> {
       await withBudget(d, biz.id, report, "turn", () => businessTurn(d, biz, now, report), true);
     }
     // The sending platform: replies its webhooks missed (every few minutes), webhooks it switched off (every 15).
-    for (const [name, fn] of [["reply check", pollReplies], ["webhook check", checkWebhooks]] as const) {
+    // Then the database's daily backup.
+    for (const [name, fn] of [["reply check", pollReplies], ["webhook check", checkWebhooks], ["backup", backupIfDue]] as const) {
       try {
         await fn(d);
       } catch (e) {

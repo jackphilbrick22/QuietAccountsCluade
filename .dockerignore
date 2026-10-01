@@ -1,0 +1,17 @@
+# The image builds from the workspace manifests, the engine, the server and the console. Nothing else goes in,
+# and never a database, a secret or someone's node_modules.
+**/node_modules
+**/dist
+**/dist-single
+**/test
+**/*.log
+**/.data
+**/*.db*
+**/.env
+**/.env.*
+.git
+.claude
+docs
+coverage
+apps/site/*
+!apps/site/package.json

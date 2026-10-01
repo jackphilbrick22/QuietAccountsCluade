@@ -9,6 +9,7 @@ import { LiveClients, NewClient } from "./Clients";
 import { LiveClient } from "./Client";
 import { LiveReview } from "./Review";
 import { TextsToSend } from "./TextsToSend";
+import { SetupPanel } from "./Setup";
 
 const NAV = [
   { id: "clients", label: "Clients", icon: Users },
@@ -89,6 +90,7 @@ function Console() {
               )}
             </div>
           )}
+          <SetupPanel />
           <button type="button" className="flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13.5px] font-semibold text-ink-3 hover:bg-surface-2 hover:text-ink" onClick={() => go({ area: "welcome", tab: "today" })}>
             <MonitorPlay size={16} /> Demo mode
           </button>
