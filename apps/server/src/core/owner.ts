@@ -54,9 +54,21 @@ const WHILE_WAITING = /^(pause|resume|status|cancel|undo|open|help|renew|monthly
 const APPROVE = new RegExp(`^${APPROVE_WORD}( ${APPROVE_TAIL})*$`);
 /** CANCEL on its own (or "cancel the service"); "cancel the note to Karen" is not cancelling the service. */
 const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it|all|quiet|accounts|account|yes|confirm|please|now))*$/;
-const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
+/** A yes said first: "Go ahead" and "Go for it" too (a bare "go" only on its own; "Go with Hey instead" is not a yes). */
+const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go ahead|go for it|go(?=\W*$)|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
 /** The whole text is a yes (matched against the words only): "Keep it going", "I'm in, thanks". Not "Ok but…". */
-const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls))*$/;
+const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go|go ahead|go for it|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls))*$/;
+/**
+ * STATUS, said as the command (matched against the words only): "Status", "Numbers", "How's it going?", "How are we
+ * doing". Any other "how…" ("How do I cancel?", "How do I take someone off the list?") is a question for a person.
+ */
+const STATUS = /^((status|stats|numbers)( update| report| please)?|how (s|is|are) (it|we|things|everything|the numbers)( (going|doing|looking))?( so far)?|how we doing)$/;
+/**
+ * Booked-out mode, said as the command (matched against the words only): "BUSY", "busy until Nov 15", "busy till
+ * 11/15", "busy 6 weeks", "We're booked solid thru Aug 3", "slammed for 3 weeks". Only a day we can count to: "Busy
+ * today, will call her tomorrow" or "booked solid till spring" is not a command (the lead, or a person, reads it).
+ */
+const BUSY = /^(we re |we are |were |i m |im |i am )?(busy|booked (out|solid|up|full)|slammed|full)( (until|till|til|thru|through) ((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*( \d{1,2}(st|nd|rd|th)?)?|\d{1,2} \d{1,2})( 20\d\d)?| (for )?(the next )?\d{1,2} (days?|weeks?|wks?|months?|mos?))?$/;
 /** The whole text is a lead outcome with nothing after it: "No", "Nope", "Done", "Not a fit", "Called him". */
 const BARE_OUTCOME = /^(no|nope|lost|pass|passed|dead|not a fit|no go|not interested|no thanks|went with someone else|done|called|reached|talked|spoke)( (him|her|them|it|already|today))?$/;
 /**
@@ -348,18 +360,24 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (waitingOk.length && !hasCode && !WHILE_WAITING.test(bare) && !aboutOther()) return noteChange();
 
   /* ---- the service (one client at a time) ---- */
-  if (/^(pause|stop sending|hold)\b/.test(bare)) {
+  // A #code names a lead, so a text with one is about that lead whatever word it starts with ("Monthly cleaning booked
+  // 180 #K7Q", "Hold off on #K7Q, she's away till November", "Free estimate sent #K7Q"): never a plan change, a pause
+  // or booked-out mode. It goes on to the lead below, or to a person; CANCEL and UNDO with a code get their own answer.
+  const command = hasCode ? "" : bare;
+  if (/^(pause|stop sending|hold)\b/.test(command)) {
     if (!one) return askWhich();
     await pause(d, one.id, true);
     return { businessId: one.id, reply: `${tag(one)}Paused. No notes will go out until you text RESUME.`, handled: "pause" };
   }
-  if (/^(resume|unpause|go)\b/.test(bare)) {
+  // "Go ahead" / "Go for it" with the close or the renewal out is a yes to it (below), never RESUME
+  const goYes = /^go\b/.test(command) && (one ? [one] : all).some((b) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal"));
+  if (/^(resume|unpause)\b|^go( ahead| for it)?$/.test(command) && !goYes) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running. Want back in? Reply here and Jack will set it up.`, handled: "resume_cancelled", needsPerson: true };
     await pause(d, one.id, false);
     return { businessId: one.id, reply: `${tag(one)}Back on. Notes resume on your next send day.`, handled: "resume" };
   }
-  if (/^(status|how|numbers)\b/.test(bare)) {
+  if (STATUS.test(command)) {
     const lines = (one ? [one] : all).map((b) => {
       const s = d.accounts.peek(b.id)!.state;
       const wants = s.replies.filter((r) => r.intent === "wants_it" || r.intent === "wants_price").length;
@@ -369,7 +387,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: fallback().id, reply: lines.join("\n"), handled: "status" };
   }
   // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
-  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(bare)) {
+  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(command)) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") {
       const c = d.accounts.peek(one.id)!.state.cancelled;
@@ -457,7 +475,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: b.id, reply: `${tag(b)}Back on.${res.stopped ? "" : " Nothing was lost."} ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${lost}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel" };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
-  if (/^(busy|booked (out|solid|up)|slammed|full)\b/.test(bare) && !/\$|\b\d{3,}\b(?!\s*(\/|-))/.test(t.replace(/\b(19|20)\d\d\b/, ""))) {
+  if (BUSY.test(command)) {
     if (!one) return askWhich();
     let reply = "";
     let pulled: string[] = [];
@@ -471,7 +489,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     await withdrawMoved(d, one.id, pulled);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "busy" };
   }
-  if (/^(open|not busy|free|room|slow)\b/.test(bare)) {
+  if (/^(open|not busy|free|room|slow)\b/.test(command)) {
     if (!one) return askWhich();
     let reply = "";
     let pulled: string[] = [];
@@ -578,16 +596,30 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   return { businessId: fallback().id, reply: `Thanks — Jack will read this and get back to you. For a lead, text BOOKED + amount + the #code, DONE, or NO. Text HELP for everything else.`, handled: "unrecognized", needsPerson: true };
 }
 
+/** How long a lead the owner already told us about stays one a text without a #code could be about. */
+const REPORTED_DAYS = 14;
+
 async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outcome"]; amount: number }, pool: Biz[], multi: boolean, tags: Map<string, string>, named?: Biz): Promise<OwnerCommandResult> {
   const code = text.match(CODE)?.[1]?.toUpperCase();
   const { outcome, amount } = lead;
   const waiting = (r: Reply) => r.status === "handed_off" && !r.ownerContactedAt;
+  // Without a code, a lead the owner told us about lately can still be what the text is about: the amount after "What's
+  // the job worth?", "She booked us for 2400" days after QUOTED, "No wait, it was 2400 not 240" after a booking. It
+  // counts next to the leads still waiting, so one that happens to be waiting never gets it by default.
+  const reported = (r: Reply, today: string) => {
+    const last = [r.ownerContactedAt, r.bookedAt].filter((x): x is string => !!x).sort().at(-1);
+    if (r.status !== "done" || !last || r.outcome === "lost" || daysBetween(last.slice(0, 10), today) > REPORTED_DAYS) return false;
+    if (outcome === "booked") return r.outcome !== "booked" || (amount > 0 && !r.outcomeValue);
+    if (outcome === "quoted") return !r.outcome || r.outcome === "no_answer";
+    return outcome === "lost";
+  };
   const hits: { biz: Biz; reply: Reply; waiting: boolean; name: string }[] = [];
   for (const b of pool) {
     const s = d.accounts.peek(b.id)?.state;
     if (!s) continue;
+    const today = nowLocal(d, s).slice(0, 10);
     for (const r of s.replies)
-      if (code ? leadCode(r.id) === code : waiting(r)) hits.push({ biz: b, reply: r, waiting: waiting(r), name: s.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from });
+      if (code ? leadCode(r.id) === code : waiting(r) || reported(r, today)) hits.push({ biz: b, reply: r, waiting: waiting(r), name: s.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from });
   }
   const live = hits.filter((h) => h.waiting);
   const newest = (xs: typeof hits) => xs.sort((a, b) => ((a.reply.handedOffAt ?? a.reply.receivedAt) < (b.reply.handedOffAt ?? b.reply.receivedAt) ? 1 : -1));
@@ -601,13 +633,20 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
   }
   // a code that fits leads in two businesses: the business the owner names breaks the tie
   if (code && named && picks.length > 1 && picks.some((p) => p.biz.id === named.id)) picks = picks.filter((p) => p.biz.id === named.id);
+  // "Booked 2400 MJK": the code typed without its "#" (in capitals, as it's on the lead text) picks one of them
+  if (!code && picks.length > 1) {
+    const typed = new Set(text.match(/\b(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3}\b/g) ?? []);
+    const byCode = picks.filter((p) => typed.has(leadCode(p.reply.id)));
+    if (byCode.length === 1) picks = byCode;
+  }
   const who = (h: (typeof hits)[number]) => `${h.name}${multi ? ` (${h.biz.profile.name})` : ""} #${leadCode(h.reply.id)}`;
   const example = text.replace(CODE, " ").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "").toUpperCase().slice(0, 30) || "BOOKED 2400";
   const fallbackBiz = pool.length === 1 ? pool[0]! : pool.find((b) => hits.some((h) => h.biz.id === b.id)) ?? pool[0]!;
   if (!picks.length)
     return code
       ? { businessId: fallbackBiz.id, reply: `No lead with #${code}.${multi ? " Check the code on the lead text." : ""}`, handled: "no_lead" }
-      : { businessId: fallbackBiz.id, reply: "Nobody's waiting on a call right now.", handled: "no_lead" };
+      : // a booking we can't place is never dropped: a person puts it on the right lead
+        { businessId: fallbackBiz.id, reply: `Nobody's waiting on a call right now.${outcome === "booked" ? " Jack will read this and put it on the right lead." : ""}`, handled: "no_lead", needsPerson: outcome === "booked" };
   if (picks.length > 1) {
     // Never guess: the wrong customer would get the booking, the Jobber note and the ledger line.
     const list = newest(picks).slice(0, 5);
@@ -618,17 +657,21 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
       businessId: list[0]!.biz.id,
       reply: code
         ? `#${code} matches more than one lead: ${list.map(who).join(", ")}. Text it again with the business name, like "${example} #${code} ${tags.get(list[0]!.biz.id)}".`
-        : `Which one? ${picks.length} are waiting: ${list.map(who).join(", ")}. Text it again with the code, like "${example} #${leadCode(list[0]!.reply.id)}".`,
+        : picks.every((p) => p.waiting)
+          ? `Which one? ${picks.length} are waiting: ${list.map(who).join(", ")}. Text it again with the code, like "${example} #${leadCode(list[0]!.reply.id)}".`
+          : `Which one? That could be ${joinOr(list.map(who), "or")}. Text it again with the code, like "${example} #${leadCode(list[0]!.reply.id)}".`,
       handled: "ask_lead",
-      // a booking must never be lost to a question: a person sees it too
-      needsPerson: !!code,
+      // a booking must never be lost to a question: a person sees it too, as they do one that may be about a lead
+      // the owner already told us about
+      needsPerson: !!code || picks.some((p) => !p.waiting),
     };
   }
   const target = picks[0]!;
   const bid = target.biz.id;
   // Taking a booking back moves its dollars off the ledger: a plain "NO #K7Q" does it; anything longer ("#K7Q she won't
-  // sign up for the monthly plan though") is more likely about something else, so a person reads it first.
-  if (target.reply.outcome === "booked" && outcome !== "booked" && text.replace(CODE, " ").trim().split(/\s+/).length > 3)
+  // sign up for the monthly plan though"), or with no code at all, is more likely about something else, so a person
+  // reads it first.
+  if (target.reply.outcome === "booked" && outcome !== "booked" && (!code || text.replace(CODE, " ").trim().split(/\s+/).length > 3))
     return { businessId: bid, reply: `${multi ? `${target.biz.profile.name}: ` : ""}${target.name} is booked on your results. To take that back, text NO #${leadCode(target.reply.id)}. Jack will read this too.`, handled: "booked_kept", needsPerson: true };
   let reply = "";
   let note: FsmNote | undefined;

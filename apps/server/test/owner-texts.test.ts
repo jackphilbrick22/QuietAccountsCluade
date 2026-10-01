@@ -649,4 +649,169 @@ describe("reminders survive a restart (n17, n53)", () => {
   });
 });
 
+describe("final review: what an owner's text is about", () => {
+  const latest = (h: Harness, bid: string) => h.d.accounts.repo.ownerTexts(bid)[0]!;
+
+  it("with no #code, a lead the owner already reported counts next to the one waiting: it asks, never books or loses the other (final 8)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r-karen", "Karen Whitfield", "2026-09-29T08:00:00");
+    await addLead(h, "ridge", "r-bob", "Bob Jones", "2026-09-29T09:00:00");
+    const karen = leadCode("r-karen");
+    const bob = leadCode("r-bob");
+    // the amount right after "What's the job worth?": Karen's or Bob's, so it asks, and a person sees it
+    expect(await h.sms(`Booked #${karen}`)).toBe(`Booked: Karen Whitfield. What's the job worth? Text "booked 2400 #${karen}". 1 more waiting.`);
+    expect(await h.sms("2400")).toBe(`Which one? That could be Bob Jones #${bob} or Karen Whitfield #${karen}. Text it again with the code, like "2400 #${bob}".`);
+    expect(latest(h, "ridge")).toMatchObject({ handled: "ask_lead", needs_person: 1 });
+    expect(reply(h, "ridge", "r-bob").status).toBe("handed_off");
+    expect(reply(h, "ridge", "r-bob").ownerContactedAt).toBeUndefined();
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    // a correction after a booking never marks the waiting lead lost
+    expect(await h.sms(`booked 240 #${karen}`)).toBe("Booked: Karen Whitfield, $240. Added to your results. 1 more waiting.");
+    expect(await h.sms("No wait, it was 2400 not 240")).toMatch(/^Which one\? That could be Bob Jones #\w{3} or Karen Whitfield #\w{3}\. Text it again with the code/);
+    expect(latest(h, "ridge")).toMatchObject({ handled: "ask_lead", needs_person: 1 });
+    expect(reply(h, "ridge", "r-bob").status).toBe("handed_off");
+    expect(reply(h, "ridge", "r-bob").outcome).toBeUndefined();
+    // a new booking with an amount is still the one waiting's: Karen's figure is already in
+    expect(await h.sms("booked 1800")).toBe("Booked: Bob Jones, $1,800. Added to your results.");
+    expect(state(h, "ridge").recoveries.filter((r) => !r.disputed).map((r) => r.value)).toEqual([240, 1800]);
+  });
+
+  it("with only the reported lead, the amount goes to it; a NO without the code never takes a booking back, and a booking is never dropped (final 8)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r-karen", "Karen Whitfield", "2026-09-29T08:00:00");
+    const karen = leadCode("r-karen");
+    expect(await h.sms(`Booked #${karen}`)).toBe(`Booked: Karen Whitfield. What's the job worth? Text "booked 2400 #${karen}".`);
+    // once "Nobody's waiting on a call right now" (and Karen's $2,400 never reached the ledger)
+    expect(await h.sms("2400")).toBe("Booked: Karen Whitfield, $2,400. Added to your results.");
+    expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400]);
+    expect(await h.sms("No")).toBe(`Karen Whitfield is booked on your results. To take that back, text NO #${karen}. Jack will read this too.`);
+    expect(latest(h, "ridge")).toMatchObject({ handled: "booked_kept", needs_person: 1 });
+    expect(state(h, "ridge").recoveries.filter((r) => !r.disputed).map((r) => r.value)).toEqual([2400]);
+    // a booking we can't place reaches a person
+    expect(await h.sms("Booked 900")).toBe("Nobody's waiting on a call right now. Jack will read this and put it on the right lead.");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "no_lead", needs_person: 1 });
+  });
+
+  it("QUOTED, then a booking days later with no #code while another lead waits: it asks; the code books it (final 8)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r-kim", "Kim Tran", "2026-09-29T09:30:00");
+    const kim = leadCode("r-kim");
+    expect(await h.sms(`Quoted her 2400 #${kim}`)).toBe("Got it — Kim Tran has a price. We'll count it when it books.");
+    h.setNow("2026-10-02T14:00:00Z");
+    await addLead(h, "ridge", "r-dan", "Dan Ruiz", "2026-10-02T08:00:00");
+    expect(await h.sms("She booked us for 2400")).toMatch(/^Which one\? That could be Dan Ruiz #\w{3} or Kim Tran #\w{3}\./);
+    expect(latest(h, "ridge")).toMatchObject({ handled: "ask_lead", needs_person: 1 });
+    expect(reply(h, "ridge", "r-dan").status).toBe("handed_off");
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    expect(await h.sms(`She booked us for 2400 #${kim}`)).toBe("Booked: Kim Tran, $2,400. Added to your results. 1 more waiting.");
+    expect(reply(h, "ridge", "r-dan").status).toBe("handed_off");
+  });
+
+  it("the code typed without its '#' picks the lead it names (final 8)", async () => {
+    const h = make();
+    await h.business("ridge");
+    let rid = "r-0";
+    for (let i = 0; !/^[A-Z]{3}$/.test(leadCode(rid)); i++) rid = `r-${i}`;
+    const karen = leadCode(rid);
+    await addLead(h, "ridge", rid, "Karen Whitfield", "2026-09-29T08:00:00");
+    await addLead(h, "ridge", "r-bob", "Bob Jones", "2026-09-29T09:00:00");
+    expect(await h.sms(`Booked #${karen}`)).toMatch(/^Booked: Karen Whitfield\. What's the job worth\?/);
+    h.d.llm = { model: "stub", structured: async () => ({ outcome: "booked", amount: 2400 }) } as never;
+    try {
+      expect(await h.sms(`Booked 2400 ${karen}`)).toBe("Booked: Karen Whitfield, $2,400. Added to your results. 1 more waiting.");
+    } finally {
+      h.d.llm = null;
+    }
+    expect(reply(h, "ridge", "r-bob").status).toBe("handed_off");
+    expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400]);
+  });
+
+  it("'Go for it' / 'Go ahead' answers the close or the renewal, never RESUME; RESUME still resumes (final 9)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await pushOwner(h, "ridge", { id: "om-close", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday 2 and the next batch goes out next week." });
+    for (const text of ["Go for it", "Go ahead", "Go ahead and keep it going", "Go!"]) {
+      expect(await h.sms(text), text).toBe("Great — Jack will text you the payment link, and the next batch goes out next week.");
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "accepted_close", needs_person: 1 });
+    }
+    expect(state(h, "ridge").events.some((e) => /said yes to keep going/.test(e.title))).toBe(true);
+    expect(state(h, "ridge").dataset.business.plan.stage).toBe("trial");
+
+    // the renewal: the yes is kept, and asked which, never "Back on"
+    const r = make();
+    await r.business("ridge");
+    await r.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "annual", paidOn: "2025-10-20", yearsPaidOn: ["2025-10-20"] } });
+    await r.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-renewal", at: "2026-09-20T09:00:00", kind: "renewal", text: "Your year with us ends Oct 20.", refs: [{ kind: "year_end", id: "2026-10-20" }] });
+    });
+    expect(await r.sms("Go ahead")).toBe("Great — which one: RENEW for another year, or MONTHLY to go month to month?");
+    expect(latest(r, "ridge")).toMatchObject({ handled: "ask_renewal" });
+    expect(state(r, "ridge").dataset.business.plan.yearsPaidOn).toEqual(["2025-10-20"]);
+
+    // nothing outstanding: RESUME (and a bare GO) still resume
+    const p = make();
+    await p.business("ridge");
+    for (const text of ["RESUME", "go"]) {
+      expect(await p.sms("PAUSE")).toMatch(/^Paused\./);
+      expect(await p.sms(text), text).toBe("Back on. Notes resume on your next send day.");
+      expect(p.d.accounts.peek("ridge")!.paused, text).toBe(false);
+    }
+  });
+
+  it("a text with a #code is about that lead: never a plan change, a pause or booked-out mode (final 11)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "monthly", paidOn: "2026-06-01" } });
+    await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
+    const code = leadCode("r1");
+    for (const text of [`Monthly cleaning booked 180 #${code}`, `Annual contract, booked 1200 #${code}`, `Hold off on #${code}, she's away till November`, `Full removal booked #${code}`, `Busy today, will call her tomorrow #${code}`]) {
+      expect(await h.sms(text), text).not.toMatch(/month to month|another year|Paused|new work waits|Back on/);
+      expect(latest(h, "ridge"), text).toMatchObject({ needs_person: 1 });
+      expect(latest(h, "ridge").handled, text).not.toMatch(/^(renew_|pause|busy|open)/);
+    }
+    expect(state(h, "ridge").dataset.business.plan).toMatchObject({ stage: "paying", billing: "monthly", paidOn: "2026-06-01" });
+    expect(h.d.accounts.peek("ridge")!.paused).toBe(false);
+    expect(state(h, "ridge").dataset.business.bookedOutUntil).toBeUndefined();
+    expect(reply(h, "ridge", "r1").status).toBe("handed_off");
+    // booked out: "Free estimate sent #code" never clears it
+    expect(await h.sms("BUSY until Nov 15")).toContain("new work waits");
+    expect(await h.sms(`Free estimate sent #${code}`)).not.toContain("new work is back on");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "unrecognized", needs_person: 1 });
+    expect(state(h, "ridge").dataset.business.bookedOutUntil).toBe("2026-11-15");
+  });
+
+  it("BUSY is booked-out mode only when it's said as the command; 'Busy today, will call her tomorrow' is not (final 12)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
+    const until = () => state(h, "ridge").dataset.business.bookedOutUntil;
+    for (const text of ["Busy today, will call her tomorrow", "busy till tomorrow", "We're booked solid till spring", "Slammed this week, will get to her Friday"]) {
+      expect(await h.sms(text), text).not.toContain("new work waits");
+      expect(until(), text).toBeUndefined();
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "unrecognized", needs_person: 1 });
+    }
+    expect(reply(h, "ridge", "r1").status).toBe("handed_off");
+    for (const [text, day] of [["BUSY until Nov 15", "2026-11-15"], ["busy 6 weeks", "2026-11-10"], ["I'm slammed for 3 weeks", "2026-10-20"], ["We're booked solid thru 11/20", "2026-11-20"], ["Busy", "2026-10-27"]] as const) {
+      expect(await h.sms(text), text).toContain("new work waits");
+      expect(until(), text).toBe(day);
+    }
+  });
+
+  it("STATUS is the command, never any question that starts with 'How' (final 13)", async () => {
+    const h = make();
+    await h.business("ridge");
+    for (const text of ["How do I take someone off the list?", "How do I cancel?", "How much is the year?"]) {
+      expect(await h.sms(text), text).toMatch(/^Thanks — Jack will read this and get back to you\./);
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "unrecognized", needs_person: 1 });
+    }
+    for (const text of ["Status", "Numbers", "How's it going?", "How are we doing", "how’s it looking so far"]) {
+      expect(await h.sms(text), text).toMatch(/^So far: 0 notes out/);
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "status", needs_person: 0 });
+    }
+  });
+});
+
 
