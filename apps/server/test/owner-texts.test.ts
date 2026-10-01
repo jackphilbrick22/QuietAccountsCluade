@@ -1012,8 +1012,10 @@ describe("verification review: owner texts that read two ways", () => {
       expect(await h.sms(text), text).toMatch(/^Thanks — Jack will read this and get back to you\./);
       expect(latest(h, "ridge"), text).toMatchObject({ handled: "unrecognized", needs_person: 1 });
     }
-    expect(await h.sms("Ok thanks")).toBe("Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.");
-    expect(latest(h, "ridge")).toMatchObject({ handled: "ack", needs_person: 0 });
+    for (const text of ["Ok thanks", "Ok cool", "Yes perfect", "Okay sounds good"]) {
+      expect(await h.sms(text), text).toBe("Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.");
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "ack", needs_person: 0 });
+    }
 
     // paused with the renewal out: "Go" is the renewal's yes, and a person reads it too
     const r = make();

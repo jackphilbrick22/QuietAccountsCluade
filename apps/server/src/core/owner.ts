@@ -57,7 +57,7 @@ const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it
 /** A yes said first: "Go ahead" and "Go for it" too (a bare "go" only on its own; "Go with Hey instead" is not a yes). */
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go ahead|go for it|go(?=\W*$)|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
 /** The whole text is a yes (matched against the words only): "Keep it going", "I'm in, thanks". Not "Ok but…". */
-const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go|go ahead|go for it|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls))*$/;
+const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go|go ahead|go for it|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls|cool|great|perfect|awesome|sounds good|got it))*$/;
 /**
  * STATUS, said as the command (matched against the words only): "Status", "Numbers", "How's it going?", "How are we
  * doing". Any other "how…" ("How do I cancel?", "How do I take someone off the list?") is a question for a person.
