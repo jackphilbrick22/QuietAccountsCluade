@@ -23,15 +23,28 @@ function amountsIn(text: string): number[] {
   return out;
 }
 
+/** A phone number, however it's written: "6035550142", "603-555-0142", "(603) 555-0142", "555-0142". */
+const PHONE_NUMBER = /\b\d{3}[\s.-]?\d{4}\b|\b\d{7,}\b/;
+/** More than any one job we follow up on is worth. */
+const MAX_AMOUNT = 100_000;
+
+/**
+ * A number in an owner's text that is never a booking's amount: a phone number, or a figure over $100,000 ("booked
+ * 6035550142" once put $6,035,550,142 on the ledger). A booking with one in it goes to a person.
+ */
+export function notAnAmount(text: string): boolean {
+  return PHONE_NUMBER.test(text.replace(/#\s?[a-z0-9]{3}\b/gi, " ")) || amountsIn(text).some((v) => v > MAX_AMOUNT);
+}
+
 /**
  * A second read of an owner's text the rules shouldn't decide alone (it talks about another company). Claude says what
- * happened for the owner; an amount counts only if it's written in the text. "unclear", a failure, or no Claude at
- * all: a person reads it.
+ * happened for the owner; an amount counts only if it's written in the text. "unclear", a failure, no Claude at all,
+ * or a booking with a phone number or a figure over $100,000 in it: a person reads it.
  */
 export async function readLeadTextWithClaude(llm: Llm | null, text: string): Promise<{ outcome?: Reply["outcome"]; amount: number; unclear?: true }> {
   if (!llm) return { amount: 0, unclear: true };
   const out = await llm.structured(ReadingSchema, { purpose: "owner.lead_text", effort: "low", maxTokens: 512, system: SYSTEM, user: `OWNER'S TEXT:\n"""\n${text.slice(0, 1000)}\n"""` }).catch(() => null);
-  if (!out || out.outcome === "unclear") return { amount: 0, unclear: true };
+  if (!out || out.outcome === "unclear" || (out.outcome === "booked" && notAnAmount(text))) return { amount: 0, unclear: true };
   const amount = out.outcome === "booked" && out.amount && amountsIn(text).includes(out.amount) ? out.amount : 0;
   return { outcome: out.outcome === "reached" ? undefined : out.outcome, amount };
 }

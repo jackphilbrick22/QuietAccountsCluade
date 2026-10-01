@@ -1,6 +1,6 @@
 import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
-import { readLeadTextWithClaude } from "../agents/ownerText.ts";
+import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
 import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
@@ -235,13 +235,17 @@ const BOOKED = /\b(booked(?! (solid|out|up|full)\b)|book it|sold(?! out\b)|won(?
 const QUOTED = /\b(quoted|re-?quoted|(sent|gave|emailed|texted) (him |her |them )?(a |an |the )?(new |updated )?(price|quote|estimate|number))\b/;
 const LOST = /^no\b(?!\s+(problem|prob|worries|sweat))|\b(lost|pass(ed)?|dead|not a fit|nope|no go|not interested|no thanks|too expensive|chose someone)\b/;
 const REACHED = /\b(done|called|talked|reached|spoke|spoken|texted|emailed|contacted|handled|got (a )?hold of)\b/;
+/** The amount and nothing else: "2400", "$2,400", "2.4k". */
+const AMOUNT_ALONE = /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/i;
 
 /**
  * The dollar amount in an owner's text: a standalone number ("2400", "$2,400", "2.4k"). Digits inside the #code,
- * dates ("10/15"), phone numbers, times ("3pm") and counts ("3 trees") are never the amount.
+ * dates ("10/15"), times ("3pm") and counts ("3 trees") are never the amount. Nor is a phone number or a figure over
+ * $100,000: a text with one has no amount at all.
  */
 export function readAmount(text: string): number {
   const body = text.replace(/#\s?[a-z0-9]{3}\b/gi, " ");
+  if (notAnAmount(body)) return 0;
   const re = /(?:^|[\s$(:])\$?\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s?(k)?(?![\w/:%@-]|\s?(?:am|pm|a\.m|p\.m|o'?clock|days?|weeks?|wks?|months?|mos?|hours?|hrs?|mins?|minutes?|years?|yrs?|ft|feet|trees?|stumps?|jobs?|people|leads?)\b)/gi;
   for (const m of body.matchAll(re)) {
     const v = Number(`${m[1]!.replace(/,/g, "")}.${m[2] ?? "0"}`) * (m[3] ? 1000 : 1);
@@ -254,7 +258,8 @@ export function readAmount(text: string): number {
  * What an owner's text says about a lead, or undefined when it says nothing about one. A plain "yes" is never a
  * booking (it answers the close, or nothing), and "called, no answer" is a no answer, not a win. Nothing negated is
  * a booking ("Won't book it", "hasn't booked yet"), and nor is someone else's ("They booked someone else"). A text
- * that says both ways ("Booked 2400, beat the other guy's price") is `unclear`: a person reads it.
+ * that says both ways ("Booked 2400, beat the other guy's price"), or a booking with a phone number or a figure over
+ * $100,000 in it ("booked 6035550142"), is `unclear`: a person reads it.
  */
 export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount: number; unclear?: true } | undefined {
   const body = text.replace(/#\s?[a-z0-9]{3}\b/gi, " ");
@@ -269,10 +274,10 @@ export function readLeadText(text: string): { outcome?: Reply["outcome"]; amount
   const name = body.match(WENT_WITH_NAME)?.[1];
   const named = !!name && !NOT_A_NAME.has(name);
   const other = !named && WENT_WITH_OTHER.test(positive) && !WENT_WITH_US.test(positive);
-  const booked = BOOKED.test(positive) || WENT_WITH_US.test(positive) || (amount > 0 && /^\$?\s?[\d,]+(\.\d{1,2})?\s?k?[.!]*$/.test(t));
+  const booked = BOOKED.test(positive) || WENT_WITH_US.test(positive) || (amount > 0 && AMOUNT_ALONE.test(t));
   const shopping = ELSEWHERE_HAS_ANY.test(positive);
   // "Booked 2400, she won't sign up for the maintenance plan": a booking and a no in one text is a person's call
-  if (booked && (elsewhere || negated || named || other || shopping)) return { amount: 0, unclear: true };
+  if (booked && (elsewhere || negated || named || other || shopping || notAnAmount(body))) return { amount: 0, unclear: true };
   if (booked) return { outcome: "booked", amount };
   // not booked yet is still open: they were reached, with a price if the owner gave one
   if (negated) return NOT_YET.test(t) ? { outcome: QUOTED.test(t) ? "quoted" : undefined, amount: 0 } : { outcome: "lost", amount: 0 };
@@ -710,20 +715,21 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
   }
   // a code that fits leads in two businesses: the business the owner names breaks the tie
   if (code && named && picks.length > 1 && picks.some((p) => p.biz.id === named.id)) picks = picks.filter((p) => p.biz.id === named.id);
-  // "Booked 2400 MJK": the code typed without its "#" (in capitals, as it's on the lead text) picks one of them
-  if (!code && picks.length > 1) {
-    const typed = new Set(text.match(/\b(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3}\b/g) ?? []);
-    const byCode = picks.filter((p) => typed.has(leadCode(p.reply.id)));
-    if (byCode.length === 1) picks = byCode;
-  }
+  // "Booked 2400 MJK": the code typed without its "#" (in capitals, as it's on the lead text) names the lead, waiting or not
+  const typed = new Set(text.match(/\b(?=[A-Z0-9]*[A-Z])[A-Z0-9]{3}\b/g) ?? []);
+  const byCode = code ? [] : hits.filter((h) => typed.has(leadCode(h.reply.id)));
+  if (byCode.length === 1) picks = byCode;
   const who = (h: (typeof hits)[number]) => `${h.name}${multi ? ` (${h.biz.profile.name})` : ""} #${leadCode(h.reply.id)}`;
   const example = text.replace(CODE, " ").replace(/\s+/g, " ").trim().replace(/[.!]+$/, "").toUpperCase().slice(0, 30) || "BOOKED 2400";
   const fallbackBiz = pool.length === 1 ? pool[0]! : pool.find((b) => hits.some((h) => h.biz.id === b.id)) ?? pool[0]!;
-  if (!picks.length)
-    return code
-      ? { businessId: fallbackBiz.id, reply: `No lead with #${code}.${multi ? " Check the code on the lead text." : ""}`, handled: "no_lead" }
-      : // a booking we can't place is never dropped: a person puts it on the right lead
-        { businessId: fallbackBiz.id, reply: `Nobody's waiting on a call right now.${outcome === "booked" ? " Jack will read this and put it on the right lead." : ""}`, handled: "no_lead", needsPerson: outcome === "booked" };
+  // A booking without a code goes on a lead still waiting, or the one its code typed without the "#" names. With neither
+  // ("BOOKED 2400" after DONE on the only one), it never lands on one the owner already told us about, and it's never
+  // dropped: Jack puts it on the right lead. The amount alone, when the only fit is a lead booked without one, answers
+  // our "What's the job worth?".
+  const worth = picks.length === 1 && picks[0]!.reply.outcome === "booked" && AMOUNT_ALONE.test(text.trim());
+  if (!code && outcome === "booked" && !live.length && byCode.length !== 1 && !worth)
+    return { businessId: fallbackBiz.id, reply: "Got it, Jack will match it.", handled: "match_booking", needsPerson: true };
+  if (!picks.length) return { businessId: fallbackBiz.id, reply: code ? `No lead with #${code}.${multi ? " Check the code on the lead text." : ""}` : "Nobody's waiting on a call right now.", handled: "no_lead" };
   if (picks.length > 1) {
     // Never guess: the wrong customer would get the booking, the Jobber note and the ledger line.
     const list = newest(picks).slice(0, 5);
@@ -740,7 +746,7 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
       handled: "ask_lead",
       // a booking must never be lost to a question: a person sees it too, as they do one that may be about a lead
       // the owner already told us about
-      needsPerson: !!code || picks.some((p) => !p.waiting),
+      needsPerson: !!code || outcome === "booked" || picks.some((p) => !p.waiting),
     };
   }
   const target = picks[0]!;

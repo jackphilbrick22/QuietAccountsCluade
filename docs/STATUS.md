@@ -87,6 +87,20 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     new-client form has no inbox field (add it in Settings).
   - Server 340.
 
+- **A4. Booking texts that get lost or invented.**
+  - A booking text with no #code, when nobody is waiting and its only fit is a lead the owner already told us about
+    (BOOKED 2400 after DONE, or "She booked us for 2400" after QUOTED), replies "Got it, Jack will match it." and goes
+    to Needs a person with the business and the text; nothing is recorded until Jack places it. Still placed: the
+    lead's code typed without "#" ("Booked 2400 KAR"), and the amount alone right after "What's the job worth?". A
+    no-code booking with exactly one lead waiting still books it.
+  - Every booking text that gets "Which one?" goes to Needs a person, code or no code.
+  - A phone number (7+ digits however written: 6035550142, 603-555-0142, (603) 555-0142, 555-0142) is never an
+    amount, and nothing over $100,000 is ever recorded, in the rules and in Claude's second read; the text goes to
+    Jack and books nothing.
+  - Brief note: at this branch the no-code BOOKED after DONE didn't say "Nobody's waiting": it booked $2,400 onto the
+    lead just marked reached (a later fix let recently reported leads match). "(603) 555-0142" was read as $603.
+  - Server 345.
+
 **Live steps for Jack**
 - (A1) Leave FEATURE_NEW_REQUESTS and FEATURE_YEARLY unset (off) in production.
 - (A3) Give each client its own inbox, connected in Instantly, in Settings before planning; keep client inboxes out

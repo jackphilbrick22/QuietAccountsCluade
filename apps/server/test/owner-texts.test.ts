@@ -680,7 +680,7 @@ describe("final review: what an owner's text is about", () => {
     expect(state(h, "ridge").recoveries.filter((r) => !r.disputed).map((r) => r.value)).toEqual([240, 1800]);
   });
 
-  it("with only the reported lead, the amount goes to it; a NO without the code never takes a booking back, and a booking is never dropped (final 8)", async () => {
+  it("with only the reported lead, the amount alone goes to it; a NO without the code never takes a booking back, and a booking is never dropped (final 8, A4)", async () => {
     const h = make();
     await h.business("ridge");
     await addLead(h, "ridge", "r-karen", "Karen Whitfield", "2026-09-29T08:00:00");
@@ -692,9 +692,9 @@ describe("final review: what an owner's text is about", () => {
     expect(await h.sms("No")).toBe(`Karen Whitfield is booked on your results. To take that back, text NO #${karen}. Jack will read this too.`);
     expect(latest(h, "ridge")).toMatchObject({ handled: "booked_kept", needs_person: 1 });
     expect(state(h, "ridge").recoveries.filter((r) => !r.disputed).map((r) => r.value)).toEqual([2400]);
-    // a booking we can't place reaches a person
-    expect(await h.sms("Booked 900")).toBe("Nobody's waiting on a call right now. Jack will read this and put it on the right lead.");
-    expect(latest(h, "ridge")).toMatchObject({ handled: "no_lead", needs_person: 1 });
+    // a booking we can't place reaches a person (A4)
+    expect(await h.sms("Booked 900")).toBe("Got it, Jack will match it.");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "match_booking", needs_person: 1 });
   });
 
   it("QUOTED, then a booking days later with no #code while another lead waits: it asks; the code books it (final 8)", async () => {
@@ -1155,3 +1155,150 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
 });
 
 
+
+describe("A4: booking texts that get lost or invented", () => {
+  const latest = (h: Harness, bid: string) => h.d.accounts.repo.ownerTexts(bid)[0]!;
+
+  it("a booking with no #code and nobody waiting goes to Jack to match, never onto a lead the owner already told us about", async () => {
+    const h = make();
+    await h.business("ridge");
+    // nobody handed off yet
+    expect(await h.sms("Booked 900")).toBe("Got it, Jack will match it.");
+    expect(latest(h, "ridge")).toMatchObject({ body: "Booked 900", handled: "match_booking", needs_person: 1 });
+    // DONE on the only lead, then the booking: it's Jack's to put on the right lead, with the text and the business
+    await addLead(h, "ridge", "r-kim", "Kim Tran", "2026-09-29T08:00:00");
+    expect(await h.sms("DONE")).toBe("Thanks — Kim Tran marked as reached.");
+    expect(await h.sms("BOOKED 2400")).toBe("Got it, Jack will match it.");
+    expect(latest(h, "ridge")).toMatchObject({ body: "BOOKED 2400", handled: "match_booking", needs_person: 1 });
+    expect(reply(h, "ridge", "r-kim").outcome).toBeUndefined();
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    const items = (await h.api("GET", "/api/review")).json.items as Record<string, unknown>[];
+    expect(items).toContainEqual(expect.objectContaining({ kind: "owner_text", businessId: "ridge", businessName: "Ridgeline Tree Co.", text: "BOOKED 2400", reply: "Got it, Jack will match it." }));
+    // a lead booked with no amount yet, next to Kim: the amount alone could be either one's, so it's Jack's to match too
+    await addLead(h, "ridge", "r-al", "Al Moss", "2026-09-29T09:00:00");
+    const al = leadCode("r-al");
+    expect(await h.sms(`Booked #${al}`)).toBe(`Booked: Al Moss. What's the job worth? Text "booked 2400 #${al}".`);
+    expect(await h.sms("2400")).toBe("Got it, Jack will match it.");
+    expect(reply(h, "ridge", "r-al").outcomeValue).toBeUndefined();
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    // the code still places it
+    expect(await h.sms(`booked 2400 #${al}`)).toBe("Booked: Al Moss, $2,400. Added to your results.");
+    // anything else with nobody waiting is still just that
+    expect(await h.sms("DONE")).toBe("Nobody's waiting on a call right now.");
+    // QUOTED on the only lead, then a booking days later: Jack's to match, as after DONE
+    const q = make();
+    await q.business("ridge");
+    await addLead(q, "ridge", "r-kim", "Kim Tran", "2026-09-29T09:30:00");
+    expect(await q.sms(`Quoted her 2400 #${leadCode("r-kim")}`)).toBe("Got it — Kim Tran has a price. We'll count it when it books.");
+    q.setNow("2026-10-02T14:00:00Z");
+    expect(await q.sms("She booked us for 2400")).toBe("Got it, Jack will match it.");
+    expect(latest(q, "ridge")).toMatchObject({ handled: "match_booking", needs_person: 1 });
+    expect(reply(q, "ridge", "r-kim").outcome).toBe("quoted");
+    expect(state(q, "ridge").recoveries).toEqual([]);
+  });
+
+  it("the code typed without its '#' names the lead with nobody else waiting: after DONE, and after 'What's the job worth?'", async () => {
+    const h = make();
+    await h.business("ridge");
+    // codes in letters only, as the owner would type them back
+    const lettered = (p: string) => {
+      let rid = `${p}-0`;
+      for (let i = 0; !/^[A-Z]{3}$/.test(leadCode(rid)); i++) rid = `${p}-${i}`;
+      return rid;
+    };
+    const [rk, ra] = [lettered("r-karen"), lettered("r-al")];
+    const [karen, al] = [leadCode(rk), leadCode(ra)];
+    await addLead(h, "ridge", rk, "Karen Whitfield", "2026-09-29T08:00:00");
+    expect(await h.sms(`DONE #${karen}`)).toBe("Thanks — Karen Whitfield marked as reached.");
+    expect(await h.sms("BOOKED 2400")).toBe("Got it, Jack will match it.");
+    h.d.llm = { model: "stub", structured: async () => ({ outcome: "booked", amount: 2400 }) } as never;
+    try {
+      expect(await h.sms(`Booked 2400 ${karen}`)).toBe("Booked: Karen Whitfield, $2,400. Added to your results.");
+      expect(latest(h, "ridge")).toMatchObject({ handled: "booked", needs_person: 0 });
+      await addLead(h, "ridge", ra, "Al Moss", "2026-09-29T09:00:00");
+      expect(await h.sms(`Booked #${al}`)).toBe(`Booked: Al Moss. What's the job worth? Text "booked 2400 #${al}".`);
+      expect(await h.sms(`Booked 2400 ${al}`)).toBe("Booked: Al Moss, $2,400. Added to your results.");
+    } finally {
+      h.d.llm = null;
+    }
+    expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400, 2400]);
+  });
+
+  it("every booking text that gets 'Which one?' is flagged to Jack, code or no code", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r1", "Kim Tran", "2026-09-29T08:00:00");
+    await addLead(h, "ridge", "r2", "Dan Ruiz", "2026-09-29T09:00:00");
+    expect(await h.sms("booked 2400")).toMatch(/^Which one\? 2 are waiting: Dan Ruiz #\w{3}, Kim Tran #\w{3}\./);
+    expect(latest(h, "ridge")).toMatchObject({ body: "booked 2400", handled: "ask_lead", needs_person: 1 });
+    expect(state(h, "ridge").replies.every((r) => r.status === "handed_off")).toBe(true);
+    // one owner, two businesses, one lead waiting in each
+    const two = make();
+    await two.business("aaa-tree", { name: "AAA Tree" });
+    await two.business("bbb-tree", { name: "BBB Tree" });
+    await addLead(two, "aaa-tree", "r-a", "Bea Cole", "2026-09-29T09:10:00");
+    await addLead(two, "bbb-tree", "r-b", "Al Moss", "2026-09-29T09:20:00");
+    expect(await two.sms("Sold it 2.4k")).toMatch(/^Which one\? 2 are waiting: Al Moss \(BBB Tree\) #\w{3}, Bea Cole \(AAA Tree\) #\w{3}\./);
+    expect(latest(two, "bbb-tree")).toMatchObject({ handled: "ask_lead", needs_person: 1 });
+    expect(state(two, "aaa-tree").recoveries.concat(state(two, "bbb-tree").recoveries)).toEqual([]);
+  });
+
+  it("a phone number is never a booking amount, nor is anything over $100,000: Jack reads it, nothing is booked", async () => {
+    const misread = ["booked 6035550142", "BOOKED 603-555-0142", "booked (603) 555-0142", "Booked 555-0142", "sold 603.555.0142", "booked 603 555 0142", "6035550142 booked", "booked 250000", "Booked $1,250,000", "sold it 150k"];
+    for (const t of misread) {
+      expect(readAmount(t), t).toBe(0);
+      expect(readLeadText(t), t).toEqual({ amount: 0, unclear: true });
+    }
+    for (const [t, v] of [["booked 2400", 2400], ["BOOKED $2,400", 2400], ["booked 2.4k", 2400], ["booked 12500", 12500], ["Booked $100,000", 100000]] as const) {
+      expect(readAmount(t), t).toBe(v);
+      expect(readLeadText(t), t).toEqual({ outcome: "booked", amount: v });
+    }
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r1", "Kim Tran", "2026-09-29T08:00:00");
+    const code = leadCode("r1");
+    for (const t of [`BOOKED 6035550142 #${code}`, "booked (603) 555-0142", "Booked 250000"]) {
+      expect(await h.sms(t), t).toMatch(/^Thanks — that one could go either way, so Jack will read it and mark the lead himself\./);
+      expect(latest(h, "ridge"), t).toMatchObject({ body: t, handled: "unclear_lead", needs_person: 1 });
+    }
+    // the bare number ("6035550142" once booked $6,035,550,142): with no booking word it's no lead text at all, and
+    // Jack reads it
+    for (const t of ["6035550142", "250000"]) {
+      expect(readAmount(t), t).toBe(0);
+      expect(readLeadText(t), t).toBeUndefined();
+      expect(await h.sms(t), t).toMatch(/^Thanks — Jack will read this and get back to you\./);
+      expect(latest(h, "ridge"), t).toMatchObject({ body: t, handled: "unrecognized", needs_person: 1 });
+    }
+    expect(reply(h, "ridge", "r1").status).toBe("handed_off");
+    expect(state(h, "ridge").recoveries).toEqual([]);
+    // Claude's second read is held to the same rule, whatever amount it reads
+    let amount = 6035550142;
+    h.d.llm = { model: "stub", structured: async () => ({ outcome: "booked", amount }) } as never;
+    try {
+      expect(await h.sms(`Beat the other guy's price, she booked us for 6035550142 #${code}`)).toMatch(/^Thanks — that one could go either way/);
+      amount = 250000;
+      expect(await h.sms(`Beat the other guy's price, she booked us for 250000 #${code}`)).toMatch(/^Thanks — that one could go either way/);
+      expect(latest(h, "ridge")).toMatchObject({ handled: "unclear_lead", needs_person: 1 });
+      amount = 2400;
+      expect(await h.sms(`Beat the other guy's price, she booked us for 2400 #${code}`)).toBe("Booked: Kim Tran, $2,400. Added to your results.");
+    } finally {
+      h.d.llm = null;
+    }
+    expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400]);
+  });
+
+  it("BOOKED 2400 #code, a booking with one lead waiting, NO #code and DONE still work", async () => {
+    const h = make();
+    await h.business("ridge");
+    await addLead(h, "ridge", "r1", "Kim Tran", "2026-09-29T08:00:00");
+    await addLead(h, "ridge", "r2", "Dan Ruiz", "2026-09-29T09:00:00");
+    expect(await h.sms(`BOOKED 2400 #${leadCode("r1")}`)).toBe("Booked: Kim Tran, $2,400. Added to your results. 1 more waiting.");
+    expect(await h.sms("booked 12500")).toBe("Booked: Dan Ruiz, $12,500. Added to your results.");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "booked", needs_person: 0 });
+    await addLead(h, "ridge", "r3", "Al Moss", "2026-09-29T10:00:00");
+    await addLead(h, "ridge", "r4", "Bea Cole", "2026-09-29T11:00:00");
+    expect(await h.sms(`NO #${leadCode("r3")}`)).toBe("Got it — Al Moss marked not a fit. 1 more waiting.");
+    expect(await h.sms("DONE")).toBe("Thanks — Bea Cole marked as reached.");
+    expect(state(h, "ridge").recoveries.map((r) => r.value)).toEqual([2400, 12500]);
+  });
+});
