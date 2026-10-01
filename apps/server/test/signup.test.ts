@@ -167,6 +167,22 @@ describe("sign-up from the site", () => {
     expect(d.accounts.peek(id)!.state.dataset.business).toMatchObject({ ownerPhone: "+16035550142", signup: { from: "site" } });
   });
 
+  it("tells the operator which offer and trade the owner signed up for, and keeps where he came from", async () => {
+    const ref = "page=lawn&src=k12&utm_source=instantly&utm_campaign=lawn-oct";
+    const r = await start({ ...form, company: "Green Acre Lawn", first: "Pat", cell: "603-555-0122", software: "housecall_pro", trade: "lawn", offer: "monthly", ref });
+    expect(r.status).toBe(201);
+    const id = r.json.id as string;
+    expect(d.accounts.peek(id)!.state.dataset.business).toMatchObject({ trade: "lawn", software: "housecall_pro" });
+    expect(alertsFor(id).find((a) => a.kind === "signup")!.detail).toContain("Offer: monthly. Trade: lawn.");
+    const row = d.accounts.repo.db.get<{ detail: string }>("SELECT detail FROM audit WHERE business_id = ? AND action = 'signup'", id)!;
+    expect(JSON.parse(row.detail)).toMatchObject({ ref, offer: "monthly", trade: "lawn" });
+    const onePass = await start({ ...form, company: "Tall Pine Tree", first: "Ryan", cell: "603-555-0123", offer: "one_pass" });
+    expect(alertsFor(onePass.json.id as string).find((a) => a.kind === "signup")!.detail).toContain("Offer: one pass. Trade: tree.");
+    // only the two offers there are; a ref longer than the page ever sends is refused, not cut
+    expect((await start({ ...form, company: "Odd Offer Co", cell: "603-555-0124", offer: "yearly" })).status).toBe(400);
+    expect((await start({ ...form, company: "Long Ref Co", cell: "603-555-0125", ref: "x".repeat(201) })).status).toBe(400);
+  });
+
   it("keeps only the site's own audit numbers", async () => {
     await start({ ...form, company: "Oak Hollow Tree", first: "Lee", cell: "603-555-0133", audit: { quotes: 12, perMonth: 900, junk: "x".repeat(5000) } as unknown as Record<string, number> });
     const id = bizNamed("Oak Hollow Tree")[0]!.id;

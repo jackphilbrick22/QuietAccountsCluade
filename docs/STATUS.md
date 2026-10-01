@@ -139,7 +139,34 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     date" (no "a") was missed by the brief's grep and is reworded too.
   - Engine 1,469, server 374.
 
+- **A7. Site: the lawn page and the front page.**
+  - The public site is two pages, plain Vite, no framework: `/` (logo, one line, the two offer cards, footer) and
+    `/lawn` (the monthly page from reference/lawn-page.html with every §5 monthly edit).
+  - /lawn's hero holds "Your company name" and "Start my free 150 →" with "then $497/mo if you say yes" beside it.
+    The first press sends nothing: it shows his first note with his company in it (signed "Sarah", an example name,
+    until he types his own) and the text he'd get. The same button then sends the rest, with the consent box. A ?co=
+    link opens it filled in. One form per page; every button scrolls to it; sticky bar on phones.
+  - The note and the owner text are the engine's own words, rendered at build time from a fixture (a lawn customer
+    who stopped weekly mowing); no engine code reaches the browser; a test checks the page against the engine.
+  - The form posts JSON to {VITE_SERVER_URL}/start, or to Netlify Forms (a hidden static form "start" with a
+    honeypot); any error offers an sms: link to Jack with the company filled in. /start takes `offer` and `trade`
+    (the operator alert shows both) and `ref` (page, ?src=, UTM, cut to 200).
+  - claims.ts: landscaping lead costs (about $118 search, about $37 Local Services) and the Jobber facts confirmed on
+    the live Help Center (up to two reminders, at most 90 days out; Campaigns reaches only people who qualify after
+    it's set up; a monthly add-on). "$29/month" is on no live Help Center page any more, so the site doesn't say it.
+  - `pnpm build:site` writes apps/site/dist plus dist.zip. Every built page passes a word-ban check; at 390px the
+    headline, promise and button sit in the first screen (Playwright check).
+  - Brief notes: Housecall Pro's export path is Jobs → Actions → Export (no filter step); the reference form sent
+    "hcp", which /start recorded as unknown software; the sticky price line needs two lines at 390px.
+  - Left: an engine-written example Friday text on /lawn (now possible with A6's wording), then remove the old
+    site's apps/site/src/friday.ts and its server test; the file drop is C1; Lighthouse not run (not available here).
+
 **Live steps for Jack**
+- (A7) Either build the site with VITE_SERVER_URL set to the server's https URL (and that site origin in
+  SIGNUP_ORIGINS), or leave it unset and turn on Netlify form detection (form "start"). Drag apps/site/dist (or
+  dist.zip) to Netlify. The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address
+  must exist and reach the server's import before launch. Check /lawn and /lawn?co=Your+Company on a phone, then
+  send one test sign-up.
 - (A6) Set SIGNUP_ORIGINS to the site's address (for example https://quietaccounts.com) in production, or the
   server won't start with sign-ups on. Check each new sign-up's guessed time zone in Settings before planning.
 - (A5) Leave SMS_PROVIDER unset (or manual) in production until Twilio clears carrier registration. Work "Texts to

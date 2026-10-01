@@ -1,13 +1,18 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
-import { viteSingleFile } from "vite-plugin-singlefile";
+import { PAGES } from "./src/trades.ts";
+import { sitePages } from "./build/render.ts";
+import { zipDist } from "./build/zip.ts";
 
-// The public site. `--mode single` builds one self-contained HTML file (the shareable preview).
-export default defineConfig(({ mode }) => ({
-  plugins: mode === "single" ? [viteSingleFile({ removeViteModuleLoader: true })] : [],
+// The public site: one HTML page per path (/ and /lawn/index.html, which Netlify serves at /lawn), built to dist/
+// with dist.zip beside it for Netlify drag-and-drop. The pages' shared pieces and the engine's words go in at build.
+const at = (path: string) => fileURLToPath(new URL(path, import.meta.url));
+
+export default defineConfig({
+  plugins: [sitePages(), zipDist()],
   build: {
-    outDir: mode === "single" ? "dist-single" : "dist",
+    outDir: "dist",
     target: "es2022",
-    chunkSizeWarningLimit: 4000,
-    assetsInlineLimit: mode === "single" ? 100_000_000 : 4096,
+    rollupOptions: { input: { index: at("./index.html"), ...Object.fromEntries(PAGES.map((p) => [p.id, at(`./${p.id}/index.html`)])) } },
   },
-}));
+});

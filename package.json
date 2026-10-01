@@ -15,7 +15,7 @@
     "typecheck": "pnpm -r --if-present typecheck",
     "check": "pnpm typecheck && pnpm test",
     "dev:site": "pnpm --filter @qa/site dev",
-    "build:site": "pnpm --filter @qa/site build:single"
+    "build:site": "pnpm --filter @qa/site build"
   },
   "engines": {
     "node": ">=22.5"

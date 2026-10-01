@@ -989,6 +989,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     signer: z.string().trim().max(60).optional(),
     trade: z.string().max(40).optional(),
     software: z.string().max(40).optional(),
+    /** Which offer's page they signed up from. */
+    offer: z.enum(["monthly", "one_pass"]).optional(),
     consent: z.literal(true),
     files: z.array(z.object({ name: z.string().min(1).max(200), text: z.string().min(1) })).max(5).optional(),
     // the site's own audit numbers and nothing else: unknown keys are dropped, never stored
@@ -1080,9 +1082,9 @@ export function createApp(d: HttpDeps): Hono<Env> {
     await raiseAlert(d, id, {
       kind: "signup",
       title: again ? `${f.company} came back through the site${f.files?.length ? " with a file" : ""}` : `New sign-up: ${f.company}`,
-      detail: `${f.first}, ${cell}${f.software ? `, uses ${f.software}` : ""}. ${read}${shared}${next}`,
+      detail: `${f.first}, ${cell}${f.software ? `, uses ${f.software}` : ""}.${f.offer ? ` Offer: ${f.offer === "one_pass" ? "one pass" : "monthly"}.` : ""}${f.trade ? ` Trade: ${trade}.` : ""} ${read}${shared}${next}`,
     });
-    repo.audit(id, "public", again ? "signup.again" : "signup", { ref: f.ref, software: f.software, audit: f.audit, files: f.files?.map((x) => ({ name: x.name, chars: x.text.length })), fileRead: !!f.files?.length && mayRead, ...(others.length ? { sharedCell: cell } : {}) });
+    repo.audit(id, "public", again ? "signup.again" : "signup", { ref: f.ref, software: f.software, offer: f.offer, trade, audit: f.audit, files: f.files?.map((x) => ({ name: x.name, chars: x.text.length })), fileRead: !!f.files?.length && mayRead, ...(others.length ? { sharedCell: cell } : {}) });
     // a second Start says nothing about the account it matched
     return c.json({ ok: true, id: again ? "thanks" : id }, 201);
   });

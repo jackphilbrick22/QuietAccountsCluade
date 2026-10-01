@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { emptyState, generateSample, weeklyReport, type Reply, type Touch } from "@qa/engine";
 import { fridayExample } from "../../site/src/friday.ts";
@@ -7,10 +6,11 @@ import { fridayExample } from "../../site/src/friday.ts";
 const shape = (line: string) => line.replace(/\$[\d,]+(?:\.\d+)?/g, "$#").replace(/\d+/g, "#");
 
 /**
- * The public site shows an example Friday text. Every line in it has to be one the real Friday text writes
- * (weeklyReport), so the page never promises a line the product doesn't send.
+ * The old site's example Friday text (src/friday.ts) keeps to the real one until it goes: every line in it has to be
+ * one the real Friday text writes (weeklyReport). What the pages say about Friday is checked on the built pages, with
+ * the site's other word rules (apps/site/test/pages.test.ts).
  */
-describe("the site's Friday example", () => {
+describe("the old site's Friday example", () => {
   it("uses only lines the real Friday text writes, in the same order", () => {
     const sample = generateSample({ trade: "tree", asOf: "2026-10-02" });
     const ds = { ...sample.dataset, business: { ...sample.dataset.business, ownerFirstName: "Dave" } };
@@ -38,11 +38,5 @@ describe("the site's Friday example", () => {
       expect(i, `the real Friday text never writes "${line}" here`).toBeGreaterThan(at);
       at = i;
     }
-  });
-
-  it("doesn't promise a quiet rate every Friday: it shows up once enough new quotes are two weeks old", () => {
-    const page = readFileSync(new URL("../../site/index.html", import.meta.url), "utf8");
-    expect(page).not.toMatch(/Every Friday,? your quiet rate/i);
-    expect(fridayExample("Dave", "$4,250").join("\n")).not.toMatch(/quiet rate|every Friday/i);
   });
 });
