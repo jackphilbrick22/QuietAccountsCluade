@@ -816,6 +816,10 @@ describe("the jobs report beside the Visits report", () => {
       st.dataset.asOf = at.slice(0, 10);
       expect(dueTouches(st, at).due.some((d) => d.touch.customerId === id)).toBe(true);
     }
+    // the same in a Visits report that ends today: the visits that went by undone say so without one still to come
+    const today = read(visitsReport(clients.map((x) => ({ ...x, visits: x.visits.filter((v) => v.date <= LAWN_ASOF) })), "newest"), "Visits Report.csv").dataset;
+    const ds = read(JOBS("Active"), "Jobs Report.csv", lawn(), LAWN_ASOF, today).dataset;
+    expect(oneOpp(scan(ds), id, "lapsed_regular").suppressed).toBeUndefined();
   });
 });
 

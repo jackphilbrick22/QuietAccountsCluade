@@ -84,14 +84,17 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
   const nameOf = bookingNames(ds);
 
   /**
-   * New work for a customer in a window, earliest first. A visit is work once it's done, never while it's only on the
-   * calendar or left there from a schedule that stopped, and one job's visits are one booking: a weekly regular back
-   * on the schedule is one job that came back, worth what the visits done so far billed. The job's own record (a jobs
-   * report, a sync) is that same booking, dated when the job was made, and one made before the window is none,
-   * whatever its visits since; with only its visits, it's dated by the first in the window. A client list's last date
-   * stands in for the visits only when no job, visit or invoice in the window shows them back.
+   * New work for a customer in a window that opens on `from` (the first note), earliest first. A visit is work once
+   * it's done, never while it's only on the calendar or left there from a schedule that stopped, and one job's visits
+   * are one booking: a weekly regular back on the schedule is one job that came back, worth what the visits done so far
+   * billed. The job's own record (a jobs report, a sync) is that same booking, dated when the job was made; with only
+   * its visits, it's dated by the first in the window. A job made before the window, or one whose visits were already
+   * being done before it, is none, whatever its visits since: unless its visits had stopped for as long as it takes a
+   * regular of theirs to go quiet (a job the owner never closed, or one he set going again), and then it's back from
+   * its first visit in the window. A client list's last date stands in for the visits only when no job, visit or
+   * invoice in the window shows them back.
    */
-  const bookings = (customerId: string, ok: (d: ISODate | undefined) => boolean): { jobs: Job[]; value: Money; on: ISODate; name: string }[] => {
+  const bookings = (customerId: string, ok: (d: ISODate | undefined) => boolean, from: ISODate): { jobs: Job[]; value: Money; on: ISODate; name: string }[] => {
     const byName = new Map<string, Job[]>();
     for (const j of jobsBy.get(customerId) ?? []) {
       if (j.status === "cancelled" || used.has(j.id) || (j.visit && !book.worked(j))) continue;
@@ -101,11 +104,15 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
     const out: { jobs: Job[]; value: Money; on: ISODate; name: string; listed: boolean }[] = [];
     for (const [name, all] of byName) {
       const own = all.find((j) => !j.visit && !j.fromList);
-      if (own && !ok(jobOn(own))) continue;
-      const jobs = all.filter((j) => j === own || ok(jobOn(j))).sort(byOn);
+      const inWindow = all.filter((j) => j !== own && ok(jobOn(j))).sort(byOn);
+      // the job's last visit done before the note (a numbered job's: visits with no number are only whose they are)
+      const before = all.filter((j) => j.visit && j.jobRef && jobOn(j)! < from).sort(byOn).at(-1);
+      const back = !!before && !!inWindow.length && daysBetween(jobOn(before)!, jobOn(inWindow[0]!)!) >= book.quietAfter(customerId);
+      if (before ? !back : own && !ok(jobOn(own))) continue;
+      const jobs = (own ? [own, ...inWindow] : inWindow).sort(byOn);
       if (!jobs.length) continue;
       const value = jobs.filter((j) => j.visit).reduce((s, v) => s + v.total, 0) || (own?.total ?? 0);
-      out.push({ jobs, value, on: jobOn(own ?? jobs[0]!)!, name, listed: !own && jobs.every((j) => j.fromList) });
+      out.push({ jobs, value, on: jobOn(back ? inWindow[0]! : (own ?? jobs[0]!))!, name, listed: !own && jobs.every((j) => j.fromList) });
     }
     const real = out.filter((b) => !b.listed);
     const billed = (invBy.get(customerId) ?? []).some((i) => i.status === "paid" && !used.has(i.id) && ok(i.issuedOn ?? i.paidOn));
@@ -118,8 +125,8 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
     }
   };
 
-  const firstComeback = (customerId: string, ok: (d: ISODate | undefined) => boolean): { record: Recovery["record"]; value: Money; on: ISODate } | undefined => {
-    const job = bookings(customerId, ok)[0];
+  const firstComeback = (customerId: string, ok: (d: ISODate | undefined) => boolean, from: ISODate): { record: Recovery["record"]; value: Money; on: ISODate } | undefined => {
+    const job = bookings(customerId, ok, from)[0];
     if (job) {
       take(job);
       return { record: { kind: "job", id: job.name }, value: job.value, on: job.on };
@@ -137,7 +144,7 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
     if (held.holdout) {
       // the comparison group: comebacks before they were ever written to (tier "holdout", lift only)
       const until = held.treatedFrom;
-      const natural = firstComeback(held.customerId, (d) => !!d && d >= held.firstTouchOn && (!until || d < until) && daysBetween(held.firstTouchOn, d) <= silentDays);
+      const natural = firstComeback(held.customerId, (d) => !!d && d >= held.firstTouchOn && (!until || d < until) && daysBetween(held.firstTouchOn, d) <= silentDays, held.firstTouchOn);
       if (natural) {
         out.push({ ...rec(held, natural.record, natural.value, natural.on, "customer_id", 0.9), tier: "holdout" });
         continue;
@@ -160,7 +167,7 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
       continue;
     }
     // 2) every new job for this customer in the window: one credit per job, not one per person
-    const jobs = bookings(r.customerId, inWindow);
+    const jobs = bookings(r.customerId, inWindow, r.firstTouchOn);
     if (jobs.length) {
       for (const job of jobs) {
         take(job);
@@ -237,15 +244,24 @@ export function bookingSpan(r: Pick<Reply, "receivedAt" | "ownerContactedAt" | "
   return [addDays(start, -30), addDays(end, 30)];
 }
 
+/**
+ * A booking their records show with no amount on it (a client list's last date, visits with no price): it never
+ * stands in for the owner's figure, it takes it.
+ */
+export function noAmount(x: Recovery): boolean {
+  return x.record.kind === "job" && x.value === 0 && x.match !== "owner_reported" && !x.from;
+}
+
 export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[] {
   // One per booking the owner told us about (keyed by the reply). Skipped only when that booking is already
-  // on the ledger as a counted job within a month of it; an older or uncounted comeback never blocks it.
+  // on the ledger as a counted job within a month of it; an older or uncounted comeback never blocks it, nor one with
+  // no amount on it (the caller folds that one into his).
   const have = new Set(existing.map((r) => r.id));
   // The same booking is anything on the ledger for them from the month before they wrote back to the month after the
   // owner said BOOKED: a quote approved in October and a BOOKED texted in November when it's scheduled are one job.
   const already = (r: Reply) => {
     const [from, to] = bookingSpan(r);
-    return existing.some((x) => x.customerId === r.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
+    return existing.some((x) => x.customerId === r.customerId && !x.disputed && !noAmount(x) && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
   };
   return replies
     // a booking from someone answering our reply to their own new request is theirs, not a comeback

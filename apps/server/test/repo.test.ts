@@ -82,4 +82,27 @@ describe("deletions that last", () => {
     });
     expect(after).toEqual([0, 1]);
   });
+
+  it("a client list's booking that a job took and gave back when it was cancelled is one booking, the same after a restart", async () => {
+    h = harness({ now: "2026-10-01T14:00:00Z" });
+    await h.business("sparkle", { name: "Sparkle House Cleaning", trade: "cleaning" });
+    const list = (on: string) => ({ name: "Clients.csv", text: `First Name,Last Name,Email,Last Cleaning\nKaren,Brennan,karen@yahoo.com,${on}\n` });
+    const jobs = (status: string) => ({ name: "Jobs Report.csv", text: `Job #,Client name,Client email,Title,Job status,Job type,Created date,Start date,Completed date,Total ($)\n501,Karen Brennan,karen@yahoo.com,Biweekly cleaning,${status},Recurring,10/05/2026,10/21/2026,,160\n` });
+    // we wrote to Karen on October 1st and she wrote back the next day; the list on the 8th has her cleaned on the 7th,
+    // the jobs report on the 10th her new job #501, and the one on the 12th #501 cancelled
+    await h.d.accounts.withAccount("sparkle", (s) => {
+      reconcile(s, [list("07/14/2026")], "2026-10-01T14:00:00Z");
+      const id = s.dataset.customers[0]!.id;
+      s.outreach = [{ customerId: id, firstTouchOn: "2026-10-01", lastTouchOn: "2026-10-01" }];
+      s.replies = [{ id: "r1", customerId: id, channel: "email", receivedAt: "2026-10-02T15:00:00", from: "karen@yahoo.com", text: "Yes, put me back on", intent: "wants_it", confidence: 0.9, extracted: {}, status: "done" }];
+    });
+    for (const [f, now] of [[list("10/07/2026"), "2026-10-08T14:00:00Z"], [jobs("Active"), "2026-10-10T14:00:00Z"], [jobs("Cancelled"), "2026-10-12T14:00:00Z"]] as const) {
+      await h.d.accounts.withAccount("sparkle", (s) => {
+        reconcile(s, [f], now);
+      });
+    }
+    const [warm, cold] = await bothWays("sparkle", (s) => s.recoveries.map((r) => [r.id, r.value, r.cameBackOn]));
+    expect(warm).toEqual([[expect.any(String), 0, "2026-10-07"]]);
+    expect(cold).toEqual(warm);
+  });
 });

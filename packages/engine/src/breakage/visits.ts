@@ -53,10 +53,14 @@ export interface VisitBook {
   ahead(j: Job): boolean;
   /**
    * A job's own record (a jobs report row, a sync) whose visits the data has: whether one of them is still to come on
-   * a schedule still served. A job the owner never closed reads "Active" for good; its visits say whether it is.
-   * Undefined for a job with none of its visits here.
+   * a schedule still served. A job the owner never closed reads "Active" for good; its visits say whether it is, when
+   * they can: once its schedule stopped, or when the data has visits after the day. An export that ends today has
+   * nobody's next visit, so it says nothing of a job still served. Undefined then, and for a job with none of its
+   * visits here.
    */
   jobAhead(j: Job): boolean | undefined;
+  /** How many days without a visit a client of theirs goes before they've gone quiet: the trade's rule, by how often they come. */
+  quietAfter(customerId: string): number;
 }
 
 /**
@@ -116,26 +120,40 @@ export function visitBook(ds: Dataset): VisitBook {
   }
   const markedThrough = (j: Job) => (j.crew && through.get(j.crew)) || through.get("") || "";
   const missed = (j: Job) => unmarked(j) && (!!j.undone || jobDate(j)! <= markedThrough(j) || jobDate(j)! < (jobTicked.get(jobOf(j)) ?? ""));
+  const quiet = new Map<string, number>();
+  // how often they come is the client's, whichever job
+  const quietAfter = (customerId: string): number => {
+    let q = quiet.get(customerId);
+    if (q === undefined) {
+      const gap = rhythmOf((mine.get(customerId) ?? []).filter(plain).map((x) => jobDate(x)!).sort().map((date) => ({ date }))).median;
+      q = lapseAfter(ds.business.trade, gap || undefined).days;
+      quiet.set(customerId, q);
+    }
+    return q;
+  };
   const seen = new Map<string, boolean>();
   const stopped = (j: Job): boolean => {
     const k = j.visit && j.jobRef ? jobOf(j) : j.customerId;
     let s = seen.get(k);
     if (s === undefined) {
-      const theirs = mine.get(j.customerId) ?? [];
-      const jobs = j.visit && j.jobRef ? visitsOf.get(k)! : theirs;
+      const jobs = j.visit && j.jobRef ? visitsOf.get(k)! : (mine.get(j.customerId) ?? []);
       const done = jobs.filter(plain).map((x) => jobDate(x)!).sort();
       const last = done[done.length - 1] ?? "";
       const since = jobs.filter((x) => missed(x) && jobDate(x)! > last).map((x) => jobDate(x)!).sort();
-      // how often they come is the client's, whichever job
-      const gap = rhythmOf(theirs.filter(plain).map((x) => jobDate(x)!).sort().map((date) => ({ date }))).median;
-      s = since.length > 0 && daysBetween(last || since[0]!, since[since.length - 1]!) >= lapseAfter(ds.business.trade, gap || undefined).days;
+      s = since.length > 0 && daysBetween(last || since[0]!, since[since.length - 1]!) >= quietAfter(j.customerId);
       seen.set(k, s);
     }
     return s;
   };
   const ahead = (j: Job) => !!j.visit && j.status !== "cancelled" && !j.undone && (jobDate(j) ? !dated(j) : !DONE_JOB.has(j.status) && j.status !== "unknown") && !stopped(j);
-  const jobAhead = (j: Job) => (j.visit || !j.number ? undefined : visitsOf.get(ref(j.customerId, j.number))?.some(ahead));
-  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j)), missed, markedThrough, stopped, ahead, jobAhead };
+  // the visits here run past the day: some are still to come
+  const seesAhead = ds.jobs.some((j) => j.visit && !!jobDate(j) && !dated(j));
+  const jobAhead = (j: Job) => {
+    const visits = j.visit || !j.number ? undefined : visitsOf.get(ref(j.customerId, j.number));
+    if (!visits) return undefined;
+    return visits.some(ahead) || (seesAhead || stopped(visits[0]!) ? false : undefined);
+  };
+  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j)), missed, markedThrough, stopped, ahead, jobAhead, quietAfter };
 }
 
 /**

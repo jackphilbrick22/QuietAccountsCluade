@@ -362,6 +362,37 @@ describe("a shop's season ends where its own mowing does", () => {
   });
 });
 
+describe("a regular on an Active job, in a Visits report that ends on the scan day", () => {
+  // September 1st: the shop's regulars are on Active recurring jobs (the jobs report), and the Visits report runs up
+  // to today, so it has nobody's next visit. Tom was away for August (his visits taken off) and is back on the 7th.
+  const asOf: ISODate = "2026-09-01";
+  const clients = seasonalClients(asOf).map((c) => ({ ...c, visits: c.visits.filter((v) => v.date <= asOf && !(c.name === "Tom Alvarez" && v.date >= "2026-08-10")) }));
+  const tom = clients.find((c) => c.name === "Tom Alvarez")!;
+  const on = clients.filter((c) => !c.lapsed && c.visits.some((v) => v.recurring && v.date >= "2026-01-01"));
+  const JOBS = [
+    "Job #,Client name,Client email,Title,Job status,Job type,Created date,Start date,Completed date,Total ($)",
+    ...on.map((c) => `${c.visits.find((v) => v.recurring && v.date >= "2026-01-01")!.job},${c.name},${c.email},Weekly mowing,Active,Recurring,03/20/2026,04/20/2026,,0`),
+  ].join("\n");
+  const read = (withJobs: boolean) => {
+    const visits = ingestFile(emptyDataset(lawn(), asOf), visitsReport(clients, "newest"), "Visits Report.csv", `${asOf}T12:00:00Z`).dataset;
+    return withJobs ? ingestFile(visits, JOBS, "Jobs Report.csv", `${asOf}T12:00:00Z`).dataset : visits;
+  };
+  const idOf = (ds: Dataset) => ds.customers.find((x) => x.emails.includes(tom.email))!.id;
+
+  it("is left alone: his job says he's on the schedule, though no visit of it is still to come in the file", () => {
+    expect(tom.story).toBe("regular");
+    // the Visits report alone has him three missed visits gone
+    const alone = read(false);
+    expect(oneOpp(scan(alone), idOf(alone), "lapsed_regular").suppressed).toBeUndefined();
+    const ds = read(true);
+    expect(oneOpp(scan(ds), idOf(ds), "lapsed_regular").suppressed).toBe("active_work");
+    const st = emptyState(ds, `${asOf}T12:00:00`);
+    find(st, `${asOf}T12:00:00`);
+    planBatch(st, "2026-09-02T12:00:00", { startOn: "2026-09-02" });
+    expect(st.touches.filter((t) => t.customerId === idOf(ds))).toEqual([]);
+  }, 60_000);
+});
+
 describe("a regular's routine is what he's had all season", () => {
   it("a mowing regular who quit in July and had a fall clean-up since is gone in the fall and spring windows", () => {
     const jobs = [...weekly("Weekly mowing", "2026-04-20", "2026-07-13"), job("leaf", "c1", { title: "Fall leaf cleanup", total: 180, completedOn: "2026-10-20" })];

@@ -532,14 +532,19 @@ export function importTable(
   if (resolver.sharedPhones.size)
     warnings.push(`${resolver.sharedPhones.size.toLocaleString("en-US")} phone number${resolver.sharedPhones.size === 1 ? " is" : "s are"} shared by people with different names or emails. They're kept as separate customers.`);
 
-  // A visits file is every visit on the days it covers. One an earlier file had on those days, for a client in this
-  // one, that this file doesn't have is off the calendar now: the job was closed when they stopped, or the visit moved.
+  // A visits file is every visit on the days it covers. One an earlier file had on those days that this file doesn't
+  // have is off the calendar now: the job was closed when they stopped, or deleted when they cancelled (a client with
+  // no visit left has no row at all), or the visit moved. A file of one client's visits, or of one crew's, is only
+  // that client's or that crew's calendar.
   if (filed.size) {
-    const days = [...filed].map((id) => jobs.get(id)!.scheduledOn ?? "").filter(Boolean).sort();
+    const inFile = [...filed].map((id) => jobs.get(id)!);
+    const days = inFile.map((j) => j.scheduledOn ?? "").filter(Boolean).sort();
     const [first = "", last = ""] = [days[0], days.at(-1)];
-    const whose = new Set([...filed].map((id) => jobs.get(id)!.customerId));
+    const whose = new Set(inFile.map((j) => j.customerId));
+    const crews = new Set(inFile.map((j) => j.crew).filter(Boolean));
     const covered = (on?: string) => !on || (on >= first && on <= last);
-    for (const j of dataset.jobs) if (j.visit && !filed.has(j.id) && whose.has(j.customerId) && covered(j.scheduledOn)) jobs.delete(j.id);
+    const theirs = (j: Job) => (whose.size > 1 || whose.has(j.customerId)) && (crews.size !== 1 || !j.crew || crews.has(j.crew));
+    for (const j of dataset.jobs) if (j.visit && !filed.has(j.id) && theirs(j) && covered(j.scheduledOn)) jobs.delete(j.id);
   }
 
   const next: Dataset = {

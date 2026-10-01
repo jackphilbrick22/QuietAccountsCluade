@@ -7,7 +7,7 @@ import { allowedDay, bookedOutStart, goesOutOn, HOLD_WHEN_BOOKED, nextAllowed, p
 import { INBOX_DAILY, NOTES_SPAN_DAYS, paceOnePass, type Pace } from "../cadence/pace.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
-import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
+import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, noAmount, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
 import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { isOnePass, ONE_PASS } from "../plans.ts";
@@ -894,10 +894,19 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
   const r = state.replies.find((x) => x.id === replyId);
   if (!r) return;
   r.ownerContactedAt = r.ownerContactedAt ?? at;
-  // "NO #K7Q" after "BOOKED 2400 #K7Q": the booking they told us about is taken back, and its dollars leave the ledger
+  // "NO #K7Q" after "BOOKED 2400 #K7Q": the booking they told us about is taken back, and its dollars leave the ledger.
+  // One a job in their records took the place of goes back to his word first: the job, if its visits count, is a
+  // booking of its own again.
   if (outcome && outcome !== "booked" && r.outcome === "booked") {
     r.outcomeValue = undefined;
-    for (const rec of state.recoveries) if (rec.match === "owner_reported" && rec.record.id === r.id && !rec.disputed) rec.disputed = { at, reason: `The owner changed it to ${outcome.replace("_", " ")}`, by: "owner" };
+    for (const rec of state.recoveries) {
+      if (rec.disputed) continue;
+      if (rec.from?.match === "owner_reported" && rec.from.record.id === r.id) {
+        Object.assign(rec, rec.from);
+        delete rec.from;
+      }
+      if (rec.match === "owner_reported" && rec.record.id === r.id) rec.disputed = { at, reason: `The owner changed it to ${outcome.replace("_", " ")}`, by: "owner" };
+    }
   }
   // the day it booked, not the day they first talked: "QUOTED" in October, "BOOKED" in November books in November
   if (outcome === "booked" && r.outcome !== "booked") r.bookedAt = at;
@@ -905,26 +914,49 @@ export function markContacted(state: AccountState, replyId: string, at: ISODateT
   if (value) r.outcomeValue = value;
   // and booked again after all: the same record comes back, at the new figure
   if (outcome === "booked")
-    for (const rec of state.recoveries)
-      if (rec.match === "owner_reported" && rec.record.id === r.id && rec.disputed?.by === "owner") {
-        // unless the job itself reached the ledger meanwhile (their export shows it): that one counts, and only once
-        const on = at.slice(0, 10);
-        const [from, to] = bookingSpan(r, on);
-        const shown = state.recoveries.some((x) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
-        if (shown) continue;
-        rec.disputed = undefined;
-        rec.cameBackOn = on;
-        if (value) rec.value = round2(value);
-      }
+    for (const rec of state.recoveries.filter((x) => x.match === "owner_reported" && x.record.id === r.id && x.disputed?.by === "owner")) {
+      // unless the job itself reached the ledger meanwhile (their export shows it): that one counts, and only once; one
+      // with no amount on it takes his figure
+      const on = at.slice(0, 10);
+      const [from, to] = bookingSpan(r, on);
+      const same = (x: Recovery) => x !== rec && x.customerId === rec.customerId && !x.disputed && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to;
+      if (state.recoveries.some((x) => same(x) && !noAmount(x))) continue;
+      rec.disputed = undefined;
+      rec.cameBackOn = on;
+      if (value) rec.value = round2(value);
+      const bare = state.recoveries.find((x) => same(x) && noAmount(x));
+      if (bare) fold(state, rec, bare);
+    }
   r.status = "done";
   const name = state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from;
   const hrs = Math.round((Date.parse(r.ownerContactedAt) - Date.parse(r.receivedAt)) / 3600000);
   if (outcome === "booked") {
     event(state, at, "ledger", "win", `Booked: ${name}${value ? ` — ${fmtMoney(value)}` : ""}`, `Called back in ${hrs}h.`, r.customerId ? [{ kind: "customer", id: r.customerId }] : undefined);
-    state.recoveries.push(...ownerReported([r], state.recoveries));
+    for (const rec of ownerReported([r], state.recoveries)) {
+      // the same booking already on the ledger with no amount on it (a client list's date, visits with no price)
+      const [from, to] = bookingSpan(r);
+      const bare = state.recoveries.find((x) => x.customerId === rec.customerId && !x.disputed && noAmount(x) && x.tier !== "after_note" && x.tier !== "holdout" && x.cameBackOn >= from && x.cameBackOn <= to);
+      state.recoveries.push(rec);
+      if (bare) fold(state, rec, bare);
+    }
   } else {
     event(state, at, "dispatcher", "info", `You reached ${name}`, `${hrs}h after they wrote back.`);
   }
+}
+
+/** What a booking was before a job in their records took its place (the owner's BOOKED, a quote they approved): the first such, kept. */
+function was(x: Recovery): Recovery["from"] {
+  return x.from ?? { record: x.record, value: x.value, match: x.match, confidence: x.confidence };
+}
+
+/**
+ * The owner's BOOKED (`told`) and the same booking their records show with no amount on it (`bare`: a client list's
+ * date, visits with no price) are one: his takes its record, at his figure, from the earlier of their days, and the
+ * other goes.
+ */
+function fold(state: AccountState, told: Recovery, bare: Recovery): void {
+  Object.assign(told, { from: was(told), record: bare.record, match: bare.match, confidence: bare.confidence }, bare.cameBackOn < told.cameBackOn ? { cameBackOn: bare.cameBackOn, lagDays: bare.lagDays } : {});
+  state.recoveries.splice(state.recoveries.indexOf(bare), 1);
 }
 
 /** Past this, a lead nobody called is the operator's to chase (it sits in "Needs a person"), not another text. */
@@ -971,12 +1003,13 @@ export function ledgerPass(state: AccountState, now: ISODateTime, features: Feat
   );
   const found = attribute(state.dataset, state.outreach, { replied });
   // someone who came back quietly and then wrote to us is now traced; if the owner already told us about that same
-  // job (BOOKED), their figure gives way to the one in their records, so it counts once
-  for (const r of state.recoveries) {
-    if (r.tier !== "after_note" || !replied.has(r.customerId)) continue;
+  // job (BOOKED), their figure gives way to the one in their records, so it counts once (a record with no amount on it
+  // takes his figure instead)
+  for (const r of state.recoveries.filter((x) => x.tier === "after_note" && replied.has(x.customerId))) {
     r.tier = "traced";
     const told = state.recoveries.find((x) => x !== r && x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && Math.abs(daysBetween(x.cameBackOn, r.cameBackOn)) <= 30);
-    if (told) told.disputed = { at: now, reason: `Same job as ${r.record.kind} ${r.record.id} in their records`, by: "ledger" };
+    if (told && noAmount(r)) fold(state, told, r);
+    else if (told) told.disputed = { at: now, reason: `Same job as ${r.record.kind} ${r.record.id} in their records`, by: "ledger" };
   }
   // One credit per record (job, quote, invoice), not per person. A job goes by the name its booking has now, whatever
   // record the ledger first knew it by: its own record before its visits came in, or one of its visits.
@@ -984,18 +1017,19 @@ export function ledgerPass(state: AccountState, now: ISODateTime, features: Feat
   const names = new Map(state.dataset.jobs.map((j) => [j.id, nameOf(j)]));
   const key = (x: Recovery["record"]) => `${x.kind}:${x.kind === "job" ? (names.get(x.id) ?? x.id) : x.id}`;
   const byVisits = new Set(state.dataset.jobs.filter((j) => j.visit).map(nameOf));
-  // jobs with a record of their own, dated when they were made; one known only by its visits is dated by the first
-  const own = new Set(state.dataset.jobs.filter((j) => !j.visit).map(nameOf));
   const live = new Set(found.map((r) => key(r.record)));
   // A job seen through its visits that has none left that count (rained out, never done, or gone from the calendar
   // with its job) didn't come back. One the owner told us about, or a quote they approved, goes back to that, on its
-  // own day: the owner said it booked. One the owner marked not ours stays, so it stays out if its visits count again.
+  // own day: the owner said it booked (and if he has taken that back since, it stays out). One the owner marked not
+  // ours stays, so it stays out if its visits count again.
   for (const x of state.recoveries.filter((x) => x.record.kind === "job" && !x.disputed && !live.has(key(x.record)))) {
     const name = names.get(x.record.id) ?? x.record.id;
     if (!byVisits.has(name) && bookedThrough(name) !== "visits") continue;
     if (x.from) {
       Object.assign(x, x.from);
       delete x.from;
+      const reply = x.match === "owner_reported" ? state.replies.find((y) => y.id === x.record.id) : undefined;
+      if (reply && reply.outcome !== "booked") x.disputed = { at: now, reason: `The owner changed it to ${(reply.outcome ?? "not booked").replace("_", " ")}`, by: "owner" };
       continue;
     }
     state.recoveries.splice(state.recoveries.indexOf(x), 1);
@@ -1005,46 +1039,58 @@ export function ledgerPass(state: AccountState, now: ISODateTime, features: Feat
   const known = new Map(state.recoveries.map((r) => [key(r.record), r]));
   let added = 0;
   const jobQuote = new Map(state.dataset.jobs.filter((j) => j.quoteId).map((j) => [nameOf(j), j.quoteId!]));
-  // what a booking was before a job in their records took its place: the first such, kept
-  const was = (x: Recovery): Recovery["from"] => x.from ?? { record: x.record, value: x.value, match: x.match, confidence: x.confidence };
+  // A record of theirs that took a booking's place keeps the figure the booking had when it carries none of its own (a
+  // client list's date, visits with no price), and the day it had when that was the owner's or a quote's
+  const retake = (x: Recovery, r: Recovery) =>
+    Object.assign(x, { record: r.record, value: r.value || (x.from?.value ?? 0), match: r.match, confidence: r.confidence }, x.from ? {} : { cameBackOn: r.cameBackOn, lagDays: r.lagDays });
   for (const r of found) {
-    const had = known.get(key(r.record));
+    // the same booking; or the one this booking started as, that a record of theirs took over and that's gone again
+    // (a list's date taken over by a job since cancelled): it's this one once more, never a second with its id
+    const had = known.get(key(r.record)) ?? state.recoveries.find((x) => x.id === r.id);
     if (had) {
+      if (key(had.record) !== key(r.record)) {
+        if (!had.disputed && !live.has(key(had.record))) {
+          retake(had, r);
+          known.set(key(r.record), had);
+        }
+        continue;
+      }
       // a job seen through its visits is worth the visits done so far, and dated by them, as this export has them;
       // one the owner told us about, or a quote they approved, keeps its day
-      if (byVisits.has(r.record.id)) Object.assign(had, had.from ? { record: r.record, value: r.value } : { record: r.record, value: r.value, cameBackOn: r.cameBackOn, lagDays: r.lagDays });
+      if (byVisits.has(r.record.id)) retake(had, r);
       continue;
     }
-    // The quote they approved last sync became this job: one win, now at the job's figure. And a quote whose job
-    // is already on the ledger is that job.
+    // The quote they approved last sync became this job: one win, now at the job's figure (the quote's, when the job
+    // has none). And a quote whose job is already on the ledger is that job.
     const fromQuote = r.record.kind === "job" && jobQuote.get(r.record.id);
     const asQuote = fromQuote ? state.recoveries.find((x) => x.record.kind === "quote" && x.record.id === fromQuote) : undefined;
     if (asQuote) {
       // still the day they came back (the approval), so no weekly report announces it twice; a quote marked "not
       // ours" stays out as its job
-      if (!asQuote.disputed) Object.assign(asQuote, { from: was(asQuote), record: r.record, value: r.value, match: r.match, confidence: r.confidence });
+      if (!asQuote.disputed) Object.assign(asQuote, { from: was(asQuote), record: r.record, value: r.value || asQuote.value, match: r.match, confidence: r.confidence });
       known.set(key(r.record), asQuote);
       continue;
     }
     if (r.record.kind === "quote" && state.dataset.jobs.some((j) => j.quoteId === r.record.id && known.has(`job:${nameOf(j)}`))) continue;
-    // The export now shows the job the owner told us about: the invoiced figure replaces the owner's.
-    // (matched over the whole lead, from their reply to the month after BOOKED: the job can be dated before the text;
-    // a job known only by its visits is dated by the first, so a yes in October for a spring start shows in April)
+    // The export now shows the job the owner told us about: the invoiced figure replaces the owner's (his stays when
+    // the record has none). Matched over the whole lead, from their reply on: the job can be dated before the text,
+    // and a job can be dated well after it, whatever shows it (its visits, its own record, a client list's date): a
+    // yes in October for a spring start shows in April, and so does a job made in March when the season is laid out.
     const reported = (x: Recovery) => {
       const reply = state.replies.find((y) => y.id === x.record.id);
       const [from, to] = reply ? bookingSpan(reply) : [addDays(x.cameBackOn, -30), addDays(x.cameBackOn, 30)];
-      return r.cameBackOn >= from && (r.cameBackOn <= to || (byVisits.has(r.record.id) && !own.has(r.record.id)));
+      return r.cameBackOn >= from && (r.cameBackOn <= to || r.record.kind === "job");
     };
     const told = r.tier === "traced" ? state.recoveries.find((x) => x.customerId === r.customerId && x.match === "owner_reported" && !x.disputed && reported(x)) : undefined;
     if (told) {
-      Object.assign(told, { from: was(told), record: r.record, value: r.value, match: r.match, confidence: r.confidence });
+      Object.assign(told, { from: was(told), record: r.record, value: r.value || told.value, match: r.match, confidence: r.confidence });
       known.set(key(r.record), told);
       continue;
     }
     // A client list's last date stood in for them until their records showed the comeback: it's that same booking
     const listed = state.recoveries.find((x) => x.customerId === r.customerId && x.tier === r.tier && !x.disputed && x.record.kind === "job" && bookedThrough(names.get(x.record.id) ?? x.record.id) === "list" && !live.has(key(x.record)));
     if (listed) {
-      Object.assign(listed, { record: r.record, value: r.value, cameBackOn: r.cameBackOn, lagDays: r.lagDays, match: r.match, confidence: r.confidence });
+      retake(listed, r);
       known.set(key(r.record), listed);
       continue;
     }
@@ -1064,6 +1110,11 @@ export function ledgerPass(state: AccountState, now: ISODateTime, features: Feat
       `${r.lagDays ?? 0} days after the last note.`,
       [{ kind: "customer", id: r.customerId }],
     );
+  }
+  // and a list's date that stood in for one whose place a record took another way (the owner's BOOKED did first) is
+  // that booking too, never a second one beside it
+  for (const x of state.recoveries.filter((x) => !x.disputed && x.record.kind === "job" && bookedThrough(names.get(x.record.id) ?? x.record.id) === "list" && !live.has(key(x.record)))) {
+    if (state.recoveries.some((y) => y !== x && y.customerId === x.customerId && y.tier === x.tier && !y.disputed && live.has(key(y.record)))) state.recoveries.splice(state.recoveries.indexOf(x), 1);
   }
   const l = lift(state.outreach, state.recoveries);
   event(state, now, "ledger", "info", `Recovered so far: ${fmtMoney(l.treated.value)}`, l.note);
