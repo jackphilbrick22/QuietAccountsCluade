@@ -63,7 +63,7 @@ const schema = z.object({
   AUTO_SEND_BILLING_TEXTS: z.enum(["true", "false"]).default("false"),
   /** The domain your inbound email provider receives on; addresses are import+<token>@ and requests+<token>@ it. */
   INBOUND_DOMAIN: z.string().optional(),
-  /** The site's Start form posts here (POST /start). Comma-separated origins allowed to call it; empty = any. */
+  /** The site's Start form posts here (POST /start). Comma-separated origins allowed to call it; empty = any, which only a server not sending for real allows while SIGNUPS is on. */
   SIGNUP_ORIGINS: z.string().default(""),
   SIGNUPS: z.enum(["on", "off"]).default("on"),
   /** New sign-ups the whole server takes in an hour (on top of five tries an hour per address); past it, "text Jack". */
@@ -105,12 +105,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     const weak = (["OPERATOR_TOKEN", "APP_SECRET", "WEBHOOK_SECRET"] as const).filter((k) => c[k].startsWith("dev-"));
     if (weak.length) throw new Error(`Refusing to send for real with development secrets: set ${weak.join(", ")}`);
     if (!/^https:\/\//.test(c.PUBLIC_URL) || /\/\/(localhost|127\.0\.0\.1)\b/.test(c.PUBLIC_URL)) throw new Error("PUBLIC_URL must be the public https address when sending for real (every unsubscribe link points at it)");
+    // open to any origin, any page on the web could fill the operator's queue with sign-ups
+    if (c.SIGNUPS === "on" && !signupOrigins(c).length) throw new Error("SIGNUPS=on needs SIGNUP_ORIGINS when sending for real: the site's address, like https://quietaccounts.com (or set SIGNUPS=off)");
   }
   return c;
 }
 
 export function isProductionLike(c: Config): boolean {
   return !c.OPERATOR_TOKEN.startsWith("dev-") && !c.APP_SECRET.startsWith("dev-") && !c.WEBHOOK_SECRET.startsWith("dev-");
+}
+
+/** The origins SIGNUP_ORIGINS lets call POST /start, none meaning any: the start-up check and the CORS rule read it the same way. */
+export function signupOrigins(c: Pick<Config, "SIGNUP_ORIGINS">): string[] {
+  return c.SIGNUP_ORIGINS.split(",").map((x) => x.trim()).filter(Boolean);
 }
 
 /** The FEATURE_* settings, as the engine takes them. */

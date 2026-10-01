@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, CheckCheck, Pause, Play, RefreshCw, Send } from "lucide-react";
-import { AGENTS, BREAKAGE_LABEL, fmtMoney, fmtPhone, plural, type BreakageType } from "@qa/engine";
+import { AGENTS, brakesLine, BREAKAGE_LABEL, fmtMoney, fmtPhone, plural, SEND_BRAKES, wantedWords, type BreakageType } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, Table, Td, Th, Tr } from "../components/table";
@@ -190,7 +190,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         <Kpi label="Found" value={s ? fmtMoney(s.totalValue, { compact: true }) : "—"} sub={s ? plural(s.opportunities, "opportunity", "opportunities") : "no scan yet"} />
         <Kpi label="Reachable" value={s ? fmtMoney(s.reachableValue, { compact: true }) : "—"} sub={s ? `${s.reachablePeople.toLocaleString("en-US")} people` : undefined} />
         <Kpi label="Notes sent" value={(o.counts?.sent ?? 0).toLocaleString("en-US")} sub={`${(o.counts?.queued ?? 0).toLocaleString("en-US")} queued`} />
-        <Kpi label="Replies" value={(o.totals?.replied ?? 0).toLocaleString("en-US")} sub={`${o.totals?.wants ?? 0} want a price or date`} />
+        <Kpi label="Replies" value={(o.totals?.replied ?? 0).toLocaleString("en-US")} sub={`${o.totals?.wants ?? 0} ${wantedWords(o.business.plan).past}`} />
         <Kpi label="Booked" value={fmtMoney(o.recoveredValue ?? 0)} tone="ok" sub={plural(o.totals?.booked ?? 0, "job")} />
         <Kpi
           label="Quiet rate"
@@ -250,7 +250,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
             <dd className="num text-right font-semibold">{o.week?.sent ?? 0}</dd>
             <dt className="text-ink-3">Wrote back</dt>
             <dd className="num text-right font-semibold">{o.week?.replied ?? 0}</dd>
-            <dt className="text-ink-3">Want a price or date</dt>
+            <dt className="text-ink-3">{wantedWords(o.business.plan).label}</dt>
             <dd className="num text-right font-semibold">{o.week?.wants ?? 0}</dd>
             <dt className="text-ink-3">Booked</dt>
             <dd className="num text-right font-semibold">{fmtMoney(o.week?.bookedValue ?? 0)}</dd>
@@ -280,11 +280,11 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
                 <dd className="num text-right font-semibold">{h.sent}</dd>
                 <dt className="text-ink-3">Bounce rate</dt>
                 <dd className="text-right">
-                  <Pill tone={h.bounceRate > 0.04 ? "bad" : h.bounceRate > 0.02 ? "warn" : "ok"}>{pct(h.bounceRate)}</Pill>
+                  <Pill tone={h.bounceRate > SEND_BRAKES.bounces.rate ? "bad" : h.bounceRate > 0.02 ? "warn" : "ok"}>{pct(h.bounceRate)}</Pill>
                 </dd>
                 <dt className="text-ink-3">Complaint rate</dt>
                 <dd className="text-right">
-                  <Pill tone={h.complaintRate > 0.003 ? "bad" : h.complaintRate > 0.001 ? "warn" : "ok"}>{pct(h.complaintRate, 2)}</Pill>
+                  <Pill tone={h.complaintRate > SEND_BRAKES.complaints.rate ? "bad" : h.complaintRate > 0 ? "warn" : "ok"}>{pct(h.complaintRate, 2)}</Pill>
                 </dd>
                 <dt className="text-ink-3">Asked to stop</dt>
                 <dd className="num text-right font-semibold">{h.stops}</dd>
@@ -295,7 +295,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
                   <ClearBrake id={id} />
                 </>
               )}
-              <p className="text-[12px] text-ink-3">Auto-pause at 4% bounces or 0.3% complaints.</p>
+              <p className="text-[12px] text-ink-3">{brakesLine()}</p>
             </>
           ) : (
             <p className="text-[13px] text-ink-3">Nothing sent yet.</p>

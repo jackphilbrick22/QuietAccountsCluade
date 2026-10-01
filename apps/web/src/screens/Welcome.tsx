@@ -55,7 +55,7 @@ export function Welcome() {
                 See it with a sample tree company
               </Button>
             </div>
-            <p className="text-[13.5px] text-ink-3">First 150 free. No card, no contract, no sales call. Any month nobody asks for a price or a date, you don't pay.</p>
+            <p className="text-[13.5px] text-ink-3">First 150 free, then $497 a month if you say yes. No card, no contract, no sales call. Any month nobody asks to come back, you don't pay.</p>
           </div>
 
           <Card className="flex flex-col gap-4 p-5 shadow-lift sm:p-6">

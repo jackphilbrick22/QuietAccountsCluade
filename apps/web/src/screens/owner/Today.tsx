@@ -1,5 +1,5 @@
 import { ArrowRight, Bot, ShieldCheck } from "lucide-react";
-import { AGENTS, fmtMoney, plural, type AgentEvent } from "@qa/engine";
+import { AGENTS, fmtMoney, plural, wantedWords, type AgentEvent } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { derive, relTime } from "../../lib/derive";
 import { Bar, cx, Pill } from "../../components/ui";
@@ -61,7 +61,7 @@ export function Today() {
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <Section
           title={d.hot.length ? `Waiting on you (${d.hot.length})` : "Waiting on you"}
-          sub={d.hot.length ? "They asked for a price or a date. Call them back the same day." : "Nobody is waiting. We text you the moment someone wants the work."}
+          sub={d.hot.length ? `They ${wantedWords(b.plan).past}. Call them back the same day.` : `Nobody is waiting. We text you the moment someone ${wantedWords(b.plan).present}.`}
           actions={
             <Btn variant="ghost" onClick={() => go({ tab: "leads" })}>
               Open Unibox <ArrowRight size={15} />
@@ -186,16 +186,16 @@ export function Guarantee() {
       {trial ? (
         <>
           <p className="text-[13.5px] text-ink-2">
-            The first {b.plan.trialSize} are free. After that it's {fmtMoney(b.plan.monthlyPrice)} a month, cancel by text, and <b className="text-ink">any month nobody asks for a price or a date, you don't pay.</b>
+            The first {b.plan.trialSize} are free. After that it's {fmtMoney(b.plan.monthlyPrice)} a month, cancel by text, and <b className="text-ink">any month nobody asks to come back, you don't pay.</b>
           </p>
           <Bar value={d.totals.wants} max={Math.max(3, d.totals.wants)} tone="ok" />
-          <span className="text-[12.5px] text-ink-3">{d.totals.wants ? `${plural(d.totals.wants, "person has", "people have")} asked for a price or a date so far.` : "Nobody yet. The first replies usually land within days."}</span>
+          <span className="text-[12.5px] text-ink-3">{d.totals.wants ? `${plural(d.totals.wants, "person has", "people have")} ${wantedWords(b.plan).past} so far.` : "Nobody yet. The first replies usually land within days."}</span>
         </>
       ) : g ? (
         <>
           <p className="text-[13.5px] text-ink-2">
             This month runs to <b className="text-ink">{new Date(`${g.chargeOn}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</b>.{" "}
-            {g.free ? "Nobody has asked for a price or a date yet, so right now this month is free." : `${plural(g.asked.length, "person has", "people have")} asked for a price or a date, so this month counts.`}
+            {g.free ? `Nobody has ${wantedWords(b.plan).past} yet, so right now this month is free.` : `${plural(g.asked.length, "person has", "people have")} ${wantedWords(b.plan).past}, so this month counts.`}
           </p>
           <div>
             <Pill tone={g.free ? "warn" : "ok"}>{g.free ? "On track to be free" : "Working: month is paid for"}</Pill>
@@ -203,7 +203,7 @@ export function Guarantee() {
           {b.plan.freeMonths.length > 0 && <span className="text-[12.5px] text-ink-3">{plural(b.plan.freeMonths.length, "month has", "months have")} been free under the guarantee.</span>}
         </>
       ) : (
-        <p className="text-[13.5px] text-ink-2">Any month nobody asks for a price or a date, you don't pay. No contract. Cancel with one text.</p>
+        <p className="text-[13.5px] text-ink-2">Any month nobody asks to come back, you don't pay. No contract. Cancel with one text.</p>
       )}
     </Box>
   );

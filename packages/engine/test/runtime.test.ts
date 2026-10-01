@@ -515,7 +515,7 @@ describe("Ledger and Reporter", () => {
     expect(lines[0]).toBe("Dave, 1 job came back this week — $2,400.");
     expect(msg.text).toContain(`Notes out: ${sent.length} (to ${sent.length} people)`);
     expect(msg.text).toContain("Wrote back: 2"); // the yes and the stop; out-of-office doesn't count
-    expect(msg.text).toContain("Want a price or a date: 1");
+    expect(msg.text).toContain("Asked to come back: 1");
     expect(msg.text).toContain("Booked: 1 · $2,400");
     expect(msg.text).toContain("Your average time to call them back: 4h");
     expect(msg.text).not.toMatch(/Why the quiet ones said no/);
@@ -544,7 +544,7 @@ describe("Ledger and Reporter", () => {
       s.dataset.business.plan.paidOn = "2026-10-01";
       return s;
     };
-    it("a month where nobody asked for a price or a date is free", () => {
+    it("a month where nobody asked to come back is free", () => {
       const s = paying(fresh());
       const sent = sendDue(s, DAY1_SEND);
       receiveReply(s, { from: from(sent[0]!), text: "stop", receivedAt: `${START}T15:00:00` });
@@ -665,7 +665,7 @@ describe("Ledger and Reporter", () => {
     const msg = closeIfDue(s, `${addDays(last, 8)}T09:00:00`)!;
     expect(msg.kind).toBe("close");
     expect(msg.text).toMatch(/^Dave, the free 150 is done\./);
-    expect(msg.text).toContain("any month nobody asks for a price or a date, you don't pay");
+    expect(msg.text).toContain("any month nobody asks to come back, you don't pay");
     expect(s.trialCompletedOn).toBe(last);
     expect(closeIfDue(s, `${addDays(last, 9)}T09:00:00`)).toBeUndefined();
   });

@@ -20,7 +20,7 @@ export function OpsBilling() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHead title="Billing" sub="Plans, next charges and the guarantee: any month nobody asks for a price or a date is free." />
+      <PageHead title="Billing" sub="Plans, next charges and the guarantee: any month nobody asks to come back is free." />
 
       <Kpis>
         <Kpi label="MRR" value={fmtMoney(mrr(rows))} tone="ok" sub={`${paying.length} paying`} />

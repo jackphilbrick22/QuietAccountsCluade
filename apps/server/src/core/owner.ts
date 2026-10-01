@@ -1,4 +1,4 @@
-import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
@@ -380,7 +380,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       r = ownerApproves(state, nowLocal(d, state));
     });
     const when = r.firstDay ? fmtDay(r.firstDay) : "your next send day";
-    return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone wants a price or a date, you'll get a text with their name and number.`, handled: "approved_first_note" };
+    return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone ${wantedWords(b.profile.plan).present}, you'll get a text with their name and number.`, handled: "approved_first_note" };
   }
 
   // While a first note waits for the OK (one business's or two's), only exact commands act; anything else ("Hold on,
@@ -422,7 +422,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       const s = d.accounts.peek(b.id)!.state;
       const wants = s.replies.filter((r) => r.intent === "wants_it" || r.intent === "wants_price").length;
       const booked = counted(s.recoveries).reduce((a, r) => a + r.value, 0);
-      return `${tag(b)}So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} asked for a price or a date, $${Math.round(booked).toLocaleString("en-US")} booked.`;
+      return `${tag(b)}So far: ${s.touches.filter((x) => x.status === "sent").length} notes out, ${wants} ${wantedWords(b.profile.plan).past}, $${Math.round(booked).toLocaleString("en-US")} booked.`;
     });
     return { businessId: fallback().id, reply: lines.join("\n"), handled: "status" };
   }

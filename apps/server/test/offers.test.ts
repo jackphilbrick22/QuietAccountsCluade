@@ -264,13 +264,16 @@ describe("the yearly plan, off (the default)", () => {
     expect((await y.api("GET", "/api/businesses/trial/close-preview")).json.text).toMatch(/Or pay for the year/);
   });
 
-  it("the close promises to follow every new quote only where new-request answering is sold", async () => {
+  it("the close never promises to follow every new quote, whatever is sold: it works everyone who drops off each month", async () => {
     const preview = async (h: Harness) => {
       await h.business("trial");
       return (await h.api("GET", "/api/businesses/trial/close-preview")).json.text as string;
     };
-    expect(await preview(make())).not.toMatch(/new quote/);
-    expect(await preview(make({ env: { FEATURE_NEW_REQUESTS: "on" } }))).toMatch(/keeps it going on the rest of the list and every new quote you write\./);
+    for (const h of [make(), make({ env: { FEATURE_NEW_REQUESTS: "on" } })]) {
+      const text = await preview(h);
+      expect(text).not.toMatch(/new quote/);
+      expect(text).toMatch(/keeps it going on the rest of the list and everyone who drops off each month\./);
+    }
   });
 
   it("Settings can't set up a yearly plan", async () => {

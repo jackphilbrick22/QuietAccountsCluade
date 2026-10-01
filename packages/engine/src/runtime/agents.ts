@@ -7,7 +7,7 @@ import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
-import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
@@ -450,6 +450,26 @@ export function clearBrake(state: AccountState, now: ISODateTime, by: string): v
   state.updatedAt = now;
 }
 
+/**
+ * The send brake: sending pauses when a rate goes over its limit, once enough notes have gone out to judge it. Small
+ * senders get no spam-rate data from Gmail, so these trip well before the providers' limits.
+ */
+export const SEND_BRAKES = {
+  bounces: { rate: 0.03, after: 40 },
+  complaints: { rate: 0.001, after: 300 },
+  /** "Who is this?" replies and complaints together: people who don't recognize the business. */
+  unrecognized: { rate: 0.01, after: 100 },
+} as const;
+
+/** "3%", "0.1%": a brake's rate as the console and the reasons say it. */
+const brakePct = (rate: number) => `${round2(rate * 100)}%`;
+
+/** The brakes in one line, for the console. */
+export function brakesLine(): string {
+  const { bounces, complaints, unrecognized } = SEND_BRAKES;
+  return `Pauses on its own at ${brakePct(bounces.rate)} bounces after ${bounces.after} sends, ${brakePct(complaints.rate)} complaints after ${complaints.after}, or ${brakePct(unrecognized.rate)} “who is this?” replies after ${unrecognized.after}.`;
+}
+
 export function sendHealth(state: AccountState): { sent: number; bounces: number; complaints: number; stops: number; bounceRate: number; complaintRate: number; paused: boolean; reason?: string } {
   const all = healthCounts(state);
   const base = state.dataset.business.healthBaseline;
@@ -462,10 +482,10 @@ export function sendHealth(state: AccountState): { sent: number; bounces: number
   const bounceRate = sent ? bounces / sent : 0;
   const complaintRate = sent ? complaints / sent : 0;
   let reason: string | undefined;
-  // Small senders get no spam-rate data from Gmail, so the brakes here trip well before the providers' limits.
-  if (sent >= 40 && bounceRate > 0.03) reason = `Bounce rate ${(bounceRate * 100).toFixed(1)}% is over 3% — paused to protect the sending reputation. The list needs cleaning.`;
-  else if (sent >= 300 && complaintRate > 0.001) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused at 0.1%, well before Gmail's 0.3% limit.`;
-  else if (sent >= 100 && (complaints + confused) / sent > 0.01) reason = `${complaints + confused} people didn't recognize the business or complained — paused. Check the sender name and that these people really asked for a price.`;
+  const brake = SEND_BRAKES;
+  if (sent >= brake.bounces.after && bounceRate > brake.bounces.rate) reason = `Bounce rate ${(bounceRate * 100).toFixed(1)}% is over ${brakePct(brake.bounces.rate)} — paused to protect the sending reputation. The list needs cleaning.`;
+  else if (sent >= brake.complaints.after && complaintRate > brake.complaints.rate) reason = `Spam complaints hit ${(complaintRate * 100).toFixed(2)}% — paused at ${brakePct(brake.complaints.rate)}, well before Gmail's 0.3% limit.`;
+  else if (sent >= brake.unrecognized.after && (complaints + confused) / sent > brake.unrecognized.rate) reason = `${complaints + confused} people didn't recognize the business or complained — paused. Check the sender name and that these people really asked for a price.`;
   return { sent, bounces, complaints, stops, bounceRate, complaintRate, paused: !!reason, reason };
 }
 
@@ -855,7 +875,7 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
       // end): that year's charges were frozen into priorFees at the switch.
       if (b.plan.paidOn && g.chargeOn <= b.plan.paidOn && paidYearOn(b, g.periodStart)) b.plan.priorFees = round2((b.plan.priorFees ?? 0) - annualRefund(b));
     }
-    event(state, now, "guard", "action", "Guarantee: this month is free", "Nobody asked for a price or a date this period, so you won't be charged.");
+    event(state, now, "guard", "action", "Guarantee: this month is free", `Nobody ${wantedWords(b.plan).past} this period, so you won't be charged.`);
   }
   return ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
 }

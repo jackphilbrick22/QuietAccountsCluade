@@ -115,7 +115,33 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     texts it; two older toasts still say "Texted to the owner".
   - Server 361.
 
+- **A6. Small ones.**
+  - Guarantee words follow the plan's kind through one engine helper: "asked to come back" (monthly, and a plan with
+    no kind), "wanted the work" (one pass). The rule underneath is unchanged. No owner text, console screen or the
+    site's Friday example says "price or a date"; the Friday line reads "Asked to come back: 3"; the monthly close
+    promises "everyone who drops off each month".
+  - The welcome text on lawn, landscape and cleaning opens with the past customers who haven't been back; tree,
+    painting and fence keep the quiet quotes. The monthly welcome ends "The first 150 are free, then $497 a month if
+    you say yes."
+  - "put me back on", "same day as before" (as a request, or as the reply's last words) and "can you come back"
+    read as wanting it back; things put back, complaints and an old day told rather than asked for don't.
+  - New accounts send Monday to Friday, 7-10 a.m.; existing accounts keep their days.
+  - Settings edits trade and time zone (an unknown zone is refused). Sign-up guesses the time zone from the cell's
+    area code (US and Canada) and the alert asks Jack to check it.
+  - The console shows the engine's real brakes: 3% bounces after 40 sends, 0.1% complaints after 300, 1% "who is
+    this?" replies after 100 (they were wrong in four screens).
+  - A server sending for real won't start with sign-ups on and no SIGNUP_ORIGINS.
+  - Notes no longer say "that's on us for not following up", "I'll get you an updated price this week", "We've got
+    openings coming up" or "Always glad to help a past customer"; a past customer's subject is the job, not the
+    street; the linter flags those promises.
+  - Brief notes: "same day as before" matched bare caught complaints and "Same day as before. We're good for now",
+    which would have charged that month, so it needs a request around it; the operator console's "want a price or
+    date" (no "a") was missed by the brief's grep and is reworded too.
+  - Engine 1,469, server 374.
+
 **Live steps for Jack**
+- (A6) Set SIGNUP_ORIGINS to the site's address (for example https://quietaccounts.com) in production, or the
+  server won't start with sign-ups on. Check each new sign-up's guessed time zone in Settings before planning.
 - (A5) Leave SMS_PROVIDER unset (or manual) in production until Twilio clears carrier registration. Work "Texts to
   send" in the console and paste each owner reply on their client's Overview. When Twilio clears, set
   SMS_PROVIDER=twilio with TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM.

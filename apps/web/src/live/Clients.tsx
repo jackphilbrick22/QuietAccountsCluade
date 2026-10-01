@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { fmtMoney, playbook, TRADE_OPTIONS, type TradeId } from "@qa/engine";
+import { fmtMoney, playbook, SEND_BRAKES, TIMEZONES, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, pct, SearchBox, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -120,7 +120,7 @@ export function LiveClients() {
                   {fmtMoney(o.recoveredValue ?? 0)}
                 </Td>
                 <Td right>{o.waitingOnOwner?.length ? <span className="font-semibold text-bad">{o.waitingOnOwner.length}</span> : <span className="text-ink-3">0</span>}</Td>
-                <Td right>{h?.sent ? <Pill tone={h.bounceRate > 0.04 ? "bad" : h.bounceRate > 0.02 ? "warn" : "ok"}>{pct(h.bounceRate)}</Pill> : <span className="text-ink-3">—</span>}</Td>
+                <Td right>{h?.sent ? <Pill tone={h.bounceRate > SEND_BRAKES.bounces.rate ? "bad" : h.bounceRate > 0.02 ? "warn" : "ok"}>{pct(h.bounceRate)}</Pill> : <span className="text-ink-3">—</span>}</Td>
                 <Td className="whitespace-nowrap text-ink-2">{o.events?.[0]?.at ? ago(o.events[0].at) : "—"}</Td>
               </Tr>
             );
@@ -133,16 +133,6 @@ export function LiveClients() {
 }
 
 /* ------------------------------ add a client ------------------------------ */
-
-const TIMEZONES = [
-  ["America/New_York", "Eastern"],
-  ["America/Chicago", "Central"],
-  ["America/Denver", "Mountain"],
-  ["America/Phoenix", "Arizona"],
-  ["America/Los_Angeles", "Pacific"],
-  ["America/Anchorage", "Alaska"],
-  ["Pacific/Honolulu", "Hawaii"],
-] as const;
 
 export function NewClient() {
   const go = useApp((s) => s.go);

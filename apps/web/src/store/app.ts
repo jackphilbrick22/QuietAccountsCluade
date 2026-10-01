@@ -379,7 +379,7 @@ export function defaultBusiness(trade: TradeId): BusinessProfile {
     signerName: "",
     signerRole: "office",
     timezone: typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "America/New_York",
-    sendDays: [2, 3, 4],
+    sendDays: [1, 2, 3, 4, 5],
     sendWindow: [7, 10],
     blackoutWeeks: [],
     minQuoteValue: 300,

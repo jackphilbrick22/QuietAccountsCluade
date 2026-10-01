@@ -18,7 +18,7 @@ export interface RenderContext {
   ds: Dataset;
   /** The day this note goes out (drives "a crew nearby next week" and season lines). */
   sendOn: ISODate;
-  /** We've written to this person before — so never say "that's on us for not following up". */
+  /** We've written to this person before, so their first note opens another way. */
   contactedBefore?: boolean;
   /**
    * The subject note 1 actually went out with. Every later note is "Re: " + exactly this, so it threads

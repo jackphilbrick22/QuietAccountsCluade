@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { addMonths, AGENTS, annualPrice, fmtMoney, playbook, plural, type AgentId, type BusinessProfile, type Reply, type Touch } from "@qa/engine";
+import { addMonths, AGENTS, annualPrice, fmtMoney, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -579,6 +579,24 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               <option value="owner">Owner</option>
             </select>
           </Field>
+          <Field id="ls-trade" label="Trade" hint="Its words, seasons and which people get notes. Saving a new one reads their list again.">
+            <select id="ls-trade" className={cx(selectCls, "w-full")} value={d.trade} onChange={(e) => set("trade", e.target.value as TradeId)}>
+              {[...(TRADE_OPTIONS.some((t) => t.id === d.trade) ? [] : [{ id: d.trade, label: playbook(d.trade).label }]), ...TRADE_OPTIONS].map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field id="ls-tz" label="Time zone" hint="Notes go out in their morning. A sign-up's is a guess from the cell's area code.">
+            <select id="ls-tz" className={cx(selectCls, "w-full")} value={d.timezone} onChange={(e) => set("timezone", e.target.value)}>
+              {[...(TIMEZONES.some(([z]) => z === d.timezone) ? [] : [[d.timezone, d.timezone] as const]), ...TIMEZONES].map(([z, label]) => (
+                <option key={z} value={z}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </Field>
         </div>
       </Group>
 
@@ -699,7 +717,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
 
 function diff(a: BusinessProfile, b: BusinessProfile): Patch {
   const out: Record<string, unknown> = {};
-  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "fromName", "fromEmails", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
+  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "trade", "timezone", "fromName", "fromEmails", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
   for (const k of keys) {
     let v: unknown = b[k];
     if (JSON.stringify(v) === JSON.stringify(a[k])) continue;

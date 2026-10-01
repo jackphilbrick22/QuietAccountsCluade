@@ -13,8 +13,10 @@ const SPAMMY = [
 const CANNED = [
   /\bi hope (this|my) (email|note|message)? ?finds you well\b/i, /\bvalued (customer|client)\b/i, /\btouch(ing)? base\b/i, /\bcircle back\b/i,
   /\bdon'?t hesitate to\b/i, /\bat your earliest convenience\b/i, /\bper my last\b/i, /\bwe appreciate your business\b/i,
-  /\bas an ai\b/i, /\bi'?m reaching out\b/i, /\bjust checking in to see\b/i, /\bexciting (news|offer)\b/i,
+  /\bas an ai\b/i, /\bi'?m reaching out\b/i, /\bjust checking in to see\b/i, /\bexciting (news|offer)\b/i, /\balways glad to help\b/i,
 ];
+/** Promises the owner never made: a price by a day, open slots, or that nobody followed up (his software may have). */
+const UNBACKED = [/\bon us for not following up\b/i, /\b(?:price|quote) this week\b/i, /\bopenings coming up\b/i];
 const ACRONYMS = new Set(["HOA", "LLC", "USA", "ASAP", "AC", "HVAC", "PM", "AM", "OK", "NH", "TX", "FL", "CA", "NY", "EAB", "PHC", "DIY"]);
 
 export function wordCount(s: string): number {
@@ -40,6 +42,7 @@ export function lint(subject: string, body: string, ctx: { firstName: string; jo
   if (!/Reply "stop"/.test(body)) flags.push("Missing the stop line (required)");
   if (!/·/.test(body)) flags.push("Missing the business address (required)");
   for (const re of CANNED) if (re.test(main) || re.test(subject)) flags.push(`Sounds canned: "${(main.match(re) ?? subject.match(re))?.[0]}"`);
+  for (const re of UNBACKED) if (re.test(main)) flags.push(`Promises what nobody backs: "${main.match(re)?.[0]}"`);
   const banned = bannedStatIn(main + " " + subject);
   if (banned) flags.push(`Repeats an unsourced stat ("${banned}")`);
   else if (/\d\s?%/.test(main)) flags.push("Has a percentage — notes to homeowners never quote stats");

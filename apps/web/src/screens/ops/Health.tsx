@@ -1,14 +1,15 @@
 import { useMemo } from "react";
+import { brakesLine, SEND_BRAKES } from "@qa/engine";
 import { useApp } from "../../store/app";
 import { clientRows } from "../../lib/ops";
 import { Pill } from "../../components/ui";
 import { Box, EmptyRow, PageHead, pct, Table, Td, Th, Tr } from "../../components/table";
 
-/** Guard's automatic pause thresholds (mirrors sendHealth in the engine). */
-const BOUNCE_PAUSE = 0.04;
+/** Guard's automatic pause thresholds (the engine's own), and where a rate is worth a look before them. */
+const BOUNCE_PAUSE = SEND_BRAKES.bounces.rate;
 const BOUNCE_WARN = 0.02;
-const COMPLAINT_PAUSE = 0.003;
-const COMPLAINT_WARN = 0.001;
+const COMPLAINT_PAUSE = SEND_BRAKES.complaints.rate;
+const COMPLAINT_WARN = 0;
 
 function tone(rate: number, warn: number, bad: number): "ok" | "warn" | "bad" {
   return rate > bad ? "bad" : rate > warn ? "warn" : "ok";
@@ -24,16 +25,9 @@ export function OpsHealth() {
 
   return (
     <div className="flex flex-col gap-5">
-      <PageHead title="Sending health" sub="Bounces and spam complaints per client. The Guard pauses a client automatically when either crosses its limit." />
+      <PageHead title="Sending health" sub="Bounces and spam complaints per client. The Guard pauses a client automatically when one crosses its limit." />
 
-      <Box className="flex flex-wrap gap-x-6 gap-y-2 px-4 py-3 text-[13px] text-ink-2">
-        <span>
-          <b className="text-ink">Bounce rate:</b> <Pill tone="ok">under 2%</Pill> <Pill tone="warn">2–4%</Pill> <Pill tone="bad">over 4%: pause</Pill> <span className="text-ink-3">(after 50 sends)</span>
-        </span>
-        <span>
-          <b className="text-ink">Complaint rate:</b> <Pill tone="ok">under 0.1%</Pill> <Pill tone="warn">0.1–0.3%</Pill> <Pill tone="bad">over 0.3%: pause</Pill> <span className="text-ink-3">(after 100 sends)</span>
-        </span>
-      </Box>
+      <Box className="px-4 py-3 text-[13px] text-ink-2">{brakesLine()}</Box>
 
       <Table minWidth={900} label="Sending health">
         <thead>

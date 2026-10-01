@@ -947,7 +947,8 @@ describe("marketing copy checker", () => {
     expect(lintMarketing("Up to 40% more jobs")).not.toEqual([]);
     expect(lintMarketing("80% of sales need 5 follow-ups")).not.toEqual([]);
     expect(lintMarketing("Only 3 spots left")).not.toEqual([]);
-    expect(lintMarketing("If nobody asks for a price or a date this month, you don't pay for it.")).toEqual([]);
+    expect(lintMarketing("Any month nobody asks to come back, you don't pay.")).toEqual([]);
+    expect(lintMarketing("You pay $250 for each job that books, never more than $1,000. Nothing books, you owe nothing.")).toEqual([]);
   });
 });
 

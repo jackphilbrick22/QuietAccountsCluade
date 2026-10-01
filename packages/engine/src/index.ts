@@ -20,3 +20,4 @@ export * from "./sim/simulate.ts";
 export { generateSample, type Sample, type SampleFile, type SampleOptions } from "./sample/generate.ts";
 export { CLAIMS, BANNED_STATS, bannedStatIn, claim, lintMarketing, type Claim } from "./claims.ts";
 export * from "./lookup.ts";
+export * from "./timezones.ts";

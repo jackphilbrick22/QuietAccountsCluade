@@ -40,9 +40,9 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "q1a",
       angle: "check_in",
       subject: "{job}",
-      // "that's on us for not following up" is only true if nobody ever did
+      // someone we've written to before gets another opener
       needs: ["neverFollowed"],
-      body: "Hi {first},\n\nIt's {signer} at {company}. You got a price from us {when} for {job}{priceClause}.\n\nWe never heard back, and that's on us for not following up. Is it still something you want done?\n\n{freshLook}\n\nIf you went another way, that's fine. Just reply \"pass\" and I'll close it out.\n\n{signer}",
+      body: "Hi {first},\n\nIt's {signer} at {company}. You got a price from us {when} for {job}{priceClause}.\n\nWe never heard back. Is it still something you want done?\n\n{freshLook}\n\nIf you went another way, that's fine. Just reply \"pass\" and I'll close it out.\n\n{signer}",
     },
     {
       id: "q1b",
@@ -168,7 +168,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "c1",
       angle: "check_in",
       subject: "your revised quote for {job}",
-      body: "Hi {first},\n\nIt's {signer} at {company}. You asked us for some changes on the quote for {job} {when}, and I don't think we ever got you the revised version. That's on us.\n\nDo you still want it? Tell me what you'd like changed and I'll get you an updated price this week.\n\n{signer}",
+      body: "Hi {first},\n\nIt's {signer} at {company}. You asked us for some changes on the quote for {job} {when}, and I don't think we ever got you the revised version. That's on us.\n\nDo you still want it? Tell me what you'd like changed.\n\n{signer}",
     },
   ],
   "changes.revise": [
@@ -210,7 +210,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       angle: "schedule",
       subject: "Re: getting {job} on the schedule",
       needs: ["nearTerm"],
-      body: "{first}, checking back on {job}. We've got openings coming up. Want one of them?\n\n{signer}",
+      body: "{first}, checking back on {job}. Want me to get it on the schedule?\n\n{signer}",
     },
     {
       id: "a2h",
@@ -307,7 +307,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
     {
       id: "p1",
       angle: "check_in",
-      subject: "{streetName}",
+      subject: "{job}",
       needs: ["streetName"],
       body: "Hi {first},\n\nIt's {signer} at {company}. We took care of {job} for you {when} on {streetName}. It's been about {years}.\n\nIs there anything around the place you've been meaning to get to? Happy to swing by and take a look.{freeLook}\n\n{signer}",
     },
@@ -315,14 +315,14 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "p1b",
       angle: "check_in",
       subject: "checking in from {company}",
-      body: "Hi {first},\n\nIt's {signer} at {company}. We took care of {job} for you {when}.\n\nIf there's anything on your list this season, reply and we'll get you a price. Always glad to help a past customer.\n\n{signer}",
+      body: "Hi {first},\n\nIt's {signer} at {company}. We took care of {job} for you {when}.\n\nIf there's anything on your list this season, reply and we'll get you a price.\n\n{signer}",
     },
   ],
   "past.timing": [
     {
       id: "p2",
       angle: "timing",
-      subject: "Re: {streetName}",
+      subject: "Re: {job}",
       needs: ["timingLine", "streetName"],
       body: "{first}, {timingLine}\n\nIf there's anything you'd like looked at, reply and we'll come by while we're in the area.\n\n{signer}",
     },
@@ -339,7 +339,7 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
     {
       id: "p3",
       angle: "close_file",
-      subject: "Re: {streetName}",
+      subject: "Re: {job}",
       needs: ["streetName"],
       body: "Last one from me, {first}. If everything's in good shape, no reply needed. If not, reply and we'll get you a date.\n\n{signer}",
     },

@@ -99,12 +99,13 @@ describe("the close after the free round", () => {
     expect(text).toContain("put 7 jobs back on your calendar, $7,000: Person 1, Person 2, Person 3, Person 4 +3 more.");
     expect(closeMessage(round(12, 2, 3))).toContain(": Person 1, Person 2 and Person 3.");
   });
-  it("promises to follow every new quote only where new-request answering is sold", () => {
-    const text = closeMessage(round(5, 3, 1));
-    expect(text).toContain("more quiet quotes and past customers behind them.");
-    expect(text).toContain("$497 a month keeps it going on the rest of the list. Cancel by text, any time.");
-    expect(text).not.toMatch(/new quote/);
-    expect(closeMessage(round(5, 3, 1), NEW_REQUESTS)).toContain("keeps it going on the rest of the list and every new quote you write.");
+  it("keeps going on the rest of the list and everyone who drops off each month, never on every new quote", () => {
+    for (const f of [{}, NEW_REQUESTS]) {
+      const text = closeMessage(round(5, 3, 1), f);
+      expect(text).toContain("more quiet quotes and past customers behind them.");
+      expect(text).toContain("$497 a month keeps it going on the rest of the list and everyone who drops off each month. Cancel by text, any time.");
+      expect(text).not.toMatch(/new quote/);
+    }
   });
 });
 
@@ -136,7 +137,7 @@ describe("who's still to work, in the close and the Friday text", () => {
     for (const f of [{}, NEW_REQUESTS]) {
       const close = closeMessage(st, f);
       expect(close).toContain(`There are ${n} more past customers behind them.`);
-      expect(close).toContain("$497 a month keeps it going on the rest of the list. Cancel by text, any time.");
+      expect(close).toContain("$497 a month keeps it going on the rest of the list and everyone who drops off each month. Cancel by text, any time.");
       expect(close).not.toMatch(/quotes?\b/);
     }
     expect(weeklyReport(st, START)).toContain(`${n} people still to work.`);

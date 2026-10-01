@@ -41,7 +41,7 @@ async function planned(h: Harness, bid = "ridge"): Promise<void> {
 }
 
 describe("SMS_PROVIDER=manual (A5)", () => {
-  const prod = { OPERATOR_TOKEN: TOKEN, APP_SECRET: SECRET, WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test" };
+  const prod = { OPERATOR_TOKEN: TOKEN, APP_SECRET: SECRET, WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", SIGNUP_ORIGINS: "https://site.qa.test" };
   const twilio = { SMS_PROVIDER: "twilio", TWILIO_ACCOUNT_SID: "AC123", TWILIO_AUTH_TOKEN: "tok", TWILIO_FROM: "+16035550100" };
 
   it("is the production default until Twilio clears; dev keeps the log, and a set provider is kept", () => {

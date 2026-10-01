@@ -202,7 +202,7 @@ export function lintMarketing(text: string): string[] {
   const banned = bannedStatIn(t);
   if (banned) out.push(`Repeats an unsourced stat: ${banned}`);
   if (/\bguarantee[ds]?\b[^.]{0,40}\b\d{1,3}\s?%/i.test(t) || /\b\d{1,3}\s?%[^.]{0,40}\bguarantee[ds]?\b/i.test(t)) out.push("Guarantees a percentage — the guarantee is about replies, never a lift figure");
-  if (/\brisk[- ]free\b/i.test(t)) out.push('"Risk-free" — say exactly what happens instead (the month is free if nobody asks for a price or a date)');
+  if (/\brisk[- ]free\b/i.test(t)) out.push('"Risk-free" — say exactly what happens instead ("Any month nobody asks to come back is free.")');
   if (/\bmoney[- ]back\b/i.test(t)) out.push('"Money-back" means a full refund on request under the FTC Guarantee Guides — we don\'t offer that; describe the free month instead');
   if (/\bup to \d{1,3}\s?%/i.test(t) && !/\b(typical|median|most (shops|owners))\b/i.test(t)) out.push('"Up to N%" without the typical result beside it');
   if (/\b(only|just) \d+ (spots|slots|openings) (left|remaining)\b|\b(expires|ends) (tonight|today|soon)\b/i.test(t)) out.push("Scarcity or deadline language — only with a real, enforced limit");

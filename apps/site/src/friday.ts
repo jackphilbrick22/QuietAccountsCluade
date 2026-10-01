@@ -11,7 +11,7 @@ export function fridayExample(owner: string, won: string): string[] {
     "Notes out: 61 (to 38 people)",
     "Always on: answered 4 new requests, followed up 9 new quotes",
     "Wrote back: 7",
-    "Want a price or a date: 3",
+    "Asked to come back: 3",
     `Booked: 2 · ${won}`,
     "Your average time to call them back: 3h",
   ];

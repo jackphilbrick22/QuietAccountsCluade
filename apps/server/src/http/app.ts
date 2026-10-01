@@ -38,9 +38,12 @@ import {
   annualRefund,
   grossFees,
   round2,
+  isTimeZone,
+  TIMEZONES,
+  zoneForCell,
 } from "@qa/engine";
 import { z } from "zod";
-import { features } from "../config.ts";
+import { features, signupOrigins } from "../config.ts";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
 import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
@@ -87,6 +90,9 @@ export interface HttpDeps extends Deps {
 
 type Env = { Variables: { bid?: string; actor: string } };
 
+/** One the runtime knows: an unknown zone would stop the account's clock. */
+const TimeZone = z.string().refine(isTimeZone, "Not a time zone. Use one like America/Chicago.");
+
 const TRADES = ["tree", "lawn", "landscape", "septic", "fence", "concrete", "pressure_washing", "gutter", "window_cleaning", "pool", "pest", "hvac", "junk_removal", "painting", "roofing", "irrigation", "chimney", "cleaning", "holiday_lighting", "deck", "general"] as const satisfies readonly TradeId[];
 // a trade the engine knows but this list leaves out fails the typecheck here
 const _everyTrade: Record<Exclude<TradeId, (typeof TRADES)[number]>, never> = {};
@@ -113,7 +119,7 @@ const CreateBusiness = z.object({
   mailingAddress: z.string().min(8),
   city: z.string().optional(),
   state: z.string().length(2).optional(),
-  timezone: z.string().default("America/New_York"),
+  timezone: TimeZone.default("America/New_York"),
   replyTo: z.string().email().optional(),
   /** This client's own sending inboxes and the name on them. Left out: no inbox (direct mail: the server's sender), "<signer> at <business>". */
   fromEmails: Inboxes.optional(),
@@ -127,7 +133,7 @@ const CreateBusiness = z.object({
 const ProfilePatch = CreateBusiness.partial().extend({
   trade: z.enum(TRADES).optional(),
   signerRole: z.enum(["owner", "office"]).optional(),
-  timezone: z.string().optional(),
+  timezone: TimeZone.optional(),
   // none would leave its campaigns in Instantly unable to take any change
   sendDays: z.array(z.number().int().min(0).max(6)).min(1).optional(),
   sendWindow: z.tuple([z.number().int().min(0).max(23), z.number().int().min(1).max(24)]).optional(),
@@ -179,7 +185,8 @@ function defaultProfile(input: z.infer<typeof CreateBusiness>, id: string, today
     timezone: input.timezone,
     avgJobValue: input.avgJobValue,
     annualRevenue: input.annualRevenue,
-    sendDays: [2, 3, 4],
+    // weekday mornings, Monday to Friday
+    sendDays: [1, 2, 3, 4, 5],
     sendWindow: [7, 10],
     blackoutWeeks: [],
     minQuoteValue: 300,
@@ -335,9 +342,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const taken = next && holdsInboxes(next) && (patch.fromEmails || !holdsInboxes(now)) ? inboxTaken(d, id, next.fromEmails ?? []) : undefined;
     if (taken) return inboxClash(c, taken);
     let stageBefore: string | undefined;
+    let tradeBefore: string | undefined;
     await d.accounts.withAccount(id, (state) => {
       const b = state.dataset.business;
       stageBefore = b.plan.stage;
+      tradeBefore = b.trade;
       const { voice, persistence, plan: planPatch, ...rest } = patch;
       // an inbox taken off still gets the replies to the notes it sent: they're never read as cold email
       const gone = rest.fromEmails ? (b.fromEmails ?? []).filter((x) => !rest.fromEmails!.includes(x)) : [];
@@ -392,6 +401,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
       else if (stage === "cancelled") await holdSending(d, id, "cancel");
       else if (stageBefore === "paused" || stageBefore === "cancelled") await holdSending(d, id, "resume");
     }
+    // another trade reads the same records with its own services and leaks: the list follows it now, not tonight
+    if (patch.trade && patch.trade !== tradeBefore && d.accounts.peek(id)?.state.scan) await rescan(d, id);
     repo.audit(id, "operator", "business.update", patch);
     return c.json({ ok: true, warnings: patch.ownerPhone ? sharedCell(id, patch.ownerPhone) : [] });
   });
@@ -949,7 +960,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   // consent. We make the account, read the file and put it in the operator's queue with their list ready.
   // Nothing goes to anyone from here: the operator adds the mailing address, looks at the first note and plans,
   // and only then does the owner get a text (the first note, word for word, waiting for their OK).
-  const origins = d.cfg.SIGNUP_ORIGINS.split(",").map((x) => x.trim()).filter(Boolean);
+  const origins = signupOrigins(d.cfg);
   app.use("/start", cors({ origin: origins.length ? origins : "*", allowMethods: ["POST", "OPTIONS"], allowHeaders: ["content-type"], maxAge: 86400 }));
   // Five tries an hour per caller, and a ceiling on new sign-ups for the whole server: enough for a typo, not a script.
   const HOUR = 3_600_000;
@@ -1033,11 +1044,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // CANCEL) would stop naming one business, and our "which one?" would carry whatever this form called itself.
     const others = again ? [] : businesses.filter((b) => ten(b.profile.ownerPhone) === ten(cell));
     let id = again?.id;
+    // a new account's time zone is a guess from the cell's area code, so the alert asks the operator to check it
+    let zoneCheck = "";
     if (!id) {
       id = `${f.company.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32) || "shop"}-${randomBytes(3).toString("hex")}`;
-      const today = localIso(d.clock(), "America/New_York").slice(0, 10);
+      const guessed = zoneForCell(cell);
+      const zone = guessed ?? "America/New_York";
+      zoneCheck = `check the time zone (${TIMEZONES.find(([z]) => z === zone)?.[1]}, ${guessed ? `guessed from the ${cell.slice(2, 5)} area code` : "as we don't know that area code"}), `;
+      const today = localIso(d.clock(), zone).slice(0, 10);
       const signer = f.signer?.trim() || f.first;
-      const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: others.length ? undefined : cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: "America/New_York" }, id, today);
+      const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: others.length ? undefined : cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: zone }, id, today);
       profile.software = software;
       profile.signup = others.length ? { from: "site", sharedCell: cell } : { from: "site" };
       await d.accounts.create(profile, today);
@@ -1060,7 +1076,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const shared = others.length
       ? ` Careful: ${cell} is already the owner cell for ${others.map((b) => b.profile.name).join(" and ")}, so it isn't set on this account. Texts from that cell still go to ${others.length === 1 ? "that client" : "those clients"} only, and nothing here is texted. If it really is the same owner, set the cell in this client's Settings; if not, delete this sign-up.`
       : "";
-    const next = mayRead ? ` Next: ${others.length ? "check who this is, " : ""}add their mailing address, read the first note, then Plan — they get the first note by text and it waits for their OK.` : "";
+    const next = mayRead ? ` Next: ${others.length ? "check who this is, " : ""}${zoneCheck}add their mailing address, read the first note, then Plan — they get the first note by text and it waits for their OK.` : "";
     await raiseAlert(d, id, {
       kind: "signup",
       title: again ? `${f.company} came back through the site${f.files?.length ? " with a file" : ""}` : `New sign-up: ${f.company}`,

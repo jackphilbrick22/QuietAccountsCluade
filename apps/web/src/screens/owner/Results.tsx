@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { fmtMoney, plural, type OwnerMessage } from "@qa/engine";
+import { fmtMoney, plural, wantedWords, type OwnerMessage } from "@qa/engine";
 import { useAccount } from "../../store/app";
 import { derive } from "../../lib/derive";
 import { MATCH_LABEL } from "../../lib/labels";
@@ -185,7 +185,7 @@ export function Results() {
                   <Pill tone="warn">Free: nobody asked</Pill>
                 </li>
               ))}
-              {b.plan.paidOn && !b.plan.freeMonths.length && <li className="px-3.5 py-2 text-ink-3">No free months so far. Every month has had someone ask for a price or a date.</li>}
+              {b.plan.paidOn && !b.plan.freeMonths.length && <li className="px-3.5 py-2 text-ink-3">No free months so far. Every month, someone has {wantedWords(b.plan).past}.</li>}
             </ul>
           </Box>
         </Section>

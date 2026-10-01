@@ -1,4 +1,4 @@
-import type { BusinessProfile, Features, ISODate, Money, Opportunity, Recovery, Reply } from "../model.ts";
+import type { BusinessProfile, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
@@ -9,6 +9,16 @@ import { answerTime, promiseTonight } from "../copy/render.ts";
 import { quoteById } from "../lookup.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
+
+/**
+ * Who the guarantee counts, in the owner's words: on the monthly plan someone who asked to come back, on the one pass
+ * someone who wanted the work. Underneath it's WANTS, from replies to our follow-up notes. No kind is monthly.
+ */
+export function wantedWords(plan: Pick<PlanState, "kind">): { label: string; past: string; present: string } {
+  return plan.kind === "one_pass"
+    ? { label: "Wanted the work", past: "wanted the work", present: "wants the work" }
+    : { label: "Asked to come back", past: "asked to come back", present: "asks to come back" };
+}
 
 function tradeMark(b: BusinessProfile): string {
   return (
@@ -155,11 +165,16 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
 export function kickoffText(state: AccountState, firstDay: ISODate, people: number, opts: { awaitOk?: boolean } = { awaitOk: true }): string {
   const b = state.dataset.business;
   const a = state.summary?.audit;
-  // Their own number first: the share of quotes that never got an answer, and what it's worth.
+  const gone = state.summary?.onTheTable.pastCustomersNotBack ?? 0;
+  // Their own number first: the share of quotes that never got an answer, and what it's worth. The monthly trades
+  // work past customers, not quotes, so theirs is the past customers who haven't been back.
+  const monthly = soldMonthly(b.trade);
   const found =
-    a && a.silent.count && a.rate > 0
-      ? `In the last two years, ${Math.round(a.rate * 100)}% of your quotes never got a yes or a no. All told, ${a.silent.count.toLocaleString("en-US")} quotes, ${fmtMoney(a.silent.value, { compact: true })}, are sitting quiet. Nobody said no to that money; nobody asked.`
-      : `We went through everything you sent and found the people worth a note.`;
+    monthly && gone
+      ? `Going through your records, ${gone.toLocaleString("en-US")} past ${gone === 1 ? "customer hasn't" : "customers haven't"} been back.`
+      : !monthly && a && a.silent.count && a.rate > 0
+        ? `In the last two years, ${Math.round(a.rate * 100)}% of your quotes never got a yes or a no. All told, ${a.silent.count.toLocaleString("en-US")} quotes, ${fmtMoney(a.silent.value, { compact: true })}, are sitting quiet. Nobody said no to that money; nobody asked.`
+        : `We went through everything you sent and found the people worth a note.`;
   const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
   const onDay = firsts.filter((t) => t.dueAt.slice(0, 10) === firstDay).length;
@@ -175,14 +190,15 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
       ? `Starting ${day}, the first ${onDay || people} go out, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. You don't have to do anything.`
       : `Reply OK and the first ${onDay || people} go out ${day}, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
     ``,
-    `When someone wants a price or a date, I'll text you their name, number and what they said. Just reply:`,
+    `When someone ${wantedWords(b.plan).present}, I'll text you their name, number and what they said. Just reply:`,
     `BOOKED 2400 (the amount) when you book one`,
     `NO if it's dead`,
     `BUSY until Nov 15 if you're slammed — we'll wait`,
     `PAUSE to stop everything`,
     ``,
     ...callListLines(state),
-    `The first ${b.plan.trialSize} are free.`,
+    // "free" with its price beside it; the one pass's own wording comes with the one pass
+    b.plan.kind === "one_pass" ? `The first ${b.plan.trialSize} are free.` : `The first ${b.plan.trialSize} are free, then ${fmtMoney(b.plan.monthlyPrice)} a month if you say yes.`,
   ].join("\n");
 }
 
@@ -282,7 +298,7 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     w.booked > 0
       ? `${b.ownerFirstName}, ${w.booked} ${w.booked === 1 ? "job" : "jobs"} came back this week — ${fmtMoney(w.bookedValue)}.`
       : w.wants > 0
-        ? `${b.ownerFirstName}, ${w.wants} ${w.wants === 1 ? "person" : "people"} asked for a price or a date this week.`
+        ? `${b.ownerFirstName}, ${w.wants} ${w.wants === 1 ? "person" : "people"} ${wantedWords(b.plan).past} this week.`
         : `${b.ownerFirstName}, here's your week.`;
   const lines = [
     head,
@@ -303,7 +319,7 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
       return `Always on: ${[reqs ? answered : "", fresh ? `followed up ${fresh} new ${fresh === 1 ? "quote" : "quotes"}` : ""].filter(Boolean).join(", ")}`;
     })(),
     `Wrote back: ${w.replied}`,
-    `Want a price or a date: ${w.wants}`,
+    `${wantedWords(b.plan).label}: ${w.wants}`,
     `Booked: ${w.booked}${w.bookedValue ? ` · ${fmtMoney(w.bookedValue)}` : ""}`,
     (() => {
       // the number the whole service drives toward zero
@@ -370,8 +386,7 @@ export function totals(state: AccountState): { booked: number; bookedValue: Mone
 /**
  * The close, sent a week after the free round's last note.
  * Leads with what came back (names), counts second, then the offer and the guarantee. The year is offered only
- * where the server sells it, and new quotes are followed only where it sells new-request answering and the trade's
- * offer works quotes (the monthly trades work past customers only).
+ * where the server sells it.
  */
 export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string } & Features = {}): string {
   const b = state.dataset.business;
@@ -388,14 +403,14 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
     t.booked > 0
       ? `${b.ownerFirstName}, the free ${trial} put ${t.booked} ${t.booked === 1 ? "job" : "jobs"} back on your calendar, ${fmtMoney(t.bookedValue)}: ${someNames(names, t.booked)}.`
       : askers.length
-        ? `${b.ownerFirstName}, from the free ${trial}, ${someNames(askers, askers.length)} asked for a price or a date.`
+        ? `${b.ownerFirstName}, from the free ${trial}, ${someNames(askers, askers.length)} ${wantedWords(b.plan).past}.`
         : `${b.ownerFirstName}, the free ${trial} is done.`;
   const lines = [
     lead,
-    `From ${notes} ${notes === 1 ? "note" : "notes"} to ${t.contacted} ${t.contacted === 1 ? "person" : "people"}, ${t.replied} wrote back and ${t.wants} asked for a price or a date.`,
+    `From ${notes} ${notes === 1 ? "note" : "notes"} to ${t.contacted} ${t.contacted === 1 ? "person" : "people"}, ${t.replied} wrote back and ${t.wants} ${wantedWords(b.plan).past}.`,
     t.remaining ? `There are ${t.remaining.toLocaleString("en-US")} more ${quotes ? "quiet quotes and past customers" : "past customers"} behind them.` : "",
-    `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list${opts.newRequests && quotes ? " and every new quote you write" : ""}. Cancel by text, any time.`,
-    `And the guarantee: any month nobody asks for a price or a date, you don't pay.`,
+    `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list and everyone who drops off each month. Cancel by text, any time.`,
+    `And the guarantee: any month nobody asks to come back, you don't pay.`,
     opts.yearly && offerYear(state, t.bookedValue)
       ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. If the jobs we trace to our notes don't add up to what you paid, we refund the difference. A quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), your price is locked, and nothing renews without your yes.`
       : "",
@@ -435,7 +450,7 @@ export function renewalNotice(state: AccountState, asOf: ISODate): { yearEnds: I
     floor.refund > 0
       ? `So far the jobs we traced (${fmtMoney(floor.traced)}) haven't covered what you paid (${fmtMoney(floor.paid)}). If it ends that way, the difference comes back to you.`
       : `The year has paid for itself: ${fmtMoney(floor.traced)} traced to our notes against ${fmtMoney(floor.paid)} paid.`,
-    `This year: ${asked} ${asked === 1 ? "person" : "people"} asked for a price or a date, ${won.length} booked, ${fmtMoney(value)} traced to our notes.${refunded ? ` ${refunded} quiet ${refunded === 1 ? "month" : "months"} refunded.` : ""}`,
+    `This year: ${asked} ${asked === 1 ? "person" : "people"} ${wantedWords(b.plan).past}, ${won.length} booked, ${fmtMoney(value)} traced to our notes.${refunded ? ` ${refunded} quiet ${refunded === 1 ? "month" : "months"} refunded.` : ""}`,
     `Reply RENEW to keep ${fmtMoney(annualPrice(b))} for another year, MONTHLY to go month to month at ${fmtMoney(b.plan.monthlyPrice)}, or nothing and it simply ends.`,
   ].join("\n\n");
   return { yearEnds, text };
@@ -574,7 +589,7 @@ export interface GuaranteeCheck {
   text: string;
 }
 
-/** Any month where nobody asks for a price or a date is free. */
+/** Any month nobody asks to come back is free. */
 export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeCheck | undefined {
   const b = state.dataset.business;
   if (!b.plan.paidOn) return undefined;
@@ -603,7 +618,7 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const since = `${monthName(periodStart)} ${Number(periodStart.slice(8))}`;
   const annual = !!year || b.plan.billing === "annual";
   const text = free
-    ? `${b.ownerFirstName}, nobody we followed up with asked for a price or a date since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, none asking for a price or a date. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
+    ? `${b.ownerFirstName}, nobody we followed up with ${wantedWords(b.plan).past} since ${since}, so this month is free, like I promised. ${annual ? `${fmtMoney(annualRefund(b), { cents: true })} goes back to your card on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.` : `You won't be charged on ${monthName(chargeOn)} ${Number(chargeOn.slice(8))}.`}\n\nThe record: ${notesInPeriod} ${notesInPeriod === 1 ? "note" : "notes"} out, ${repliesInPeriod} ${repliesInPeriod === 1 ? "reply" : "replies"}, and nobody ${wantedWords(b.plan).past}. Nothing for you to do — it's automatic.\n\nThe notes keep going out, and you'll hear from me the day someone bites.`
     : [
         `${b.ownerFirstName}, here's who came back since ${since}:`,
         ...asked.slice(0, 8).map((r) => {

@@ -383,12 +383,25 @@ export const WANTS_PRICE_PATS: Pat[] = [
   { re: /\bstill (?:\$\s?\d|\d[\d,]{2,}\b)|\$\s?\d[\d,.]*k?\s*(?:still\b|\?)/, label: "same price?", strong: true },
 ];
 
+/** Words a request can open with: "Yes please, ...", "Thanks, and ...". */
+const ASK_LEAD = "(?:(?:yes|yeah|yep|sure|ok|okay|please|pls|plz|thanks|thank you|and|just)[,!.]?\\s+)*";
+/** A past customer's old slot: "same day as before", "the same time as last year". */
+const OLD_SLOT = "(?:the |our |my )?same (?:day|days|time|times|schedule) as (?:before|last (?:year|time|season))\\b";
+
 export const WANTS_IT_PATS: Pat[] = [
   // commitments
   { re: /\bgo ahead\b(?! and (?:send|e-?mail|give|text|shoot|update|requote|re-quote|get me|mail))|\bgo for it\b|\blets (?:do (?:it|this|that)|go|roll|get (?:it|this|that|started|going|it on|er done)|set (?:it|that|something) up|schedule|book|move forward|proceed|make it happen|plan|get (?:you|yall) out)\b/, label: "go ahead", strong: true, neg: true, commit: true },
   { re: /(?:^|[.!?,;]\s*|\b(?:yes|yeah|yep|sure|ok|okay|please|pls|lets|lets just|go ahead and|ready to|want to|wanna|want you to|you can)\s+)do it\b(?! (?:myself|ourselves|ourself|for|at|cheaper|next|in the|this (?:spring|summer|fall|winter)|after))/, label: "do it", strong: true, neg: true, commit: true },
   { re: /\b(?:book|schedule|shedule|scedule) (?:it|me|us|that|this|the (?:work|job|removal|pumping)|a time|something|an appointment|a visit|a day|a date)\b|\bput (?:me|us|it|that) (?:on|in|down)(?: for| on| the)?\b|\bsign (?:me|us) up\b|\bset (?:it|me|us|something|a time|a day|a date|that|this) up\b|\bpencil (?:me|us|it) in\b|\block (?:it|me|us) in\b|\bcount (?:me|us) in\b/, label: "schedule me", strong: true, neg: true, commit: true },
   { re: /\bget (?:me|us|it|this|that) (?:on|in) (?:the|your) (?:schedule|calendar|books?|list)\b|\b(?:move|moving|go|going) forward\b|\bproceed\b/, label: "schedule me", strong: true, neg: true, commit: true },
+  // a past customer asking for their old slot back. "Put me (or us) back on (the schedule)" opening its clause or after
+  // please, can you or you could; "same day as before" after I want, I'd like, keep or can you with no "but" after it,
+  // or bare as the reply's last words. Never "put it back in the shed", "why would you put me back on your list?",
+  // "they keep the same day as before", "I'd like the same day as before but we're moving" or "Same day as before, but
+  // we can't afford it this year".
+  { re: new RegExp(`(?:(?<=(?:^|[.!?,;:\\n])\\s*)${ASK_LEAD}|\\b(?:please|pls|plz|(?<!\\bwhy )(?:can|could|would|will) ${PRONOUN_YOU}(?: please| pls| plz| just)?|${PRONOUN_YOU} (?:can|could)) )put (?:me|us) back (?:(?:on|in) (?:the|your|our) (?:(?:regular|usual|old|weekly|mowing|cleaning) )?(?:schedule|list|route|rotation|calendar|books)\\b|on(?= ?(?:please|pls|plz|thanks|thank you)?(?:[.!?,;:\\n]|$)))`), label: "old slot back", strong: true, neg: true, commit: true },
+  { re: new RegExp(`(?:(?<=(?:^|[.!?,;:\\n])\\s*)${ASK_LEAD}(?:keep(?: (?:me|us) on)?|would (?:like|love|prefer)|want|need)|\\b(?:(?:i|we)(?: still| really| just| do)? (?:want|wanna|need)|(?:id|wed|(?:i|we) would) (?:like|love|prefer)|(?<!\\bwhy )(?:can|could|would|will) (?:${PRONOUN_YOU}|we|i)(?: please| just)?(?: (?:do|come|keep|have|get|go back to|put|book|schedule)(?: (?:me|us|it))?(?: (?:on|in|at|for|down for))?)?)) ${OLD_SLOT}(?![^.!?\\n]*\\b(?:but|though|except|however)\\b)`), label: "old slot back", strong: true, neg: true, commit: true },
+  { re: new RegExp(`(?<=(?:^|[.!?\\n])\\s*)${ASK_LEAD}${OLD_SLOT}(?:,? (?:please|pls|plz|thanks|thank you|works(?: for (?:me|us))?|is fine|would be great))*[.!?]*(?:[\\s,]+(?:thanks|thank you|thx|cheers)[,.!]*(?:\\s+(?!anyway\\b)[a-z]+){0,2}[.!]*)?$`), label: "old slot back", strong: true, neg: true, commit: true },
   { re: /\b(?:approve|approved|accept|accepted|accepting)\b(?! (?:that|your apology))|\bsign(?:ed)? (?:the|your) (?:quote|estimate|contract|proposal)\b|\bsigned it\b|\b(?:send|pay|put down) (?:the |a )?deposit\b/, label: "approved", strong: true, neg: true, commit: true },
   { re: /\b(?:yes|yeah|yep|yup|sure|ok|okay)[,!. ]*(?:please|pls|plz|go ahead|lets do it|do it|definitely|absolutely|of course|for sure)\b|\bplease do\b|\b(?:yes|yeah|yep),? (?:we|i) (?:do|still|would|are|am|need|want)\b/, label: "yes please", strong: true, neg: true, commit: true },
   { re: /\b(?:im|were|we are|i am|we r|all) ready\b|\bready when (?:you|u) are\b|\bwhenever (?:you|u|yall) (?:can|are|have|get)\b|\bsooner the better\b|\bthe sooner the better\b/, label: "ready", strong: true, neg: true, commit: true },

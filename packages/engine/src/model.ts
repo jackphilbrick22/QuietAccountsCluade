@@ -362,6 +362,8 @@ export interface BusinessProfile {
 }
 
 export interface PlanState {
+  /** Which offer: monthly, or one pass paid per booking. No kind is monthly (every plan made before the one pass). */
+  kind?: "monthly" | "one_pass";
   stage: "trial" | "paying" | "paused" | "cancelled";
   /** Free round size (people contacted) before any charge. */
   trialSize: number;
