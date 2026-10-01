@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
-import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
-import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones, makeId, sha256Hex } from "../src/util.ts";
+import { decodeText, emptyDataset, ingestFile, mergePulled } from "../src/ingest/index.ts";
+import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones, makeId } from "../src/util.ts";
 import type { BusinessProfile, Dataset, QuoteStatus } from "../src/model.ts";
 import { scan } from "../src/breakage/detect.ts";
+import { customer, job } from "./fixtures.ts";
 
 const biz: BusinessProfile = {
   id: "b1", name: "Ridgeline Tree Co", trade: "tree", otherTrades: [], software: "unknown", ownerName: "Dave Ridge", ownerFirstName: "Dave",
@@ -101,33 +102,84 @@ describe("util parsing", () => {
 });
 
 describe("record ids", () => {
-  it("are SHA-256 based: the same parts give the same id, always the prefix plus 14 base-36 characters", () => {
-    expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
-    expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
-    // two blocks, and UTF-8 for the accents and curly quotes in Excel names
-    expect(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")).toBe("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
-    expect(sha256Hex("José O’Brien")).toBe("79a6bd6286c32585db73e56f7519c403902ad89baecd167006a920d62b5d78a5");
+  const T = "2026-09-29T12:00:00Z";
+  it("are the ids every stored account already has: the same parts always give the same id", () => {
     // pinned: ids are stored keys, so the scheme must not drift
-    expect(makeId("q", "jobber", "1042")).toBe("q_1gmxx9p1dom3dm");
+    expect(makeId("q", "jobber", "1042")).toBe("q_8awkyo");
+    expect(makeId("j", "jobber", "55")).toBe("j_1wq4a0l");
     expect(makeId("q", "jobber", "1042")).toBe(makeId("q", "jobber", 1042));
-    expect(makeId("c", "")).toMatch(/^c_[0-9a-z]{14}$/);
-    expect(makeId("c", "x".repeat(5000))).toMatch(/^c_[0-9a-z]{14}$/);
     expect(makeId("c", "a", "b")).not.toBe(makeId("c", "b", "a"));
   });
 
-  it("never collide across 200,000 ordinary addresses (32-bit ids had a few collisions at this size)", () => {
-    const seen = new Set<string>();
-    for (let i = 0; i < 200_000; i++) seen.add(makeId("c", `person${i}@gmail.com`));
-    expect(seen.size).toBe(200_000);
+  it("a record stored under its id is updated in place by a re-import and a re-pull, never copied", () => {
+    // an account saved earlier: Jobber job #55, $650, already on the ledger under the id it has always had
+    const stored: Dataset = {
+      ...emptyDataset(biz, "2026-09-29"),
+      customers: [customer("c_al", { sourceIds: ["jobber:Z2lkQWw="], name: "Al Finch", firstName: "Al", lastName: "Finch", emails: ["al@gmail.com"] })],
+      jobs: [job("j_1wq4a0l", "c_al", { sourceId: "Z2lkNTU=", number: "55", title: "Maple pruning", total: 650, status: "scheduled", rawStatus: "upcoming", createdOn: "2026-08-01", scheduledOn: "2026-09-02", completedOn: undefined })],
+    };
+    const JOBS = "Job #,Client name,Client email,Title,Job status,Created date,Total\n55,Al Finch,al@gmail.com,Maple pruning,Completed,2026-08-01,650\n";
+    const reimported = ingestFile(stored, JOBS, "Jobs Report.csv", T).dataset;
+    expect(reimported.jobs.map((j) => [j.id, j.status, j.total])).toEqual([["j_1wq4a0l", "completed", 650]]);
+    const pulledJob = { ...stored.jobs[0]!, id: makeId("j", "jobber", "55"), customerId: "jobber:Z2lkQWw=", status: "completed" as const, rawStatus: "archived", completedOn: "2026-09-02" };
+    const repulled = mergePulled(stored, { customers: [{ ...stored.customers[0]!, id: "jobber:Z2lkQWw=" }], quotes: [], jobs: [pulledJob], invoices: [], requests: [] }, "jobber");
+    expect(repulled.jobs.map((j) => [j.id, j.status, j.customerId])).toEqual([["j_1wq4a0l", "completed", "c_al"]]);
   });
 
-  it("two homeowners whose old 32-bit ids collided stay two people, each with their own quote", () => {
-    expect(makeId("c", "john.gonzalez@gmail.com")).not.toBe(makeId("c", "patricia.roberts81@gmail.com"));
+  it("two homeowners whose ids collide stay two people, each with their own quote", () => {
+    expect(makeId("c", "john.gonzalez@gmail.com")).toBe(makeId("c", "patricia.roberts81@gmail.com"));
     const csv = "Client name,Client email,Title,Total,Sent date,Quote #\nJohn Gonzalez,john.gonzalez@gmail.com,Remove dead oak over driveway,2400,2026-06-03,1001\nPatricia Roberts,patricia.roberts81@gmail.com,Prune maples,900,2026-06-05,1002\n";
-    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), csv, "quotes.csv", "2026-09-29T12:00:00Z", { kind: "quote" });
+    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), csv, "quotes.csv", T, { kind: "quote" });
     expect(dataset.customers.map((c) => c.name).sort()).toEqual(["John Gonzalez", "Patricia Roberts"]);
     const john = dataset.customers.find((c) => c.name === "John Gonzalez")!;
+    const pat = dataset.customers.find((c) => c.name === "Patricia Roberts")!;
     expect(dataset.quotes.find((q) => /dead oak/.test(q.title))!.customerId).toBe(john.id);
+    expect(dataset.quotes.find((q) => /maples/.test(q.title))!.customerId).toBe(pat.id);
+    // and the same again keeps each where they are
+    const again = ingestFile(dataset, csv, "quotes.csv", T, { kind: "quote" }).dataset;
+    expect(again.customers.map((c) => c.id).sort()).toEqual([john.id, pat.id].sort());
+  });
+
+  it("two quote, job and invoice numbers whose ids collide stay two records, on every re-import and re-pull", () => {
+    expect(makeId("q", "jobber", "439599")).toBe(makeId("q", "jobber", "622382"));
+    const QUOTES = `Quote #,Client name,Client email,Title,Total,Sent date,Status
+439599,John Gonzalez,john@gmail.com,Remove dead oak over driveway,2400,2026-06-03,Awaiting response
+622382,Patricia Roberts,pat@gmail.com,Prune maples,900,2026-06-05,Awaiting response
+`;
+    const ds = ingestFile(emptyDataset(biz, "2026-09-29"), QUOTES, "Quotes Report.csv", T).dataset;
+    const whose = (d: Dataset, n: string) => d.customers.find((c) => c.id === d.quotes.find((q) => q.number === n)!.customerId)!.name;
+    expect(ds.quotes).toHaveLength(2);
+    expect([whose(ds, "439599"), whose(ds, "622382")]).toEqual(["John Gonzalez", "Patricia Roberts"]);
+    const ids = ds.quotes.map((q) => q.id);
+    // Patricia says yes on the next export: her quote changes, John's is still open
+    const next = ingestFile(ds, QUOTES.replace("900,2026-06-05,Awaiting response", "900,2026-06-05,Approved"), "Quotes Report.csv", T).dataset;
+    expect(next.quotes.map((q) => q.id)).toEqual(ids);
+    expect(next.quotes.map((q) => [q.number, q.status])).toEqual([["439599", "awaiting_response"], ["622382", "approved"]]);
+    // a pull with both, their jobs (which collide too) and Patricia's invoice: each lands on its own record
+    const pat = next.customers.find((c) => c.name === "Patricia Roberts")!;
+    const john = next.customers.find((c) => c.name === "John Gonzalez")!;
+    const pulled = mergePulled(next, {
+      customers: [],
+      quotes: next.quotes.map((q) => ({ ...q, id: makeId("q", "jobber", q.number!), status: "converted" as const })),
+      jobs: [
+        job(makeId("j", "jobber", "439599"), john.id, { number: "439599", quoteRef: "439599", quoteId: makeId("q", "jobber", "439599") }),
+        job(makeId("j", "jobber", "622382"), pat.id, { number: "622382", quoteRef: "622382", quoteId: makeId("q", "jobber", "622382") }),
+      ],
+      invoices: [{ id: makeId("i", "jobber", "77"), number: "77", customerId: pat.id, subject: "Prune maples", total: 900, balance: 0, status: "paid", rawStatus: "paid", jobRef: "622382", jobId: makeId("j", "jobber", "622382") }],
+      requests: [],
+    }, "jobber");
+    expect(pulled.quotes.map((q) => q.id)).toEqual(ids);
+    expect(pulled.jobs).toHaveLength(2);
+    const patJob = pulled.jobs.find((j) => j.number === "622382")!;
+    expect(patJob.customerId).toBe(pat.id);
+    expect(patJob.quoteId).toBe(pulled.quotes.find((q) => q.number === "622382")!.id);
+    expect(pulled.jobs.find((j) => j.number === "439599")!.quoteId).toBe(pulled.quotes.find((q) => q.number === "439599")!.id);
+    expect(pulled.invoices[0]!.jobId).toBe(patJob.id);
+    // pulled again: the same ids, nothing copied
+    const twice = mergePulled(pulled, { customers: [], quotes: [], jobs: [job(makeId("j", "jobber", "622382"), pat.id, { number: "622382", total: 950 })], invoices: [], requests: [] }, "jobber");
+    expect(twice.jobs.map((j) => j.id)).toEqual(pulled.jobs.map((j) => j.id));
+    expect(twice.jobs.find((j) => j.number === "622382")!.total).toBe(950);
+    expect(twice.jobs.find((j) => j.number === "439599")!.total).toBe(1000);
   });
 });
 
@@ -642,6 +694,23 @@ describe("status words an owner types on their own sheet", () => {
     const { statusReadsTwoWays } = await import("../src/ingest/fields.ts");
     expect(statusReadsTwoWays("Yes - said no to the gate")).toBe(true);
   });
+  it("a yes still waiting on something is held for a person, never chased as unanswered", async () => {
+    const SHEET = `Name,Email,Job,Price,Date,Status
+Mike Sanderson,mike@gmail.com,Cedar privacy fence,6200,2026-08-02,Yes - waiting on HOA
+Al Finch,al@gmail.com,Vinyl fence,4800,2026-08-03,Yes - waiting on financing
+Kim Lee,kim@gmail.com,Picket fence,2100,2026-08-04,Y - pending
+Jane Doe,jane@gmail.com,Chain link fence,1900,2026-08-05,Approved - waiting on HOA
+`;
+    const ds = load([["Fence estimates.csv", SHEET]]);
+    expect(ds.quotes.map((q) => q.status)).toEqual(["approved", "approved", "approved", "approved"]);
+    const r = scan(ds);
+    expect(r.opportunities.filter((o) => o.type === "unanswered_quote")).toEqual([]);
+    const held = r.opportunities.filter((o) => o.caution?.some((c) => /reads two ways/.test(c)));
+    expect(new Set(held.map((o) => o.customerId)).size).toBe(4);
+    // a yes waiting only on its deposit or a date is the next step, not a second answer
+    const { statusReadsTwoWays } = await import("../src/ingest/fields.ts");
+    for (const next of ["Yes - awaiting deposit", "Approved - pending scheduling", "Sold - waiting to be scheduled"]) expect(statusReadsTwoWays(next), next).toBe(false);
+  });
 
   it("a status nobody recognises is held for a person with a warning, never chased as open on a guess", () => {
     const SHEET = `Name,Phone,Email,Address,Job,Price,Date,Status
@@ -722,6 +791,26 @@ Jane Doe,jane@gmail.com,Pine over garage,1800,2026-05-03,Lost
     const TWICE = `Name,Email,Job,Price,Date,Status\nMike Sanderson,mike@gmail.com,Stump grinding,300,2026-05-02,Pending\nMike Sanderson,mike@gmail.com,Stump grinding,300,2026-05-02,Pending\n`;
     expect(load([["Estimates.csv", TWICE], ["Estimates.csv", TWICE]]).quotes).toHaveLength(2);
   });
+  it("a sheet with no title column: the note written when marking it Sold doesn't make a new quote", () => {
+    // a one-service fence shop: the notes show in place of a title, and change when the owner marks the sale
+    const N1 = `Name,Email,Phone,Price,Date,Status,Notes
+Mike Sanderson,mike@gmail.com,603-224-1101,6200,2026-05-02,Pending,Sent quote - 150ft vinyl
+Jane Doe,jane@gmail.com,603-224-1102,3400,2026-05-03,Pending,
+`;
+    const N2 = `Name,Email,Phone,Price,Date,Status,Notes
+Mike Sanderson,mike@gmail.com,603-224-1101,6200,2026-05-02,Sold,Signed 6/1 - deposit paid
+Jane Doe,jane@gmail.com,603-224-1102,3400,2026-05-03,Sold,Signed 6/3
+`;
+    const ds = load([["Fence quotes.csv", N1], ["Fence quotes.csv", N2]]);
+    expect(ds.quotes.map((q) => [q.total, q.status])).toEqual([[6200, "converted"], [3400, "converted"]]);
+    expect(ds.quotes[0]!.title).toBe("Signed 6/1 - deposit paid");
+    expect(scan(ds).opportunities.filter((o) => o.type === "unanswered_quote")).toEqual([]);
+    // two quotes to one person on one day are told apart by their price, whichever order the rows come in
+    const TWO = `Name,Email,Price,Date,Status,Notes\nMike Sanderson,mike@gmail.com,6200,2026-05-02,Pending,Vinyl\nMike Sanderson,mike@gmail.com,900,2026-05-02,Pending,Gate\n`;
+    const SWAPPED = `Name,Email,Price,Date,Status,Notes\nMike Sanderson,mike@gmail.com,900,2026-05-02,Pending,Gate - waiting\nMike Sanderson,mike@gmail.com,6200,2026-05-02,Sold,Vinyl - signed\n`;
+    const two = load([["Fence quotes.csv", TWO], ["Fence quotes.csv", SWAPPED]]);
+    expect(two.quotes.map((q) => [q.total, q.status])).toEqual([[6200, "converted"], [900, "awaiting_response"]]);
+  });
 });
 
 describe("two people on one phone number", () => {
@@ -797,5 +886,57 @@ Jane Doe,(603) 224-5678,jane@gmail.com,"88 Pine St, Bow, NH 03304"
     const ds = load([["Customers.csv", TWO], ["Estimates.csv", FLAT]]);
     const est = ds.quotes.find((q) => q.number === "1001")!;
     expect(ds.customers.find((c) => c.id === est.customerId)!.emails).toEqual([]);
+  });
+
+  // Reports → Sales by Customer Detail, the extra file setup asks for: every line of every sale, under the customer,
+  // with a running total in "Balance"
+  const SALES = `Sales by Customer Detail
+Ridgeline Tree Co
+All Dates
+
+,Date,Transaction Type,Num,Product/Service,Memo/Description,Qty,Sales Price,Amount,Balance
+Mike Sanderson,,,,,,,,,
+,03/02/2026,Invoice,2001,Tree removal,Oak removal,1,"2,000.00","2,000.00","2,000.00"
+,03/02/2026,Invoice,2001,Stump grinding,Stump,1,400.00,400.00,"2,400.00"
+Total for Mike Sanderson,,,,,,,,"$2,400.00",
+Jane Doe,,,,,,,,,
+,04/10/2026,Sales Receipt,2002,Pruning,Maple pruning,1,650.00,650.00,650.00
+,05/01/2026,Credit Memo,2003,Pruning,Refund for a missed limb,1,-50.00,-50.00,600.00
+Total for Jane Doe,,,,,,,,$600.00,
+TOTAL,,,,,,,,"$3,000.00",
+`;
+  it("Sales by Customer Detail reads as past sales, paid, never as money still owed", () => {
+    const ds = load([["Customers.csv", CUSTOMERS], ["Sales by Customer Detail.csv", SALES]]);
+    expect(ds.invoices.map((i) => [i.number, i.total, i.balance, i.status])).toEqual([
+      ["2001", 2400, 0, "paid"],
+      ["2002", 650, 0, "paid"],
+      ["2003", -50, 0, "void"],
+    ]);
+    expect(ds.customers).toHaveLength(2);
+    expect(scan(ds).opportunities.filter((o) => o.type === "unpaid_invoice")).toEqual([]);
+  });
+  it("a balance report reads what's owed from its Open Balance, never the running Balance", () => {
+    const OWED = `Customer Balance Detail
+
+,Date,Transaction Type,Num,Due Date,Amount,Open Balance,Balance
+Mike Sanderson,,,,,,,
+,03/02/2026,Invoice,2004,04/01/2026,"3,000.00","1,000.00","1,000.00"
+,04/02/2026,Invoice,2005,05/02/2026,500.00,500.00,"1,500.00"
+`;
+    const ds = load([["Customers.csv", CUSTOMERS], ["Customer Balance Detail.csv", OWED]]);
+    expect(ds.invoices.map((i) => [i.number, i.total, i.balance])).toEqual([["2004", 3000, 1000], ["2005", 500, 500]]);
+  });
+});
+
+describe("an owner's sheet that starts in column B", () => {
+  const ROWS = `,Mike Sanderson,mike@gmail.com,603-224-1101,Oak removal,2400,2026-05-02,Waiting\n,Al Finch,al@gmail.com,603-224-1103,Maple pruning,900,2026-05-04,Sold\n`;
+  it.each([
+    ["with its sections labelled in column A", `,Name,Email,Phone,Job,Price,Date Sent,Status\nPENDING,,,,,,,\n${ROWS.split("\n")[0]}\nSOLD,,,,,,,\n${ROWS.split("\n")[1]}\n`],
+    ["with a note at the bottom of column A", `,Name,Email,Phone,Job,Price,Date Sent,Status\n${ROWS}Updated 9/1 by Dave,,,,,,,\n`],
+  ])("%s keeps reading names from its Name column", (_case, csv) => {
+    expect(parseTable(csv).headers[0]).not.toBe("Customer");
+    const ds = load([["Estimates.csv", csv]]);
+    expect(ds.customers.map((c) => c.name).sort()).toEqual(["Al Finch", "Mike Sanderson"]);
+    expect(ds.quotes.map((q) => q.status)).toEqual(["awaiting_response", "converted"]);
   });
 });

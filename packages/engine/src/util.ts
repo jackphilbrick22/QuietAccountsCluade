@@ -416,10 +416,7 @@ export function streetName(street: string | undefined): string {
 
 /* ----------------------------- ids / rng -------------------------- */
 
-/**
- * FNV-1a 32-bit: a quick stable number from a string, for deterministic picks and seeds. Never an id: at 32 bits
- * two homeowners in one shop of a few thousand can hash alike (see makeId).
- */
+/** FNV-1a 32-bit — stable ids from content. */
 export function hash(s: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -429,131 +426,8 @@ export function hash(s: string): string {
   return (h >>> 0).toString(36);
 }
 
-const SHA256_K = new Int32Array([
-  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-]);
-const SHA256_H = new Int32Array([0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]);
-// reused between calls (an import makes tens of thousands of ids); Int32 keeps the arithmetic in small integers
-const SHA256_W = new Int32Array(64);
-const SHA256_OUT = new Int32Array(8);
-let shaBuf = new Uint8Array(512);
-
-/** UTF-8 bytes of `s` into `m`; returns how many. A lone surrogate becomes U+FFFD, as TextEncoder does. */
-function utf8Into(s: string, m: Uint8Array): number {
-  let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    let c = s.charCodeAt(i);
-    if (c < 0x80) m[n++] = c;
-    else if (c < 0x800) {
-      m[n++] = 0xc0 | (c >> 6);
-      m[n++] = 0x80 | (c & 63);
-    } else if (c >= 0xd800 && c < 0xdc00 && i + 1 < s.length && (s.charCodeAt(i + 1) & 0xfc00) === 0xdc00) {
-      c = 0x10000 + ((c - 0xd800) << 10) + (s.charCodeAt(++i) - 0xdc00);
-      m[n++] = 0xf0 | (c >> 18);
-      m[n++] = 0x80 | ((c >> 12) & 63);
-      m[n++] = 0x80 | ((c >> 6) & 63);
-      m[n++] = 0x80 | (c & 63);
-    } else {
-      if (c >= 0xd800 && c < 0xe000) c = 0xfffd;
-      m[n++] = 0xe0 | (c >> 12);
-      m[n++] = 0x80 | ((c >> 6) & 63);
-      m[n++] = 0x80 | (c & 63);
-    }
-  }
-  return n;
-}
-
-/** SHA-256 of `s` (UTF-8) into SHA256_OUT, allocating nothing: scanning a big shop makes an id per candidate. */
-function digest(s: string): Int32Array {
-  // UTF-8 is at most 3 bytes per UTF-16 unit; 72 more leaves room for the padding
-  if (shaBuf.length < s.length * 3 + 72) shaBuf = new Uint8Array(Math.max(s.length * 3 + 72, shaBuf.length * 2));
-  const m = shaBuf;
-  const len = utf8Into(s, m);
-  const size = Math.ceil((len + 9) / 64) * 64;
-  m.fill(0, len, size);
-  m[len] = 0x80;
-  // the length in bits, big-endian, closes the last block
-  const bits = len * 8;
-  const hiBits = Math.floor(bits / 0x100000000);
-  for (let i = 0; i < 4; i++) {
-    m[size - 1 - i] = (bits >>> (8 * i)) & 0xff;
-    m[size - 5 - i] = (hiBits >>> (8 * i)) & 0xff;
-  }
-  const w = SHA256_W;
-  const K = SHA256_K;
-  let h0 = SHA256_H[0]!, h1 = SHA256_H[1]!, h2 = SHA256_H[2]!, h3 = SHA256_H[3]!, h4 = SHA256_H[4]!, h5 = SHA256_H[5]!, h6 = SHA256_H[6]!, h7 = SHA256_H[7]!;
-  for (let off = 0; off < size; off += 64) {
-    for (let i = 0, p = off; i < 16; i++, p += 4) w[i] = (m[p]! << 24) | (m[p + 1]! << 16) | (m[p + 2]! << 8) | m[p + 3]!;
-    for (let i = 16; i < 64; i++) {
-      const x = w[i - 15]!;
-      const y = w[i - 2]!;
-      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
-      const s1 = ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
-      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) | 0;
-    }
-    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, k = h7;
-    for (let i = 0; i < 64; i++) {
-      const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-      const t1 = (k + S1 + ((e & f) ^ (~e & g)) + K[i]! + w[i]!) | 0;
-      const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-      const t2 = (S0 + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-      k = g;
-      g = f;
-      f = e;
-      e = (d + t1) | 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (t1 + t2) | 0;
-    }
-    h0 = (h0 + a) | 0;
-    h1 = (h1 + b) | 0;
-    h2 = (h2 + c) | 0;
-    h3 = (h3 + d) | 0;
-    h4 = (h4 + e) | 0;
-    h5 = (h5 + f) | 0;
-    h6 = (h6 + g) | 0;
-    h7 = (h7 + k) | 0;
-  }
-  const out = SHA256_OUT;
-  out[0] = h0;
-  out[1] = h1;
-  out[2] = h2;
-  out[3] = h3;
-  out[4] = h4;
-  out[5] = h5;
-  out[6] = h6;
-  out[7] = h7;
-  return out;
-}
-
-/**
- * SHA-256 of the string's UTF-8 bytes, as eight unsigned 32-bit words. Written out here because ids are made
- * synchronously, and the engine also runs in the browser (the site's audit), where there is no node:crypto.
- */
-export function sha256(s: string): number[] {
-  return Array.from(digest(s), (x) => x >>> 0);
-}
-
-/** SHA-256 as the usual 64 hex characters. */
-export function sha256Hex(s: string): string {
-  return sha256(s)
-    .map((x) => x.toString(16).padStart(8, "0"))
-    .join("");
-}
-
-/**
- * Stable ids from content: the same parts always give the same id, and every id is its prefix plus 14 base-36
- * characters (64 bits of SHA-256). Ids key every record, so two people must never share one: at 64 bits a shop
- * with 100,000 records has well under a one-in-a-billion chance of any collision (32-bit FNV had about one in
- * 350 at 5,000 customers, and two homeowners who collided were merged into one).
- */
 export function makeId(prefix: string, ...parts: (string | number | undefined)[]): string {
-  const h = digest(parts.map((p) => String(p ?? "")).join("|"));
-  return `${prefix}_${(h[0]! >>> 0).toString(36).padStart(7, "0")}${(h[1]! >>> 0).toString(36).padStart(7, "0")}`;
+  return `${prefix}_${hash(parts.map((p) => String(p ?? "")).join("|"))}`;
 }
 
 /** Mulberry32 seeded RNG. Same seed, same sequence — simulations are reproducible. */

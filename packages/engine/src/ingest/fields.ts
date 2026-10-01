@@ -215,6 +215,8 @@ const WAITING_ON_DEPOSIT = String.raw`\b(?:awaiting|pending|needs?|waiting (?:on
 const LEADS_WITH = String.raw`^\W*(?:(?:customer|client)\s+)?`;
 /** A yes from the customer. "Won't" is not a win. An owner's own "Yes" on their sheet is one too. */
 const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received)|\byes)\b`;
+/** The owner's own yes leading the status, however short: "Y - pending", "Yep, waiting on HOA". */
+const OWNER_YES = String.raw`^\W*(?:y|yes|yep|yeah|verbal(?:ly)?\s+yes)\b`;
 /**
  * Gone to someone else: "Went with another company", "Hired a competitor", "Lost to ABC Fence", "Closed lost". Only
  * when the other side is a someone: "Went w/ black vinyl" and "Chose another color" are the option they bought.
@@ -242,6 +244,8 @@ const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|aban
 const STILL_OPEN = String.raw`(?:awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow(?:ing|ed)?[\s-]*up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented|emailed|not (?:moving forward|proceeding) (?:yet|until|till|til|for now|before|this))`;
 /** Waiting on the customer, as a reason written after a "not sold": "Not sold - pending", "Not sold (no response)". */
 const WAITING = String.raw`\b(?:pending|awaiting|waiting|on hold|follow(?:ing|ed)?[\s-]*up|no (?:response|answer|reply)|thinking|consider(?:ing)?|deciding|undecided|open|outstanding|unreachable|needs? (?:response|approval|hoa)|viewed|(?:estimate|proposal|quote) sent|resent|call ?back|postponed|deferred|nurtur\w*)\b`;
+/** What a yes waits on as its next step, not as a condition on it: the deposit, or a date on the calendar. */
+const NEXT_STEP = String.raw`${WAITING_ON_DEPOSIT}|\b(?:ready|waiting|awaiting|pending) (?:on |to |for )?(?:be |a )?(?:schedul\w*|(?:start )?date)\b`;
 /** "Not sold", "unsold", "no sale", "didn't sell": a sale that hasn't happened, yet or at all. */
 const DID_NOT_SELL = String.raw`\bdid(?:\s+not|n['’]?t)\s+sell\b`;
 const NOT_SOLD = String.raw`(?:${NOT}sold\b|\bno[\s-]+sale\b|${DID_NOT_SELL})`;
@@ -312,7 +316,9 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [/\bclosed[\s-]*won\b|\bwon\b(?!['’])/i, "approved"],
   // Work exists: ServiceTitan "Sold", Housecall Pro "Copied to job", QuickBooks "Converted", PaintScout "Invoiced" and "Paid".
   [/(converted|job created|copied to job|\bsold\b|complete|invoiced|\b(?:un)?paid\b|scheduled|in progress)/i, "converted"],
-  [/(approved|accepted|\bsigned\b|booked|client approved|customer approved|pro approved)/i, "approved"],
+  // An owner's own yes leads the same way: "Yes - waiting on HOA" is a yes with a condition, never an unanswered quote
+  // (statusReadsTwoWays holds it for a person).
+  [new RegExp(`(approved|accepted|\\bsigned\\b|booked|client approved|customer approved|pro approved)|${OWNER_YES}`, "i"), "approved"],
   // Closed by the software or the office — NOT a customer decision (expired, dismissed, cancelled, No Go).
   [/(expir)/i, "expired"],
   [new RegExp(CLOSED_OUT, "i"), "archived"],
@@ -322,16 +328,18 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
 
 /**
  * A status that says two things at once ("Requoted - sold", "Approved - said no to the gate", "Declined - changes
- * requested"): the map above still makes its best reading, but nobody should be written to on a guess, so the
- * opportunity is held for a person to look at. Negated words don't count ("Unsigned" is not a yes).
+ * requested", "Yes - waiting on HOA"): the map above still makes its best reading, but nobody should be written to on
+ * a guess, so the opportunity is held for a person to look at. Negated words don't count ("Unsigned" is not a yes),
+ * and a yes waiting on its deposit or a date ("Approved - awaiting deposit") is just the next step.
  */
 export function statusReadsTwoWays(raw: string): boolean {
   const t = raw.replace(new RegExp(`${NOT}\\w+`, "gi"), " ");
-  const yes = new RegExp(SAID_YES, "i").test(t);
+  const yes = new RegExp(`${SAID_YES}|${OWNER_YES}`, "i").test(t);
   const no = new RegExp(SAID_NO, "i").test(raw);
   const revision = /changes? requested|\brequest(?:ed)? changes\b|\brevisions? (?:requested|needed)\b|\brevised\b|\bre-?quoted\b/i.test(raw);
   const waiting = new RegExp(WAITING, "i").test(raw);
-  return (yes && no) || (yes && revision) || (no && (revision || waiting));
+  const onCondition = new RegExp(WAITING, "i").test(raw.replace(new RegExp(NEXT_STEP, "gi"), " "));
+  return (yes && no) || (yes && revision) || (yes && onCondition) || (no && (revision || waiting));
 }
 
 /** Per-software status words that mean something different there. */

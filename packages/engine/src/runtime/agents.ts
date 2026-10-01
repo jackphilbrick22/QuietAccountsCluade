@@ -1337,8 +1337,12 @@ export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt:
   if (!c) {
     const parts = (lead.name ?? "").trim().split(/\s+/).filter(Boolean);
     const street = lead.address?.split(",")[0]?.trim();
+    // nobody on file matched, so whoever already has this id (ids are short hashes and can collide) is someone else
+    const key = email ?? digits(lead.phone ?? "");
+    let id = makeId("c", "fwd", key);
+    for (let n = 2; ds.customers.some((x) => x.id === id); n++) id = makeId("c", "fwd", key, n);
     c = {
-      id: makeId("c", "fwd", email ?? digits(lead.phone ?? "")),
+      id,
       sourceIds: [],
       name: lead.name?.trim() || email || fmtPhone(lead.phone!) || "New request",
       firstName: parts.length > 1 || (parts[0] && !/\./.test(parts[0])) ? (parts[0] ?? "") : "",
@@ -1364,7 +1368,10 @@ export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt:
     }
   }
   const title = (lead.job ?? "").replace(/\s+/g, " ").trim().slice(0, 200) || "New request";
-  const requestId = makeId("r", "fwd", c.id, title.toLowerCase(), receivedAt.slice(0, 10));
+  const who = c.id;
+  let requestId = makeId("r", "fwd", who, title.toLowerCase(), receivedAt.slice(0, 10));
+  // only this person's own request on that id is the same one again; another's keeps it and this one is salted
+  for (let n = 2; ds.requests.some((r) => r.id === requestId && r.customerId !== who); n++) requestId = makeId("r", "fwd", who, title.toLowerCase(), receivedAt.slice(0, 10), n);
   if (ds.requests.some((r) => r.id === requestId)) return { requestId, customerId: c.id, duplicate: true };
   ds.requests.push({ id: requestId, customerId: c.id, title, status: "new", rawStatus: "forwarded", createdOn: receivedAt.slice(0, 10), createdAt: receivedAt, source: lead.source });
   event(state, now, "reader", "action", `Request forwarded from ${lead.source}: ${c.name}`, title, [{ kind: "customer", id: c.id }]);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readRequestEmail } from "../src/inbox/request.ts";
 import { answerNewRequests, takeRequest } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
+import { makeId } from "../src/util.ts";
 import { ASOF, ago, business, customer, dataset } from "./fixtures.ts";
 
 const WEB_FORM = `---------- Forwarded message ---------
@@ -105,6 +106,24 @@ describe("a forwarded request goes on the always-on track", () => {
     const t = takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
     expect(t.customerId).toBe("c9");
     expect(st.dataset.customers).toHaveLength(1);
+  });
+  it("two people whose ids collide stay two people, and one's request is never taken for a copy of another's", () => {
+    const st = emptyState(dataset({ business: paying(), customers: [] }), `${ASOF}T10:00:00`);
+    const take = (name: string, email: string, job: string) => takeRequest(st, { name, email, job, source: "your website", read: "loose" }, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
+    expect(makeId("c", "fwd", "lead412789@gmail.com")).toBe(makeId("c", "fwd", "lead649192@gmail.com"));
+    const sam = take("Sam Reed", "lead412789@gmail.com", "Oak removal");
+    const lou = take("Lou Park", "lead649192@gmail.com", "Oak removal");
+    expect(lou.customerId).not.toBe(sam.customerId);
+    expect(st.dataset.customers.find((c) => c.id === lou.customerId)!.emails).toEqual(["lead649192@gmail.com"]);
+    expect(st.dataset.customers.find((c) => c.id === sam.customerId)!.emails).toEqual(["lead412789@gmail.com"]);
+    const alice = take("Alice Hart", "alice.hart@gmail.com", "tree down 692849");
+    const bob = take("Bob Lyle", "bob.lyle@gmail.com", "tree down 3412");
+    expect(makeId("r", "fwd", alice.customerId, "tree down 692849", ASOF)).toBe(makeId("r", "fwd", bob.customerId, "tree down 3412", ASOF));
+    expect(bob.duplicate).toBe(false);
+    expect(st.dataset.requests.find((r) => r.id === bob.requestId)!.customerId).toBe(bob.customerId);
+    expect(st.dataset.requests.find((r) => r.id === alice.requestId)!.customerId).toBe(alice.customerId);
+    // and Bob's forwarded twice is still one request
+    expect(take("Bob Lyle", "bob.lyle@gmail.com", "tree down 3412")).toMatchObject({ requestId: bob.requestId, duplicate: true });
   });
 });
 

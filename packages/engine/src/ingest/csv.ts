@@ -10,6 +10,8 @@ export interface Table {
   /** Lines skipped above the header (report titles, date ranges). */
   preamble: string[];
   delimiter: string;
+  /** A QuickBooks "… by Customer" report: each customer's name was carried down into a Customer column. */
+  grouped?: boolean;
 }
 
 export function sniffDelimiter(text: string): string {
@@ -131,16 +133,22 @@ export function parseTable(text: string): Table {
     raw[0] = "Customer";
     rows = grouped;
   }
-  return { headers: dedupeHeaders(raw), rows, preamble: all.slice(0, h).map((r) => r.filter(Boolean).join(" ")), delimiter };
+  const table: Table = { headers: dedupeHeaders(raw), rows, preamble: all.slice(0, h).map((r) => r.filter(Boolean).join(" ")), delimiter };
+  if (grouped) table.grouped = true;
+  return table;
 }
 
 /**
  * QuickBooks' "… by Customer" reports put each customer's name alone on a row above their transactions, under a
  * blank first header, and leave the first cell of each transaction blank. Carry the name down onto every row under
- * it, so each row says whose it is. Undefined when the file isn't laid out that way.
+ * it, so each row says whose it is. Only on that report's own shape, QuickBooks' Type and Num columns and no name
+ * column of its own: an owner's sheet that starts in column B, with "PENDING" or a note alone in column A, keeps
+ * reading names from its Name column. Undefined when the file isn't laid out that way.
  */
 function carryGroupNames(headers: string[], rows: string[][]): string[][] | undefined {
   if (headers[0] !== "" || headers.length < 3) return undefined;
+  const has = (re: RegExp) => headers.some((h) => re.test(h));
+  if (!has(/^(transaction )?type$/i) || !has(/^num$/i) || has(/\b(name|customer|client)\b|^(first|last)\b/i)) return undefined;
   const isGroup = (r: string[]) => !!r[0] && r.slice(1).every((c) => c === "");
   const groups = rows.filter(isGroup).length;
   const under = rows.filter((r) => r[0] === "" && r.slice(1).some(Boolean)).length;

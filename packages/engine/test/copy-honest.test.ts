@@ -183,8 +183,7 @@ describe("no charge to look", () => {
     expect(main(problemNote("hvac", "AC replacement - 3 ton", true))).toContain("No charge to look.");
   });
   it("a past customer of a pest company isn't promised a free visit either", () => {
-    // the variant follows the ids; job j2 gets p1, the note with the free-look line
-    const ds = dataset({ business: { trade: "pest", name: "Test Pest" }, customers: [customer("c1")], jobs: [job("j2", "c1", { title: "Rodent exclusion", completedOn: ago(400), total: 600 })] });
+    const ds = dataset({ business: { trade: "pest", name: "Test Pest" }, customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Rodent exclusion", completedOn: ago(400), total: 600 })] });
     const n = renderNote(oneOpp(scan(ds), "c1", "one_and_done"), ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
     expect(n.templateId).toBe("p1");
     expect(main(n)).toContain("We took care of the rodent problem for you");
@@ -267,8 +266,7 @@ describe("plain grammar", () => {
     expect(main(n)).not.toMatch(/back back/);
   });
   it("says 'about 2½ years', never '2.4 years'", () => {
-    // the variant follows the ids; job j2 gets p1, the note that says how long it's been
-    const ds = dataset({ customers: [customer("c1")], jobs: [job("j2", "c1", { title: "Remove leaning pine", completedOn: ago(880), total: 1800 })] });
+    const ds = dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { title: "Remove leaning pine", completedOn: ago(880), total: 1800 })] });
     const o = oneOpp(scan(ds), "c1", "one_and_done");
     const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
     expect(n.templateId).toBe("p1");

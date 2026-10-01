@@ -187,7 +187,18 @@ export function importTable(
   detection: Detection,
   opts: { fileName: string; importedAt: string },
 ): ImportResult {
-  const { kind, source, mapping } = detection;
+  const { kind, source } = detection;
+  const fields = { ...detection.mapping.fields };
+  // QuickBooks' "… by Customer" detail reports keep a running total in "Balance", not what's owed; what's owed is
+  // their "Open Balance". One with neither that nor a status (Sales by Customer Detail, which setup asks for) lists
+  // past sales, line by line: those were paid, and never read as money still to collect.
+  if (table.grouped && source === "quickbooks") {
+    const open = table.headers.findIndex((h) => /^open balance$/i.test(h));
+    if (open >= 0) fields.balance = open;
+    else delete fields.balance;
+  }
+  const pastSales = kind === "invoice" && !!table.grouped && source === "quickbooks" && fields.balance === undefined && fields.status === undefined;
+  const mapping = { ...detection.mapping, fields };
   const warnings = [...detection.warnings];
   const rows: Row[] = table.rows.map((r, index) => {
     const cells = cellGetter(r, mapping.fields);
@@ -200,18 +211,22 @@ export function importTable(
   const invoices = new Map(dataset.invoices.map((i) => [i.id, i]));
   const requests = new Map(dataset.requests.map((r) => [r.id, r]));
 
-  // Records with no number, by what they are: whose, what and when (see recId below).
-  const unnumbered = new Map<string, string[]>();
-  const keep = (k: RecordKind, r: { id: string; number?: string; customerId: string }, title: string | undefined, on: string | undefined) => {
+  // Records with no number, by whose they are and the day they were written, with what each is for and its price
+  // (see recId below).
+  const unnumbered = new Map<string, { id: string; what: string; total?: number }[]>();
+  const keep = (k: RecordKind, r: { id: string; number?: string; customerId: string; total?: number }, title: string | undefined, on: string | undefined) => {
     if (r.number) return;
-    const key = contentKey(k, r.customerId, title, on);
-    (unnumbered.get(key) ?? unnumbered.set(key, []).get(key)!).push(r.id);
+    const key = contentKey(k, r.customerId, on);
+    (unnumbered.get(key) ?? unnumbered.set(key, []).get(key)!).push({ id: r.id, what: plain(title), total: r.total });
   };
   for (const q of dataset.quotes) keep("quote", q, q.title, q.createdOn);
   for (const j of dataset.jobs) keep("job", j, j.title, j.createdOn);
   for (const i of dataset.invoices) keep("invoice", i, i.subject, i.issuedOn);
   for (const r of dataset.requests) keep("request", r, r.title, r.createdOn);
+  const claimed = new Set<string>();
   const seenInFile = new Map<string, number>();
+  // a past sale's lines, summed into the sale they belong to
+  const saleTotals = new Map<string, number>();
   const unreadStatuses = new Map<string, number>();
 
   let accepted = 0;
@@ -229,26 +244,42 @@ export function importTable(
     const customer = resolver.resolve(p, source);
     const number = get("number");
     const lineItems = parseLineItems(get("lineItems"));
+    // What the row is for, from the title or line items only. A sheet with no title column shows its notes instead.
+    const named = get("title") || lineItems.map((l) => l.name).slice(0, 3).join(", ");
     // Blank when the export has no title (Jobber's are optional): kept as empty text, never dropped.
-    const title = get("title") || lineItems.map((l) => l.name).slice(0, 3).join(", ") || get("description").slice(0, 120);
-    // With no number column, a row is known by whose it is, what it's for and when, never by where it sits in the
-    // file: the owner's updated sheet, with rows added on top or re-sorted and Pending changed to Sold, updates the
-    // same records instead of leaving the old Pending copies to be chased. A true duplicate row keeps its own record
-    // by its count, and a record an earlier import keyed another way is found by the same facts.
+    const title = named || get("description").slice(0, 120);
+    const itemsTotal = lineItems.reduce((s, l) => s + (l.optional && l.selected === false ? 0 : l.total), 0);
+    const total = parseMoney(get("total")) ?? parseMoney(get("subtotal")) ?? (itemsTotal || 0);
+    // With no number column, a row is known by whose it is, when it was written and what it's for, never by where it
+    // sits in the file: the owner's updated sheet, with rows added on top or re-sorted and Pending changed to Sold,
+    // updates the same records instead of leaving the old Pending copies to be chased. Notes shown in place of a
+    // title are no part of it, so the "Signed 6/1" written when marking it Sold doesn't make a new quote: a row with
+    // no title is matched on whose and when alone, the same price first. A true duplicate row keeps its own record by
+    // its count, and a record an earlier import keyed another way is found by the same facts.
     const recId = (k: RecordKind): string => {
-      if (number) return makeId(k[0]!, source, number);
+      const held: ReadonlyMap<string, { number?: string; sourceId?: string }> = k === "quote" ? quotes : k === "invoice" ? invoices : k === "request" ? requests : jobs;
+      if (number) {
+        // a record with another number already on this id (two numbers whose ids collide) keeps it
+        const other = (id: string) => {
+          const x = held.get(id);
+          return !!x && (k === "request" ? x.sourceId : x.number) !== number;
+        };
+        return unclaimed(makeId(k[0]!, source, number), other, k[0]!, source, number);
+      }
       const on =
         k === "quote" ? (parseDate(get("createdOn")) ?? parseDate(get("sentOn")))
         : k === "job" ? (parseDate(get("createdOn")) ?? parseDate(get("scheduledOn")))
         : k === "invoice" ? (parseDate(get("issuedOn")) ?? parseDate(get("createdOn")))
         : parseDate(get("createdOn"));
-      const key = contentKey(k, customer.id, title, on);
-      const n = seenInFile.get(key) ?? 0;
-      seenInFile.set(key, n + 1);
-      return unnumbered.get(key)?.[n] ?? makeId(k[0]!, source, "row", key, n);
+      const key = contentKey(k, customer.id, on);
+      const what = plain(named);
+      const mine = (unnumbered.get(key) ?? []).filter((r) => !claimed.has(r.id) && (!what || r.what === what));
+      const n = seenInFile.get(`${key}|${what}`) ?? 0;
+      seenInFile.set(`${key}|${what}`, n + 1);
+      const id = (mine.find((r) => r.total === total) ?? mine[0])?.id ?? unclaimed(makeId(k[0]!, source, "row", key, what, n), (x) => held.has(x), k[0]!, source, "row", key, what, n);
+      claimed.add(id);
+      return id;
     };
-    const itemsTotal = lineItems.reduce((s, l) => s + (l.optional && l.selected === false ? 0 : l.total), 0);
-    const total = parseMoney(get("total")) ?? parseMoney(get("subtotal")) ?? (itemsTotal || 0);
     const property = p.address;
     const rawStatus = get("status");
 
@@ -319,18 +350,22 @@ export function importTable(
       jobs.set(job.id, { ...prev, ...stripUndefined(job), title: title || prev?.title || "" } as Job);
       accepted++;
     } else if (kind === "invoice") {
-      const bal = parseMoney(get("balance"));
+      const id = recId("invoice");
+      // a past sale's lines add up to the sale; one that comes to nothing or less is a credit or refund, not a sale
+      const sum = pastSales ? (saleTotals.get(id) ?? 0) + total : total;
+      if (pastSales) saleTotals.set(id, sum);
+      const bal = pastSales ? 0 : parseMoney(get("balance"));
       const paidOn = parseDate(get("paidOn"));
-      let status = mapStatus(rawStatus, INVOICE_STATUS_MAP);
+      let status = pastSales && sum <= 0 ? "void" : mapStatus(rawStatus, INVOICE_STATUS_MAP);
       const dueOn = parseDate(get("dueOn"));
       if (!status) status = paidOn || bal === 0 ? "paid" : dueOn && dueOn < dataset.asOf ? "past_due" : "awaiting_payment";
       const inv: Invoice = {
-        id: recId("invoice"),
+        id,
         sourceId: number || undefined,
         number: number || undefined,
         customerId: customer.id,
         subject: title,
-        total,
+        total: sum,
         balance: bal ?? (status === "paid" || status === "void" ? 0 : total),
         status,
         rawStatus,
@@ -413,9 +448,23 @@ export function importTable(
   return { dataset: next, record };
 }
 
-/** What an unnumbered record is: its kind, whose it is, what it's for and the day it was written. */
-function contentKey(kind: RecordKind, customerId: string, title: string | undefined, on: string | undefined): string {
-  return [kind === "visit" ? "job" : kind, customerId, (title ?? "").toLowerCase().replace(/\s+/g, " ").trim(), on ?? ""].join("|");
+/** Where an unnumbered record is looked for: its kind, whose it is and the day it was written. */
+function contentKey(kind: RecordKind, customerId: string, on: string | undefined): string {
+  return [kind === "visit" ? "job" : kind, customerId, on ?? ""].join("|");
+}
+
+function plain(s: string | undefined): string {
+  return (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Ids are short hashes, so now and then two records' ids collide. One never takes over another's: while `id` is held
+ * by a record that isn't this one, the same parts salted with 2, 3, … are tried. The same record always lands on the
+ * same id, and one already stored keeps its own.
+ */
+function unclaimed(id: string, heldByOther: (id: string) => boolean, prefix: string, ...parts: (string | number)[]): string {
+  for (let n = 2; heldByOther(id); n++) id = makeId(prefix, ...parts, n);
+  return id;
 }
 
 function stripUndefined<T extends object>(o: T): Partial<T> {
@@ -738,18 +787,31 @@ export function mergePulled(dataset: Dataset, pulled: PulledBatch, source: Sourc
     remap.set(pc.id, c.id);
   }
   const fix = <T extends { customerId: string }>(r: T): T => ({ ...r, customerId: remap.get(r.customerId) ?? r.customerId });
-  const upsert = <T extends { id: string }>(existing: T[], incoming: T[]): T[] => {
+  // A record of another number already on a pulled record's id (two numbers whose ids collide) keeps it: the pulled
+  // one takes the next salted id, and whatever points at it by number follows.
+  type Numbered = { id: string; number?: string; sourceId?: string };
+  const ident = (k: string, x: Numbered | undefined) => (k === "r" ? x?.sourceId : x?.number);
+  const seat = (m: ReadonlyMap<string, Numbered>, k: string, id: string, key: string | undefined) =>
+    key ? unclaimed(id, (x) => m.has(x) && ident(k, m.get(x)) !== key, k, source, key) : id;
+  const upsert = <T extends Numbered>(existing: T[], incoming: T[], k: string): Map<string, T> => {
     const m = new Map(existing.map((x) => [x.id, x]));
-    for (const x of incoming) m.set(x.id, { ...m.get(x.id), ...stripUndefined(x) } as T);
-    return [...m.values()];
+    for (const x of incoming) {
+      const id = seat(m, k, x.id, ident(k, x));
+      m.set(id, { ...m.get(id), ...stripUndefined(x), id } as T);
+    }
+    return m;
   };
+  const quotes = upsert(dataset.quotes, pulled.quotes.map(fix), "q");
+  const jobs = upsert(dataset.jobs, pulled.jobs.map((j) => fix(j.quoteId ? { ...j, quoteId: seat(quotes, "q", j.quoteId, j.quoteRef) } : j)), "j");
+  const invoices = upsert(dataset.invoices, pulled.invoices.map((i) => fix(i.jobId ? { ...i, jobId: seat(jobs, "j", i.jobId, i.jobRef) } : i)), "i");
+  const requests = upsert(dataset.requests, pulled.requests.map((r) => fix(r.quoteId ? { ...r, quoteId: seat(quotes, "q", r.quoteId, r.quoteRef) } : r)), "r");
   const next: Dataset = {
     ...dataset,
     customers: resolver.all(),
-    quotes: upsert(dataset.quotes, pulled.quotes.map(fix)),
-    jobs: upsert(dataset.jobs, pulled.jobs.map(fix)),
-    invoices: upsert(dataset.invoices, pulled.invoices.map(fix)),
-    requests: upsert(dataset.requests, pulled.requests.map(fix)),
+    quotes: [...quotes.values()],
+    jobs: [...jobs.values()],
+    invoices: [...invoices.values()],
+    requests: [...requests.values()],
   };
   linkRecords(next);
   if (next.business.software === "unknown" || next.business.software === "spreadsheet") next.business = { ...next.business, software: source };
