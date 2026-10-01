@@ -197,8 +197,34 @@ Updated every loop iteration. Newest first.
   1800", "$930" and "BOOKED 930" stay plain. A business with no word of its own gets its initials as its
   short name, never a piece of its id. Engine 1,232, server 262.
 
+- Whole-codebase sweep (five lenses, each finding checked by a skeptic): 30 confirmed, all fixed and tested,
+  in five batches.
+  - Money and plans: Settings can record a yearly plan (billing, year price, paid years); a second RENEW
+    changes nothing; RENEW and MONTHLY work from the paid year running today, so years never overlap; every
+    plan change by text goes to Jack's queue to collect or refund; CANCEL refunds a renewed year that hadn't
+    started; RESUME after a year ran out says it's still paused (and the direct sender honours a paused plan).
+  - Owner texts: a text without a #code can be about a lead reported in the last 14 days, and asks when
+    two fit; "Go ahead" answers the close or the renewal instead of running RESUME; a text with a #code is
+    never a plan change, pause or booked-out command; BUSY and STATUS act only on the command shapes.
+  - Sending: queued follow-ups stop once the quote is approved, becomes a job, gets onto the schedule, or the
+    customer books or gets a new quote (in Instantly the lead is withdrawn); people whose request got our
+    instant answer now get their follow-ups; a "today" answer is never sent late at night.
+  - Surface: one Instantly campaign per client (the business id is in the name); forwarded requests and
+    exports are read from every recipient field (Delivered-To, Cc, Bcc, provider envelopes); Don't send,
+    Hold and edits reach Instantly or are refused with a reason; record ids are 64-bit (SHA-256), not 32.
+  - Import: blank titles no longer crash it; archived quotes are dated by the quote, not the archive day;
+    status words owners type (Done, Yes, Didn't sell) are read, and any we don't know is held for a person;
+    "Leads…csv" with prices is read as quotes; unknown work never becomes the trade's first service; paid
+    invoices and same-day sibling quotes count as coming back; re-sent sheets update rows in place; a
+    shared phone no longer merges two people; the QuickBooks "Estimates by Customer" report imports.
+  - Console: Resume on a plan that's paused or cancelled says nothing will send.
+  - Engine 1,304, server 285.
+- Known gaps left on purpose: an owner who edits a row's title or date before re-sending still gets a new
+  record (the database save never deletes); an edit made in the seconds before Instantly's "sent" webhook
+  arrives re-pushes from note 1 (BUSY's take-back has the same race).
+
 **Next**
-- A twentieth, narrow pass on this; then one whole-codebase pass before wrapping up.
+- One narrow verification pass over the sweep's fixes; then wrap up.
 
 ## 2026-09-30 — iteration 2
 
