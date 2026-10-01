@@ -129,9 +129,10 @@ export class Repo {
       .reverse();
     const messages = this.db
       .all<{ data: string }>(
-        // Billing, renewal, kickoff and refund texts and SLA nudges always load: "already sent?" is decided from them,
-        // and one that fell out of the window would otherwise go out again after every restart.
-        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge','renewal','kickoff','refund') OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
+        // Billing, renewal, kickoff and refund texts, SLA nudges and a one pass's money texts always load: "already
+        // sent?" is decided from them (and a money text's approval finds it), and one that fell out of the window would
+        // otherwise go out again after every restart.
+        "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge','renewal','kickoff','refund') OR kind LIKE 'charge\\_%' ESCAPE '\\' OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",
         id,
         id,
       )
@@ -362,8 +363,8 @@ export class Repo {
   }
 
   /** Where one text to the owner stands now (read back after the dispatcher ran, so the console says what happened). */
-  ownerMessageDelivery(bid: string, id: string): { delivery: string; channel: string | null; error: string | null } | undefined {
-    return this.db.get("SELECT delivery, channel, error FROM owner_messages WHERE business_id = ? AND id = ?", bid, id);
+  ownerMessageDelivery(bid: string, id: string): { delivery: string; channel: string | null; error: string | null; delivered_at: string | null } | undefined {
+    return this.db.get("SELECT delivery, channel, error, delivered_at FROM owner_messages WHERE business_id = ? AND id = ?", bid, id);
   }
 
   /** The "Texts to send" list (SMS_PROVIDER=manual): every client's texts waiting to be sent by hand, newest first. */
@@ -386,9 +387,22 @@ export class Repo {
     this.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND delivery = 'manual'", bid);
   }
 
-  /** Off the list for good (the client cancelled): skipped with the reason, except a refund we owe them. */
+  /**
+   * Off the list for good (the client cancelled): skipped with the reason, except a refund we owe them and a one pass's
+   * money texts (its bookings before the cancel are still billed).
+   */
   skipManual(bid: string, error: string): void {
-    this.db.run("UPDATE owner_messages SET delivery = 'skipped', error = ? WHERE business_id = ? AND delivery = 'manual' AND kind != 'refund'", error, bid);
+    this.db.run("UPDATE owner_messages SET delivery = 'skipped', error = ? WHERE business_id = ? AND delivery = 'manual' AND kind != 'refund' AND kind NOT LIKE 'charge\\_%' ESCAPE '\\'", error, bid);
+  }
+
+  /** A text not sent yet, written again before it goes (a money text names its charge's day when it's approved). */
+  setOwnerMessageText(bid: string, id: string, text: string): void {
+    this.db.run("UPDATE owner_messages SET text = ?, data = json_set(data, '$.text', ?) WHERE business_id = ? AND id = ? AND delivery IN ('review','pending','failed','manual')", text, text, bid, id);
+  }
+
+  /** A text not sent yet that isn't needed any more (what it was about moved on): it never goes. */
+  withdrawOwnerMessage(bid: string, id: string, why: string): boolean {
+    return Number(this.db.run("UPDATE owner_messages SET delivery = 'cancelled', error = ? WHERE business_id = ? AND id = ? AND delivery IN ('review','pending','failed','manual')", why, bid, id).changes) > 0;
   }
 
   ownerMessages(bid: string, opts: { delivery?: string; limit?: number } = {}): { id: string; at: string; kind: string; text: string; delivery: string; channel: string | null; delivered_at: string | null }[] {

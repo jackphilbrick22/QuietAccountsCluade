@@ -21,6 +21,11 @@ export function SetupPanel() {
       </div>
       <div className={s.sms === "log" ? "text-warn" : undefined}>Owner texts: {SMS[s.sms] ?? s.sms}</div>
       <div className={s.stripe === "unrecognized" ? "font-semibold text-bad" : undefined}>Stripe: {STRIPE[s.stripe]}</div>
+      {s.stripeWebhook && (
+        <div className={s.stripeWebhook.secret ? undefined : "font-semibold text-bad"}>
+          Stripe events: {s.stripeWebhook.secret ? (s.stripeWebhook.lastEventAt ? `last ${ago(s.stripeWebhook.lastEventAt)}` : "none yet") : "no signing secret"}
+        </div>
+      )}
       <div className={backupFailed ? "font-semibold text-bad" : undefined} title={s.backup.error ?? s.backup.file ?? undefined}>
         {backupFailed ? `Backup failed ${ago(s.backup.failedAt)}` : `Last backup: ${s.backup.lastAt ? ago(s.backup.lastAt) : "none yet"}`}
         {s.backup.kept ? ` (${s.backup.kept} kept)` : ""}

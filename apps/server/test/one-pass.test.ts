@@ -217,7 +217,7 @@ describe("the end of a one pass", () => {
     const end = (await review(h)).find((x) => x.kind === "owner_message" && x.messageKind === "pass_end")!;
     expect(end).toBeDefined();
     const text = h.d.accounts.repo.ownerMessages("ridge").find((m) => m.kind === "pass_end")!.text;
-    expect(text.split("\n")[0]).toBe("Dave, your list is done. Asked 5, 0 wrote back, 0 wanted the work, 0 booked.");
+    expect(text.split("\n")[0]).toBe("Dave, your list is done. Asked 5, 0 wrote back, 0 wanted the work, 0 booked. You paid nothing.");
     expect(text).toContain("I'll check back next season.");
     expect(text).not.toMatch(/497|free/i);
     // nothing else of the monthly plan's: no free-round close, no billing text
@@ -585,7 +585,7 @@ describe("the rest of a list after its free round", () => {
       s.replies.push(...[first!, theirs].map((customerId, i) => ({ id: `rep${i}`, customerId, channel: "email" as const, receivedAt: "2026-11-20T10:00:00", from: `${customerId}@gmail.com`, text: "Yes please", intent: "wants_it" as const, confidence: 0.9, extracted: {}, status: "done" as const })));
     });
     await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "done" } });
-    expect(h.d.accounts.repo.ownerMessages("ridge").find((m) => m.kind === "pass_end")!.text.split("\n")[0]).toBe("Dave, your list is done. Asked 30, 1 wrote back, 1 wanted the work, 0 booked.");
+    expect(h.d.accounts.repo.ownerMessages("ridge").find((m) => m.kind === "pass_end")!.text.split("\n")[0]).toBe("Dave, your list is done. Asked 30, 1 wrote back, 1 wanted the work, 0 booked. You paid nothing.");
   });
 });
 

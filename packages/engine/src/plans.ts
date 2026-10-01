@@ -1,4 +1,4 @@
-import type { PlanState } from "./model.ts";
+import type { Charge, PlanState } from "./model.ts";
 
 /**
  * The two offers' plans (BRIEF §2). Monthly: the free 150, then a month at a time on the owner's yes. One pass: the
@@ -14,6 +14,15 @@ export const ONE_PASS = { pricePerBooking: 250, capBookings: 4, windowDays: 60, 
 
 export function isOnePass(plan: Pick<PlanState, "kind">): boolean {
   return plan.kind === "one_pass";
+}
+
+/**
+ * Whether a plan bills a one pass's bookings: one that has started, and still once it went monthly after it ("Then
+ * monthly if his list refills"). Its bookings stay billable by its terms, and its charges go through, whatever the plan
+ * is now. Only a one pass ever starts (`startedOn`).
+ */
+export function billsPass(plan: Pick<PlanState, "startedOn">): boolean {
+  return !!plan.startedOn;
 }
 
 /** Whether a plan's stage is one its kind runs through: a one pass is never "paying", a monthly plan never "done". */
@@ -39,4 +48,14 @@ export function onePassPlan(over: Partial<PlanState> = {}): PlanState {
 export function passLate(plan: Pick<PlanState, "pace" | "targetEndOn">) {
   const late = plan.pace?.late;
   return late && plan.targetEndOn && late.canMeet > plan.targetEndOn ? late : undefined;
+}
+
+/** A charge that holds its place under the cap: every one not refunded or skipped (one the owner disputes too, until Jack decides). */
+export function holdsPlace(c: Pick<Charge, "status">): boolean {
+  return c.status !== "refunded" && c.status !== "skipped";
+}
+
+/** What a one pass's owner has paid: its charges paid and not refunded, in dollars. */
+export function passPaid(plan: Pick<PlanState, "charges">): number {
+  return (plan.charges ?? []).filter((c) => c.status === "paid").reduce((n, c) => n + c.amount, 0) / 100;
 }

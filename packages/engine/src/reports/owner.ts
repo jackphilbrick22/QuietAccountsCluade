@@ -1,14 +1,14 @@
-import type { BusinessProfile, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply, Touch } from "../model.ts";
+import type { BusinessProfile, Charge, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply, Touch } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { pickWorked } from "../breakage/detect.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
 import { refillRate } from "../breakage/refill.ts";
-import { isOnePass, ONE_PASS } from "../plans.ts";
+import { holdsPlace, isOnePass, ONE_PASS, passPaid } from "../plans.ts";
 import { counted } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
-import { quoteById } from "../lookup.ts";
+import { customerById, quoteById } from "../lookup.ts";
 
 const WANTS = new Set(["wants_it", "wants_price"]);
 
@@ -220,13 +220,67 @@ export function passPromise(plan: Pick<PlanState, "pricePerBooking" | "capBookin
   return `You pay ${fmtMoney(price)} for each job that books, never more than ${fmtMoney(price * (plan.capBookings ?? ONE_PASS.capBookings))}. Nothing books, you owe nothing.`;
 }
 
+/* ------------------------------------------------------------------ */
+/* A one pass's money texts (BRIEF B4)                                 */
+/* ------------------------------------------------------------------ */
+
+const COUNT = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+
+/** A charge's money: its own, the running total with it, and the pass's cap. */
+function chargeMoney(plan: PlanState, c: Charge): { price: string; soFar: string; cap: string } {
+  const live = (plan.charges ?? []).filter(holdsPlace);
+  const n = live.findIndex((x) => x.id === c.id) + 1 || live.length + 1;
+  return { price: fmtMoney(c.amount / 100), soFar: fmtMoney((n * c.amount) / 100), cap: fmtMoney((plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (plan.capBookings ?? ONE_PASS.capBookings)) };
+}
+
+/** "your card ending 4242", or just "your card" when only Jack knows which (his own link saved it). */
+function cardWords(plan: PlanState): string {
+  return plan.card?.last4 ? `your card ending ${plan.card.last4}` : "your card";
+}
+
+/**
+ * The text for a billable booking, with the lead's code. The first goes by a link that saves the card (with no Stripe
+ * key, Jack texts his own link); the rest go on the saved card on `on`, one business day after the text reaches the
+ * owner, and NOT OURS before then cancels it. A link after the first (the card wasn't saved) says where the total stands.
+ */
+export function chargeHeadsUp(state: AccountState, c: Charge, opts: { link?: string; on?: ISODate }): string {
+  const plan = state.dataset.business.plan;
+  const name = customerById(state.dataset, c.customerId)?.name ?? "Someone";
+  const { price, soFar, cap } = chargeMoney(plan, c);
+  if (c.via === "card") return `${name} booked (#${c.code}). ${price} goes on ${cardWords(plan)} on ${WEEKDAY[new Date(`${opts.on}T12:00:00Z`).getUTCDay()]}, ${soFar} of your ${cap}. Not ours? Reply NOT OURS #${c.code}.`;
+  const first = soFar === price ? `That's your first ${price}.` : `That's ${price}, ${soFar} of your ${cap}.`;
+  return `${name} booked (#${c.code}). ${first} ${opts.link ? `Here's the link: ${opts.link}.` : "I'll text you the link."} It saves your card for the rest, and I text before every charge.`;
+}
+
+/** A charge on the saved card that didn't go through: the link to pay it instead, once Jack says so. */
+export function chargeRetryText(state: AccountState, c: Charge, link: string): string {
+  const name = customerById(state.dataset, c.customerId)?.name ?? "someone";
+  return `The ${fmtMoney(c.amount / 100)} for ${name} (#${c.code}) didn't go through on ${cardWords(state.dataset.business.plan)}. Here's the link to pay it: ${link}. It saves your card for the rest.`;
+}
+
+/** Once, when the cap's last charge is paid. */
+export function chargeCapText(plan: PlanState): string {
+  const n = plan.capBookings ?? ONE_PASS.capBookings;
+  const cap = fmtMoney((plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * n);
+  return `That's ${COUNT[n] ?? n}, the ${cap} cap. Anything else that books from this pass is yours.`;
+}
+
+/** A charge Jack refunded (its job cancelled before the work, or it wasn't ours). */
+export function chargeRefundText(state: AccountState, c: Charge): string {
+  const name = customerById(state.dataset, c.customerId)?.name ?? "someone";
+  return `Your ${fmtMoney(c.amount / 100)} for ${name} (#${c.code}) is going back on your card.`;
+}
+
 /**
  * A one pass's own notes: those due from its first send day on. A free round before it (the rest of a lawn or cleaning
- * list after its free 150) isn't the pass's, and nobody written to then is on the pass's list.
+ * list after its free 150) isn't the pass's, and nobody written to then is on the pass's list. Once it went monthly,
+ * only those due by the day it was done: the notes after are the monthly plan's.
  */
 export function passTouches(state: AccountState): Touch[] {
-  const from = state.dataset.business.plan.startedOn;
-  return from ? state.touches.filter((t) => t.dueAt.slice(0, 10) >= from) : [];
+  const plan = state.dataset.business.plan;
+  const from = plan.startedOn;
+  const to = isOnePass(plan) ? undefined : plan.doneOn;
+  return from ? state.touches.filter((t) => t.dueAt.slice(0, 10) >= from && (!to || t.dueAt.slice(0, 10) <= to)) : [];
 }
 
 /** Where a one pass stands: the people on its list and how many written to, and its notes sent out of all of them. */
@@ -243,8 +297,8 @@ export function passProgress(state: AccountState): { people: number; started: nu
 }
 
 /**
- * The one pass's last text, when its list is done: the tally, then whether the list refills fast enough to keep going
- * monthly (refillRate), else a look next season. It never mentions the monthly price. What was paid comes with billing.
+ * The one pass's last text, when its list is done: the tally with what was paid, then whether the list refills fast
+ * enough to keep going monthly (refillRate), else a look next season. It never mentions the monthly price.
  */
 export function passEndText(state: AccountState, asOf: ISODate): string {
   const b = state.dataset.business;
@@ -255,8 +309,10 @@ export function passEndText(state: AccountState, asOf: ISODate): string {
   const wanted = people(state.replies.filter((r) => WANTS.has(r.intent)));
   const booked = counted(state.recoveries).filter((r) => asked.has(r.customerId)).length;
   const refill = state.scan && refillRate(state.scan, asOf);
+  const paid = passPaid(b.plan);
+  const cap = (b.plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (b.plan.capBookings ?? ONE_PASS.capBookings);
   return [
-    `${b.ownerFirstName}, your list is done. Asked ${asked.size}, ${wrote} wrote back, ${wanted} ${wantedWords(b.plan).past}, ${booked} booked.`,
+    `${b.ownerFirstName}, your list is done. Asked ${asked.size}, ${wrote} wrote back, ${wanted} ${wantedWords(b.plan).past}, ${booked} booked. ${!paid ? "You paid nothing." : paid >= cap ? `You paid ${fmtMoney(paid)}, the cap.` : `You paid ${fmtMoney(paid)}.`}`,
     refill?.monthly
       ? `About ${refill.perMonth} more of your past customers stop coming or come due each month. That's enough to keep this going monthly: reply here and Jack will text you how it works.`
       : `I'll check back next season.`,

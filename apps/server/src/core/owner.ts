@@ -1,4 +1,5 @@
-import { addDays, cancelPlan, counted, daysBetween, isOnePass, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, billableBookings, billsPass, cancelPlan, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
@@ -8,6 +9,7 @@ import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSe
  * The owner never opens the dashboard: they answer our texts.
  *
  *   About a lead:      BOOKED 2400 #K7Q · DONE · NO · QUOTED · NO ANSWER   (the #code is on every hand-off text)
+ *   About a charge:    NOT OURS #M2D   (a one pass's booking the notes didn't bring: on every money text)
  *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · MONTHLY · CANCEL
  *                      (RENEW, YEARLY and UNDO within a day only with the yearly plan sold, FEATURE_YEARLY)
  *   About a person:    SKIP Karen Whitfield — off every list (already won it, said no on the phone, a friend)
@@ -41,6 +43,8 @@ interface Biz {
 }
 
 const OPT_OUT = /^(stop|stop ?all|unsubscribe|end|quit|revoke|opt ?out)$/;
+/** NOT OURS #code, the one pass's dispute (BRIEF B4): the words first, anything after them a reason. */
+const NOT_OURS = /^not ours\b/;
 const OPT_IN = /^(start|unstop)$/;
 const HELP = /^(help|info|commands)$/;
 /** "SKIP Karen Whitfield", "remove the Whitfields", "don't email Karen Whitfield". */
@@ -348,6 +352,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: fallback().id, reply: `Texts are back on.${paused.length ? " Your notes are still paused — text RESUME to restart them." : ""}`, handled: "texts_on" };
   }
   if (HELP.test(bare)) return { businessId: fallback().id, reply: HELP_TEXT, handled: "help" };
+  if (NOT_OURS.test(bare) && CODE.test(text)) return notOursCommand(d, named ? [named] : all, text.match(CODE)![1]!.toUpperCase(), tag, fallback);
 
   /* ---- the first note: nothing goes out until the owner says OK ---- */
   const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk && b.profile.plan.stage !== "cancelled");
@@ -496,9 +501,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     let until = "";
     let partWay = 0;
     let renewed = false;
+    // a one pass's bookings made before today are still billed (a pass gone monthly's too): how many aren't paid yet
+    let owed = 0;
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
       r = cancelPlan(state, at, { paused: one.paused, yearly });
+      const plan = state.dataset.business.plan;
+      if (billsPass(plan)) owed = billableBookings(state).billable.filter((x) => !plan.charges?.some((c) => c.customerId === x.customerId && c.status === "paid")).length;
       // a renewed year that hadn't started may or may not have been paid: Jack checks, and refunds it if it was
       renewed = !!state.cancelled?.years?.length;
       until = `${fmtClock(at)} tomorrow`;
@@ -513,9 +522,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const tt = totals(d.accounts.peek(one.id)!.state);
     // UNDO only where the yearly plan is sold; otherwise cancelling is final
     const undo = yearly ? ` Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} ${partWay ? `to pick back up; the ${partWay === 1 ? "1 person" : `${partWay} people`} already part-way through their notes won't get the rest.` : "and it all picks back up."}` : "";
+    const price = fmtMoney(one.profile.plan.pricePerBooking ?? ONE_PASS.pricePerBooking);
+    const charges = owed
+      ? `No more notes, and nothing that books from today on is charged. ${owed === 1 ? `The job booked before today is still ${price}` : `The ${owed} jobs booked before today are still ${price} each`}, and I text before every charge.`
+      : "No more notes, no more charges.";
     return {
       businessId: one.id,
-      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours.${undo}`,
+      reply: `${tag(one)}Done — cancelled. ${charges}${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours.${undo}`,
       handled: "cancel",
       ...(renewed ? { needsPerson: true } : {}),
     };
@@ -704,6 +717,33 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // about that lead, and goes to a person below).
   if (waitingOk.length && !hasCode) return noteChange();
   return { businessId: fallback().id, reply: `Thanks — Jack will read this and get back to you. For a lead, text BOOKED + amount + the #code, DONE, or NO. Text HELP for everything else.`, handled: "unrecognized", needsPerson: true };
+}
+
+/**
+ * NOT OURS #code (BRIEF B4). Before its charge, the charge is cancelled and its place freed; after it, Jack decides
+ * the refund and the charge holds its place meanwhile (his Needs a person shows it). A lead with no charge yet comes
+ * off the bookings, so it's never charged, and Jack sees that too.
+ */
+async function notOursCommand(d: Deps, pool: Biz[], code: string, tag: (b: Biz) => string, fallback: () => Biz): Promise<OwnerCommandResult> {
+  const hits = pool.filter((b) => {
+    const s = d.accounts.peek(b.id)?.state;
+    return !!s && ((s.dataset.business.plan.charges ?? []).some((c) => c.code === code) || s.replies.some((r) => r.handedOffAt && leadCode(r.id) === code));
+  });
+  if (hits.length > 1) return { businessId: hits[0]!.id, reply: `#${code} is on more than one of ${joinOr(hits.map((b) => b.profile.name), "and")}. Jack will read this and sort it out.`, handled: "not_ours_which", needsPerson: true };
+  const b = hits[0];
+  if (!b) return { businessId: fallback().id, reply: `I couldn't find #${code}. Jack will read this and sort it out.`, handled: "not_ours_unknown", needsPerson: true };
+  let r: ReturnType<typeof notOurs>;
+  let name = "";
+  await d.accounts.withAccount(b.id, (state) => {
+    r = notOurs(state, code, nowLocal(d, state));
+    name = state.dataset.customers.find((c) => c.id === r?.customerId)?.name ?? "that one";
+  });
+  withdrawStaleTexts(d, b.id);
+  const res = r!;
+  d.accounts.repo.audit(b.id, "owner-sms", "not_ours", { code, done: res?.done });
+  if (res?.done === "asked") return { businessId: b.id, reply: `${tag(b)}Got it. The ${fmtMoney(res.charge!.amount / 100)} for ${name} (#${code}) was already charged, so Jack will look at it and text you.`, handled: "not_ours_charged" };
+  if (res?.done === "disputed") return { businessId: b.id, reply: `${tag(b)}Got it: ${name} (#${code}) is off your bookings, so there's no charge for it.`, handled: "not_ours", needsPerson: true };
+  return { businessId: b.id, reply: `${tag(b)}Got it: no charge for ${name} (#${code}).`, handled: "not_ours" };
 }
 
 /** How long a lead the owner already told us about stays one a text without a #code could be about. */

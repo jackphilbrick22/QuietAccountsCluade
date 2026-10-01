@@ -201,7 +201,7 @@ export function bookedThrough(name: string): "visits" | "list" | undefined {
 }
 
 /** When a job was booked: the day it was made, else the day it was for, else the day it was done. */
-function jobOn(j: Job): ISODate | undefined {
+export function jobOn(j: Job): ISODate | undefined {
   return j.createdOn ?? j.scheduledOn ?? j.completedOn;
 }
 

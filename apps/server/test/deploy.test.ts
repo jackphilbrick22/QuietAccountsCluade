@@ -168,6 +168,7 @@ describe("the health page (GET /api/health/setup)", () => {
       instantly: { webhooks: "not_set_up" },
       sms: "log",
       stripe: "manual",
+      stripeWebhook: null,
       backup: { lastAt: null, file: null, failedAt: null, error: null, kept: 0, dir: backupsOf(h) },
     });
   });
@@ -179,7 +180,7 @@ describe("the health page (GET /api/health/setup)", () => {
       ["rk_live_51Qa8Kz", "live"],
       ["pk_live_51Qa8Kz", "unrecognized"],
     ]) {
-      const h = make({ env: { STRIPE_SECRET_KEY: key! } });
+      const h = make({ env: { STRIPE_SECRET_KEY: key!, STRIPE_WEBHOOK_SECRET: "whsec_test", STRIPE_ALLOW_LIVE: "true" } });
       const json = await setup(h);
       expect(json.stripe).toBe(mode);
       expect(JSON.stringify(json)).not.toContain("51Qa8Kz");
@@ -219,8 +220,8 @@ describe("the files a host builds from", () => {
       expect(entry, key).toMatch(/^# [A-Z_, and]+ \((required|optional|coming)[^)]*\): /m);
       expect(entry, key).toMatch(/Without (it|them)/);
     }
-    // the settings the next items add are listed already
-    for (const key of ["FEATURE_NEW_REQUESTS", "FEATURE_YEARLY", "STRIPE_WEBHOOK_SECRET", "STRIPE_ALLOW_LIVE"]) expect(env).toMatch(new RegExp(`^# ${key}=`, "m"));
+    // switched off unless set on purpose
+    for (const key of ["FEATURE_NEW_REQUESTS", "FEATURE_YEARLY", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "STRIPE_ALLOW_LIVE"]) expect(env).toMatch(new RegExp(`^# ${key}=`, "m"));
     expect(env).toMatch(/^DATABASE_PATH=\/data\//m);
   });
 

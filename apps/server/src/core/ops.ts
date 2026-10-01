@@ -63,6 +63,7 @@ import {
   SEASONAL_TRADES,
   stopSequence,
   weekday,
+  CHARGE_TEXTS,
   type AccountState,
   type BusinessProfile,
   type FileIn,
@@ -76,6 +77,7 @@ import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundP
 import { ProviderError } from "../contracts.ts";
 import type { Llm } from "../agents/llm.ts";
 import type { MailCheck } from "../providers/mailcheck.ts";
+import type { StripeClient } from "../providers/stripe.ts";
 import { draftAnswer, readReplyWithClaude } from "../agents/replies.ts";
 import { readRequestWithClaude } from "../agents/requests.ts";
 import { personalizeFirstNote } from "../agents/writer.ts";
@@ -97,6 +99,8 @@ export interface Deps {
   clock: () => Date;
   /** Pre-send "does this domain take mail?" check. Absent = skip (tests, or MAIL_CHECK=off). */
   mailCheck?: MailCheck;
+  /** Stripe, with STRIPE_SECRET_KEY. Absent: billing by hand (Jack's own links, a Done button for each charge). */
+  stripe?: StripeClient;
 }
 
 /** False (and the address suppressed as bounced) when the domain can't receive mail. */
@@ -145,7 +149,7 @@ export function unsubscribeUrl(cfg: Config, businessId: string, email: string): 
  * business that had the same id: it never reaches the new one, not even as an "old address" alert. (A key from before
  * lineages is its own lineage.)
  */
-export type LinkKind = "owner" | "import" | "requests" | "oauth|jobber";
+export type LinkKind = "owner" | "import" | "requests" | "oauth|jobber" | `pay|${string}`;
 
 /** Marks a lineage started on a business that already had keyless links out (made before keys existed). */
 const KEYLESS_LINEAGE = "~";
@@ -1404,11 +1408,16 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 /* Dispatcher: owner texts in and out                                  */
 /* ------------------------------------------------------------------ */
 
-const BILLING_KINDS = new Set(["close", "precharge", "free_month", "refund", "pass_end"]);
-/** Billing texts a person always sends: a refund to issue first, and a one pass's last text (BRIEF B3: Jack approves it). */
-const ALWAYS_REVIEWED = new Set(["refund", "pass_end"]);
+/** A one pass's money texts (BRIEF B4). */
+const MONEY_TEXTS = new Set<string>(CHARGE_TEXTS);
+const BILLING_KINDS = new Set<string>(["close", "precharge", "free_month", "refund", "pass_end", ...MONEY_TEXTS]);
+/**
+ * Billing texts a person always sends: a refund to issue first, a one pass's last text (BRIEF B3: Jack approves it),
+ * and its money texts (his OK sets the charge's day, or sends its link).
+ */
+const ALWAYS_REVIEWED = new Set<string>(["refund", "pass_end", ...MONEY_TEXTS]);
 
-/** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them. */
+/** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them and a one pass's money texts. */
 const CANCELLED_OWNER = "Cancelled: nothing more goes to the owner.";
 
 /** Twilio refuses a number that texted STOP (error 21610): the owner is opted out at the carrier. */
@@ -1419,9 +1428,10 @@ const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
  * says they did), they go by email through the direct mail provider when there is one; otherwise they're marked
  * failed, which puts them in the operator's review queue. Nothing is ever "sent" to a log in production.
  * By hand (SMS_PROVIDER=manual), a text waits on the "Texts to send" list until the operator marks it sent.
- * A cancelled client gets nothing more, except the refund text when they leave a yearly plan early.
+ * A cancelled client gets nothing more, except the refund text when they leave a yearly plan early. A billing text goes
+ * only once the operator approved that very text (`approved`): any other made meanwhile still waits for his OK.
  */
-export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowBilling?: boolean } = {}): Promise<number> {
+export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { approved?: string } = {}): Promise<number> {
   let n = 0;
   for (const m of d.accounts.repo.pendingOwnerMessages(100)) {
     if (bid && m.business_id !== bid) continue;
@@ -1430,14 +1440,15 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
     const b = loaded.state.dataset.business;
     const done = (delivery: "sent" | "manual" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, delivery, { ...f, at: d.clock().toISOString() });
-    // the one exception: the refund we owe them when they leave a yearly plan early
-    if (b.plan.stage === "cancelled" && m.kind !== "refund") {
+    // the exceptions: the refund we owe them when they leave a yearly plan early, and a one pass's money texts (its
+    // bookings made before the cancel are still billed)
+    if (b.plan.stage === "cancelled" && m.kind !== "refund" && !MONEY_TEXTS.has(m.kind)) {
       done("skipped", { error: CANCELLED_OWNER });
       continue;
     }
     // a refund text waits for a person even with auto-send on (someone has to issue the refund first), and so does a
     // one pass's last text
-    if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || ALWAYS_REVIEWED.has(m.kind)) && !opts.allowBilling) {
+    if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || ALWAYS_REVIEWED.has(m.kind)) && m.id !== opts.approved) {
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, "review");
       continue;
     }

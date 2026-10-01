@@ -210,7 +210,7 @@ describe("Texts to send and Paste their reply (A5)", () => {
     // no charge notice after "no more charges": what waited goes no further, as with Twilio
     await deliverOwnerMessages(h.d);
     expect((await list(h)).map((t) => [t.kind, t.text])).toEqual([["reply", cancel.json.reply]]);
-    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", "om-pre")).toEqual({ delivery: "skipped", channel: null, error: "Cancelled: nothing more goes to the owner." });
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", "om-pre")).toEqual({ delivery: "skipped", channel: null, error: "Cancelled: nothing more goes to the owner.", delivered_at: null });
     expect(((await h.api("GET", "/api/businesses/ridge/owner-messages?delivery=skipped")).json as { kind: string }[]).map((m) => m.kind).sort()).toEqual(["handoff", "precharge", "reply"]);
   });
 

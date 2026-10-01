@@ -105,6 +105,8 @@ export interface Overview {
   guarantee?: GuaranteeCheck;
   /** A one pass: the people on its list and how many written to, its notes sent out of all of them. */
   pass?: { people: number; started: number; sent: number; notes: number };
+  /** A one pass's billable bookings within the cap and past it, and the names of the people its charges are for. */
+  billing?: { billable: number; overCap: number; names: Record<string, string> };
   /** Once a free 150 or a one pass is over: newly lapsed or due customers a month (last 12), and whether that's monthly's 30. */
   refill?: { perMonth: number; monthly: boolean };
   counts?: { customers: number; quotes: number; jobs: number; invoices: number; requests: number; queued: number; sent: number };
@@ -213,6 +215,8 @@ export interface SetupHealth {
   instantly: { webhooks: "not_set_up" | "unknown" | "ok" | "failing"; checkedAt?: string | null; error?: string | null; lastEventAt?: string | null };
   sms: string;
   stripe: "manual" | "test" | "live" | "unrecognized";
+  /** With a key: whether Stripe's events can be checked (the signing secret is set), and when the last one came. */
+  stripeWebhook: { secret: boolean; lastEventAt: string | null } | null;
   backup: { lastAt: string | null; file: string | null; failedAt: string | null; error: string | null; kept: number; dir: string | null };
 }
 
@@ -259,6 +263,14 @@ interface Drafted {
   draft?: string;
   draftNeedsOwner?: boolean;
 }
+/** Which charge, whose and for how much (dollars). */
+interface ChargeRef {
+  chargeId: string;
+  customerId: string;
+  name: string;
+  code: string;
+  amount: number;
+}
 export type ReviewItem =
   | (ReviewBase & Drafted & { kind: "unclear"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; text: string })
   | (ReviewBase & Drafted & { kind: "late_lead"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; hours: number; text: string })
@@ -273,6 +285,10 @@ export type ReviewItem =
   | (ReviewBase & { kind: "brake"; reason: string; queued: number })
   | (ReviewBase & { kind: "unsure_send"; touchId: string; customerId: string; name: string; step: number; subject: string; error: string })
   | (ReviewBase & { kind: "not_taken"; touchId: string; customerId: string; name: string; reason: string })
+  /** A one pass's charge for Jack to decide: a refund (its job cancelled before the work), the owner's NOT OURS after it was charged, or a second payment for it. */
+  | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice"; why: string; status: string; refundBy: "stripe" | "hand" })
+  /** By hand (no Stripe key): an approved charge for Jack to collect, then Done. */
+  | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null })
   /** The sending platform itself (businessId is ""). */
   | (ReviewBase & { kind: "platform"; title: string; detail: string });
 

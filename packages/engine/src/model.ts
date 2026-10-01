@@ -409,6 +409,71 @@ export interface PlanState {
    * would). One record for the whole pass, whatever batch was planned last.
    */
   pace?: { inboxes: number; endOn: ISODate; lastFirst: ISODate; dailyNew?: number; late?: { canMeet: ISODate; moreInboxes?: number } };
+  /** The day the plan was cancelled: nothing booked from then on is billable. */
+  cancelledOn?: ISODate;
+  /**
+   * One pass: a charge for each billable booking, one per customer (billableBookings). Once a charge exists it's the
+   * record, whatever the ledger says of the booking later. A Settings save never touches it.
+   */
+  charges?: Charge[];
+  /** The card the owner saved (the first link's Checkout, a Stripe customer Jack pasted): later charges go on it. */
+  card?: SavedCard;
+}
+
+/**
+ * One booking's charge. heads_up (its text waits for Jack) → approved → link_sent (the /pay link went) or charging
+ * (the saved card, from its day) → paid, failed, refunded or skipped. Refunded and skipped free its place under the cap.
+ */
+export type ChargeStatus = "heads_up" | "approved" | "link_sent" | "charging" | "paid" | "failed" | "refunded" | "skipped";
+
+export interface Charge {
+  /** From the pass (its business and first send day) and the customer (chargeId), never from a booking's id. */
+  id: string;
+  customerId: string;
+  /** The ledger's booking it was made for, and the day it was made; none when Jack marked it paid without one. */
+  bookingId?: string;
+  bookedOn?: ISODate;
+  /** The lead's code from its hand-off text: on every money text, and what NOT OURS names. */
+  code: string;
+  /** In cents. */
+  amount: number;
+  status: ChargeStatus;
+  /** A link that saves the card (no card yet), or the saved card off-session. */
+  via: "link" | "card";
+  /**
+   * The saved card's day, named in its text: one business day after the text reaches the owner. Until it has, it moves
+   * on with the day the text would go.
+   */
+  chargeOn?: ISODate;
+  at: ISODateTime;
+  approvedAt?: ISODateTime;
+  /** When the saved card's text reached the owner (sent, or texted by hand and marked sent): nothing is charged before. */
+  toldAt?: ISODateTime;
+  /** The last time it went to Stripe (claimed, made, confirmed or read back). */
+  triedAt?: ISODateTime;
+  paidAt?: ISODateTime;
+  refundedAt?: ISODateTime;
+  /** Why it was skipped, failed or refunded, or how it was paid when not through the software. */
+  reason?: string;
+  /**
+   * Jack's to decide: a refund once its booking went (cancelled before the work), the owner's NOT OURS after it was
+   * charged, or a second payment for it (`paymentIntent`, that payment's).
+   */
+  ask?: { kind: "refund" | "not_ours" | "paid_twice"; at: ISODateTime; why: string; paymentIntent?: string };
+  /** Jack kept the money when asked: it isn't asked again. */
+  keptAt?: ISODateTime;
+  /** `again`: payments made after it was paid (an older Checkout from its link), each Jack's until he refunds or keeps it. */
+  stripe?: { customer?: string; sessions?: string[]; paymentIntent?: string; paymentMethod?: string; brand?: string; last4?: string; refund?: string; again?: string[] };
+}
+
+export interface SavedCard {
+  /** Stripe's customer and card; with no Stripe key, Jack's own link saved it and only he knows the ids. */
+  customer?: string;
+  paymentMethod?: string;
+  brand?: string;
+  last4?: string;
+  at: ISODateTime;
+  from: "checkout" | "pasted" | "paid_outside";
 }
 
 export interface ImportRecord {

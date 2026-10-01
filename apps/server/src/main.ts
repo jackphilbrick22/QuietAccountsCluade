@@ -11,6 +11,7 @@ import { createApp, type HttpDeps } from "./http/app.ts";
 import { LogEmailProvider, SmtpEmailProvider } from "./providers/email.ts";
 import { LogNotifier, ManualNotifier, TwilioNotifier } from "./providers/sms.ts";
 import { createMailCheck } from "./providers/mailcheck.ts";
+import { createStripeClient } from "./providers/stripe.ts";
 import { createLlm } from "./agents/llm.ts";
 import { createInstantlyProvider, parseInstantlyWebhook } from "./integrations/instantly/index.ts";
 import { registerWebhooks } from "./core/backstop.ts";
@@ -57,7 +58,9 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
         }
       : {};
   const mailCheck = cfg.MAIL_CHECK === "off" ? undefined : createMailCheck();
-  return { cfg, accounts, email, notifier, llm, fsm, log, clock: () => new Date(), parsers: { instantly: parseInstantlyWebhook }, mailCheck };
+  // without a key, billing is by hand (BRIEF B4's manual mode)
+  const stripe = cfg.STRIPE_SECRET_KEY ? createStripeClient({ key: cfg.STRIPE_SECRET_KEY }) : undefined;
+  return { cfg, accounts, email, notifier, llm, fsm, log, clock: () => new Date(), parsers: { instantly: parseInstantlyWebhook }, mailCheck, stripe };
 }
 
 export function start(env: Record<string, string | undefined> = process.env) {

@@ -302,7 +302,104 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     welcome text keeps B3's one-pass wording with B2's "the last N from <day>" on the monthly one.
   - Engine 1,625, server 446, site 108.
 
+- **B4. $250 per booking, capped at $1,000.**
+  - The count: `billableBookings` (engine) reads the ledger and the replies by customer.
+    - A real reply to one of the pass's own notes: not stop, not interested, wrong person, complaint, out-of-office or bounce; never a new-request answer or a reply to a note from before the pass. A reply read before its note's sent event counts too (the note it stopped was the pass's).
+    - Booked within 60 days of the first such reply, dated by the day the booking was made (job created, quote approved, invoice issued, BOOKED text or console entry). With only the work date, it's that date. A quote goes by its approved day, never the day it became a job: the very quote the pass chased too, and a job made from an approved quote, even when the job is what the ledger saw first. A quote approved before the pass wrote to them (approved, never scheduled) goes by the day its job was made. The same day decides the cancel.
+    - One per customer, whatever the booking ids. Four within the cap: it counts charges not refunded or cancelled, and a disputed charge holds its place until Jack decides.
+    - Not "not ours". Made before any cancel, by text or in Settings; a booking the day of the cancel counts as after it.
+    - A job cancelled before the work, or a quote whose job was, isn't a booking. Neither is a booking the owner texted whose export shows the job only cancelled (every job of theirs since the first note).
+    - freeFirst: the first N written to (by first note sent) are free and outside the cap.
+    - The rest of a lawn or cleaning list: cleaning bills only if the customer is back on a regular schedule; lawn only a season or one job over $500.
+  - A pass gone monthly (the owner's yes to the end text, set up in Settings) still bills its own bookings by its terms (`billsPass`):
+    - The worker keeps settling and charging them. Paid outside and NOT OURS still work, and the CANCEL reply counts what's still owed.
+    - The console keeps the pass's box, "The one pass before this plan", with its charges and the card.
+    - The pass is done the day it went monthly (if not before), and its notes end there, so a reply to a monthly note never bills $250.
+  - The charge log, kept on the plan:
+    - One charge per pass and customer: its booking, the lead's code, $250, status, Stripe ids, times and reason.
+    - Once a charge exists it's the record. A booking that drops out before the charge cancels it, with the reason. After the charge it never refunds by itself: Jack gets "Refund X's $250?" in Needs a person. If that customer books again, the question goes away and the $250 stands for the new booking. Money paid after its charge was cancelled stays his to decide.
+    - A Settings save or any plan patch never touches it.
+  - Owner texts, each with the lead's #code, always wait for Jack's OK. His OK sends only the text he approved; any other made meanwhile still waits for him:
+    - Booking 1: the /pay link.
+    - Bookings 2–4: "on your card ending 4242 on <day>". The card is charged one business day after the text reaches the owner (sent, or marked Sent on Texts to send), never before the day it names.
+      - Until it reaches him (on Texts to send, back with Jack after a STOP, a failed send), nothing is charged and the day in the text moves on with today, on the list too.
+      - Approved again, it counts from then.
+    - The cap text, once, after the fourth charge is paid. A declined card's link text. A refund text.
+    - They still go to a cancelled one-pass owner.
+    - The end text now says "You paid $X" ("You paid $1,000, the cap.").
+    - The one-pass CANCEL reply (a pass gone monthly's too) says what booked before today is still owed, otherwise "no more charges".
+    - No one-pass text says $497.
+  - NOT OURS #code (the only new owner-text rule; the paste box too):
+    - Before the charge it's cancelled, its place freed, its waiting text withdrawn, and the booking comes off the ledger.
+    - After the charge, Jack refunds or keeps it, and it holds its place meanwhile.
+    - A lead with no charge yet comes off the bookings, and its customer gets a cancelled charge for the pass, so a job a later export brings isn't charged either.
+    - A lead's code whose customer has a charge acts on that charge.
+  - Stripe (fetch client, form-encoded bodies, Idempotency-Key on every write):
+    - /pay/{signed link}:
+      - Each unpaid open makes a fresh cards-only Checkout that saves the card (key {charge}:checkout:{n}) and expires the one before. A paid one says so; /pay/thanks is the success page. No raw Checkout URL is ever sent.
+      - Marking a charge paid outside expires its open Checkout.
+      - A second payment that gets through anyway asks Jack to refund that payment; the charge stays paid.
+      - Replace all links kills the link, and each unpaid link's text goes again for Jack's OK with the new one.
+    - The worker charges saved cards from their day, once the text reached the owner: PaymentIntent made unconfirmed (key {charge}:pi), its id stored, then confirmed off-session.
+    - Stripe refusing it outright (a 4xx with no PaymentIntent, such as a deleted customer) fails it, so the link takes over.
+    - A charge left mid-charge (a restart, a lost answer, a 5xx) is read back by its id after 10 minutes, then confirmed, waited on, paid or failed.
+    - Refunds go through Stripe on Jack's OK.
+  - POST /webhooks/stripe:
+    - The signature is checked against the raw body (HMAC-SHA256, 5 minutes, timing-safe).
+    - Each event is taken once by its id, and each change is guarded by the charge's status.
+    - A link charge is paid only by checkout.session.completed with paid; a declined try inside Checkout changes nothing.
+  - Operator API:
+    - Mark a charge paid outside the software.
+    - Paste a Stripe customer id: its default card, else the newest; without a key, only the id is kept.
+    - Decide a refund, a NOT OURS or a second payment.
+    - Send a link charge's text again.
+  - Without a key: each approved charge waits in Needs a person as "Send the $250 link" or "Charge his saved card" (from its day, once its text reached the owner), with Done.
+  - Settings: STRIPE_WEBHOOK_SECRET and STRIPE_ALLOW_LIVE. A live key is refused without STRIPE_ALLOW_LIVE=true; a key without the webhook secret is refused on a server with production secrets. .env.example, the README and the Setup box match.
+  - Console:
+    - Billable bookings "x of 4" and what's paid.
+    - Each charge and where it stands ("the card a business day after its text reaches him" until it has), with "Paid outside" and "Send the link again".
+    - The paid-twice question.
+    - The card on file, with a box to paste a Stripe customer id.
+  - Fake Stripe models idempotency keys, declines, processing, lost answers, expired sessions, a deleted customer and replayed webhooks. Every "Done when" case has a test.
+  - Brief notes:
+    - "One business day later" counts from when the text reached the owner, not from Jack's OK: in manual SMS mode the OK only puts it on Texts to send.
+    - With a key, a link charge goes heads_up → link_sent at Jack's OK. "approved" is a card charge waiting for its day, or any charge without a key.
+    - Booking 1's text names a /pay link, which exists only with a key. Without one it says "I'll text you the link." and Jack sends his own.
+    - A booking dated the day of the cancel counts as after it.
+    - A second booking that comes before the first link is paid waits for it, so "your first $250" stays true.
+    - A charge in flight counts as charged for NOT OURS.
+    - The off-session confirm answers a decline itself, so payment_intent.payment_failed is usually moot.
+    - "Then monthly if his list refills": a pass's bookings stay billable for 60 days after each reply, so they're still billed once the plan is monthly.
+  - Left:
+    - Not checked against live or test-mode Stripe (no key was given). The Live steps say how.
+    - A link the owner leaves unpaid isn't flagged by itself: it shows as "Link sent", and the bookings after it wait for it.
+    - charge.refunded and card disputes (chargebacks) aren't handled: refunds are marked when Stripe's refund call answers, and chargebacks are Jack's.
+    - The cap text isn't sent again if a refund frees a place and the cap fills again.
+    - "One business day" doesn't skip holidays.
+    - HELP doesn't list NOT OURS (no owner-text wording changes beyond the brief).
+    - A late reply to a pass's note after it went monthly also counts as "asked to come back" that month. So one booking can bill $250 and also make that month paid. That's Jack's call.
+    - A cancelled pass taken straight to monthly loses its cancel day, as any plan back from cancelled does, so its bookings after the cancel bill again.
+  - Engine 1,662, server 488, site 108.
+
 **Live steps for Jack**
+- (B4) Stripe, in test mode first:
+  1. In Stripe (test mode), add the webhook endpoint PUBLIC_URL/webhooks/stripe with four events: checkout.session.completed, checkout.session.expired, payment_intent.succeeded and payment_intent.payment_failed. Copy its signing secret.
+  2. Set STRIPE_SECRET_KEY to the sk_test_ key and STRIPE_WEBHOOK_SECRET to that whsec_ secret, then restart. The Setup box should say "Stripe: test" and "Stripe events: none yet".
+  3. Run one test client end to end:
+     - **Link:** book a test lead (BOOKED 2400 #code) and approve its money text (in manual SMS mode, text it and press Sent). Open the /pay link and try 4000 0000 0000 0002: it's declined and the charge stays "Link sent". Then pay with 4242 4242 4242 4242: the charge says Paid, the card ending 4242 is on file, and the Setup box shows the event.
+     - **Saved card:** book a second lead, approve its text and send it. Nothing should be charged before the next business day, and on that day it should be Paid.
+     - **Decline on the saved card:** in the Stripe dashboard, make a test customer with the card 4000 0000 0000 0341 (it saves, then declines). Paste its cus_ id, book a lead, then approve and send the text. On its day the charge should say "Didn't go through", with the link text waiting for you.
+     - **Refund:** mark a paid one's job cancelled in a new export, or reply NOT OURS after the charge. Refund it from Needs a person, then check the refund in Stripe and the owner's text.
+     - **NOT OURS before the charge:** reply NOT OURS #code before its day (from the owner's phone, or the paste box). There should be no charge.
+     - **Replace all links:** the old /pay link should say it's no longer valid, and a new text should wait for your OK.
+     - **Gone monthly:** switch the test client to monthly in Settings with a card charge approved. It should still be charged on its day, and a lead booked after the switch should get its money text.
+  4. Going live, on purpose, at deploy: set the sk_live_ key, STRIPE_ALLOW_LIVE=true, and the signing secret of a live-mode endpoint (live and test endpoints have different secrets).
+  5. Without a key (manual mode):
+     - Each charge waits in Needs a person.
+     - For "Send the $250 link", text your own Stripe payment link set to save the card for future use, and press Done once it's paid.
+     - Paste that owner's Stripe customer id (cus_...) under the one-pass box.
+     - For "Charge his saved card", charge it in Stripe on its day, then press Done.
+     - Do the same paste for each owner who already paid through your own link.
 - (B2 re-check) In a lawn shop's season, send a fresh Visits report (or invoices) at least every two weeks. When one
   is older, Needs a person asks for it and nothing new is planned until it comes.
 - (B3) On a one pass, check in Instantly that each of its inboxes shows a daily limit of 30 after its first activation.

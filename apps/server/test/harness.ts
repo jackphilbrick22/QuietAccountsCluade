@@ -11,6 +11,7 @@ import { createApp, type HttpDeps } from "../src/http/app.ts";
 import { LogEmailProvider } from "../src/providers/email.ts";
 import { LogNotifier } from "../src/providers/sms.ts";
 import type { FsmConnector, OutboundProvider, OwnerNotifier } from "../src/contracts.ts";
+import type { StripeClient } from "../src/providers/stripe.ts";
 
 export const TOKEN = "test-operator-token-789";
 export const SECRET = "test-app-secret-0123456789";
@@ -32,7 +33,7 @@ export interface Harness {
   close(): void;
 }
 
-export function harness(opts: { email?: OutboundProvider; notifier?: OwnerNotifier; fsm?: Partial<Record<"jobber", FsmConnector>>; env?: Record<string, string>; now?: string; dir?: string } = {}): Harness {
+export function harness(opts: { email?: OutboundProvider; notifier?: OwnerNotifier; fsm?: Partial<Record<"jobber", FsmConnector>>; stripe?: StripeClient; env?: Record<string, string>; now?: string; dir?: string } = {}): Harness {
   const dir = opts.dir ?? mkdtempSync(join(tmpdir(), "qa-harness-"));
   const dbPath = join(dir, "qa.db");
   let now = new Date(opts.now ?? "2026-09-29T14:00:00Z"); // Tue 10:00 New York
@@ -44,6 +45,7 @@ export function harness(opts: { email?: OutboundProvider; notifier?: OwnerNotifi
     notifier: opts.notifier ?? new LogNotifier(true),
     llm: null,
     fsm: opts.fsm ?? {},
+    stripe: opts.stripe,
     log: () => {},
     clock: () => now,
     parsers: {},

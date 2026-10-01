@@ -651,8 +651,10 @@ describe("the end of a one pass", () => {
       reply("auto", "c60", "auto_reply"),
     ];
     st.recoveries = Array.from({ length: 6 }, (_, i) => ({ id: `rec${i}`, customerId: `c${i}`, record: { kind: "job" as const, id: `j${i}` }, value: 2400, cameBackOn: "2026-10-25", tier: "traced" as const, match: "owner_reported" as const, confidence: 1 }));
+    // four of them charged and paid (B4)
+    st.dataset.business.plan.charges = Array.from({ length: 4 }, (_, i) => ({ id: `chg${i}`, customerId: `c${i}`, code: "K7Q", amount: 25000, status: "paid" as const, via: "card" as const, at: "2026-10-26T09:00:00" }));
     const text = passEndText(st, "2026-11-05");
-    expect(text.split("\n")[0]).toBe("Dave, your list is done. Asked 412, 38 wrote back, 9 wanted the work, 6 booked.");
+    expect(text.split("\n")[0]).toBe("Dave, your list is done. Asked 412, 38 wrote back, 9 wanted the work, 6 booked. You paid $1,000, the cap.");
     expect(text).toContain("I'll check back next season.");
     expect(text).not.toMatch(/\$497|497|free|asked to come back|price or a date/i);
   });
@@ -687,7 +689,7 @@ describe("the end of a one pass", () => {
       { id: "rf", customerId: "f0", record: { kind: "job", id: "jf" }, value: 900, cameBackOn: "2026-09-20", tier: "traced", match: "owner_reported", confidence: 1 },
       { id: "rp", customerId: "c0", record: { kind: "job", id: "jp" }, value: 2400, cameBackOn: "2026-10-25", tier: "traced", match: "owner_reported", confidence: 1 },
     ];
-    expect(passEndText(st, "2026-11-05").split("\n")[0]).toBe("Dave, your list is done. Asked 3, 1 wrote back, 1 wanted the work, 1 booked.");
+    expect(passEndText(st, "2026-11-05").split("\n")[0]).toBe("Dave, your list is done. Asked 3, 1 wrote back, 1 wanted the work, 1 booked. You paid nothing.");
     expect(passProgress(st)).toEqual({ people: 3, started: 3, sent: 9, notes: 9 });
   });
 });

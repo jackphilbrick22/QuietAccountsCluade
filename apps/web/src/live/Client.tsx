@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { ArrowLeft, CheckCheck, Pause, Play, RefreshCw, Send } from "lucide-react";
-import { AGENTS, brakesLine, BREAKAGE_LABEL, daysBetween, fmtMoney, fmtPhone, isOnePass, MONTHLY_REFILL, ONE_PASS, passLate, passPromise, plural, SEND_BRAKES, wantedWords, type BreakageType } from "@qa/engine";
+import { AGENTS, billsPass, brakesLine, BREAKAGE_LABEL, daysBetween, fmtMoney, fmtPhone, isOnePass, MONTHLY_REFILL, ONE_PASS, passLate, passPaid, passPromise, plural, SEND_BRAKES, wantedWords, type BreakageType, type ChargeStatus } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
-import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, Table, Td, Th, Tr } from "../components/table";
+import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, smallInputCls, Table, Td, Th, Tr } from "../components/table";
 import { SUPPRESS_LABEL } from "../lib/labels";
 import { api, type Links, type OppPage, type Overview, type PlanResult, type TouchPage } from "./api";
 import { copy, useAction, useApi, useLive, type ClientTab } from "./store";
@@ -204,7 +204,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         />
       </Kpis>
 
-      {isOnePass(o.business.plan) && <PassBox o={o} />}
+      {(isOnePass(o.business.plan) || billsPass(o.business.plan)) && <PassBox o={o} />}
       {o.refill && <RefillNote o={o} />}
 
       <PasteReply key={id} id={id} />
@@ -357,30 +357,121 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
   );
 }
 
-/** A one pass: the plan kind, its list, how far through it is against its end date, and its bookings and charges. */
+/**
+ * A one pass: the plan kind, its list, how far through it is against its end date, and its bookings and charges. Gone
+ * monthly since, it's done, and its bookings and charges are still billed.
+ */
 function PassBox({ o }: { o: Overview }) {
   const p = o.business.plan;
+  const pass = isOnePass(p);
+  const over = p.stage === "done" || !pass;
+  const cap = p.capBookings ?? ONE_PASS.capBookings;
+  const price = p.pricePerBooking ?? ONE_PASS.pricePerBooking;
   const x = o.pass ?? { people: 0, started: 0, sent: 0, notes: 0 };
   const today = o.asOf ?? "";
   const days = p.startedOn && p.targetEndOn ? daysBetween(p.startedOn, p.targetEndOn) : ONE_PASS.days;
   const day = p.startedOn && today >= p.startedOn ? Math.min(days, daysBetween(p.startedOn, today) + 1) : 0;
   return (
-    <Section title="One pass" sub={`The whole list once, newest first. ${p.freeFirst ? `Bookings from the first ${p.freeFirst} people are free. ` : ""}${passPromise(p)}`}>
+    <Section title={pass ? "One pass" : "The one pass before this plan"} sub={`${pass ? "The whole list once, newest first." : "Its bookings are still billed by its terms."} ${p.freeFirst ? `Bookings from the first ${p.freeFirst} people are free. ` : ""}${passPromise(p)}`}>
       <Kpis>
         {/* before it's planned, the people a plan would take */}
         <Kpi label="List" value={(x.people || (o.totals?.remaining ?? 0)).toLocaleString("en-US")} sub={x.people ? `${x.started.toLocaleString("en-US")} written to` : "not planned yet"} />
         <Kpi label="Notes sent" value={`${x.sent.toLocaleString("en-US")} of ${x.notes.toLocaleString("en-US")}`} sub={x.notes ? `${Math.round((x.sent / x.notes) * 100)}% of the pass` : "nothing planned yet"} />
         <Kpi
           label="Ends"
-          value={p.stage === "done" ? `Done ${when(p.doneOn)}` : when(p.targetEndOn)}
-          sub={p.stage === "done" ? undefined : p.startedOn ? (day ? `day ${day} of ${days}` : `starts ${when(p.startedOn)}`) : "starts when it's planned"}
+          value={over ? `Done ${when(p.doneOn)}` : when(p.targetEndOn)}
+          sub={over ? undefined : p.startedOn ? (day ? `day ${day} of ${days}` : `starts ${when(p.startedOn)}`) : "starts when it's planned"}
           tone={p.stage === "running" && passLate(p) ? "warn" : undefined}
         />
-        {/* counted and charged once billing is built (B4) */}
-        <Kpi label="Billable bookings" value={`— of ${p.capBookings ?? ONE_PASS.capBookings}`} sub="counted with billing" />
-        <Kpi label="Charges" value="—" sub={`${fmtMoney(p.pricePerBooking ?? ONE_PASS.pricePerBooking)} a booking`} />
+        <Kpi label="Billable bookings" value={`${o.billing?.billable ?? 0} of ${cap}`} sub={o.billing?.overCap ? `${o.billing.overCap} more past the cap` : "one per customer"} />
+        <Kpi label="Charges" value={fmtMoney(passPaid(p))} sub={`paid, of ${fmtMoney(price * cap)}`} tone={passPaid(p) ? "ok" : undefined} />
       </Kpis>
+      {!!p.charges?.length && <ChargesTable o={o} />}
+      <SavedCard o={o} />
     </Section>
+  );
+}
+
+/** A charge's state, in the operator's words. */
+const CHARGE_STATUS: Record<ChargeStatus, string> = { heads_up: "Text waiting for you", approved: "Approved", link_sent: "Link sent", charging: "Going through", paid: "Paid", failed: "Didn't go through", refunded: "Refunded", skipped: "No charge" };
+
+/**
+ * The pass's charge log: who, which lead, where each stands; one not paid yet can be marked paid outside the software,
+ * and one out on its /pay link can have its text sent again (for your OK) with the link as it is now.
+ */
+function ChargesTable({ o }: { o: Overview }) {
+  const { busy, run } = useAction();
+  const bid = encodeURIComponent(o.business.id);
+  return (
+    <Table minWidth={620} label="Charges">
+      <thead>
+        <tr>
+          <Th>Booked</Th>
+          <Th>Where it stands</Th>
+          <Th right>Amount</Th>
+          <Th />
+        </tr>
+      </thead>
+      <tbody>
+        {o.business.plan.charges!.map((c) => (
+          <Tr key={c.id}>
+            <Td>
+              <span className="block font-semibold">{o.billing?.names[c.customerId] || "A customer"}</span>
+              <span className="text-[12px] text-ink-3">
+                {c.code ? `#${c.code} · ` : ""}
+                {c.bookedOn ? `booked ${when(c.bookedOn)}` : "no booking on the ledger"}
+              </span>
+            </Td>
+            <Td>
+              <span className="block">
+                {CHARGE_STATUS[c.status]}
+                {c.status === "approved" && c.via === "card" ? (c.toldAt && c.chargeOn ? `: the card on ${when(c.chargeOn)}` : ": the card a business day after its text reaches him") : ""}
+              </span>
+              {c.reason && <span className="text-[12px] text-ink-3">{c.reason}</span>}
+            </Td>
+            <Td right>{fmtMoney(c.amount / 100)}</Td>
+            <Td right>
+              {c.status === "link_sent" && (
+                <Btn variant="ghost" disabled={!!busy} onClick={() => void run("link", () => api("POST", `/businesses/${bid}/charges/${encodeURIComponent(c.id)}/link`), "The text with its link waits for your OK")}>
+                  Send the link again
+                </Btn>
+              )}
+              {!["paid", "refunded", "skipped", "charging"].includes(c.status) && (
+                <Btn variant="ghost" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${bid}/charges/paid`, { customerId: c.customerId }), "Marked paid")}>
+                  Paid outside
+                </Btn>
+              )}
+            </Td>
+          </Tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+/** The card later charges go on: the first link's Checkout saved it, or Jack pastes the Stripe customer his own link made. */
+function SavedCard({ o }: { o: Overview }) {
+  const [customer, setCustomer] = useState("");
+  const { busy, run } = useAction();
+  const card = o.business.plan.card;
+  const field = `card-${o.business.id}`;
+  return (
+    <form
+      className="flex flex-wrap items-center gap-2 text-[13px]"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void run("card", () => api("POST", `/businesses/${encodeURIComponent(o.business.id)}/stripe-customer`, { customer: customer.trim() }), "Later charges go on that customer's card").then((r) => r && setCustomer(""));
+      }}
+    >
+      <span className="text-ink-2">{card ? `Card on file${card.last4 ? `: ${card.brand ?? "card"} ending ${card.last4}` : ""}${card.customer ? ` (${card.customer})` : ""}.` : "No card on file yet: the first booking's link saves it."}</span>
+      <label htmlFor={field} className="sr-only">
+        Stripe customer id
+      </label>
+      <input id={field} className={cx(smallInputCls, "w-56")} value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="cus_… from your own link" />
+      <Btn type="submit" disabled={!customer.trim() || !!busy}>
+        Use its card
+      </Btn>
+    </form>
   );
 }
 

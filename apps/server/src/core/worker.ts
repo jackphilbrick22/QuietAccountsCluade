@@ -1,6 +1,7 @@
-import { billingCheck, chase, closeIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
+import { billingCheck, billsPass, chase, closeIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { backupIfDue } from "./backup.ts";
+import { runBilling } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
@@ -12,6 +13,7 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
  *  - Dispatcher: nudge the owner about hot leads nobody has called
  *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text; with the yearly plan
  *    sold (FEATURE_YEARLY), the renewal ask and settling a year; a one pass's end once its list is done
+ *  - Ledger: a one pass's charges (its billable bookings, their money texts, saved cards charged on their day)
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
  *  - Writer: nightly top-up for paying monthly accounts so the list keeps being worked at the weekly pace (a one pass
  *    is the whole list once: never topped up)
@@ -21,7 +23,8 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
  *  - background tasks queue (webhook follow-ups, retries)
  * Each step is isolated: one business failing never stops the others, and one slow business never holds up the
  * rest: each gets a time budget, after which the tick moves on and that business's turn finishes in the background
- * (it's skipped until then, so nothing is ever sent twice). A cancelled business gets no more work at all.
+ * (it's skipped until then, so nothing is ever sent twice). A cancelled business gets no more work, but a one pass's
+ * bookings made before its cancel are still billed.
  */
 export interface TickReport {
   businesses: number;
@@ -161,6 +164,10 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
       report.sent += r.sent;
       report.failed += r.failed;
     });
+
+  // A one pass's charges, before its texts go: bookings made before a cancel are still billed, so a cancelled pass too,
+  // and a pass gone monthly since.
+  if (billsPass(biz.profile.plan)) await step("billing", () => runBilling(d, bid));
 
   await step("dispatch", async () => {
     if (!cancelled) {

@@ -43,6 +43,7 @@ import {
   zoneForCell,
   endPass,
   isOnePass,
+  billsPass,
   monthlyPlan,
   ONE_PASS,
   onePassPlan,
@@ -50,6 +51,8 @@ import {
   passProgress,
   refillRate,
   stageFits,
+  billableBookings,
+  CHARGE_TEXTS,
   type PlanState,
 } from "@qa/engine";
 import { z } from "zod";
@@ -62,6 +65,8 @@ import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import { setupHealth } from "../core/health.ts";
+import { approveChargeText, decideChargeOp, markPaid, openPay, pasteCustomer, sendLinkAgain, stripeEvent } from "../core/billing.ts";
+import { verifyStripeSignature, type StripeEvent } from "../providers/stripe.ts";
 import {
   answerInThread,
   approve,
@@ -239,11 +244,20 @@ function notStarted(b: BusinessProfile): boolean {
   return b.plan.stage === "trial" || (isOnePass(b.plan) && b.plan.stage === "running");
 }
 
+/** A one pass's billable bookings within the cap and past it, and the names of the people its charges are for. */
+function billing(state: AccountState) {
+  const count = billableBookings(state);
+  const names = Object.fromEntries((state.dataset.business.plan.charges ?? []).map((c) => [c.customerId, state.dataset.customers.find((x) => x.id === c.customerId)?.name ?? ""]));
+  return { billable: count.billable.length, overCap: count.overCap.length, names };
+}
+
 /** Compact business overview for dashboards (never the whole dataset). `features`: what this server sells beyond the two offers. */
 export function overview(state: AccountState, paused: boolean, features: Features) {
   const b = state.dataset.business;
   const t = totals(state);
   const pass = isOnePass(b.plan);
+  // a pass gone monthly still shows: its bookings are still billed
+  const billed = pass || billsPass(b.plan);
   const hot = state.replies.filter((r) => (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt);
   return {
     business: b,
@@ -260,7 +274,9 @@ export function overview(state: AccountState, paused: boolean, features: Feature
     // the monthly promise is a monthly plan's (a one pass made from a paying one keeps its first paid day)
     guarantee: b.plan.paidOn && !pass ? guaranteeCheck(state, state.dataset.asOf) : undefined,
     // a one pass: its list, how far through, against its end date
-    pass: pass ? passProgress(state) : undefined,
+    pass: billed ? passProgress(state) : undefined,
+    // and what it bills: billable bookings (charged or waiting for one) against the cap, and who each charge is for
+    billing: billed ? billing(state) : undefined,
     // "Who gets monthly": how fast the list refills, once a free 150 or a one pass is over
     refill: state.scan && (pass ? b.plan.stage === "done" : !!state.trialCompletedOn) ? refillRate(state.scan, state.dataset.asOf) : undefined,
     counts: {
@@ -437,8 +453,13 @@ export function createApp(d: HttpDeps): Hono<Env> {
         if (switched && next.billing !== "annual" && next.paidOn) next.yearsPaidOn = (next.yearsPaidOn ?? []).filter((y) => y < next.paidOn!);
         // a yearly plan's first paid day is one of its paid years, so its refunds, renewal ask and year floor all run
         if (next.billing === "annual" && next.paidOn && !(next.yearsPaidOn ?? []).includes(next.paidOn)) next.yearsPaidOn = [...(next.yearsPaidOn ?? []), next.paidOn].sort();
-        // a plan made a one pass gets the pass's terms where it has none
+        // a plan made a one pass gets the pass's terms where it has none; a pass gone monthly is done that day (if not
+        // before): its bookings are still billed by its terms, and the notes from then on are the monthly plan's
         b.plan = isOnePass(next) ? onePassPlan(next) : next;
+        if (isOnePass(before) && !isOnePass(b.plan) && billsPass(b.plan)) b.plan.doneOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
+        // cancelled here as by text: nothing booked from today on is billed (and back from it, the day is gone)
+        if (b.plan.stage === "cancelled" && stageBefore !== "cancelled") b.plan.cancelledOn = localIso(d.clock(), b.timezone).slice(0, 10);
+        else if (b.plan.stage !== "cancelled") delete b.plan.cancelledOn;
         // a new end date: whether the notes it has meet it; before the owner's OK, one they don't is paced to at once
         // (never once the pass is over)
         if (isOnePass(b.plan) && b.plan.pace && b.plan.targetEndOn !== before.targetEndOn) {
@@ -747,11 +768,18 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.get("/businesses/:id/owner-messages", (c) => c.json(repo.ownerMessages(c.req.param("id"), { delivery: c.req.query("delivery") })));
 
   op.post("/businesses/:id/owner-messages/:mid/send", async (c) => {
-    // Operator approves a billing text (the close, pre-charge, free month) for delivery.
+    // Operator approves a billing text (the close, pre-charge, free month) for delivery. A one pass's money text moves
+    // its charge on first (its day, its link), or is withdrawn when the charge moved on meanwhile; one that failed to
+    // send goes again with its link as it is now, or its card's day from today.
+    const m = repo.db.get<{ kind: string; delivery: string }>("SELECT kind, delivery FROM owner_messages WHERE business_id = ? AND id = ?", c.req.param("id"), c.req.param("mid"));
+    if (m && (CHARGE_TEXTS as readonly string[]).includes(m.kind) && (m.delivery === "review" || m.delivery === "failed")) {
+      const r = await approveChargeText(d, c.req.param("id"), c.req.param("mid"));
+      if (r.refused) return c.json({ ok: false, error: r.refused }, 409);
+    }
     const moved = d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND id = ? AND delivery IN ('review','failed')", c.req.param("id"), c.req.param("mid"));
     // nothing to send (already sent, or withdrawn): say so instead of reporting a send that didn't happen
     if (!Number(moved.changes)) return c.json({ ok: false, error: "That text isn't waiting to be sent any more (it was sent or withdrawn)." }, 409);
-    await deliverOwnerMessages(d, c.req.param("id"), { allowBilling: true });
+    await deliverOwnerMessages(d, c.req.param("id"), { approved: c.req.param("mid") });
     const after = repo.ownerMessageDelivery(c.req.param("id"), c.req.param("mid"));
     repo.audit(c.req.param("id"), "operator", "owner-message.approve", { id: c.req.param("mid"), delivery: after?.delivery });
     // 200 either way (the approval stands); the console reads ok/delivery and says what really happened
@@ -766,6 +794,38 @@ export function createApp(d: HttpDeps): Hono<Env> {
     if (!repo.sentByHand(c.req.param("id"), c.req.param("mid"), d.clock().toISOString())) return c.json({ error: "That text isn't waiting to be sent any more." }, 409);
     repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "owner-message.sent_by_hand", { id: c.req.param("mid") });
     return c.json({ ok: true });
+  });
+
+  // A one pass's charges (BRIEF B4): one Jack was paid outside the software (or Done, with no Stripe key), a Stripe
+  // customer his own payment link saved the card on, his answer to one waiting on him (a refund, a NOT OURS, a second
+  // payment), and a /pay link's text again for his OK.
+  op.post("/businesses/:id/charges/paid", async (c) => {
+    const { customerId } = z.object({ customerId: z.string().min(1) }).parse(await c.req.json());
+    const r = await markPaid(d, c.req.param("id"), customerId);
+    if ("refused" in r) return c.json({ error: r.refused }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.paid_outside", { charge: r.charge.id, customerId });
+    return c.json({ ok: true, charge: r.charge });
+  });
+  op.post("/businesses/:id/charges/:cid/decide", async (c) => {
+    const { refund } = z.object({ refund: z.boolean() }).parse(await c.req.json());
+    const r = await decideChargeOp(d, c.req.param("id"), c.req.param("cid"), refund);
+    if ("refused" in r) return c.json({ error: r.refused }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.decide", { charge: c.req.param("cid"), ...r });
+    return c.json({ ok: true, ...r });
+  });
+  op.post("/businesses/:id/charges/:cid/link", async (c) => {
+    if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
+    const [made] = await sendLinkAgain(d, c.req.param("id"), c.req.param("cid"));
+    if (!made) return c.json({ error: "That charge isn't waiting on its link." }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.link_again", { charge: c.req.param("cid") });
+    return c.json({ ok: true, messageId: made });
+  });
+  op.post("/businesses/:id/stripe-customer", async (c) => {
+    const { customer } = z.object({ customer: z.string().trim().regex(/^cus_\w+$/, "A Stripe customer id, like cus_PQ8x2LmN0aB1cD") }).parse(await c.req.json());
+    const r = await pasteCustomer(d, c.req.param("id"), customer);
+    if ("refused" in r) return c.json({ error: r.refused }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.customer", { customer });
+    return c.json({ ok: true, card: r.card });
   });
 
   op.get("/businesses/:id/close-preview", (c) => {
@@ -790,11 +850,13 @@ export function createApp(d: HttpDeps): Hono<Env> {
     if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
     return c.json(links(c.req.param("id")));
   });
-  // New owner, import and connect links for one client (a departed office manager, a forwarded text): every old one stops working.
-  op.post("/businesses/:id/links/rotate", (c) => {
+  // New owner, import and connect links for one client (a departed office manager, a forwarded text): every old one stops
+  // working. A one pass's /pay links out are among them: each one's text goes again for his OK, with its new link.
+  op.post("/businesses/:id/links/rotate", async (c) => {
     const id = c.req.param("id");
     if (!repo.exists(id)) throw new NotFound("No such business");
     rotateLinks(d, id);
+    await sendLinkAgain(d, id);
     repo.audit(id, "operator", "links.rotate");
     return c.json(links(id));
   });
@@ -870,6 +932,15 @@ export function createApp(d: HttpDeps): Hono<Env> {
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
       for (const m of [...repo.ownerMessages(b.id, { delivery: "review" }), ...repo.ownerMessages(b.id, { delivery: "failed" })])
         items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
+      // a one pass's charges waiting on a person: a refund, a NOT OURS or a second payment to decide; by hand (no Stripe
+      // key), each one approved is his to collect (the card's from its day, once its text reached the owner), then Done
+      const plan = s.dataset.business.plan;
+      for (const ch of plan.charges ?? []) {
+        const charge = { chargeId: ch.id, customerId: ch.customerId, name: people.get(ch.customerId)?.name ?? "", code: ch.code, amount: ch.amount / 100 };
+        if (ch.ask) items.push({ kind: "charge_ask", ...biz, at: ch.ask.at, ...charge, ask: ch.ask.kind, why: ch.ask.why, status: ch.status, refundBy: d.stripe && (ch.ask.paymentIntent ?? ch.stripe?.paymentIntent) ? "stripe" : "hand" });
+        else if (!d.stripe && ch.status === "approved" && (ch.via === "link" || (ch.toldAt && (ch.chargeOn ?? "") <= nowLocal.slice(0, 10))))
+          items.push({ kind: "charge_due", ...biz, at: ch.approvedAt ?? ch.at, ...charge, via: ch.via, last4: plan.card?.last4 ?? null });
+      }
       // the Guard's brake is holding every note until a person looks
       const health = sendHealth(s);
       if (health.paused) {
@@ -1165,7 +1236,46 @@ export function createApp(d: HttpDeps): Hono<Env> {
   app.get("/u/:token", unsub);
   app.post("/u/:token", unsub); // RFC 8058 one-click
 
+  /* ----------------------------- the owner's /pay link ----------------------------- */
+  // A one pass's payment link (BRIEF B4): never a raw Checkout URL, which expires; this one makes a fresh Checkout
+  // each time it's opened unpaid. The thanks page is Checkout's success URL.
+  const payPage = (title: string, body: string) =>
+    `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body style="font:16px/1.5 system-ui;padding:40px;max-width:520px;margin:auto"><h2>${title}</h2><p>${body}</p></body>`;
+  app.get("/pay/thanks", (c) => c.html(payPage("Thanks, it's paid", "Your card is saved for the rest, and you'll get a text before every charge. You can close this page.")));
+  app.get("/pay/:token", async (c) => {
+    const r = await openPay(d, c.req.param("token"));
+    if ("redirect" in r) return c.redirect(r.redirect, 303);
+    if (r.page === "paid") return c.html(payPage("Paid", "This one is paid. Thanks. You can close this page."));
+    if (r.page === "nothing") return c.html(payPage("Nothing to pay", "There's nothing to pay on this link right now. Text Jack if that looks wrong."));
+    return c.html(payPage("This link isn't valid anymore", "Text Jack and he'll send you a new one."), 404);
+  });
+
   /* ----------------------------- webhooks ----------------------------- */
+  // Stripe (BRIEF B4): the signature checked against the raw body; each event taken once by its id, and each change
+  // guarded by the charge's status, so a retry, a replay or one out of order never charges or marks twice. A failure
+  // answers 500, so Stripe sends it again.
+  app.post("/webhooks/stripe", async (c) => {
+    const secret = d.cfg.STRIPE_WEBHOOK_SECRET;
+    if (!d.stripe || !secret) return c.json({ error: "Stripe isn't set up here" }, 404);
+    const raw = await c.req.text();
+    if (!verifyStripeSignature(secret, raw, c.req.header("stripe-signature"), d.clock().getTime())) return c.json({ error: "bad signature" }, 400);
+    const ev = safeJson(raw) as StripeEvent | undefined;
+    if (!ev?.id || !ev.data?.object) return c.json({ error: "Expected a Stripe event" }, 400);
+    const id = `stripe:${ev.id}`;
+    const claim = repo.claimWebhook(id, "stripe", raw, d.clock().toISOString());
+    if (claim === "duplicate") return c.json({ ok: true, duplicate: true });
+    if (claim === "busy") return c.json({ ok: false, busy: true }, 503, { "Retry-After": "120" });
+    try {
+      const r = await stripeEvent(d, ev);
+      repo.finishWebhook(id, r.businessId ? "processed" : "ignored", r.businessId, r.note);
+      return c.json({ ok: true });
+    } catch (e) {
+      repo.finishWebhook(id, "failed", undefined, (e as Error).message);
+      d.log(`[stripe] ${ev.type} ${ev.id} failed: ${(e as Error).message}`);
+      return c.json({ error: "failed" }, 500);
+    }
+  });
+
   const secretOk = (c: Context<Env>) => {
     const s = c.req.param("secret") ?? "";
     const a = Buffer.from(s);

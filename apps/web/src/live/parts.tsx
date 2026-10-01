@@ -338,6 +338,11 @@ export const MSG_KIND: Record<string, string> = {
   renewal: "Year renewal",
   refund: "Yearly refund (issue it, then send)",
   pass_end: "End of the pass",
+  charge_link: "A booking's charge, by the link",
+  charge_card: "A booking's charge, on the saved card",
+  charge_retry: "A charge that didn't go through",
+  charge_cap: "The cap is reached",
+  charge_refund: "A refund (it's issued)",
   info: "Heads up",
   reply: "Reply to their text",
 };

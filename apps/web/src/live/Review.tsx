@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { RefreshCw } from "lucide-react";
+import { fmtMoney } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, Chip, PageHead, selectCls } from "../components/table";
@@ -16,6 +17,8 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
   alert: { label: "Alert", tone: "bad" },
   owner_text: { label: "Owner texted", tone: "accent" },
   owner_message: { label: "Text waiting for you", tone: "accent" },
+  charge_ask: { label: "Charge to decide", tone: "bad" },
+  charge_due: { label: "Charge to collect", tone: "accent" },
   unclear: { label: "Unclear reply", tone: "warn" },
   draft: { label: "Answer drafted", tone: "info" },
   ready: { label: "Ready to start", tone: "info" },
@@ -26,13 +29,13 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
   not_taken: { label: "Platform refused", tone: "warn" },
   platform: { label: "Sending platform", tone: "bad" },
 };
-const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "owner_text", "owner_message", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
+const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "charge_ask", "owner_text", "owner_message", "charge_due", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
 
 /** An owner's UNDO a person finishes with Restore plan: a refund set up, the platform down, or an inbox another client has now. */
 const RESTORE = ["undo_refund", "undo_platform", "undo_inbox"];
 
 const itemKey = (it: ReviewItem) =>
-  `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "seq" in it ? it.seq : "id" in it ? it.id : ""}`;
+  `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "chargeId" in it ? it.chargeId : "seq" in it ? it.seq : "id" in it ? it.id : ""}`;
 
 /** What we did with an owner's text, in the operator's words. */
 const HANDLED: Record<string, string> = {
@@ -48,6 +51,9 @@ const HANDLED: Record<string, string> = {
   resume_done: "texted RESUME after their one pass was done",
   pass_monthly: "wants to keep going after the one pass: set up the plan in Settings and text them how it works",
   pass_end_no: "answered the end of their one pass with a no (or it's about a lead: it was left alone)",
+  not_ours: "texted NOT OURS for a lead with no charge yet: its bookings are off the ledger, so it's never charged",
+  not_ours_unknown: "texted NOT OURS with a code we can't find",
+  not_ours_which: "texted NOT OURS with a code more than one of their businesses has",
 };
 
 export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
@@ -334,6 +340,55 @@ function Item({ it }: { it: ReviewItem }) {
               Approve and send
             </Btn>
             <Btn onClick={() => void copy(it.text, "Text copied")}>Copy text</Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "charge_ask" && (
+        <>
+          <div className="text-[14px]">
+            {it.ask === "not_ours" ? (
+              <>
+                The owner says <b>{it.name}</b> (#{it.code}) wasn't ours, and its {fmtMoney(it.amount)} is {it.status === "paid" ? "charged" : "going through"}
+              </>
+            ) : it.ask === "paid_twice" ? (
+              <>
+                <b>{it.name}</b>'s {fmtMoney(it.amount)} (#{it.code}) was paid twice
+              </>
+            ) : (
+              <>
+                Refund <b>{it.name}</b>'s {fmtMoney(it.amount)} (#{it.code})?
+              </>
+            )}
+          </div>
+          <p className="text-[12.5px] text-ink-3">
+            {it.ask === "paid_twice"
+              ? `${it.why}. Refund it sends the second payment back through Stripe, and the owner's text waits for your OK; the booking stays paid. Keep it once you've sorted it with him yourself.`
+              : `${it.why}. ${it.refundBy === "stripe" ? "Refund it sends it back through Stripe" : "Refund it in Stripe yourself, then say so here"}: its place under the cap opens up again, and the owner's text waits for your OK. Keep it and it stays charged.`}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy || it.status === "charging"} onClick={() => void run("refund", () => api<{ done: string }>("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: true }), (r) => (r.done === "refunded" ? "Refunded. The text to the owner waits for your OK" : "Cancelled: it was never charged"))}>
+              {it.refundBy === "stripe" ? "Refund it" : "I refunded it"}
+            </Btn>
+            <Btn disabled={!!busy || it.status === "charging"} onClick={() => void run("keep", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: false }), "Kept")}>
+              Keep it
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "charge_due" && (
+        <>
+          <div className="text-[14px]">
+            {it.via === "link" ? `Send the ${fmtMoney(it.amount)} link` : "Charge his saved card"}: <b>{it.name}</b> booked (#{it.code})
+          </div>
+          <p className="text-[12.5px] text-ink-3">
+            {it.via === "link" ? `Text the owner your Stripe payment link for ${fmtMoney(it.amount)} (one that saves his card), and press Done once it's paid.` : `Charge ${fmtMoney(it.amount)} in Stripe on the card ${it.last4 ? `ending ${it.last4}` : "his link saved"}, then press Done.`}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/paid`, { customerId: it.customerId }), "Marked paid")}>
+              Done: it's paid
+            </Btn>
           </div>
         </>
       )}

@@ -37,6 +37,10 @@ export const schema = z.object({
 
   /** Stripe. Without a key, billing is by hand; the health page shows test or live from the key's prefix, never the key. */
   STRIPE_SECRET_KEY: z.string().optional(),
+  /** Signs Stripe's events to POST /webhooks/stripe (whsec_...). Required with a key on a server with production secrets. */
+  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  /** A live key (sk_live_, rk_live_) charges real cards: refused unless this is "true", set at deploy on purpose. */
+  STRIPE_ALLOW_LIVE: z.enum(["true", "false"]).default("false"),
 
   JOBBER_CLIENT_ID: z.string().optional(),
   JOBBER_CLIENT_SECRET: z.string().optional(),
@@ -103,6 +107,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (c.EMAIL_PROVIDER === "smtp" && !c.SMTP_URL) throw new Error("EMAIL_PROVIDER=smtp needs SMTP_URL");
   if (c.EMAIL_PROVIDER === "instantly" && !c.INSTANTLY_API_KEY) throw new Error("EMAIL_PROVIDER=instantly needs INSTANTLY_API_KEY");
   if (c.SMS_PROVIDER === "twilio" && !(c.TWILIO_ACCOUNT_SID && c.TWILIO_AUTH_TOKEN && c.TWILIO_FROM)) throw new Error("SMS_PROVIDER=twilio needs TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM");
+  // a live key charges real cards: only on purpose; and without the webhook secret no payment would ever be seen
+  if (c.STRIPE_SECRET_KEY && liveStripeKey(c.STRIPE_SECRET_KEY) && c.STRIPE_ALLOW_LIVE !== "true") throw new Error("STRIPE_SECRET_KEY is a live key: set STRIPE_ALLOW_LIVE=true to charge real cards, or use an sk_test_ key");
+  if (c.STRIPE_SECRET_KEY && !c.STRIPE_WEBHOOK_SECRET && isProductionLike(c)) throw new Error("STRIPE_SECRET_KEY needs STRIPE_WEBHOOK_SECRET: the signing secret of the endpoint PUBLIC_URL/webhooks/stripe");
   // Sending real email or texts with public default secrets would let anyone forge replies and
   // unsubscribes, and a localhost PUBLIC_URL would break every unsubscribe link. Refuse to start.
   // (Manual texts aren't sent from here: a person sends them.)
@@ -114,6 +121,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     if (c.SIGNUPS === "on" && !signupOrigins(c).length) throw new Error("SIGNUPS=on needs SIGNUP_ORIGINS when sending for real: the site's address, like https://quietaccounts.com (or set SIGNUPS=off)");
   }
   return c;
+}
+
+/** A Stripe key that moves real money. */
+export function liveStripeKey(key: string): boolean {
+  return /^[sr]k_live_/.test(key);
 }
 
 export function isProductionLike(c: Config): boolean {
