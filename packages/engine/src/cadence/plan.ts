@@ -34,6 +34,7 @@ export interface PlanOptions {
   /**
    * People who just asked for new work (we answered their request), with the day they asked: only what follows it is
    * planned for them (the request's own follow-up, or the quote sent after it), never an old leak dug up the next day.
+   * Likewise people whose follow-ups a newer quote stopped, from the day those were planned.
    */
   askedOn?: Map<string, ISODate>;
 }

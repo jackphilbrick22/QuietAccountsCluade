@@ -68,6 +68,35 @@ export function settledCheck(state: AccountState): (t: Touch) => string | undefi
   };
 }
 
+/** Why follow-ups were stopped when a newer quote went out (to them, or for the request they chased). */
+const NEWER_QUOTE = /^No longer needed: (their request got a quote|they've had a new quote since)$/;
+
+/**
+ * People whose latest follow-ups a newer quote stopped, with nothing queued for them since, and the day those were
+ * planned. That quote is the one to chase now: it gets its own follow-up, though we wrote to them lately (planBatch,
+ * find). Anything from before the stopped notes stays left alone.
+ */
+export function supersededOn(state: AccountState): Map<string, string> {
+  const live = new Set<string>();
+  // each planned sequence (an opportunity planned twice is two): whose, the day it was planned, and whether a newer quote stopped it
+  const seqs = new Map<string, { customerId: string; on: string; stopped: boolean }>();
+  for (const t of state.touches) {
+    if (t.status === "planned" || t.status === "approved" || t.status === "sending") live.add(t.customerId);
+    if (t.instant) continue;
+    const k = `${t.opportunityId}|${t.plannedOn ?? ""}`;
+    const s = seqs.get(k) ?? seqs.set(k, { customerId: t.customerId, on: "", stopped: false }).get(k)!;
+    // planned before the day was recorded: the day its note 1 was due (later, so never too eager)
+    const on = t.plannedOn ?? (t.step === 1 ? t.dueAt.slice(0, 10) : "");
+    if (on > s.on) s.on = on;
+    if (t.status === "cancelled" && NEWER_QUOTE.test(t.lastError ?? "")) s.stopped = true;
+  }
+  const latest = new Map<string, { on: string; stopped: boolean }>();
+  for (const s of seqs.values()) if (s.on >= (latest.get(s.customerId)?.on ?? "")) latest.set(s.customerId, s);
+  const out = new Map<string, string>();
+  for (const [id, s] of latest) if (s.stopped && s.on && !live.has(id)) out.set(id, s.on);
+  return out;
+}
+
 /**
  * Follow-ups still queued for an opportunity that's settled (approved, booked, quoted again) are cancelled, with one
  * note per person for the operator. A sending platform's copies are the caller's to pull: the cancelled notes come back.

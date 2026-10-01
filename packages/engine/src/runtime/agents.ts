@@ -14,7 +14,7 @@ import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
-import { settledCheck } from "./settled.ts";
+import { settledCheck, supersededOn } from "./settled.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
 
@@ -95,7 +95,8 @@ export function readFiles(state: AccountState, files: FileIn[], now: ISODateTime
 export function find(state: AccountState, now: ISODateTime): AccountState {
   const lastContacted: Record<string, string> = {};
   for (const o of state.outreach) if (!o.holdout) lastContacted[o.customerId] = o.lastTouchOn;
-  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays: 150 });
+  const newSince = Object.fromEntries(supersededOn(state));
+  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays: 150, newSince });
   state.summary = summarize(state.dataset, state.scan);
   const s = state.summary;
   event(state, now, "finder", "win", `Found ${fmtMoney(s.totalValue)} left on the table`, `${plural(s.opportunities, "opportunity", "opportunities")}; ${fmtMoney(s.reachableValue)} of it is with ${plural(s.reachablePeople, "person", "people")} we can reach.`);
@@ -131,6 +132,17 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   // the comparison group waits ~60 days, then gets worked too (nobody's quote is held back for good)
   const released = new Set(state.outreach.filter((o) => o.holdout && !o.treatedFrom && o.releaseOn && o.releaseOn <= opts.startOn).map((o) => o.customerId));
   for (const o of state.outreach) if (!released.has(o.customerId) || active.has(o.customerId)) active.add(o.customerId);
+  // Follow-ups a newer quote stopped leave that quote to chase: with nothing else queued, they're planned again, for
+  // what came after the stopped notes only (and, already written to, never held back to measure lift).
+  for (const [id, on] of supersededOn(state)) {
+    active.delete(id);
+    released.add(id);
+    if (on > (askedOn.get(id) ?? "")) askedOn.set(id, on);
+  }
+  // Someone who wrote back (our answer to their request included) is the owner's to talk to: never planned again,
+  // nor any other record at their address. Nothing planned means nothing reaches a sending platform either.
+  const replied = repliedCheck(state);
+  for (const c of state.dataset.customers) if (replied(c.id)) active.add(c.id);
   const isTrial = state.dataset.business.plan.stage === "trial";
   const firstEver = !state.touches.some((t) => t.status !== "cancelled");
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
@@ -244,6 +256,17 @@ export function staleAnswer(state: AccountState, t: Touch, now: ISODateTime): st
   return undefined;
 }
 
+/**
+ * Who has written back to us, by record and by address (another record with the same address is the same person).
+ * An out-of-office or a bounce isn't them writing. Only an answer to a new request of theirs goes to them after.
+ */
+export function repliedCheck(state: AccountState): (customerId: string) => boolean {
+  const wrote = state.replies.filter((r) => r.intent !== "auto_reply" && r.intent !== "bounce");
+  const ids = new Set(wrote.filter((r) => r.customerId).map((r) => r.customerId!));
+  const from = new Set(wrote.map((r) => r.from.toLowerCase()));
+  return (id) => ids.has(id) || !!customerById(state.dataset, id)?.emails.some((e) => from.has(e.toLowerCase()));
+}
+
 /** Everything that should go out at `now`, after the Guard's checks. Pure: marks nothing. */
 export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTouch[]; held: { touch: Touch; why: string }[] } {
   const b = state.dataset.business;
@@ -251,11 +274,7 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   const day = now.slice(0, 10);
   const due: DueTouch[] = [];
   const held: { touch: Touch; why: string }[] = [];
-  // an out-of-office or a bounce isn't the person writing back
-  const wrote = state.replies.filter((r) => r.intent !== "auto_reply" && r.intent !== "bounce");
-  const replied = new Set(wrote.filter((r) => r.customerId).map((r) => r.customerId!));
-  // by address too: another record with the same address is the same person
-  const repliedFrom = new Set(wrote.map((r) => r.from.toLowerCase()));
+  const replied = repliedCheck(state);
   const health = sendHealth(state);
   const settled = settledCheck(state);
   // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
@@ -280,7 +299,7 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
       continue;
     }
     // an instant answer to a NEW request goes even if they wrote to us about something else before
-    if (!t.instant && (replied.has(c.id) || c.emails.some((e) => repliedFrom.has(e.toLowerCase())))) {
+    if (!t.instant && replied(c.id)) {
       held.push({ touch: t, why: "They replied — the sequence stops" });
       continue;
     }

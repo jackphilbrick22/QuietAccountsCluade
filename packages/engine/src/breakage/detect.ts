@@ -43,6 +43,8 @@ export interface ContactState {
   doNotContact?: string[];
   /** Days to wait before contacting someone again after a finished sequence. */
   cooldownDays?: number;
+  /** customerId -> the day follow-ups a newer quote stopped were planned: a quote or request from then on isn't held by the cooldown. */
+  newSince?: Record<string, ISODate>;
   /**
    * Detect unpaid invoices so the owner sees the cash to collect (default on). Detection only: invoices are
    * never a primary opportunity, so no reminder is ever sent — collecting for someone else is debt-collection
@@ -656,7 +658,10 @@ function applySuppressions(ctx: Ctx, o: Opportunity): void {
     }
   }
   const last = ctx.contact.lastContacted?.[c.id];
-  if (last && daysBetween(last, ctx.asOf) < (ctx.contact.cooldownDays ?? 120)) o.suppressed = "recently_contacted";
+  // the newer quote that stopped our follow-ups is the one to chase now, though we wrote to them lately
+  const since = ctx.contact.newSince?.[c.id];
+  const newer = !!since && (o.source.kind === "quote" || o.source.kind === "request") && anchor >= since;
+  if (last && !newer && daysBetween(last, ctx.asOf) < (ctx.contact.cooldownDays ?? 120)) o.suppressed = "recently_contacted";
 }
 
 function ageMultiplier(age: number): number {

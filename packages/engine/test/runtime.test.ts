@@ -911,6 +911,83 @@ describe("always-on: someone whose request we answered is still followed up", ()
     expect(planOn(st, "2026-10-05").people).toEqual(["c1"]);
     expect(touchesOf(st, "c1").filter((t) => !t.instant).every((t) => t.chases?.id === "q1")).toBe(true);
   });
+
+  it("someone who wrote back to our answer is the owner's to talk to: nothing is planned for them, or anyone at their address", () => {
+    for (const text of ["Thanks, but we already hired another company for this. Please don't follow up.", "Sounds good, when can you come?"]) {
+      const st = answered();
+      // their spouse's record, at the same address, with a quote of its own
+      st.dataset.customers.push(customer("c2", { name: "Jo Sanderson", firstName: "Jo", emails: ["c1@gmail.com"] }));
+      st.dataset.quotes = [quote("q2", "c2", { sentOn: ago(60) })];
+      receiveReply(st, { from: "c1@gmail.com", text, receivedAt: `${ASOF}T11:00:00`, inReplyTo: "msg-answer" });
+      expect(planOn(st, "2026-10-05").people).toEqual([]);
+      expect(st.touches.filter((t) => !t.instant)).toEqual([]);
+    }
+  });
+});
+
+describe("always-on: a newer quote that stops a follow-up gets followed up itself", () => {
+  const planOn = (st: AccountState, day: string) => {
+    st.dataset.asOf = day;
+    find(st, `${day}T03:00:00`);
+    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true });
+  };
+  const sendFirst = (st: AccountState) => {
+    const n1 = touchesOf(st, "c1").find((t) => t.step === 1 && !t.instant && t.status === "approved")!;
+    markSent(st, n1.id, `${n1.dueAt}:00`, `msg-${n1.id}`);
+    return n1;
+  };
+
+  it("the request's follow-up, stopped by the quote it asked for: that quote is chased instead, once", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
+    answerNewRequests(st, `${ASOF}T10:00:00`);
+    markSent(st, st.touches[0]!.id, `${ASOF}T10:02:00`, "msg-answer");
+    // the nightly two days on starts the request's follow-up, and its note 1 goes that morning
+    expect(planOn(st, "2026-10-01").people).toEqual(["c1"]);
+    expect(sendFirst(st).chases?.type).toBe("unquoted_request");
+    // Dave quotes after the site visit: the rest of the request's follow-up stops
+    st.dataset.quotes = [quote("q1", "c1", { title: "Oak over the garage", total: 1800, sentOn: "2026-10-05" })];
+    const stopped = dropSettled(st, "2026-10-05T12:00:00");
+    expect(stopped.map((t) => t.lastError)).toEqual(stopped.map(() => "No longer needed: their request got a quote"));
+    // the quote gets its own fresh-quote follow-up once it's two days old...
+    expect(planOn(st, "2026-10-07").people).toEqual(["c1"]);
+    const chasing = touchesOf(st, "c1").filter((t) => t.chases?.id === "q1");
+    expect(chasing.length).toBeGreaterThan(1);
+    expect(chasing.every((t) => t.track === "fresh_quote" && t.status === "approved" && t.dueAt >= "2026-10-07")).toBe(true);
+    // ...and only once
+    expect(planOn(st, "2026-10-08").people).toEqual([]);
+    sendFirst(st);
+    expect(planOn(st, "2026-10-13").people).toEqual([]);
+  });
+
+  it("a revised quote that stopped the old quote's notes: the revised one is chased, never the old one again", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Dead oak over the garage", total: 2400, sentOn: ago(60) })] }), NOW);
+    expect(planOn(st, ASOF).people).toEqual(["c1"]);
+    sendFirst(st);
+    st.dataset.quotes = [...st.dataset.quotes, quote("q2", "c1", { title: "Dead oak over the garage, revised", total: 2000, sentOn: "2026-10-02" })];
+    // nothing while the old quote's notes are still queued (two sequences at once)...
+    expect(planOn(st, "2026-10-05").people).toEqual([]);
+    expect(dropSettled(st, "2026-10-05T12:00:00").map((t) => t.lastError)).toContain("No longer needed: they've had a new quote since");
+    // ...then the revised quote's own
+    expect(planOn(st, "2026-10-06").people).toEqual(["c1"]);
+    const live = touchesOf(st, "c1").filter((t) => t.status === "approved");
+    expect(live.length).toBeGreaterThan(1);
+    expect(live.every((t) => t.chases?.id === "q2" && t.track === "fresh_quote")).toBe(true);
+    expect(planOn(st, "2026-10-07").people).toEqual([]);
+  });
+
+  it("not for someone who has written back since, or bought", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Dead oak over the garage", total: 2400, sentOn: ago(60) })] }), NOW);
+    planOn(st, ASOF);
+    const n1 = sendFirst(st);
+    st.dataset.quotes = [...st.dataset.quotes, quote("q2", "c1", { title: "Dead oak over the garage, revised", total: 2000, sentOn: "2026-10-02" })];
+    dropSettled(st, "2026-10-02T12:00:00");
+    expect(planOn(structuredClone(st), "2026-10-06").people).toEqual(["c1"]);
+    const replied = structuredClone(st);
+    receiveReply(replied, { from: "c1@gmail.com", text: "Thanks, we'll think it over.", receivedAt: "2026-10-03T11:00:00", inReplyTo: n1.providerId });
+    expect(planOn(replied, "2026-10-06").people).toEqual([]);
+    st.dataset.jobs = [job("j1", "c1", { title: "Dead oak over the garage", status: "scheduled", createdOn: "2026-10-04", scheduledOn: "2026-10-20", completedOn: undefined })];
+    expect(planOn(st, "2026-10-06").people).toEqual([]);
+  });
 });
 
 describe("an answer to a new request held up by the mailbox", () => {

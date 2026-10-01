@@ -47,6 +47,7 @@ import {
   readReply,
   receiveReply,
   renewPlan,
+  repliedCheck,
   stopSequence,
   type AccountState,
   type BusinessProfile,
@@ -765,8 +766,8 @@ function pushedUnsent(d: Deps, state: AccountState): string[] {
 
 /**
  * Notes still queued for people we can no longer write to leave the platform too: the owner marked them
- * do-not-contact in their software, an answer to a request went stale before it was handed over, or a sync shows
- * the quote a follow-up chases approved, the job booked or a new quote sent.
+ * do-not-contact in their software, they (or someone at their address) wrote back, an answer to a request went stale
+ * before it was handed over, or a sync shows the quote a follow-up chases approved, the job booked or a new quote sent.
  */
 async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise<void> {
   const state = d.accounts.peek(bid)!.state;
@@ -775,16 +776,24 @@ async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise
   const stale = (s: AccountState, t: Touch) => t.instant && t.status === "approved" && !t.providerId && t.dueAt <= at.slice(0, 16) && !!staleAnswer(s, t, at);
   const settled = settledCheck(state);
   const done = (t: Touch) => (t.status === "approved" || t.status === "planned") && !!settled(t);
-  if (!state.touches.some((t) => dnc(state, t) || stale(state, t) || done(t))) return;
+  // as the direct Sender's "They replied — the sequence stops" (an answer to a new request of theirs still goes)
+  const repliedTo = (s: AccountState) => {
+    const replied = repliedCheck(s);
+    return (t: Touch) => !t.instant && (t.status === "approved" || t.status === "planned") && replied(t.customerId);
+  };
+  const wrote = repliedTo(state);
+  if (!state.touches.some((t) => dnc(state, t) || stale(state, t) || done(t) || wrote(t))) return;
   const pulled = await d.accounts.withAccount(bid, (s) => {
     dropStaleAnswers(s, at);
     const out: string[] = dropSettled(s, at).filter((t) => t.providerId?.startsWith(`${seq.name}:`)).map((t) => t.providerId!);
-    for (const t of s.touches)
-      if (dnc(s, t)) {
-        t.status = "cancelled";
-        t.lastError = "Do not contact — the owner's setting in their software";
-        if (t.providerId?.startsWith(`${seq.name}:`)) out.push(t.providerId);
-      }
+    const wrote = repliedTo(s);
+    for (const t of s.touches) {
+      const why = dnc(s, t) ? "Do not contact — the owner's setting in their software" : wrote(t) ? "They replied — the sequence stops" : undefined;
+      if (!why) continue;
+      t.status = "cancelled";
+      t.lastError = why;
+      if (t.providerId?.startsWith(`${seq.name}:`)) out.push(t.providerId);
+    }
     return out;
   });
   await withdrawLeads(d, bid, pulled, { inline: 25 });

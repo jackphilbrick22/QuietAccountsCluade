@@ -2,13 +2,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { closeIfDue, find, ledgerPass, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Quote, type Reply, type Touch } from "@qa/engine";
+import { answerNewRequests, closeIfDue, find, ledgerPass, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Quote, type Reply, type Touch } from "@qa/engine";
 import { loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
 import { Accounts } from "../src/core/accounts.ts";
 import { checkWebhooks, registerWebhooks } from "../src/core/backstop.ts";
-import { sign, syncSequencer } from "../src/core/ops.ts";
+import { plan, rescan, sign, syncSequencer } from "../src/core/ops.ts";
 import { runTasks } from "../src/core/worker.ts";
 import { createApp, type HttpDeps } from "../src/http/app.ts";
 import { LogNotifier } from "../src/providers/sms.ts";
@@ -288,7 +288,8 @@ describe("the Guard's brake in Instantly mode", () => {
     await d.accounts.withAccount("guard", (s) => {
       const c = s.dataset.customers[0]!;
       for (let i = 0; i < 146; i++) s.touches.push(note("guard", c, 1, { id: `old-${i}`, opportunityId: `old-${i}`, status: "sent", sentAt: "2026-09-01T09:00:00" }));
-      const wrong = (id: string): Reply => ({ id, customerId: c.id, channel: "email", receivedAt: "2026-09-02T09:00:00", from: "x@y.com", text: "who is this", intent: "wrong_person", confidence: 1, extracted: {}, status: "done" });
+      // from others we wrote to (not Hal: someone who wrote back gets nothing more)
+      const wrong = (id: string): Reply => ({ id, channel: "email", receivedAt: "2026-09-02T09:00:00", from: "x@y.com", text: "who is this", intent: "wrong_person", confidence: 1, extracted: {}, status: "done" });
       s.replies.push(wrong("w1"), wrong("w2"));
       const newbie = person("ida.lee@gmail.com");
       s.dataset = { ...s.dataset, customers: [...s.dataset.customers, newbie] };
@@ -436,5 +437,110 @@ describe("webhook registration", () => {
     expect(webhooks.map((w) => w.target_hook_url)).toEqual([`https://qa.test/webhooks/instantly/${WH}`]);
     expect(((await (await app.request("/api/health")).json()) as { webhooks?: string }).webhooks).toBe("ok");
     expect((await review()).some((i) => i.kind === "platform")).toBe(false);
+  });
+});
+
+describe("someone who wrote back to our answer to their request", () => {
+  const hook = (body: Record<string, unknown>) => app.request(`/webhooks/instantly/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("gets no follow-ups planned or handed to Instantly, and nor does anyone else at their address", async () => {
+    now = new Date("2026-09-29T14:00:00Z"); // Tue 10:00 New York
+    await d.accounts.create(profile("walnut", "Walnut Tree", "paying"), "2026-09-29");
+    const pat = person("pat.lee@gmail.com");
+    // their spouse's record, at the same address, with a quote of its own
+    const jo: Customer = { ...person("jo.lee@gmail.com"), emails: ["pat.lee@gmail.com"] };
+    await d.accounts.withAccount("walnut", (s) => {
+      const q: Quote = { id: "q1", customerId: jo.id, title: "Crown thinning, 3 maples", lineItems: [], total: 1500, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-07-01", jobIds: [] };
+      s.dataset = { ...s.dataset, customers: [pat, jo], quotes: [q], requests: [{ id: "r1", customerId: pat.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-29", createdAt: "2026-09-29T13:30:00Z" }] };
+      answerNewRequests(s, "2026-09-29T10:00:00");
+    });
+    await syncSequencer(d, "walnut", d.email);
+    const answer = st("walnut").touches.find((t) => t.instant)!;
+    const [, campaign] = answer.providerId!.split(":");
+    await hook({ event_type: "email_sent", timestamp: "2026-09-29T14:02:00.000Z", campaign_id: campaign, lead_email: "pat.lee@gmail.com", step: 1, email_id: "em-answer", qa_touch_1: answer.id });
+    expect(st("walnut").touches.find((t) => t.id === answer.id)!.status).toBe("sent");
+    await hook({ event_type: "reply_received", timestamp: "2026-09-29T15:00:00.000Z", campaign_id: campaign, lead_email: "pat.lee@gmail.com", email_id: "em-pat", reply_text: "Thanks, but we already hired another company for this. Please don't follow up." });
+    expect(st("walnut").replies.map((r) => r.intent)).toEqual(["already_done"]);
+    // the 3am nightly two days on
+    now = new Date("2026-10-01T07:00:00Z");
+    await rescan(d, "walnut");
+    expect((await plan(d, "walnut", { approve: true })).people).toBe(0);
+    const adds = api.callsTo("POST", "/leads/add").length;
+    await syncSequencer(d, "walnut", d.email);
+    expect(api.callsTo("POST", "/leads/add").length).toBe(adds);
+    expect(st("walnut").touches.filter((t) => !t.instant)).toEqual([]);
+  });
+
+  it("a record that turns out to share their address: its notes Instantly holds are taken back, and nothing more goes up", async () => {
+    now = new Date("2026-09-29T14:00:00Z");
+    await pushed("hazel", "Hazel Tree", ["ann.lee@gmail.com", "lu.lee@gmail.com"]);
+    expect(leadsIn("hazel")).toEqual(["ann.lee@gmail.com", "lu.lee@gmail.com"]);
+    await d.accounts.withAccount("hazel", (s) => {
+      // Jo wrote to us from her own address; a sync since puts it on Lu's record (the same household)
+      s.replies.push({ id: "r-jo", channel: "email", receivedAt: "2026-09-29T09:30:00", from: "jo.lee@gmail.com", text: "Yes please, call me.", intent: "wants_it", confidence: 0.9, extracted: {}, status: "handed_off" });
+      s.dataset.customers = s.dataset.customers.map((c) => (c.id === "c-lu" ? { ...c, emails: [...c.emails, "jo.lee@gmail.com"] } : c));
+    });
+    await syncSequencer(d, "hazel", d.email);
+    expect(leadsIn("hazel")).toEqual(["ann.lee@gmail.com"]);
+    const lu = st("hazel").touches.filter((t) => t.customerId === "c-lu");
+    expect(lu.map((t) => [t.status, t.lastError])).toEqual(lu.map(() => ["cancelled", "They replied — the sequence stops"]));
+    expect(st("hazel").touches.filter((t) => t.customerId === "c-ann").every((t) => t.status === "approved")).toBe(true);
+    const adds = api.callsTo("POST", "/leads/add").length;
+    await syncSequencer(d, "hazel", d.email);
+    expect(api.callsTo("POST", "/leads/add").length).toBe(adds);
+  });
+});
+
+describe("the quote that stops a request's follow-up", () => {
+  const hook = (body: Record<string, unknown>) => app.request(`/webhooks/instantly/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("is followed up itself at the nightly cadence: Instantly gets the quote's notes once the request's are taken back", async () => {
+    now = new Date("2026-09-29T14:00:00Z"); // Tue 10:00 New York
+    await d.accounts.create(profile("chestnut", "Chestnut Tree", "paying"), "2026-09-29");
+    const sam = person("sam.lee@gmail.com");
+    await d.accounts.withAccount("chestnut", (s) => {
+      s.dataset = { ...s.dataset, customers: [sam], requests: [{ id: "r1", customerId: sam.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-29", createdAt: "2026-09-29T13:30:00Z" }] };
+      answerNewRequests(s, "2026-09-29T10:00:00");
+    });
+    await syncSequencer(d, "chestnut", d.email);
+    const answer = st("chestnut").touches.find((t) => t.instant)!;
+    await hook({ event_type: "email_sent", timestamp: "2026-09-29T14:02:00.000Z", campaign_id: answer.providerId!.split(":")[1], lead_email: sam.emails[0], step: 1, email_id: "em-answer", qa_touch_1: answer.id });
+    // the nightly two days on starts the request's follow-up, and Instantly sends its note 1
+    now = new Date("2026-10-01T07:00:00Z");
+    await rescan(d, "chestnut");
+    expect((await plan(d, "chestnut", { approve: true })).people).toBe(1);
+    await syncSequencer(d, "chestnut", d.email);
+    const request = st("chestnut").touches.filter((t) => !t.instant);
+    expect(request.every((t) => t.chases?.type === "unquoted_request" && t.providerId)).toBe(true);
+    now = new Date("2026-10-06T13:00:00Z");
+    const n1 = request.find((t) => t.step === 1)!;
+    await hook({ event_type: "email_sent", timestamp: "2026-10-06T13:00:00.000Z", campaign_id: n1.providerId!.split(":")[1], lead_email: sam.emails[0], step: 1, email_id: "em-n1", qa_touch_1: n1.id });
+    // Dave quotes after the site visit; the next sync stops the rest of the request's follow-up there
+    now = new Date("2026-10-07T16:00:00Z");
+    await d.accounts.withAccount("chestnut", (s) => {
+      s.dataset = { ...s.dataset, quotes: [{ id: "q1", customerId: sam.id, title: "Oak over the garage", lineItems: [], total: 1800, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-10-07", jobIds: [] }] };
+      ledgerPass(s, "2026-10-07T12:00:00");
+    });
+    // (the answer's lead stays in the instant campaign: it went)
+    const followUps = () => [...leads.values()].filter((l) => l.campaign !== answer.providerId!.split(":")[1] && campaignsOf("chestnut").includes(l.campaign)).map((l) => l.email);
+    expect(followUps()).toEqual([sam.emails[0]]);
+    await syncSequencer(d, "chestnut", d.email);
+    expect(followUps()).toEqual([]);
+    const rest = st("chestnut").touches.filter((t) => t.step > 1 && !t.instant);
+    expect(rest.length).toBeGreaterThan(0);
+    expect(rest.map((t) => [t.status, t.lastError])).toEqual(rest.map(() => ["cancelled", "No longer needed: their request got a quote"]));
+    // the nightly once the quote is two days old: its own follow-up, handed to Instantly
+    now = new Date("2026-10-09T07:00:00Z");
+    await rescan(d, "chestnut");
+    expect((await plan(d, "chestnut", { approve: true })).people).toBe(1);
+    await syncSequencer(d, "chestnut", d.email);
+    const chasing = st("chestnut").touches.filter((t) => t.chases?.id === "q1");
+    expect(chasing.length).toBeGreaterThan(1);
+    expect(chasing.every((t) => t.track === "fresh_quote" && t.status === "approved" && t.providerId)).toBe(true);
+    expect(followUps()).toEqual([sam.emails[0]]);
+    // and once: the next nightly adds nothing
+    now = new Date("2026-10-10T07:00:00Z");
+    await rescan(d, "chestnut");
+    expect((await plan(d, "chestnut", { approve: true })).people).toBe(0);
   });
 });
