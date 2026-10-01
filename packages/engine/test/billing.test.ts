@@ -517,7 +517,7 @@ describe("the charge log", () => {
   it("NOT OURS kept by Jack holds the charge, and isn't asked again", () => {
     const st = pass(1);
     bookings(st, 1);
-    markPaidOutside(st, "c0", "2026-10-21T09:00:00");
+    markPaidOutside(st, { customerId: "c0" }, "2026-10-21T09:00:00");
     const code = charge(st, "c0").code;
     notOurs(st, code, "2026-10-22T09:00:00");
     expect(decideCharge(st, chargeId(st, "c0"), false, "2026-10-22T10:00:00")).toBe("kept");
@@ -625,7 +625,7 @@ describe("the charge log", () => {
   it("the cap: four paid, its text once, and the end text says what was paid", () => {
     const st = pass(6);
     bookings(st, 6);
-    for (let i = 0; i < 4; i++) markPaidOutside(st, `c${i}`, "2026-10-26T09:00:00");
+    for (let i = 0; i < 4; i++) markPaidOutside(st, { customerId: `c${i}` }, "2026-10-26T09:00:00");
     settleCharges(st, "2026-10-26T10:00:00", BY_HAND);
     settleCharges(st, "2026-10-27T10:00:00", BY_HAND);
     const cap = st.ownerMessages.filter((m) => m.kind === "charge_cap");
@@ -648,9 +648,9 @@ describe("the charge log", () => {
     expect(m.text).toBe(`Person 0 booked (#${charge(st, "c0").code}). That's your first $250. I'll text you the link. It saves your card for the rest, and I text before every charge.`);
     approveCharge(st, m.id, "2026-10-21T10:00:00", BY_HAND);
     expect(charge(st, "c0").status).toBe("approved");
-    expect("charge" in markPaidOutside(st, "c0", "2026-10-21T11:00:00")).toBe(true);
+    expect("charge" in markPaidOutside(st, { customerId: "c0" }, "2026-10-21T11:00:00")).toBe(true);
     expect(cardOnFile(st.dataset.business.plan, false)).toBe(true);
-    expect(markPaidOutside(st, "c0", "2026-10-21T11:01:00")).toEqual({ refused: "That charge is paid already." });
+    expect(markPaidOutside(st, { customerId: "c0" }, "2026-10-21T11:01:00")).toEqual({ refused: "That charge is paid already." });
     settleCharges(st, "2026-10-21T12:00:00", BY_HAND);
     expect(charge(st, "c1").via).toBe("card");
     expect(textOf(st, "c1")[0]!.text).toContain("$250 goes on your card on Thursday, $500 of your $1,000.");
@@ -659,7 +659,7 @@ describe("the charge log", () => {
   it("a charge marked paid outside the software is never charged again, and one paid after it was cancelled goes to Jack", () => {
     const st = pass(2);
     bookings(st, 2);
-    const r = markPaidOutside(st, "c1", "2026-10-20T09:00:00") as { charge: { id: string } };
+    const r = markPaidOutside(st, { customerId: "c1" }, "2026-10-20T09:00:00") as { charge: { id: string } };
     expect(r.charge.id).toBe(chargeId(st, "c1"));
     expect(charge(st, "c1")).toMatchObject({ status: "paid", reason: "Paid outside the software", bookingId: "rec-c1-2026-10-21" });
     expect(chargeStarted(st, r.charge.id, "2026-10-22T09:00:00")).toBeUndefined();
@@ -710,6 +710,6 @@ describe("the charge log", () => {
     expect(billableBookings(late).billable).toEqual([]);
     expect(why(late, "c0")).toBe("Never wrote back to the pass's notes");
     // and Jack can still mark one paid outside the software
-    expect(markPaidOutside(st, "c1", "2026-11-12T10:00:00")).toMatchObject({ charge: { status: "paid" } });
+    expect(markPaidOutside(st, { customerId: "c1" }, "2026-11-12T10:00:00")).toMatchObject({ charge: { status: "paid" } });
   });
 });

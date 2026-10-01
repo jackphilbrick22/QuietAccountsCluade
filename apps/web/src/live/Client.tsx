@@ -189,6 +189,9 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
   const l = o.lift;
   const h = o.health;
   const g = o.guarantee;
+  const p = o.business.plan;
+  // the months show once one is asked for (a one pass's owner said yes) or the plan pays; the card shows with them
+  const monthly = !!p.months?.length || (!isOnePass(p) && p.stage === "paying");
   return (
     <div className="flex flex-col gap-6">
       <Kpis>
@@ -204,7 +207,8 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         />
       </Kpis>
 
-      {(isOnePass(o.business.plan) || billsPass(o.business.plan)) && <PassBox o={o} />}
+      {(isOnePass(p) || billsPass(p)) && <PassBox o={o} card={!monthly} />}
+      {monthly && <MonthsBox o={o} />}
       {o.refill && <RefillNote o={o} />}
 
       <PasteReply key={id} id={id} />
@@ -359,9 +363,10 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
 
 /**
  * A one pass: the plan kind, its list, how far through it is against its end date, and its bookings and charges. Gone
- * monthly since, it's done, and its bookings and charges are still billed.
+ * monthly since, it's done, and its bookings and charges are still billed. The card on file shows here unless the
+ * monthly charges show it.
  */
-function PassBox({ o }: { o: Overview }) {
+function PassBox({ o, card }: { o: Overview; card: boolean }) {
   const p = o.business.plan;
   const pass = isOnePass(p);
   const over = p.stage === "done" || !pass;
@@ -387,6 +392,66 @@ function PassBox({ o }: { o: Overview }) {
         <Kpi label="Charges" value={fmtMoney(passPaid(p))} sub={`paid, of ${fmtMoney(price * cap)}`} tone={passPaid(p) ? "ok" : undefined} />
       </Kpis>
       {!!p.charges?.length && <ChargesTable o={o} />}
+      {card && <SavedCard o={o} />}
+    </Section>
+  );
+}
+
+/**
+ * The monthly plan's charges (BRIEF B5): the first month, asked for on the owner's yes, then each month that isn't
+ * free, on the saved card on its day once its pre-charge text reached him. Where each stands; one not paid yet can be
+ * marked paid outside the software, and one out on its /pay link can have its text sent again (for your OK).
+ */
+function MonthsBox({ o }: { o: Overview }) {
+  const { busy, run } = useAction();
+  const p = o.business.plan;
+  const bid = encodeURIComponent(o.business.id);
+  // a one pass's owner has no monthly price until the first month is paid: it's the month asked for
+  const price = p.months?.length ? p.months.at(-1)!.amount / 100 : p.monthlyPrice;
+  return (
+    <Section title="Monthly charges" sub={`${fmtMoney(price)} a month, each on its day once its text reached him. No subscription: nothing renews by itself.`}>
+      {!!p.months?.length && (
+        <Table minWidth={620} label="Monthly charges">
+          <thead>
+            <tr>
+              <Th>Month</Th>
+              <Th>Where it stands</Th>
+              <Th right>Amount</Th>
+              <Th />
+            </tr>
+          </thead>
+          <tbody>
+            {p.months.map((c) => (
+              <Tr key={c.id}>
+                <Td>
+                  <span className="block font-semibold">{c.first ? "First month" : `From ${when(c.month)}`}</span>
+                  {c.first && <span className="text-[12px] text-ink-3">asked for {when(c.month)}</span>}
+                </Td>
+                <Td>
+                  <span className="block">
+                    {CHARGE_STATUS[c.status]}
+                    {c.status === "approved" && c.via === "card" ? (c.toldAt && c.chargeOn ? `: the card on ${when(c.chargeOn)}` : c.first ? ": the card a business day after its text reaches him" : `: the card on ${when(c.chargeOn)}, once its text reaches him`) : ""}
+                  </span>
+                  {c.reason && <span className="text-[12px] text-ink-3">{c.reason}</span>}
+                </Td>
+                <Td right>{fmtMoney(c.amount / 100)}</Td>
+                <Td right>
+                  {c.status === "link_sent" && (
+                    <Btn variant="ghost" disabled={!!busy} onClick={() => void run("link", () => api("POST", `/businesses/${bid}/charges/${encodeURIComponent(c.id)}/link`), "The text with its link waits for your OK")}>
+                      Send the link again
+                    </Btn>
+                  )}
+                  {!["paid", "refunded", "skipped", "charging"].includes(c.status) && (
+                    <Btn variant="ghost" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${bid}/charges/paid`, { chargeId: c.id }), "Marked paid")}>
+                      Paid outside
+                    </Btn>
+                  )}
+                </Td>
+              </Tr>
+            ))}
+          </tbody>
+        </Table>
+      )}
       <SavedCard o={o} />
     </Section>
   );
@@ -449,7 +514,7 @@ function ChargesTable({ o }: { o: Overview }) {
   );
 }
 
-/** The card later charges go on: the first link's Checkout saved it, or Jack pastes the Stripe customer his own link made. */
+/** The card later charges go on (a booking's or a month's): the first link's Checkout saved it, or Jack pastes the Stripe customer his own link made. */
 function SavedCard({ o }: { o: Overview }) {
   const [customer, setCustomer] = useState("");
   const { busy, run } = useAction();
@@ -463,7 +528,7 @@ function SavedCard({ o }: { o: Overview }) {
         void run("card", () => api("POST", `/businesses/${encodeURIComponent(o.business.id)}/stripe-customer`, { customer: customer.trim() }), "Later charges go on that customer's card").then((r) => r && setCustomer(""));
       }}
     >
-      <span className="text-ink-2">{card ? `Card on file${card.last4 ? `: ${card.brand ?? "card"} ending ${card.last4}` : ""}${card.customer ? ` (${card.customer})` : ""}.` : "No card on file yet: the first booking's link saves it."}</span>
+      <span className="text-ink-2">{card ? `Card on file${card.last4 ? `: ${card.brand ?? "card"} ending ${card.last4}` : ""}${card.customer ? ` (${card.customer})` : ""}.` : `No card on file yet: the first ${isOnePass(o.business.plan) && !o.business.plan.months?.length ? "booking's" : "month's"} link saves it.`}</span>
       <label htmlFor={field} className="sr-only">
         Stripe customer id
       </label>

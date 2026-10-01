@@ -1408,16 +1408,17 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 /* Dispatcher: owner texts in and out                                  */
 /* ------------------------------------------------------------------ */
 
-/** A one pass's money texts (BRIEF B4). */
+/** Money texts: a one pass's bookings' (BRIEF B4) and the monthly plan's first month and declined months (B5). */
 const MONEY_TEXTS = new Set<string>(CHARGE_TEXTS);
 const BILLING_KINDS = new Set<string>(["close", "precharge", "free_month", "refund", "pass_end", ...MONEY_TEXTS]);
 /**
  * Billing texts a person always sends: a refund to issue first, a one pass's last text (BRIEF B3: Jack approves it),
- * and its money texts (his OK sets the charge's day, or sends its link).
+ * the money texts (his OK sets the charge's day, or sends its link), and the pre-charge text (B5: his OK lets its month
+ * be charged).
  */
-const ALWAYS_REVIEWED = new Set<string>(["refund", "pass_end", ...MONEY_TEXTS]);
+const ALWAYS_REVIEWED = new Set<string>(["refund", "pass_end", "precharge", ...MONEY_TEXTS]);
 
-/** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them and a one pass's money texts. */
+/** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them and the money texts. */
 const CANCELLED_OWNER = "Cancelled: nothing more goes to the owner.";
 
 /** Twilio refuses a number that texted STOP (error 21610): the owner is opted out at the carrier. */
@@ -1440,14 +1441,14 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { approv
     const b = loaded.state.dataset.business;
     const done = (delivery: "sent" | "manual" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, delivery, { ...f, at: d.clock().toISOString() });
-    // the exceptions: the refund we owe them when they leave a yearly plan early, and a one pass's money texts (its
-    // bookings made before the cancel are still billed)
+    // the exceptions: the refund we owe them when they leave a yearly plan early, and the money texts (a one pass's
+    // bookings made before the cancel are still billed, and a month going through at the cancel settles)
     if (b.plan.stage === "cancelled" && m.kind !== "refund" && !MONEY_TEXTS.has(m.kind)) {
       done("skipped", { error: CANCELLED_OWNER });
       continue;
     }
-    // a refund text waits for a person even with auto-send on (someone has to issue the refund first), and so does a
-    // one pass's last text
+    // a refund text waits for a person even with auto-send on (someone has to issue the refund first), and so do a
+    // one pass's last text and every text before a charge
     if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || ALWAYS_REVIEWED.has(m.kind)) && m.id !== opts.approved) {
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, "review");
       continue;

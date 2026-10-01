@@ -1,7 +1,7 @@
 import { billingCheck, billsPass, chase, closeIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { backupIfDue } from "./backup.ts";
-import { runBilling } from "./billing.ts";
+import { billingOpts, runBilling } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
@@ -11,9 +11,11 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
  * The heartbeat. Every minute, for every business, in its own local time:
  *  - Sender: send what's due (or hand the week's people to the sequencer)
  *  - Dispatcher: nudge the owner about hot leads nobody has called
- *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text; with the yearly plan
- *    sold (FEATURE_YEARLY), the renewal ask and settling a year; a one pass's end once its list is done
- *  - Ledger: a one pass's charges (its billable bookings, their money texts, saved cards charged on their day)
+ *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text (with its month's charge);
+ *    with the yearly plan sold (FEATURE_YEARLY), the renewal ask and settling a year; a one pass's end once its list is
+ *    done
+ *  - Ledger: a one pass's charges (its billable bookings, their money texts) and the months', saved cards charged on
+ *    their day
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
  *  - Writer: nightly top-up for paying monthly accounts so the list keeps being worked at the weekly pace (a one pass
  *    is the whole list once: never topped up)
@@ -165,9 +167,9 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
       report.failed += r.failed;
     });
 
-  // A one pass's charges, before its texts go: bookings made before a cancel are still billed, so a cancelled pass too,
-  // and a pass gone monthly since.
-  if (billsPass(biz.profile.plan)) await step("billing", () => runBilling(d, bid));
+  // Charges, before their texts go: a one pass's bookings made before a cancel are still billed, so a cancelled pass
+  // too, and a pass gone monthly since; a month already going through when the owner cancelled settles.
+  if (billsPass(biz.profile.plan) || biz.profile.plan.months?.length) await step("billing", () => runBilling(d, bid));
 
   await step("dispatch", async () => {
     if (!cancelled) {
@@ -181,7 +183,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
         if (daily) {
           const f = features(d.cfg);
           closeIfDue(state, local, f);
-          billingCheck(state, local);
+          billingCheck(state, local, billingOpts(d, bid));
           ended = !!passEndIfDue(state, local);
           // A yearly plan never renews by itself: ask a month out, pause at the end if nobody said yes.
           if (f.yearly && renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;

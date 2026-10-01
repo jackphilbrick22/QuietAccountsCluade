@@ -31,6 +31,11 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
 };
 const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "charge_ask", "owner_text", "owner_message", "charge_due", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
 
+/** Which month a charge is for: "the first month", "the month from Nov 1". */
+function monthFor(m: { on: string; first: boolean }): string {
+  return m.first ? "the first month" : `the month from ${when(m.on)}`;
+}
+
 /** An owner's UNDO a person finishes with Restore plan: a refund set up, the platform down, or an inbox another client has now. */
 const RESTORE = ["undo_refund", "undo_platform", "undo_inbox"];
 
@@ -39,7 +44,8 @@ const itemKey = (it: ReviewItem) =>
 
 /** What we did with an owner's text, in the operator's words. */
 const HANDLED: Record<string, string> = {
-  accepted_close: "said yes to keep going: send the payment link, then set them to Paying in Settings (and Yearly, with the first paid day, if they took the year)",
+  accepted_close: "said yes to keep going: the first month's text with its link waits for your OK, and paid, they're Paying from that day",
+  accepted_by_hand: "said yes to keep going, with the yearly plan sold: no first month's text was made. Send the payment link for the plan they want (ask if they didn't say), then set the plan and its first paid day in Settings once it's paid",
   renew_year: "renewed for another year: send the payment link before it starts (take the year off in Settings if it's never paid)",
   renew_year_pay_first: "wants the year: send the payment link, then set Yearly and the first paid day in Settings once it's paid",
   renew_monthly: "switched to month to month: charge the monthly price from the day in their activity",
@@ -49,7 +55,8 @@ const HANDLED: Record<string, string> = {
   texts_off: "turned our texts off (STOP)",
   resume_cancelled: "wants back in after cancelling",
   resume_done: "texted RESUME after their one pass was done",
-  pass_monthly: "wants to keep going after the one pass: set up the plan in Settings and text them how it works",
+  pass_monthly: "wants to keep going after the one pass: the first month's text waits for your OK, and paid, they're on the monthly plan from that day",
+  pass_year: "wants a year after the one pass: no first month's text was made. Set up the plan in Settings and text them how it works",
   pass_end_no: "answered the end of their one pass with a no (or it's about a lead: it was left alone)",
   not_ours: "texted NOT OURS for a lead with no charge yet: its bookings are off the ledger, so it's never charged",
   not_ours_unknown: "texted NOT OURS with a code we can't find",
@@ -271,7 +278,7 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
-            {["accepted_close", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused", "pass_monthly"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
+            {["accepted_close", "accepted_by_hand", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused", "pass_monthly", "pass_year"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
             <Btn variant="ghost" onClick={() => open("texts")}>
               All their texts
             </Btn>
@@ -347,9 +354,14 @@ function Item({ it }: { it: ReviewItem }) {
       {it.kind === "charge_ask" && (
         <>
           <div className="text-[14px]">
-            {it.ask === "not_ours" ? (
+            {it.ask === "not_ours" && !it.month ? (
               <>
                 The owner says <b>{it.name}</b> (#{it.code}) wasn't ours, and its {fmtMoney(it.amount)} is {it.status === "paid" ? "charged" : "going through"}
+              </>
+            ) : it.month ? (
+              <>
+                {it.ask === "paid_twice" ? "The" : "Refund the"} {fmtMoney(it.amount)} for <b>{monthFor(it.month)}</b>
+                {it.ask === "paid_twice" ? " was paid twice" : "?"}
               </>
             ) : it.ask === "paid_twice" ? (
               <>
@@ -363,8 +375,8 @@ function Item({ it }: { it: ReviewItem }) {
           </div>
           <p className="text-[12.5px] text-ink-3">
             {it.ask === "paid_twice"
-              ? `${it.why}. Refund it sends the second payment back through Stripe, and the owner's text waits for your OK; the booking stays paid. Keep it once you've sorted it with him yourself.`
-              : `${it.why}. ${it.refundBy === "stripe" ? "Refund it sends it back through Stripe" : "Refund it in Stripe yourself, then say so here"}: its place under the cap opens up again, and the owner's text waits for your OK. Keep it and it stays charged.`}
+              ? `${it.why}. Refund it sends the second payment back through Stripe, and the owner's text waits for your OK; the ${it.month ? "month" : "booking"} stays paid. Keep it once you've sorted it with him yourself.`
+              : `${it.why}. ${it.refundBy === "stripe" ? "Refund it sends it back through Stripe" : "Refund it in Stripe yourself, then say so here"}: ${it.month ? "" : "its place under the cap opens up again, and "}the owner's text waits for your OK. Keep it and it stays charged.`}
           </p>
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" disabled={!!busy || it.status === "charging"} onClick={() => void run("refund", () => api<{ done: string }>("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: true }), (r) => (r.done === "refunded" ? "Refunded. The text to the owner waits for your OK" : "Cancelled: it was never charged"))}>
@@ -380,13 +392,21 @@ function Item({ it }: { it: ReviewItem }) {
       {it.kind === "charge_due" && (
         <>
           <div className="text-[14px]">
-            {it.via === "link" ? `Send the ${fmtMoney(it.amount)} link` : "Charge his saved card"}: <b>{it.name}</b> booked (#{it.code})
+            {it.via === "link" ? `Send the ${fmtMoney(it.amount)} link` : "Charge his saved card"}:{" "}
+            {it.month ? (
+              <b>{monthFor(it.month)}</b>
+            ) : (
+              <>
+                <b>{it.name}</b> booked (#{it.code})
+              </>
+            )}
           </div>
           <p className="text-[12.5px] text-ink-3">
             {it.via === "link" ? `Text the owner your Stripe payment link for ${fmtMoney(it.amount)} (one that saves his card), and press Done once it's paid.` : `Charge ${fmtMoney(it.amount)} in Stripe on the card ${it.last4 ? `ending ${it.last4}` : "his link saved"}, then press Done.`}
+            {it.month?.first ? " Paid, he's on the monthly plan from that day: paste his Stripe customer on the client's page so later months go on that card." : ""}
           </p>
           <div className="flex flex-wrap gap-2">
-            <Btn variant="primary" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/paid`, { customerId: it.customerId }), "Marked paid")}>
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/paid`, { chargeId: it.chargeId }), "Marked paid")}>
               Done: it's paid
             </Btn>
           </div>

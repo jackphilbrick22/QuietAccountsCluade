@@ -53,6 +53,7 @@ import {
   stageFits,
   billableBookings,
   CHARGE_TEXTS,
+  isMonth,
   type PlanState,
 } from "@qa/engine";
 import { z } from "zod";
@@ -65,7 +66,7 @@ import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import { setupHealth } from "../core/health.ts";
-import { approveChargeText, decideChargeOp, markPaid, openPay, pasteCustomer, sendLinkAgain, stripeEvent } from "../core/billing.ts";
+import { approveChargeText, decideChargeOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
 import { verifyStripeSignature, type StripeEvent } from "../providers/stripe.ts";
 import {
   answerInThread,
@@ -457,9 +458,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
         // before): its bookings are still billed by its terms, and the notes from then on are the monthly plan's
         b.plan = isOnePass(next) ? onePassPlan(next) : next;
         if (isOnePass(before) && !isOnePass(b.plan) && billsPass(b.plan)) b.plan.doneOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
-        // cancelled here as by text: nothing booked from today on is billed (and back from it, the day is gone)
-        if (b.plan.stage === "cancelled" && stageBefore !== "cancelled") b.plan.cancelledOn = localIso(d.clock(), b.timezone).slice(0, 10);
-        else if (b.plan.stage !== "cancelled") delete b.plan.cancelledOn;
+        // cancelled here as by text: nothing booked from today on is billed (a pass gone monthly keeps an earlier day).
+        // Back from it, the day is gone, except on a cancelled pass taken to monthly: its bookings after it never bill.
+        if (b.plan.stage === "cancelled" && stageBefore !== "cancelled") b.plan.cancelledOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
+        else if (b.plan.stage !== "cancelled" && (isOnePass(b.plan) || !billsPass(b.plan))) delete b.plan.cancelledOn;
         // a new end date: whether the notes it has meet it; before the owner's OK, one they don't is paced to at once
         // (never once the pass is over)
         if (isOnePass(b.plan) && b.plan.pace && b.plan.targetEndOn !== before.targetEndOn) {
@@ -475,7 +477,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const stage = patch.plan?.stage;
     if (stage && stage !== stageBefore) {
       if (stage === "paused") await holdSending(d, id, "pause");
-      else if (stage === "cancelled") await holdSending(d, id, "cancel");
+      else if (stage === "cancelled") {
+        await holdSending(d, id, "cancel");
+        // as CANCEL by text: the months not charged yet never are
+        await settleBilling(d, id);
+      }
       else if (stage === "done") await holdSending(d, id, "done");
       else if (stageBefore === "paused" || stageBefore === "cancelled" || stageBefore === "done") await holdSending(d, id, "resume");
     }
@@ -768,11 +774,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.get("/businesses/:id/owner-messages", (c) => c.json(repo.ownerMessages(c.req.param("id"), { delivery: c.req.query("delivery") })));
 
   op.post("/businesses/:id/owner-messages/:mid/send", async (c) => {
-    // Operator approves a billing text (the close, pre-charge, free month) for delivery. A one pass's money text moves
-    // its charge on first (its day, its link), or is withdrawn when the charge moved on meanwhile; one that failed to
-    // send goes again with its link as it is now, or its card's day from today.
+    // Operator approves a billing text (the close, pre-charge, free month) for delivery. A money text (a month's
+    // pre-charge text too) moves its charge on first (its day, its link), or is withdrawn when the charge moved on
+    // meanwhile; one that failed to send goes again with its link as it is now, or its card's day from today.
     const m = repo.db.get<{ kind: string; delivery: string }>("SELECT kind, delivery FROM owner_messages WHERE business_id = ? AND id = ?", c.req.param("id"), c.req.param("mid"));
-    if (m && (CHARGE_TEXTS as readonly string[]).includes(m.kind) && (m.delivery === "review" || m.delivery === "failed")) {
+    if (m && ((CHARGE_TEXTS as readonly string[]).includes(m.kind) || m.kind === "precharge") && (m.delivery === "review" || m.delivery === "failed")) {
       const r = await approveChargeText(d, c.req.param("id"), c.req.param("mid"));
       if (r.refused) return c.json({ ok: false, error: r.refused }, 409);
     }
@@ -796,14 +802,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
-  // A one pass's charges (BRIEF B4): one Jack was paid outside the software (or Done, with no Stripe key), a Stripe
-  // customer his own payment link saved the card on, his answer to one waiting on him (a refund, a NOT OURS, a second
-  // payment), and a /pay link's text again for his OK.
+  // Charges, a one pass's (BRIEF B4) and the months' (B5): one Jack was paid outside the software (or Done, with no
+  // Stripe key; a booking's by its customer, a month by its id), a Stripe customer his own payment link saved the card
+  // on, his answer to one waiting on him (a refund, a NOT OURS, a second payment), and a /pay link's text again for his OK.
   op.post("/businesses/:id/charges/paid", async (c) => {
-    const { customerId } = z.object({ customerId: z.string().min(1) }).parse(await c.req.json());
-    const r = await markPaid(d, c.req.param("id"), customerId);
+    const who = z.union([z.object({ customerId: z.string().min(1) }), z.object({ chargeId: z.string().min(1) })]).parse(await c.req.json());
+    const r = await markPaid(d, c.req.param("id"), who);
     if ("refused" in r) return c.json({ error: r.refused }, 409);
-    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.paid_outside", { charge: r.charge.id, customerId });
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.paid_outside", { charge: r.charge.id, ...who });
     return c.json({ ok: true, charge: r.charge });
   });
   op.post("/businesses/:id/charges/:cid/decide", async (c) => {
@@ -932,11 +938,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
       for (const m of [...repo.ownerMessages(b.id, { delivery: "review" }), ...repo.ownerMessages(b.id, { delivery: "failed" })])
         items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
-      // a one pass's charges waiting on a person: a refund, a NOT OURS or a second payment to decide; by hand (no Stripe
-      // key), each one approved is his to collect (the card's from its day, once its text reached the owner), then Done
+      // charges waiting on a person (a one pass's, a month's): a refund, a NOT OURS or a second payment to decide; by hand
+      // (no Stripe key), each one approved is his to collect (the card's from its day, once its text reached the
+      // owner), then Done
       const plan = s.dataset.business.plan;
-      for (const ch of plan.charges ?? []) {
-        const charge = { chargeId: ch.id, customerId: ch.customerId, name: people.get(ch.customerId)?.name ?? "", code: ch.code, amount: ch.amount / 100 };
+      for (const ch of [...(plan.charges ?? []), ...(plan.months ?? [])]) {
+        const charge = isMonth(ch)
+          ? { chargeId: ch.id, month: { on: ch.month, first: !!ch.first }, amount: ch.amount / 100 }
+          : { chargeId: ch.id, customerId: ch.customerId, name: people.get(ch.customerId)?.name ?? "", code: ch.code, amount: ch.amount / 100 };
         if (ch.ask) items.push({ kind: "charge_ask", ...biz, at: ch.ask.at, ...charge, ask: ch.ask.kind, why: ch.ask.why, status: ch.status, refundBy: d.stripe && (ch.ask.paymentIntent ?? ch.stripe?.paymentIntent) ? "stripe" : "hand" });
         else if (!d.stripe && ch.status === "approved" && (ch.via === "link" || (ch.toldAt && (ch.chargeOn ?? "") <= nowLocal.slice(0, 10))))
           items.push({ kind: "charge_due", ...biz, at: ch.approvedAt ?? ch.at, ...charge, via: ch.via, last4: plan.card?.last4 ?? null });

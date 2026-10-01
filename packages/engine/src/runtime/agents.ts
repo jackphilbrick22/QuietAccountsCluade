@@ -18,6 +18,7 @@ import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, mak
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 import { settledCheck, supersededOn } from "./settled.ts";
+import { chargeMonth, type BillingOpts } from "./charges.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
 
@@ -1213,7 +1214,11 @@ export function endPass(state: AccountState, now: ISODateTime): OwnerMessage | u
   return ownerMsg(state, now, "pass_end", text, state.scan && refillRate(state.scan, today).monthly ? [{ kind: "monthly_offer", id: today }] : undefined);
 }
 
-export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+/**
+ * Two days before each monthly charge date: the month that ends then was free (nobody asked to come back), and the
+ * owner hears it, or it's charged (BRIEF B5), and the pre-charge text that waits for Jack says what goes on the card.
+ */
+export function billingCheck(state: AccountState, now: ISODateTime, opts: BillingOpts = { stripe: false }): OwnerMessage | undefined {
   // Only a paying monthly account is charged; a cancelled or paused one gets no billing texts at all, and a one pass is
   // billed per booking.
   if (isOnePass(state.dataset.business.plan) || state.dataset.business.plan.stage !== "paying") return undefined;
@@ -1233,7 +1238,9 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
     }
     event(state, now, "guard", "action", "Guarantee: this month is free", `Nobody ${wantedWords(b.plan).past} this period, so you won't be charged.`);
   }
-  return ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
+  const m = ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
+  if (!g.free) chargeMonth(state, g, m, now, opts);
+  return m;
 }
 
 /**
@@ -1399,7 +1406,8 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
     line = `${line ? `${line} ` : ""}If you'd already paid for the ${ahead.length === 1 ? "year" : "years"} you renewed from ${days}, Jack will refund all of it.`;
   }
   plan.stage = "cancelled";
-  plan.cancelledOn = today;
+  // a one pass gone monthly may have been cancelled before: its bookings are billed up to that day, never a later one
+  plan.cancelledOn ??= today;
   if (opts.yearly)
     state.cancelled = {
       at: now,
@@ -1441,7 +1449,8 @@ export function undoCancel(state: AccountState, now: ISODateTime, opts: { platfo
   if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
   if (c.years?.length) plan.yearsPaidOn = [...new Set([...(plan.yearsPaidOn ?? []), ...c.years])].sort();
   plan.stage = c.stageBefore;
-  plan.cancelledOn = undefined;
+  // the cancel's own day goes; a one pass's from before it going monthly stays
+  if (plan.cancelledOn === c.at.slice(0, 10)) plan.cancelledOn = undefined;
   const before = new Map(c.touches.map((x) => [x.id, x.status]));
   // On a sending platform the cancel took each person's copy back; a sequence can only be pushed again from its
   // first note, so one already under way stays stopped (and the owner is told), never "back in line" and stuck.

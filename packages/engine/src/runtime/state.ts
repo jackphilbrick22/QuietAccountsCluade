@@ -44,8 +44,9 @@ export interface AccountState {
 }
 
 /**
- * A one pass's money texts (BRIEF B4): a booking's, with the link that saves the card or on the saved card; a failed
- * charge's link; the cap reached; a refund.
+ * Money texts: a one pass's booking's (BRIEF B4) or the monthly plan's first month (B5), with the link that saves the
+ * card or on the saved card; a failed charge's link (a month's too); the cap reached; a refund. A later month's is its
+ * pre-charge text.
  */
 export const CHARGE_TEXTS = ["charge_link", "charge_card", "charge_retry", "charge_cap", "charge_refund"] as const;
 export type ChargeText = (typeof CHARGE_TEXTS)[number];
@@ -56,7 +57,7 @@ export interface OwnerMessage {
   /**
    * "reply": our answer to a text the owner sent the operator's phone, to text back by hand (SMS_PROVIDER=manual).
    * "pass_end": a one pass's last text (the tally and the refill check), which waits for the operator.
-   * "charge_*": a one pass's money texts (CHARGE_TEXTS), each waiting for the operator.
+   * "charge_*": the money texts (CHARGE_TEXTS), each waiting for the operator.
    */
   kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply" | "pass_end" | ChargeText;
   text: string;

@@ -374,7 +374,11 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
       expect(state(h, "aaa-tree").dataset.business.plan.stage).toBe("trial");
       expect(state(h, "aaa-tree").awaitingOwnerOk).toBeTruthy();
     }
-    expect(h.d.accounts.repo.ownerTexts("aaa-tree").every((t) => t.handled === "accepted_close" && t.needs_person)).toBe(true);
+    // MONTHLY's first month waits for Jack's OK; the year is his to settle by hand
+    expect(h.d.accounts.repo.ownerTexts("aaa-tree").map((t) => [t.body, t.handled, t.needs_person])).toEqual([
+      ["yearly", "accepted_by_hand", 1],
+      ["Monthly", "accepted_close", 1],
+    ]);
   });
 
   it("books by the #code in the text, pauses and cancels only the one named, and asks instead of guessing", async () => {
@@ -738,8 +742,10 @@ describe("final review: what an owner's text is about", () => {
     await pushOwner(h, "ridge", { id: "om-close", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday 2 and the next batch goes out next week." });
     for (const text of ["Go for it", "Go ahead", "Go ahead and keep it going", "Go!"]) {
       expect(await h.sms(text), text).toBe("Great — Jack will text you the payment link, and the next batch goes out next week.");
-      expect(latest(h, "ridge"), text).toMatchObject({ handled: "accepted_close", needs_person: 1 });
+      // with the yearly plan sold, which one is Jack's to settle: no first month's text
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "accepted_by_hand", needs_person: 1 });
     }
+    expect(state(h, "ridge").dataset.business.plan.months).toBeUndefined();
     expect(state(h, "ridge").events.some((e) => /said yes to keep going/.test(e.title))).toBe(true);
     expect(state(h, "ridge").dataset.business.plan.stage).toBe("trial");
 

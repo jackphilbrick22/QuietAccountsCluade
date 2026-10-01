@@ -381,7 +381,58 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     - A cancelled pass taken straight to monthly loses its cancel day, as any plan back from cancelled does, so its bookings after the cancel bill again.
   - Engine 1,662, server 488, site 108.
 
+- **B5. Monthly billing on the saved card.**
+  - The first $497:
+    - The owner's yes after the free 150 (or MONTHLY in it) asks for the first month. Its text waits for Jack's OK: "Dave, here's the link for your first month, $497: [/pay link]. It saves your card, and I text before every charge. Any month nobody asks to come back, you don't pay."
+    - The link uses the same Customer, cards-only Checkout, setup_future_usage and webhook rules as a booking's. If the link is opened again days later, it reuses the Customer its first Checkout made, so it never makes a second one after Stripe has forgotten the key.
+    - Paid, the plan is paying from that day. Jack doesn't set Paying by hand any more.
+    - Asked once: a second yes changes nothing.
+    - At another monthly price (set in Settings), the texts, the Checkout and each charge use that price.
+    - With the yearly plan sold (FEATURE_YEARLY), a plain yes, a trial's YEARLY and a one pass's YEARLY are still Jack's to settle by hand. Needs a person says so with its own note instead of saying a first month's text is waiting.
+  - A one pass's owner going monthly (a yes to the end text, or MONTHLY, even while the pass is still running):
+    - He gets the same first-month link. With his card saved, the first month goes on it the B4 way: text, Jack's OK, then charged one business day after it reached him.
+    - Paid, the plan is monthly from that day. The pass is done that day (if it wasn't already), and its bookings are still billed by its terms. Only the monthly plan's notes from then on count toward a month.
+  - Each month after:
+    - The pre-charge text two days before now carries its month's charge. Its last line: "Your next month starts November 20: $497 goes on your card ending 4242 that day." With no card saved, it carries the /pay link.
+    - It always waits for Jack's OK, even with AUTO_SEND_BILLING_TEXTS=true.
+    - The saved card is charged off-session on the charge date, never before it and never unless that text reached the owner (sent, or marked sent on Texts to send). B4's PaymentIntent handling covers it: stored before confirming, read back after a restart.
+    - A text that reaches the owner on or after the charge date (Jack approved it late, it sat on Texts to send, or the worker made it late) goes the booking's way. The card is charged one business day after the text reached him, and the last line names that day before it goes, on Texts to send too: "...goes on your card ending 4242 on Monday, November 23."
+    - A free month: no charge, and the free-month text goes as before.
+    - A month's charge id is the business and the month: charged once.
+    - A declined month fails, and its link text ("Your $497 for the month from November 20 didn't go through…") waits for Jack's OK.
+  - No subscription and no renewing link: nothing is charged but by this path.
+  - CANCEL by text, or Cancelled in Settings:
+    - Every month not charged yet (and a first month asked for) is cancelled and its texts withdrawn. A cancel the day before charges nothing.
+    - A month already going through is left to settle. The owner's reply says so, and the text lands in Needs a person. If it's paid, the plan stays cancelled.
+    - A later month that was declined or left unpaid on or before the cancel day stays for Jack. The owner's reply says it "is still unpaid, so Jack will look at it", and the text lands in Needs a person.
+  - The yearly plan is never charged by this path, nor is a month of a paid year (or of a year in no paid year).
+  - Without a key:
+    - The first month waits in Needs a person as "Send the $497 link", and each month (from its charge day, once its pre-charge text reached the owner) as "Charge his saved card", each with Done.
+    - Done is now by the charge's id.
+    - Jack pastes the customer id as before.
+  - Two fixes where the one pass meets the monthly plan (B4's two "Left" items):
+    - A reply to the pass's notes never counts toward a month being paid, so one booking can't both bill $250 and make a month paid. The same goes for a reply we can't tie to a note from someone the pass wrote to, even if the monthly plan wrote to them since.
+    - A cancelled pass taken to monthly keeps its cancel day, and no later cancel (by text or in Settings) moves it.
+  - Console: a "Monthly charges" box (each month, its amount, where it stands, Paid outside, Send the link again) beside the pass's charges, and the card on file. Needs a person shows months as "Charge to collect" and "Charge to decide".
+  - Brief notes:
+    - The pre-charge text never said what would be charged. It now names the amount and the card.
+    - A month is charged on its own date, not "one business day after the text" like a booking, because its text goes two days before. Only a text that reaches the owner on or after that date goes the booking's way.
+  - Left:
+    - Not checked against live or test-mode Stripe (no key was given).
+    - A first-month link or a month's link left unpaid isn't flagged by itself: it shows as "Link sent".
+    - A paid month can't be refunded from the console, except a second payment or one paid after a cancel. Jack refunds others in Stripe.
+    - The fee totals (feesPaid) still count months from the first paid day and the free months, not from what was actually charged.
+  - Engine 1,679, server 514, site 108.
+
 **Live steps for Jack**
+- (B5) In Stripe test mode, with the B4 key and webhook set up:
+  1. Text "Yes" from a test owner's phone to a client whose free 150 is closed, and approve the first month's text. Pay its /pay link with 4242 4242 4242 4242. The client should say Paying from today, with the card ending 4242 on file.
+  2. Make a test reply to a monthly note in that month. On the day two days before the charge date, approve the pre-charge text and send it. Nothing should be charged the day before; on the charge date the month should say Paid.
+  3. A quiet month: nobody asked. The free-month text goes and nothing is charged.
+  4. Decline: paste a test customer with 4000 0000 0000 0341, then approve and send a pre-charge text. On its date the month should say "Didn't go through", with the link text waiting for you.
+  5. Text CANCEL the day before a charge date. Nothing should be charged on it.
+  6. Approve a pre-charge text on its charge date. Its last line should name the next business day, and nothing should be charged until that day.
+- (B5) Without a key: "Send the $497 link" and "Charge his saved card" wait in Needs a person. Charge in Stripe on the day, then press Done, and paste the owner's cus_ id under Monthly charges.
 - (B4) Stripe, in test mode first:
   1. In Stripe (test mode), add the webhook endpoint PUBLIC_URL/webhooks/stripe with four events: checkout.session.completed, checkout.session.expired, payment_intent.succeeded and payment_intent.payment_failed. Copy its signing secret.
   2. Set STRIPE_SECRET_KEY to the sk_test_ key and STRIPE_WEBHOOK_SECRET to that whsec_ secret, then restart. The Setup box should say "Stripe: test" and "Stripe events: none yet".

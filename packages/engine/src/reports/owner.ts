@@ -1,11 +1,11 @@
-import type { BusinessProfile, Charge, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply, Touch } from "../model.ts";
+import type { BusinessProfile, Charge, Features, ISODate, Money, MonthCharge, Opportunity, PlanState, Recovery, Reply, Touch } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { pickWorked } from "../breakage/detect.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
 import { refillRate } from "../breakage/refill.ts";
-import { holdsPlace, isOnePass, ONE_PASS, passPaid } from "../plans.ts";
+import { holdsPlace, isMonth, isOnePass, ONE_PASS, passPaid } from "../plans.ts";
 import { counted } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
 import { customerById, quoteById } from "../lookup.ts";
@@ -221,7 +221,7 @@ export function passPromise(plan: Pick<PlanState, "pricePerBooking" | "capBookin
 }
 
 /* ------------------------------------------------------------------ */
-/* A one pass's money texts (BRIEF B4)                                 */
+/* Money texts: a one pass's bookings (BRIEF B4) and the months (B5)    */
 /* ------------------------------------------------------------------ */
 
 const COUNT = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
@@ -238,13 +238,28 @@ function cardWords(plan: PlanState): string {
   return plan.card?.last4 ? `your card ending ${plan.card.last4}` : "your card";
 }
 
+/** "your first month", or "the month from November 1". */
+function monthWords(c: MonthCharge): string {
+  return c.first ? "your first month" : `the month from ${monthName(c.month)} ${Number(c.month.slice(8))}`;
+}
+
 /**
  * The text for a billable booking, with the lead's code. The first goes by a link that saves the card (with no Stripe
  * key, Jack texts his own link); the rest go on the saved card on `on`, one business day after the text reaches the
  * owner, and NOT OURS before then cancels it. A link after the first (the card wasn't saved) says where the total stands.
+ * A month's: the first one's, on the owner's yes, by the link that saves the card or on the card he saved already; a
+ * later month's by its link (its pre-charge text says the rest, monthLine).
  */
-export function chargeHeadsUp(state: AccountState, c: Charge, opts: { link?: string; on?: ISODate }): string {
+export function chargeHeadsUp(state: AccountState, c: Charge | MonthCharge, opts: { link?: string; on?: ISODate }): string {
   const plan = state.dataset.business.plan;
+  if (isMonth(c)) {
+    const owner = state.dataset.business.ownerFirstName;
+    const [what, price] = [monthWords(c), fmtMoney(c.amount / 100)];
+    const promise = "Any month nobody asks to come back, you don't pay.";
+    if (c.via === "card") return `${owner}, ${what}, ${price}, goes on ${cardWords(plan)} on ${WEEKDAY[new Date(`${opts.on}T12:00:00Z`).getUTCDay()]}. I text before every charge. ${promise}`;
+    const pay = opts.link ? `here's the link for ${what}, ${price}: ${opts.link}.` : `${what} is ${price}. I'll text you the link.`;
+    return `${owner}, ${pay} ${c.first ? `It saves your card, and I text before every charge. ${promise}` : "It saves your card for the rest."}`;
+  }
   const name = customerById(state.dataset, c.customerId)?.name ?? "Someone";
   const { price, soFar, cap } = chargeMoney(plan, c);
   if (c.via === "card") return `${name} booked (#${c.code}). ${price} goes on ${cardWords(plan)} on ${WEEKDAY[new Date(`${opts.on}T12:00:00Z`).getUTCDay()]}, ${soFar} of your ${cap}. Not ours? Reply NOT OURS #${c.code}.`;
@@ -252,10 +267,22 @@ export function chargeHeadsUp(state: AccountState, c: Charge, opts: { link?: str
   return `${name} booked (#${c.code}). ${first} ${opts.link ? `Here's the link: ${opts.link}.` : "I'll text you the link."} It saves your card for the rest, and I text before every charge.`;
 }
 
+/**
+ * A later month's pre-charge text ends with this, in place of "Your next month starts November 1.": what goes on the
+ * saved card that day (the text going on or after it, the day it's charged instead), or the link to pay it (with no
+ * Stripe key and no card, Jack texts his own).
+ */
+export function monthLine(state: AccountState, c: MonthCharge, opts: { link?: string }): string {
+  const next = `Your next month starts ${monthName(c.month)} ${Number(c.month.slice(8))}: ${fmtMoney(c.amount / 100)}`;
+  const on = c.chargeOn && c.chargeOn > c.month ? `on ${WEEKDAY[new Date(`${c.chargeOn}T12:00:00Z`).getUTCDay()]}, ${monthName(c.chargeOn)} ${Number(c.chargeOn.slice(8))}` : "that day";
+  if (c.via === "card") return `${next} goes on ${cardWords(state.dataset.business.plan)} ${on}.`;
+  return opts.link ? `${next}. Here's the link to pay it: ${opts.link}. It saves your card for the rest.` : `${next}. I'll text you the link.`;
+}
+
 /** A charge on the saved card that didn't go through: the link to pay it instead, once Jack says so. */
-export function chargeRetryText(state: AccountState, c: Charge, link: string): string {
-  const name = customerById(state.dataset, c.customerId)?.name ?? "someone";
-  return `The ${fmtMoney(c.amount / 100)} for ${name} (#${c.code}) didn't go through on ${cardWords(state.dataset.business.plan)}. Here's the link to pay it: ${link}. It saves your card for the rest.`;
+export function chargeRetryText(state: AccountState, c: Charge | MonthCharge, link: string): string {
+  const what = isMonth(c) ? `Your ${fmtMoney(c.amount / 100)} for ${monthWords(c)}` : `The ${fmtMoney(c.amount / 100)} for ${customerById(state.dataset, c.customerId)?.name ?? "someone"} (#${c.code})`;
+  return `${what} didn't go through on ${cardWords(state.dataset.business.plan)}. Here's the link to pay it: ${link}. It saves your card for the rest.`;
 }
 
 /** Once, when the cap's last charge is paid. */
@@ -265,10 +292,10 @@ export function chargeCapText(plan: PlanState): string {
   return `That's ${COUNT[n] ?? n}, the ${cap} cap. Anything else that books from this pass is yours.`;
 }
 
-/** A charge Jack refunded (its job cancelled before the work, or it wasn't ours). */
-export function chargeRefundText(state: AccountState, c: Charge): string {
-  const name = customerById(state.dataset, c.customerId)?.name ?? "someone";
-  return `Your ${fmtMoney(c.amount / 100)} for ${name} (#${c.code}) is going back on your card.`;
+/** A charge Jack refunded (its job cancelled before the work, it wasn't ours, or it was paid twice or after a cancel). */
+export function chargeRefundText(state: AccountState, c: Charge | MonthCharge): string {
+  const what = isMonth(c) ? monthWords(c) : `${customerById(state.dataset, c.customerId)?.name ?? "someone"} (#${c.code})`;
+  return `Your ${fmtMoney(c.amount / 100)} for ${what} is going back on your card.`;
 }
 
 /**
@@ -723,14 +750,18 @@ export function guaranteeCheck(state: AccountState, asOf: ISODate): GuaranteeChe
   const { chargeOn, periodStart } = nextCharge(year ?? b.plan.paidOn, asOf);
   const inPeriod = (d: string) => d.slice(0, 10) >= periodStart && d.slice(0, 10) < chargeOn;
   // Only people we followed up with count. Someone answering our reply to their own new request was asking
-  // anyway; counting them would let requests the owner gets regardless cancel his free month.
+  // anyway; counting them would let requests the owner gets regardless cancel his free month. Nor does a reply to a
+  // one pass's notes (one gone monthly since): it's billed by the pass's terms, so one booking never also makes a month
+  // paid. A reply we can't tie to a note counts only for someone the pass never wrote to.
   const touchById = new Map(state.touches.map((t) => [t.id, t]));
-  const followedUp = new Set(state.touches.filter((t) => t.track !== "new_request" && (t.status === "sent" || t.status === "delivered")).map((t) => t.customerId));
+  const pass = new Set(passTouches(state).map((t) => t.id));
+  const passPeople = new Set(passTouches(state).map((t) => t.customerId));
+  const followedUp = new Set(state.touches.filter((t) => t.track !== "new_request" && !pass.has(t.id) && (t.status === "sent" || t.status === "delivered")).map((t) => t.customerId));
   const fromFollowUp = (r: (typeof state.replies)[number]) => {
     const t = r.touchId ? touchById.get(r.touchId) : undefined;
-    if (t) return t.track !== "new_request";
+    if (t) return t.track !== "new_request" && !pass.has(t.id);
     if (r.opportunityId?.startsWith("req:")) return false;
-    return !!r.customerId && followedUp.has(r.customerId);
+    return !!r.customerId && followedUp.has(r.customerId) && !passPeople.has(r.customerId);
   };
   const asked = state.replies.filter((r) => WANTS.has(r.intent) && inPeriod(r.receivedAt) && fromFollowUp(r));
   const booked = counted(state.recoveries).filter((r) => inPeriod(r.cameBackOn));

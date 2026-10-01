@@ -416,33 +416,33 @@ export interface PlanState {
    * record, whatever the ledger says of the booking later. A Settings save never touches it.
    */
   charges?: Charge[];
+  /**
+   * Monthly (BRIEF B5): the first month, asked for on the owner's yes, then each month after that isn't free, from its
+   * pre-charge text. One per month (monthChargeId). A Settings save never touches it.
+   */
+  months?: MonthCharge[];
   /** The card the owner saved (the first link's Checkout, a Stripe customer Jack pasted): later charges go on it. */
   card?: SavedCard;
 }
 
 /**
- * One booking's charge. heads_up (its text waits for Jack) → approved → link_sent (the /pay link went) or charging
- * (the saved card, from its day) → paid, failed, refunded or skipped. Refunded and skipped free its place under the cap.
+ * Where a charge stands. heads_up (its text waits for Jack) → approved → link_sent (the /pay link went) or charging
+ * (the saved card, from its day) → paid, failed, refunded or skipped. Refunded and skipped free a booking's place under
+ * the cap.
  */
 export type ChargeStatus = "heads_up" | "approved" | "link_sent" | "charging" | "paid" | "failed" | "refunded" | "skipped";
 
-export interface Charge {
-  /** From the pass (its business and first send day) and the customer (chargeId), never from a booking's id. */
+/** What a one pass's booking and a month of the monthly plan are charged by alike: the money, the texts' OKs, Stripe. */
+interface ChargeBase {
   id: string;
-  customerId: string;
-  /** The ledger's booking it was made for, and the day it was made; none when Jack marked it paid without one. */
-  bookingId?: string;
-  bookedOn?: ISODate;
-  /** The lead's code from its hand-off text: on every money text, and what NOT OURS names. */
-  code: string;
   /** In cents. */
   amount: number;
   status: ChargeStatus;
   /** A link that saves the card (no card yet), or the saved card off-session. */
   via: "link" | "card";
   /**
-   * The saved card's day, named in its text: one business day after the text reaches the owner. Until it has, it moves
-   * on with the day the text would go.
+   * The saved card's day, named in its text: a booking's (and the first month's) is one business day after the text
+   * reaches the owner, and until it has it moves on with the day the text would go; a later month's is its own day.
    */
   chargeOn?: ISODate;
   at: ISODateTime;
@@ -456,14 +456,32 @@ export interface Charge {
   /** Why it was skipped, failed or refunded, or how it was paid when not through the software. */
   reason?: string;
   /**
-   * Jack's to decide: a refund once its booking went (cancelled before the work), the owner's NOT OURS after it was
-   * charged, or a second payment for it (`paymentIntent`, that payment's).
+   * Jack's to decide: a refund once its booking went (cancelled before the work) or once it was paid after it was
+   * cancelled, the owner's NOT OURS after it was charged, or a second payment for it (`paymentIntent`, that payment's).
    */
   ask?: { kind: "refund" | "not_ours" | "paid_twice"; at: ISODateTime; why: string; paymentIntent?: string };
   /** Jack kept the money when asked: it isn't asked again. */
   keptAt?: ISODateTime;
   /** `again`: payments made after it was paid (an older Checkout from its link), each Jack's until he refunds or keeps it. */
   stripe?: { customer?: string; sessions?: string[]; paymentIntent?: string; paymentMethod?: string; brand?: string; last4?: string; refund?: string; again?: string[] };
+}
+
+/** One booking's charge. Its id is from the pass (its business and first send day) and the customer (chargeId), never a booking's. */
+export interface Charge extends ChargeBase {
+  customerId: string;
+  /** The ledger's booking it was made for, and the day it was made; none when Jack marked it paid without one. */
+  bookingId?: string;
+  bookedOn?: ISODate;
+  /** The lead's code from its hand-off text: on every money text, and what NOT OURS names. */
+  code: string;
+}
+
+/** One month's charge. Its id is from the business and the month (monthChargeId), so a month is charged once. */
+export interface MonthCharge extends ChargeBase {
+  /** The month's own day: a later month's charge date; the first month's, the day the owner said yes (it starts the day it's paid). */
+  month: ISODate;
+  /** The first month: paid, the plan is monthly and paying from that day. */
+  first?: boolean;
 }
 
 export interface SavedCard {

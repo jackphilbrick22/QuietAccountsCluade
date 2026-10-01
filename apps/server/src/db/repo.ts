@@ -129,7 +129,7 @@ export class Repo {
       .reverse();
     const messages = this.db
       .all<{ data: string }>(
-        // Billing, renewal, kickoff and refund texts, SLA nudges and a one pass's money texts always load: "already
+        // Billing, renewal, kickoff and refund texts, SLA nudges and the money texts always load: "already
         // sent?" is decided from them (and a money text's approval finds it), and one that fell out of the window would
         // otherwise go out again after every restart.
         "SELECT data FROM owner_messages WHERE business_id = ? AND (kind IN ('close','precharge','free_month','sla_nudge','renewal','kickoff','refund') OR kind LIKE 'charge\\_%' ESCAPE '\\' OR id IN (SELECT id FROM owner_messages WHERE business_id = ? ORDER BY at DESC LIMIT 300)) ORDER BY at",

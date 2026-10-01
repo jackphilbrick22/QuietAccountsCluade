@@ -1,5 +1,6 @@
 import {
   approveCharge,
+  askFirstMonth,
   CHARGE_REF,
   CHARGE_TEXTS,
   chargeFailed,
@@ -11,18 +12,22 @@ import {
   customerById,
   decideCharge,
   fmtMoney,
+  isMonth,
   linkAgain,
   markPaidOutside,
   moneyTextLive,
+  monthName,
   ONE_PASS,
   paidTwice,
   pasteCard,
   redateCharge,
   settleCharges,
+  settleMonths,
   textsOf,
   type AccountState,
   type BillingOpts,
   type Charge,
+  type MonthCharge,
   type PlanState,
 } from "@qa/engine";
 import { NotFound } from "./accounts.ts";
@@ -31,9 +36,11 @@ import { deliverOwnerMessages, linkToken, readLinkToken, verifySigned, type Deps
 import { StripeError, type StripeEvent, type StripePaymentIntent, type StripePaymentMethod } from "../providers/stripe.ts";
 
 /**
- * A one pass's billing on the server (BRIEF B4): the charge log kept up with the ledger, the money texts through Jack's
- * OK, the /pay link's Checkout, saved cards charged off-session by the worker, Stripe's webhook, refunds on his OK.
- * Without a Stripe key it's all by hand: each approved charge waits in Needs a person with a Done button.
+ * Billing on the server: a one pass's (BRIEF B4) and the monthly plan's (B5). The charge log kept up with the ledger,
+ * the months from the owner's yes and each pre-charge text, the money texts through Jack's OK, the /pay link's
+ * Checkout, saved cards charged off-session by the worker, Stripe's webhook, refunds on his OK. No subscription and no
+ * link that renews: nothing is charged but by this path. Without a Stripe key it's all by hand: each approved charge
+ * waits in Needs a person with a Done button.
  */
 
 const MONEY_TEXTS = new Set<string>(CHARGE_TEXTS);
@@ -59,13 +66,14 @@ export function readPayToken(d: Deps, token: string): { bid: string; chargeId: s
   return bid && chargeId ? { bid, chargeId } : undefined;
 }
 
-/** The business's Stripe customer: the saved card's, else the one an earlier charge's Checkout made. */
+/** The business's Stripe customer: the saved card's, else the one an earlier Checkout made (a booking's or a month's). */
 function stripeCustomer(plan: PlanState): string | undefined {
-  return plan.card?.customer ?? plan.charges?.find((c) => c.stripe?.customer)?.stripe?.customer;
+  return plan.card?.customer ?? [...(plan.charges ?? []), ...(plan.months ?? [])].find((c) => c.stripe?.customer)?.stripe?.customer;
 }
 
-/** "Booked job: Karen W. (Dow's Tree Service)" */
-function lineName(state: AccountState, c: Charge): string {
+/** "Booked job: Karen W. (Dow's Tree Service)", "First month (Dow's Tree Service)", "Month from November 1 (...)" */
+function lineName(state: AccountState, c: Charge | MonthCharge): string {
+  if (isMonth(c)) return `${c.first ? "First month" : `Month from ${monthName(c.month)} ${Number(c.month.slice(8))}`} (${state.dataset.business.name})`;
   const who = customerById(state.dataset, c.customerId);
   const short = who?.firstName ? `${who.firstName}${who.lastName ? ` ${who.lastName[0]}.` : ""}` : (who?.name ?? "a customer");
   return `Booked job: ${short} (${state.dataset.business.name})`;
@@ -79,14 +87,15 @@ function cardOf(pi: StripePaymentIntent | undefined): Pick<NonNullable<Charge["s
 }
 
 /**
- * Money texts that no longer say something true of their charge never go: any not sent yet about a charge cancelled,
- * and one still waiting for Jack's OK whose charge moved on (paid by hand, its retry no longer needed).
+ * Money texts (a month's pre-charge text too) that no longer say something true of their charge never go: any not
+ * sent yet about a charge cancelled, and one still waiting for Jack's OK whose charge moved on (paid by hand, its retry
+ * no longer needed).
  */
 export function withdrawStaleTexts(d: Deps, bid: string): void {
   const s = d.accounts.peek(bid)?.state;
   if (!s) return;
   for (const m of s.ownerMessages) {
-    if (!MONEY_TEXTS.has(m.kind)) continue;
+    if (!MONEY_TEXTS.has(m.kind) && m.kind !== "precharge") continue;
     const c = chargeOf(s, m.refs?.find((r) => r.kind === CHARGE_REF)?.id ?? "");
     if (!c || moneyTextLive(c, m.kind)) continue;
     const delivery = d.accounts.repo.ownerMessageDelivery(bid, m.id)?.delivery ?? "";
@@ -96,17 +105,20 @@ export function withdrawStaleTexts(d: Deps, bid: string): void {
 }
 
 /**
- * The charge log brought up to the ledger: new bookings' texts wait for Jack, charges whose booking went are cancelled.
- * A saved card's charge counts its day from when its text reached the owner (sent, or texted by hand and marked sent);
- * until then the day its text names moves on with today, on Texts to send too.
+ * The charge log brought up to the ledger: new bookings' texts wait for Jack, charges whose booking went are cancelled,
+ * and so are the months not charged yet once the owner cancelled. A saved card's charge counts its day from when its
+ * text (a later month's: its pre-charge text) reached the owner (sent, or texted by hand and marked sent); until then a
+ * booking's day moves on with today (a later month's, once its own day came), on Texts to send too.
  */
 export async function settleBilling(d: Deps, bid: string): Promise<void> {
   await d.accounts.withAccount(bid, (state) => {
     const now = nowOf(d, state);
+    const plan = state.dataset.business.plan;
     settleCharges(state, now, billingOpts(d, bid));
-    for (const c of state.dataset.business.plan.charges ?? []) {
+    settleMonths(state, now);
+    for (const c of [...(plan.charges ?? []), ...(plan.months ?? [])]) {
       if (c.via !== "card" || c.status !== "approved" || c.toldAt) continue;
-      const m = textsOf(state, c).find((x) => x.kind === "charge_card");
+      const m = textsOf(state, c).find((x) => x.kind === "charge_card" || x.kind === "precharge");
       const went = m && d.accounts.repo.ownerMessageDelivery(bid, m.id);
       if (went?.delivery === "sent" && went.delivered_at) chargeTold(state, c.id, localIso(new Date(went.delivered_at), state.dataset.business.timezone));
       else if (redateCharge(state, c.id, now) && m) d.accounts.repo.setOwnerMessageText(bid, m.id, m.text);
@@ -117,7 +129,7 @@ export async function settleBilling(d: Deps, bid: string): Promise<void> {
 
 /**
  * The worker's turn: the charge log, then saved cards due today whose text reached the owner (and any left mid-charge,
- * read back from Stripe).
+ * read back from Stripe), a booking's or a month's.
  */
 export async function runBilling(d: Deps, bid: string): Promise<void> {
   await settleBilling(d, bid);
@@ -126,7 +138,7 @@ export async function runBilling(d: Deps, bid: string): Promise<void> {
   const tz = s.dataset.business.timezone;
   const today = localIso(d.clock(), tz).slice(0, 10);
   const stale = localIso(new Date(d.clock().getTime() - READ_BACK_MS), tz);
-  for (const c of s.dataset.business.plan.charges ?? [])
+  for (const c of [...(s.dataset.business.plan.charges ?? []), ...(s.dataset.business.plan.months ?? [])])
     if (c.via === "card" && ((c.status === "approved" && c.toldAt && (c.chargeOn ?? today) <= today) || (c.status === "charging" && (c.triedAt ?? "") <= stale))) await chargeCard(d, bid, c.id);
 }
 
@@ -137,7 +149,7 @@ export async function runBilling(d: Deps, bid: string): Promise<void> {
  */
 async function chargeCard(d: Deps, bid: string, id: string): Promise<void> {
   const stripe = d.stripe!;
-  let c: Charge | undefined;
+  let c: Charge | MonthCharge | undefined;
   let card: PlanState["card"];
   let name = "";
   await d.accounts.withAccount(bid, (state) => {
@@ -188,6 +200,17 @@ async function settleIntent(d: Deps, bid: string, id: string, pi: StripePaymentI
 }
 
 /**
+ * The owner said yes to the monthly plan (BRIEF B5): the first month's text, with the /pay link that saves the card (or
+ * on the card a one pass saved), waits for Jack's OK. Nothing when a first month stands already.
+ */
+export async function firstMonth(d: Deps, bid: string): Promise<void> {
+  await d.accounts.withAccount(bid, (state) => {
+    askFirstMonth(state, nowOf(d, state), billingOpts(d, bid));
+  });
+  await deliverOwnerMessages(d, bid);
+}
+
+/**
  * Jack approves a money text (from the money-text approval): the charge moves on with it, and the text is written
  * again with the day it's charged, or its link. Refused (and withdrawn) when the charge moved on meanwhile.
  */
@@ -208,7 +231,7 @@ export async function approveChargeText(d: Deps, bid: string, messageId: string)
 export type PayPage = { redirect: string } | { page: "paid" | "nothing" | "gone" };
 
 /** A charge's last Checkout can't be paid any more (it's paid another way, or a new one is made); one done or gone already is fine. */
-async function expireCheckout(d: Deps, bid: string, c: Charge): Promise<void> {
+async function expireCheckout(d: Deps, bid: string, c: Charge | MonthCharge): Promise<void> {
   const last = c.stripe?.sessions?.at(-1);
   if (d.stripe && last) await d.stripe.expireCheckoutSession(last, `${last}:expire`).catch((e: Error) => d.log(`[billing] ${bid} session ${last}: ${e.message}`));
 }
@@ -230,6 +253,9 @@ export async function openPay(d: Deps, token: string): Promise<PayPage> {
   if (!customer) customer = (await d.stripe.createCustomer({ name: b.name, email: b.ownerEmail, phone: b.ownerPhone, metadata: { business_id: b.id } }, `${c.id}:customer`)).id;
   const n = c.stripe?.sessions?.length ?? 0;
   const price = b.plan.pricePerBooking ?? ONE_PASS.pricePerBooking;
+  const terms = isMonth(c)
+    ? `${fmtMoney(c.amount / 100)} a month. Each charge comes after a text, and any month nobody asks to come back, you don't pay.`
+    : `${fmtMoney(price)} per booked job, up to ${fmtMoney(price * (b.plan.capBookings ?? ONE_PASS.capBookings))}. Each later charge comes after a text.`;
   const base = d.cfg.PUBLIC_URL.replace(/\/$/, "");
   const metadata = { business_id: b.id, charge_id: c.id };
   await expireCheckout(d, t.bid, c);
@@ -240,7 +266,7 @@ export async function openPay(d: Deps, token: string): Promise<PayPage> {
       customer,
       line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: c.amount, product_data: { name: lineName(s, c) } } }],
       payment_intent_data: { setup_future_usage: "off_session", metadata },
-      custom_text: { submit: { message: `${fmtMoney(price)} per booked job, up to ${fmtMoney(price * (b.plan.capBookings ?? ONE_PASS.capBookings))}. Each later charge comes after a text.` } },
+      custom_text: { submit: { message: terms } },
       metadata,
       success_url: `${base}/pay/thanks`,
       cancel_url: `${base}/pay/${token}`,
@@ -322,14 +348,14 @@ export async function decideChargeOp(d: Deps, bid: string, id: string, refund: b
 }
 
 /**
- * Jack marks a customer's charge paid outside the software (his own link, or Done by hand): never charged again, and
- * the Checkout its link last made can't be paid.
+ * Jack marks a charge paid outside the software (his own link, or Done by hand): a customer's, or a month by its id.
+ * Never charged again, and the Checkout its link last made can't be paid.
  */
-export async function markPaid(d: Deps, bid: string, customerId: string): Promise<{ charge: Charge } | { refused: string }> {
+export async function markPaid(d: Deps, bid: string, who: Parameters<typeof markPaidOutside>[1]): Promise<ReturnType<typeof markPaidOutside>> {
   if (!d.accounts.repo.exists(bid)) throw new NotFound("No such business");
   let r: ReturnType<typeof markPaidOutside>;
   await d.accounts.withAccount(bid, (state) => {
-    r = markPaidOutside(state, customerId, nowOf(d, state));
+    r = markPaidOutside(state, who, nowOf(d, state));
   });
   withdrawStaleTexts(d, bid);
   if ("charge" in r!) await expireCheckout(d, bid, r.charge);
@@ -344,7 +370,7 @@ export async function sendLinkAgain(d: Deps, bid: string, chargeId?: string): Pr
   const made: string[] = [];
   const old: string[] = [];
   await d.accounts.withAccount(bid, (state) => {
-    for (const c of state.dataset.business.plan.charges ?? []) {
+    for (const c of [...(state.dataset.business.plan.charges ?? []), ...(state.dataset.business.plan.months ?? [])]) {
       if (chargeId && c.id !== chargeId) continue;
       const before = textsOf(state, c).filter((m) => m.kind === "charge_link" || m.kind === "charge_retry");
       const m = linkAgain(state, c.id, nowOf(d, state), billingOpts(d, bid));

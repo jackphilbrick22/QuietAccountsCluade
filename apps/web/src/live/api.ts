@@ -263,14 +263,8 @@ interface Drafted {
   draft?: string;
   draftNeedsOwner?: boolean;
 }
-/** Which charge, whose and for how much (dollars). */
-interface ChargeRef {
-  chargeId: string;
-  customerId: string;
-  name: string;
-  code: string;
-  amount: number;
-}
+/** Which charge and for how much (dollars): a one pass's booking (whose, and its lead's code), or a month's. */
+type ChargeRef = { chargeId: string; amount: number } & ({ customerId: string; name: string; code: string; month?: undefined } | { month: { on: string; first: boolean } });
 export type ReviewItem =
   | (ReviewBase & Drafted & { kind: "unclear"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; text: string })
   | (ReviewBase & Drafted & { kind: "late_lead"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; hours: number; text: string })
@@ -285,7 +279,7 @@ export type ReviewItem =
   | (ReviewBase & { kind: "brake"; reason: string; queued: number })
   | (ReviewBase & { kind: "unsure_send"; touchId: string; customerId: string; name: string; step: number; subject: string; error: string })
   | (ReviewBase & { kind: "not_taken"; touchId: string; customerId: string; name: string; reason: string })
-  /** A one pass's charge for Jack to decide: a refund (its job cancelled before the work), the owner's NOT OURS after it was charged, or a second payment for it. */
+  /** A charge for Jack to decide: a refund (its job cancelled before the work, or paid after it was cancelled), the owner's NOT OURS after it was charged, or a second payment for it. */
   | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice"; why: string; status: string; refundBy: "stripe" | "hand" })
   /** By hand (no Stripe key): an approved charge for Jack to collect, then Done. */
   | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null })

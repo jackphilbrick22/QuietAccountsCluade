@@ -4,9 +4,9 @@ import type { StripeEvent } from "../src/providers/stripe.ts";
 /*
  * A fake Stripe for tests, behind the real client's fetch: it reads the form-encoded bodies and the Idempotency-Key
  * header, and keeps customers, saved cards, Checkout Sessions, PaymentIntents and refunds. A key used again returns
- * what it returned the first time (as Stripe does for 24 hours), whatever happened since. Cards by their last four:
- * 4242 pays, 0002 is declined, 0077 sits processing until `settle`. A PaymentIntent for a customer Stripe doesn't
- * have (deleted since) is refused outright, as Stripe does.
+ * what it returned the first time (as Stripe does for 24 hours, `forgetKeys` after), whatever happened since. Cards by
+ * their last four: 4242 pays, 0002 is declined, 0077 sits processing until `settle`. A PaymentIntent for a customer
+ * Stripe doesn't have (deleted since) is refused outright, as Stripe does.
  */
 
 export interface FakeCall {
@@ -204,6 +204,10 @@ export function fakeStripe() {
     /** The next request matching `match` ("POST /v1/payment_intents"): "before" never reaches Stripe; "after" is done, but the answer is lost. */
     dropNext(match: string, when: "before" | "after"): void {
       drops.push({ match, when });
+    },
+    /** A day went by: Stripe has forgotten the keys used so far, and one used again makes something new. */
+    forgetKeys(): void {
+      keys.clear();
     },
     /** Money Stripe took and kept: PaymentIntents that succeeded and weren't refunded. */
     kept(): Obj[] {

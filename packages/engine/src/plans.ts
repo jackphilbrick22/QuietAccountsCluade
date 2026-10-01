@@ -1,4 +1,4 @@
-import type { Charge, PlanState } from "./model.ts";
+import type { Charge, ISODate, MonthCharge, Money, PlanState } from "./model.ts";
 
 /**
  * The two offers' plans (BRIEF §2). Monthly: the free 150, then a month at a time on the owner's yes. One pass: the
@@ -35,6 +35,18 @@ export function monthlyPlan(): PlanState {
   return { stage: "trial", trialSize: 150, monthlyPrice: 497, freeMonths: [] };
 }
 
+/**
+ * The first month is paid (BRIEF B5): the plan is monthly and paying from that day, at what was paid. A one pass's
+ * owner too: the pass is done that day (if not before), and its bookings are still billed by its terms (billsPass).
+ */
+export function startMonthly(plan: PlanState, day: ISODate, price: Money): void {
+  if (isOnePass(plan)) {
+    plan.kind = "monthly";
+    plan.doneOn ??= day;
+  }
+  Object.assign(plan, { stage: "paying", paidOn: day, monthlyPrice: price } satisfies Partial<PlanState>);
+}
+
 /** A new one pass with its terms filled in: running, though it hasn't started until it's first planned. */
 export function onePassPlan(over: Partial<PlanState> = {}): PlanState {
   const { pricePerBooking, capBookings, windowDays, freeFirst } = ONE_PASS;
@@ -48,6 +60,11 @@ export function onePassPlan(over: Partial<PlanState> = {}): PlanState {
 export function passLate(plan: Pick<PlanState, "pace" | "targetEndOn">) {
   const late = plan.pace?.late;
   return late && plan.targetEndOn && late.canMeet > plan.targetEndOn ? late : undefined;
+}
+
+/** A month of the monthly plan's, not a one pass's booking. */
+export function isMonth(c: Charge | MonthCharge): c is MonthCharge {
+  return "month" in c;
 }
 
 /** A charge that holds its place under the cap: every one not refunded or skipped (one the owner disputes too, until Jack decides). */

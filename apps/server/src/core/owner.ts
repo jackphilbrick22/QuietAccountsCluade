@@ -1,5 +1,5 @@
 import { addDays, billableBookings, billsPass, cancelPlan, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
-import { withdrawStaleTexts } from "./billing.ts";
+import { firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
@@ -329,14 +329,16 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const planWord = (w: string) => (yearly ? PLAN_WORD : MONTHLY_WORD).test(w);
   // a question we asked that a yes or a no answers: the close, the renewal, or the end of a one pass offering monthly
   const asked = (b: Biz) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal") || outstanding(d, b.id, "pass_end");
-  // A one-pass owner who wants to keep going (MONTHLY, or a yes to the end text's offer) is Jack's to set up: nothing
-  // changes on a text alone.
+  // A one-pass owner who wants to keep going (MONTHLY, or a yes to the end text's offer): nothing changes on a text
+  // alone. Monthly, the first month's text waits for Jack's OK (on the card the pass saved, or its link), and paid, the
+  // plan is monthly from that day; the year is Jack's to set up.
   const keepGoing = async (b: Biz, choice: "monthly" | "year"): Promise<OwnerCommandResult> => {
     await d.accounts.withAccount(b.id, (state) => {
       const at = nowLocal(d, state);
-      state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} wants to keep going ${choice === "year" ? "for a year" : "monthly"}`, detail: `“${text.trim().slice(0, 160)}” — set up the plan and text them how it works.` });
+      state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} wants to keep going ${choice === "year" ? "for a year" : "monthly"}`, detail: `“${text.trim().slice(0, 160)}” — ${choice === "year" ? "set up the plan and text them how it works" : "the first month's text waits for your OK"}.` });
     });
-    return { businessId: b.id, reply: `${tag(b)}Great. Jack will text you how it works.`, handled: "pass_monthly", needsPerson: true };
+    if (choice === "monthly") await firstMonth(d, b.id);
+    return { businessId: b.id, reply: `${tag(b)}Great. Jack will text you how it works.`, handled: choice === "year" ? "pass_year" : "pass_monthly", needsPerson: true };
   };
 
   /* ---- our texts (the phone as a whole) ---- */
@@ -468,14 +470,16 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     }
     const choice = /^(monthly|month to month)/.test(bare) ? "monthly" : "year";
     if (isOnePass(one.profile.plan)) return keepGoing(one, choice);
-    // A trial owner picking a plan is a yes to the close: Jack sends the payment link and marks them paying. Nothing
-    // turns paying on a text alone.
+    // A trial owner picking a plan is a yes to the close. Nothing turns paying on a text alone: month to month, the first
+    // month's text waits for Jack's OK, and paid, the plan is paying from that day; the year, Jack sends its link and
+    // marks them paying.
     if (one.profile.plan.stage === "trial") {
       await d.accounts.withAccount(one.id, (state) => {
         const at = nowLocal(d, state);
-        state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} picked ${choice === "year" ? "the year" : "month to month"}`, detail: `“${text.trim().slice(0, 160)}” — send the payment link, then mark them paying.` });
+        state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} picked ${choice === "year" ? "the year" : "month to month"}`, detail: `“${text.trim().slice(0, 160)}” — ${choice === "year" ? "send the payment link, then mark them paying" : "the first month's text waits for your OK"}.` });
       });
-      return { businessId: one.id, reply: `${tag(one)}Great — ${choice === "year" ? "the year" : "month to month"} it is. Jack will text you the payment link.`, handled: "accepted_close", needsPerson: true };
+      if (choice === "monthly") await firstMonth(d, one.id);
+      return { businessId: one.id, reply: `${tag(one)}Great — ${choice === "year" ? "the year" : "month to month"} it is. Jack will text you the payment link.`, handled: choice === "year" ? "accepted_by_hand" : "accepted_close", needsPerson: true };
     }
     // Jack collects every payment, so a change (or a year waiting on its link) goes to his queue; a repeat changes nothing.
     const stageBefore = one.profile.plan.stage;
@@ -516,6 +520,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     });
     // cancel everywhere: the platform's campaigns pause and leads still waiting are taken back
     await holdSending(d, one.id, "cancel").catch((e) => d.log(`[owner] ${one.id} cancel on the sending platform failed: ${(e as Error).message}`));
+    // a month not charged yet never is, and its texts not sent are withdrawn; one going through settles, and one whose
+    // day came and didn't go through stays: Jack looks at both
+    const monthsOf = () => d.accounts.peek(one.id)!.state.dataset.business.plan.months ?? [];
+    if (monthsOf().length) await settleBilling(d, one.id);
+    const open = monthsOf().filter((c) => c.status === "charging" || c.status === "failed" || c.status === "link_sent");
     d.accounts.repo.audit(one.id, "owner-sms", "cancel", { stopped: r.stopped, refund: r.refund });
     // a yearly refund text goes straight to the operator's queue: they issue it, then send it
     if (r.refund) await deliverOwnerMessages(d, one.id);
@@ -526,11 +535,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const charges = owed
       ? `No more notes, and nothing that books from today on is charged. ${owed === 1 ? `The job booked before today is still ${price}` : `The ${owed} jobs booked before today are still ${price} each`}, and I text before every charge.`
       : "No more notes, no more charges.";
+    const left = open.map((c) => `the ${fmtMoney(c.amount / 100)} for ${c.first ? "your first month" : `the month from ${fmtDay(c.month)}`} ${c.status === "charging" ? "was already going through" : "is still unpaid"}`);
+    const still = left.length ? ` ${joinOr(left, "and").replace(/^t/, "T")}, so Jack will look at ${left.length === 1 ? "it" : "them"}.` : "";
     return {
       businessId: one.id,
-      reply: `${tag(one)}Done — cancelled. ${charges}${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours.${undo}`,
+      reply: `${tag(one)}Done — cancelled. ${charges}${still}${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours.${undo}`,
       handled: "cancel",
-      ...(renewed ? { needsPerson: true } : {}),
+      ...(renewed || left.length ? { needsPerson: true } : {}),
     };
   }
   if (/^undo\b/.test(bare) && !yearly) {
@@ -698,12 +709,15 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (closing.length + renewing.length + ending.length > 1) return askWhich();
     if (ending[0]) return keepGoing(ending[0], "monthly");
     const b = closing[0] ?? renewing[0];
+    // the free 150's yes: the first month's text, with the link that saves the card, waits for Jack's OK; paid, the
+    // plan is paying from that day. With the yearly plan sold, which one is his to settle.
     if (b && closing.length) {
       await d.accounts.withAccount(b.id, (state) => {
         const at = nowLocal(d, state);
-        state.events.push({ id: `ev_owner_yes_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} said yes to keep going`, detail: `“${text.trim().slice(0, 160)}” — send the payment link, then mark them paying.` });
+        state.events.push({ id: `ev_owner_yes_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} said yes to keep going`, detail: `“${text.trim().slice(0, 160)}” — ${yearly ? "send the payment link, then mark them paying" : "the first month's text waits for your OK"}.` });
       });
-      return { businessId: b.id, reply: `${tag(b)}Great — Jack will text you the payment link, and the next batch goes out next week.`, handled: "accepted_close", needsPerson: true };
+      if (!yearly) await firstMonth(d, b.id);
+      return { businessId: b.id, reply: `${tag(b)}Great — Jack will text you the payment link, and the next batch goes out next week.`, handled: yearly ? "accepted_by_hand" : "accepted_close", needsPerson: true };
     }
     // a paused owner's "Go ahead" may mean RESUME as much as the renewal: a person reads it too
     const goPaused = !!b?.paused && /^go\b/.test(bare);

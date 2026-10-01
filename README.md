@@ -54,7 +54,7 @@ says what happens without it. The ones a deploy gets wrong:
 | From | URL | Set up |
 | --- | --- | --- |
 | Instantly: replies, bounces, unsubscribes | `PUBLIC_URL/webhooks/instantly/WEBHOOK_SECRET` | The server registers it at boot, and turns it back on if Instantly switches it off. The health page says whether it's OK. |
-| Stripe: one-pass payments | `PUBLIC_URL/webhooks/stripe` | Add the endpoint in Stripe (events `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`) and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Without `STRIPE_SECRET_KEY` billing is by hand. |
+| Stripe: one-pass and monthly payments | `PUBLIC_URL/webhooks/stripe` | Add the endpoint in Stripe (events `checkout.session.completed`, `checkout.session.expired`, `payment_intent.succeeded`, `payment_intent.payment_failed`) and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Without `STRIPE_SECRET_KEY` billing is by hand. |
 | Twilio: owner texts | `PUBLIC_URL/webhooks/sms/WEBHOOK_SECRET` | The number's incoming-message webhook (POST). Take CANCEL out of its opt-out keywords. |
 | Inbound email: exports owners forward | `PUBLIC_URL/webhooks/inbound-email/WEBHOOK_SECRET` | Your inbound email service, posting JSON, for `INBOUND_DOMAIN`. |
 
