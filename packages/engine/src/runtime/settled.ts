@@ -1,5 +1,6 @@
 import type { ISODateTime, Job, RecordKind, Touch } from "../model.ts";
 import { customerById, jobsOf, oppById, quoteById, quotesOf } from "../lookup.ts";
+import { statusReadsTwoWays } from "../ingest/fields.ts";
 import { makeId } from "../util.ts";
 import type { AccountState } from "./state.ts";
 
@@ -47,6 +48,9 @@ export function settledCheck(state: AccountState): (t: Touch) => string | undefi
         if (q.status === "approved") return "the quote was approved";
         if (q.status === "declined" && about.type !== "declined_quote") return "they said no to the quote";
       }
+      // a status a person has to read ("Yes - backed out", one we don't recognise, one that reads two ways): no more
+      // notes until they have; the hold it gets only stops new plans
+      if (q && (q.unreadStatus || statusReadsTwoWays(q.rawStatus))) return "its status changed to one a person needs to read";
     } else if (about?.kind === "request") {
       const r = ds.requests.find((x) => x.id === about.id);
       if (r && (r.quoteId || r.status === "converted" || quotes.some((q) => (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999")))) return "their request got a quote";

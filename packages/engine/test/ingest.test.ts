@@ -712,6 +712,10 @@ Jane Doe,jane@gmail.com,Chain link fence,1900,2026-08-05,Approved - waiting on H
     for (const next of ["Yes - awaiting deposit", "Approved - pending scheduling", "Sold - waiting to be scheduled"]) expect(statusReadsTwoWays(next), next).toBe(false);
   });
 
+  it.each(["Yes - deposit received", "Yes - verbal", "Yes (verbal)", "Yes - 10/20", "Yes - Dave", "Yes - option 2", "Y - deposit in", "Yes, going ahead"])("an owner's yes with a note after it still reads as a yes: %s", (s) => {
+    expect(status(s).status).toBe("approved");
+  });
+
   it("a yes that came undone is never read as a go-ahead: held for a person, never told it's not on the schedule", async () => {
     const SHEET = `Name,Email,Job,Price,Date,Status
 Mike Sanderson,mike@gmail.com,Cedar privacy fence,6200,2026-08-20,Yes - backed out

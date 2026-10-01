@@ -318,10 +318,10 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [/\bclosed[\s-]*won\b|\bwon\b(?!['’])/i, "approved"],
   // Work exists: ServiceTitan "Sold", Housecall Pro "Copied to job", QuickBooks "Converted", PaintScout "Invoiced" and "Paid".
   [/(converted|job created|copied to job|\bsold\b|complete|invoiced|\b(?:un)?paid\b|scheduled|in progress)/i, "converted"],
-  // An owner's own yes leads the same way, on its own or before a next step or a condition: "Yes", "Y - awaiting
-  // deposit", "Yes - waiting on HOA" (a yes with a condition, never an unanswered quote; statusReadsTwoWays holds it for
-  // a person). Anything else after it ("Yes - backed out", "Yes - fell through") isn't read as a yes: a person reads it.
-  [new RegExp(`(approved|accepted|\\bsigned\\b|booked|client approved|customer approved|pro approved)|${OWNER_YES}(?:\\W*$|(?=.*(?:${WAITING}|${NEXT_STEP})))`, "i"), "approved"],
+  // An owner's own yes leads the same way, whatever note follows it: "Yes", "Yes - deposit received", "Yes - 10/20",
+  // "Yes - waiting on HOA" (a yes with a condition, never an unanswered quote; statusReadsTwoWays holds it for a
+  // person). Unless the yes came undone ("Yes - backed out", "Yes - cancelled"): that isn't read as a yes.
+  [new RegExp(`(approved|accepted|\\bsigned\\b|booked|client approved|customer approved|pro approved)|${OWNER_YES}(?!.*(?:${CLOSED_OUT}|${BACKED_OUT}))`, "i"), "approved"],
   // Closed by the software or the office — NOT a customer decision (expired, dismissed, cancelled, No Go).
   [/(expir)/i, "expired"],
   [new RegExp(CLOSED_OUT, "i"), "archived"],

@@ -836,6 +836,19 @@ describe("a follow-up stops once they've said yes", () => {
     expect(dueTouches(st, n1!.dueAt).held.find((h) => h.touch.id === n1!.id)!.why).toBe("No longer needed: the quote was approved");
   });
 
+  it("a status a person has to read stops the rest: a yes with a note, a yes that came undone, one we don't know", () => {
+    for (const [raw, why] of [
+      ["Yes - deposit received", "the quote was approved"],
+      ["Yes - backed out", "its status changed to one a person needs to read"],
+      ["Assigned", "its status changed to one a person needs to read"],
+    ] as const) {
+      const st = mike();
+      const [n1] = touchesOf(st, "c1");
+      st.dataset.quotes = st.dataset.quotes.map((q) => ({ ...q, rawStatus: raw, status: raw.startsWith("Yes - d") ? ("approved" as const) : ("awaiting_response" as const), unreadStatus: raw.startsWith("Yes - d") ? undefined : true }));
+      expect(dueTouches(st, n1!.dueAt).held.find((h) => h.touch.id === n1!.id)?.why, raw).toBe(`No longer needed: ${why}`);
+    }
+  });
+
   it("a job they booked since, or a new quote sent since, stops it too; nothing new, and it carries on", () => {
     const booked = mike();
     const [b1] = touchesOf(booked, "c1");
