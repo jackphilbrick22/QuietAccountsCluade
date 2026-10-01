@@ -29,10 +29,12 @@ import {
   staleAnswer,
   totals,
   customerById,
+  dataThrough,
   daysBetween,
   detect,
   dueTouches,
   find,
+  growingSeason,
   importTable,
   isOnePass,
   kickoff,
@@ -58,6 +60,7 @@ import {
   receiveReply,
   renewPlan,
   repliedCheck,
+  SEASONAL_TRADES,
   stopSequence,
   weekday,
   type AccountState,
@@ -378,6 +381,31 @@ export async function paceAlert(d: Deps, bid: string): Promise<void> {
 
 function closePaceAlerts(d: Deps, bid: string): void {
   for (const a of d.accounts.repo.openAlerts(bid)) if (a.kind === "pace") d.accounts.repo.finishAlert(bid, a.seq, d.clock().toISOString());
+}
+
+/** In a lawn shop's season, records older than this are stale: its regulars' visits since aren't in them. */
+export const STALE_RECORDS_DAYS = 14;
+
+/**
+ * A seasonal shop's records go stale between exports. In its growing season, once the newest is more than two weeks
+ * old (dataThrough), who stopped since can't be told from them: nothing new is planned from them (the nightly top-up
+ * waits), and Jack is asked, once, for a fresh export. Outside the season they reach its end, as they should.
+ */
+export async function staleRecords(d: Deps, bid: string): Promise<boolean> {
+  const ds = d.accounts.peek(bid)!.state.dataset;
+  if (!SEASONAL_TRADES.has(ds.business.trade)) return false;
+  const season = growingSeason(ds.business);
+  if (ds.asOf.slice(5) < season.opens || ds.asOf.slice(5) > season.closes) return false;
+  const through = dataThrough(ds);
+  const age = daysBetween(through, ds.asOf);
+  if (age <= STALE_RECORDS_DAYS) return false;
+  if (!d.accounts.repo.openAlerts(bid).some((a) => a.kind === "stale_records"))
+    await raiseAlert(d, bid, {
+      kind: "stale_records",
+      title: `${ds.business.name}'s records are ${age} days old`,
+      detail: `The newest is from ${through}, so who stopped since can't be told from them, and nothing new is planned. Ask for a fresh Visits report (or invoices).`,
+    });
+  return true;
 }
 
 function startedPeople(state: AccountState): number {

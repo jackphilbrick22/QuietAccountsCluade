@@ -4,7 +4,7 @@ import { goesOutOn, planOutreach } from "../src/cadence/plan.ts";
 import { renderNote } from "../src/copy/render.ts";
 import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import type { BreakageType, BusinessProfile, Dataset, ISODate } from "../src/model.ts";
-import { dueTouches, find, markSent, OFF_SEASON, ownerApproves, planBatch } from "../src/runtime/agents.ts";
+import { closeIfDue, dueTouches, find, markSent, OFF_SEASON, ownerApproves, planBatch } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { generateSample } from "../src/sample/generate.ts";
 import { goneForSeason, growingSeason, sellingSeason, sellingWindow, shopSeasonEnd } from "../src/trades/index.ts";
@@ -511,4 +511,245 @@ describe("the sample generator sees winter", () => {
     expect(plan.people.filter((x) => active.includes(x))).toEqual([]);
     expect(plan.firstDay).toBe("2027-01-19");
   }, 60_000);
+});
+
+describe("a regular with no visits of his own to say when his season starts", () => {
+  const SHOPS: [string, string][] = [
+    ["PA", "5 Market St, Harrisburg, PA 17101"],
+    ["OH", "200 High St, Columbus, OH 43215"],
+    ["GA", "88 Peachtree St, Atlanta, GA 30303"],
+    ["TX", "300 Congress Ave, Austin, TX 78701"],
+  ];
+  /** The shop's file as exported on `asOf`, read and scanned: who it flags, by email. */
+  const flagged = (csv: string, name: string, state: string, mailingAddress: string, asOf: ISODate) => {
+    const ds = ingestFile(emptyDataset(lawn({ state, mailingAddress }), asOf), csv, name, `${asOf}T12:00:00Z`).dataset;
+    const email = new Map(ds.customers.map((c) => [c.id, c.emails[0]!]));
+    return scan(ds).opportunities.map((o) => [email.get(o.customerId), o.type]);
+  };
+  // weekly regulars mowed to the last week of October, and one who stopped in July
+  const LIST = `Client name,Email,Last Visit,Frequency
+Mike Sanderson,mike@gmail.com,2026-10-22,Weekly
+Linda Whitfield,linda@gmail.com,2026-10-26,Weekly
+Tom Alvarez,tom@gmail.com,2026-10-29,Every other week
+Karen Brennan,karen@gmail.com,2026-07-10,Weekly
+`;
+  const RECURRING = `Job #,Job title,Client name,Client email,Client phone number,Service street,Billing type,Visits assigned to,Line items,Total ($),Completed visits,Number of invoices,Schedule start date,Schedule end date
+610,Weekly mowing,Mike Sanderson,mike@gmail.com,717-224-1100,12 Oak Ln,Per visit,Crew 1,Mow,4200,70,70,04/08/2024,10/29/2026
+611,Weekly mowing,Linda Whitfield,linda@gmail.com,717-224-1101,15 Pine St,Per visit,Crew 1,Mow,2900,50,50,04/07/2025,10/26/2026
+`;
+
+  it.each(SHOPS)("in %s, a client list's regulars mowed to late October aren't gone in March or early April, before a shop may have started; by June they are", (state, address) => {
+    for (const asOf of ["2027-03-01", "2027-03-29", "2027-03-30", "2027-04-10"]) expect(flagged(LIST, "Clients.csv", state, address, asOf), `${state} ${asOf}`).toEqual([["karen@gmail.com", "lapsed_regular"]]);
+    expect(flagged(LIST, "Clients.csv", state, address, "2027-06-01").sort()).toEqual([
+      ["karen@gmail.com", "lapsed_regular"],
+      ["linda@gmail.com", "lapsed_regular"],
+      ["mike@gmail.com", "lapsed_regular"],
+      ["tom@gmail.com", "lapsed_regular"],
+    ]);
+  });
+
+  it("in Pennsylvania, a Recurring Jobs report's jobs that ran to late October aren't gone in March or early April", () => {
+    const [state, address] = SHOPS[0]!;
+    for (const asOf of ["2027-03-29", "2027-04-10"]) expect(flagged(RECURRING, "Recurring Jobs Report.csv", state, address, asOf), asOf).toEqual([]);
+    expect(flagged(RECURRING, "Recurring Jobs Report.csv", state, address, "2027-06-01")).toHaveLength(2);
+  });
+});
+
+describe("a lawn shop that bills by the month, with no jobs file", () => {
+  const MONTH = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const first = (y: number, m: number) => `${y}-${String(m).padStart(2, "0")}-01`;
+  /**
+   * `who`'s bill for each month he was mowed, April to October 2025 and April to `lastMonth` 2026: dated the month's
+   * last day, or billed in arrears on the 1st after it.
+   */
+  const bills = (who: string, lastMonth: number, when: "end" | "arrears") =>
+    [2025, 2026].flatMap((y) =>
+      [4, 5, 6, 7, 8, 9, 10]
+        .filter((m) => y === 2025 || m <= lastMonth)
+        .map((m) => {
+          const on = when === "end" ? addDays(first(y, m + 1), -1) : first(y, m + 1);
+          return invoice(`${who}-${y}-${m}`, who, { subject: `Lawn maintenance - ${MONTH[m]}`, total: 180, balance: 0, status: "paid", rawStatus: "Paid", issuedOn: on, dueOn: on, paidOn: on });
+        }),
+    );
+  const REGULARS = ["r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8"];
+  /** Eight regulars billed to the season's end, and three who quit after June, July and August 2026. */
+  const shopOn = (when: "end" | "arrears", asOf: ISODate) => {
+    const invoices = [...REGULARS.flatMap((who) => bills(who, 10, when)), ...bills("june", 6, when), ...bills("july", 7, when), ...bills("august", 8, when)];
+    return scan(dataset({ asOf, business: { trade: "lawn", name: "Greenline", avgJobValue: undefined }, customers: [...REGULARS, "june", "july", "august"].map((id) => customer(id)), invoices: invoices.filter((i) => i.issuedOn! <= asOf) }));
+  };
+
+  it.each(["end", "arrears"] as const)("billed at the month's %s: whoever quit after June, July or August is found in the fall and spring windows, and no regular", (when) => {
+    for (const asOf of ["2026-11-10", "2027-01-15", "2027-03-01"]) {
+      const r = shopOn(when, asOf);
+      expect(REGULARS.flatMap((x) => oppsFor(r, x)), asOf).toEqual([]);
+      expect(["june", "july", "august"].map((x) => reachable(r, x, "lapsed_regular").length), asOf).toEqual([1, 1, 1]);
+    }
+    expect(REGULARS.flatMap((x) => oppsFor(shopOn(when, "2026-10-15"), x))).toEqual([]);
+  });
+});
+
+describe("between exports, the season is read only as far as the records reach", () => {
+  /** The shop's Visits report as exported on `exported`, scanned again each night to `asOf` with nothing newer. */
+  const later = (exported: ISODate, asOf: ISODate) => {
+    const shop = shopOn(exported);
+    return { ...shop, r: scan({ ...shop.ds, asOf }) };
+  };
+
+  it("a September export rescanned every night through the fall and winter flags no active regular, and still finds who stopped", () => {
+    for (const asOf of ["2026-09-25", "2026-09-29", "2026-10-07", "2026-10-15", "2026-11-10", "2027-01-15", "2027-03-01"]) {
+      const { r, who } = later("2026-09-08", asOf);
+      const active = new Set(who(...ACTIVE("2026-09-08")));
+      expect(r.opportunities.filter((o) => active.has(o.customerId)).map((o) => o.type), asOf).toEqual([]);
+      expect(who("stoppedJuly2026", "stoppedAfter2025").map((x) => reachable(r, x, "lapsed_regular").length), asOf).toEqual([1, 1, 1, 1, 1]);
+    }
+  }, 60_000);
+
+  it("the launch export, never sent again, doesn't make every regular gone the next September", () => {
+    const { r, who } = later("2026-10-08", "2027-09-01");
+    const active = new Set(who(...ACTIVE("2026-10-08")));
+    expect(r.opportunities.filter((o) => active.has(o.customerId)).map((o) => o.type)).toEqual([]);
+    expect(who("stoppedJuly2026").map((x) => reachable(r, x, "lapsed_regular").length)).toEqual([1, 1, 1]);
+  });
+});
+
+describe("a regular who quit late in the season with his job left open", () => {
+  const HEAD = "Job #,Date,Visit title,Client name,Client email,Visit completed,Visit based ($),Job type";
+  /** Weekly visits from `from` to `to`, marked done through `doneTo`. */
+  const rows = (job: number, name: string, from: ISODate, to: ISODate, doneTo: ISODate) => {
+    const out: string[] = [];
+    for (let d = from; d <= to; d = addDays(d, 7)) out.push(`${job},${d},Weekly mowing,${name},${name.split(" ")[0]!.toLowerCase()}@gmail.com,${d <= doneTo ? "Yes" : "No"},45.00,Recurring`);
+    return out;
+  };
+  const NAMES = ["Linda Whitfield", "Tom Alvarez", "Karen Brennan", "Steve Coutu", "Donna Duval", "Paul Ellis", "Janet Fortin", "Gary Gagnon", "Ruth Hale", "Brian Irwin", "Carol Jacques", "Kevin Kimball"];
+  // exported October 8th, at launch: twelve regulars on the calendar to the end of October; Mike quit after September 7th,
+  // and his job was never closed (its visits since read "No", and the rest of October is still on the calendar)
+  const EXPORT = [
+    HEAD,
+    ...NAMES.flatMap((name, i) => rows(800 + i, name, addDays("2026-04-20", i % 5), "2026-10-29", "2026-10-07")),
+    ...rows(900, "Mike Sanderson", "2026-04-20", "2026-10-26", "2026-09-07"),
+  ].join("\n");
+
+  it("is found once his calendar's dates have passed, in the fall window and the spring one; no regular is", () => {
+    const ds = ingestFile(emptyDataset(lawn(), "2026-10-08"), EXPORT, "Visits Report.csv", "2026-10-08T12:00:00Z").dataset;
+    const mike = ds.customers.find((c) => c.emails.includes("mike@gmail.com"))!.id;
+    // on the day: his October visits are on the calendar, so he's left alone
+    expect(reachable(scan(ds), mike, "lapsed_regular")).toEqual([]);
+    for (const asOf of ["2026-10-29", "2026-11-10", "2027-01-15", "2027-03-01"]) {
+      const r = scan({ ...ds, asOf });
+      expect(reachable(r, mike, "lapsed_regular").map((o) => o.anchorDate), asOf).toEqual(["2026-09-07"]);
+      expect(r.opportunities.filter((o) => o.customerId !== mike), asOf).toEqual([]);
+    }
+  });
+});
+
+describe("a lawn shop's winter work", () => {
+  /** `who`'s snow plowing through each winter in `winters`, a push every week or two from December to March. */
+  const plowed = (who: string, winters: number[]) =>
+    winters.flatMap((y) =>
+      [`${y}-12-08`, `${y}-12-19`, `${y + 1}-01-05`, `${y + 1}-01-14`, `${y + 1}-01-27`, `${y + 1}-02-09`, `${y + 1}-02-20`, `${y + 1}-03-06`].map((d, i) =>
+        job(`${who}-${y}-${i}`, who, { title: "Snow plowing", recurring: true, total: 65, completedOn: d }),
+      ),
+    );
+
+  it.each(["lawn", "landscape"] as const)("a %s shop's plow customers, plowed every winter, aren't lapsed mowing regulars", (trade) => {
+    const jobs = [
+      ...["r1", "r2", "r3"].flatMap((who) => [...weekly("Weekly mowing", "2025-04-21", "2025-10-27", who), ...weekly("Weekly mowing", "2026-04-20", "2026-10-26", who)]),
+      ...plowed("p1", [2024, 2025, 2026]),
+      ...plowed("p2", [2025, 2026]),
+      // one who had a spring clean-up too: it comes due in its season, but he's no mowing regular gone
+      ...plowed("p3", [2025, 2026]),
+      job("p3-cleanup", "p3", { title: "Spring cleanup", total: 160, completedOn: "2026-04-14" }),
+    ];
+    for (const asOf of ["2026-10-15", "2026-11-10", "2027-01-15", "2027-03-01", "2027-06-15"]) {
+      const r = shop(trade, jobs, asOf);
+      expect([...oppsFor(r, "p1"), ...oppsFor(r, "p2"), ...oppsFor(r, "p3", "lapsed_regular")].map((o) => [o.type, o.reason]), asOf).toEqual([]);
+    }
+  });
+});
+
+describe("the free 150 for a shop that starts late in a selling window", () => {
+  const SPRING_LINE = /we're setting the spring routes now/;
+  /** A New Hampshire lawn shop on its free round: 220 weekly regulars who all stopped in July, Monday to Friday, 75 new people a week. */
+  const trial = (asOf: ISODate) => {
+    const ids = Array.from({ length: 220 }, (_, i) => `c${i}`);
+    const ds = dataset({
+      asOf,
+      business: { trade: "lawn", name: "Greenline Lawn Care", avgJobValue: undefined, sendDays: [1, 2, 3, 4, 5] },
+      customers: ids.map((id) => customer(id)),
+      jobs: ids.flatMap((id) => weekly("Weekly mowing", "2026-04-20", "2026-07-13", id)),
+    });
+    const st = emptyState(ds, `${asOf}T07:00:00`);
+    planBatch(st, `${asOf}T07:00:00`, { startOn: asOf, limitPeople: 150 });
+    return st;
+  };
+  const firstDays = (st: ReturnType<typeof trial>) => st.touches.filter((t) => t.step === 1 && t.status !== "cancelled").map((t) => t.dueAt.slice(0, 10)).sort();
+  /** Everything approved and due by `day` goes out on its day. */
+  const sendThrough = (st: ReturnType<typeof trial>, day: ISODate) => {
+    for (const t of st.touches) if (t.status === "approved" && t.dueAt.slice(0, 10) <= day) markSent(st, t.id, t.dueAt);
+  };
+
+  it("planned November 9th, the round is the whole 150: the rest start in January, written for spring, and the trial isn't closed after the fall's", () => {
+    const st = trial("2026-11-09");
+    const days = firstDays(st);
+    expect(days).toHaveLength(150);
+    expect(days.filter((d) => d < "2027")).toEqual(Array(75).fill(expect.stringMatching(/^2026-11-(09|1[0-3])$/)));
+    expect(days.filter((d) => d > "2027")[0]).toBe("2027-01-01");
+    expect(st.touches.filter((t) => t.dueAt.slice(0, 10) > "2026-11-15" && t.dueAt < "2027")).toEqual([]);
+    const spring = st.touches.filter((t) => t.dueAt > "2027");
+    expect(spring.map((t) => t.season)).toEqual(spring.map(() => "2027-spring"));
+    expect(spring.filter((t) => t.step === 2).map((t) => t.body.split("\n\n")[0])).toEqual(Array(75).fill(expect.stringMatching(SPRING_LINE)));
+    // the welcome text says the whole 150, and when the last of them go
+    expect(st.ownerMessages.find((m) => m.kind === "kickoff")!.text).toContain("then the rest of your 150 over the next few weeks (the last 75 from Friday, January 1)");
+    expect(ownerApproves(st, "2026-11-09T06:00:00")).toMatchObject({ firstDay: "2026-11-09" });
+    sendThrough(st, "2026-11-15");
+    expect(closeIfDue(st, "2026-11-20T09:00:00")).toBeUndefined();
+    expect(st.trialCompletedOn).toBeUndefined();
+    sendThrough(st, "2027-01-31");
+    expect(closeIfDue(st, "2027-02-01T09:00:00")!.text).toMatch(/From \d+ notes to 150 people[\s\S]*the next batch goes out next week\./);
+  });
+
+  it.each([
+    ["planned March 22nd, late in the spring window", "2027-03-22", "2027-03-31", 120],
+    ["signed up in summer, when no window is open", "2027-06-15", "2027-06-15", 0],
+  ])("%s, the round is the whole 150, the rest from September 1st, and the trial isn't closed before they've gone", (_, day, windowEnds, inWindow) => {
+    const st = trial(day);
+    const days = firstDays(st);
+    expect(days).toHaveLength(150);
+    expect(days.filter((d) => d <= windowEnds)).toHaveLength(inWindow);
+    expect(days.filter((d) => d > windowEnds)[0]).toBe("2027-09-01");
+    const fall = st.touches.filter((t) => t.dueAt > "2027-09");
+    expect(fall.map((t) => t.season)).toEqual(fall.map(() => "2027-fall"));
+    ownerApproves(st, `${day}T06:00:00`);
+    sendThrough(st, windowEnds);
+    expect(closeIfDue(st, "2027-04-07T09:00:00")).toBeUndefined();
+    expect(closeIfDue(st, "2027-07-07T09:00:00")).toBeUndefined();
+  });
+
+  it("a round a pause cut short at the window's close goes on in the next one: the trial isn't closed, asking for $497, after a third of it", () => {
+    const st = trial("2026-11-02");
+    expect(firstDays(st).every((d) => d <= "2026-11-13")).toBe(true);
+    ownerApproves(st, "2026-11-02T06:00:00");
+    sendThrough(st, "2026-11-04");
+    // paused on the 4th, back December 1st: the rest are held past their season, and the Sender cancels them for good
+    for (const { touch, why } of dueTouches(st, "2026-12-01T09:59").held) {
+      expect(why).toBe(OFF_SEASON);
+      touch.status = "cancelled";
+      touch.lastError = why;
+    }
+    const went = new Set(st.touches.filter((t) => t.status === "sent").map((t) => t.customerId));
+    expect(went.size).toBe(45);
+    expect(closeIfDue(st, "2026-12-08T09:00:00")).toBeUndefined();
+    const rest = st.touches.filter((t) => t.step === 1 && t.status === "approved");
+    expect(rest).toHaveLength(105);
+    expect(rest.every((t) => t.dueAt > "2027-01" && !went.has(t.customerId))).toBe(true);
+  });
+
+  it("a round done by mid-November closes with the date its next batch can go: never “next week” in December", () => {
+    const st = trial("2026-10-26");
+    expect(firstDays(st)).toHaveLength(150);
+    ownerApproves(st, "2026-10-26T06:00:00");
+    sendThrough(st, "2026-11-15");
+    const close = closeIfDue(st, "2026-11-20T09:00:00")!.text;
+    expect(close).toContain("Say yes by Friday 27 and the next batch goes out Friday, January 1.");
+  });
 });

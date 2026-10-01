@@ -24,6 +24,14 @@ const NORTH_OPENS_LATE = 45;
  * of regular work that stop earlier than that are short, not the season.
  */
 const SEASON_ENDS_EARLY = 42;
+/**
+ * With no visits of his own to say when his season starts (a client list's one date, a recurring job's own row), a
+ * regular's season opens mid-April, as the north's does: a shop elsewhere may not have started by its climate's first
+ * month (Pennsylvania mows from April, not March), and nobody's list shows him back before it has.
+ */
+const UNSEEN_START = "04-15";
+/** Usual gaps of a month or more are bills, not visits: each stands for several, so two missed are more than three visits. */
+const BILLED_MONTHLY = 28;
 
 /** The growing season's months, per climate, are the mowing's. */
 const MOWING = PLAYBOOKS.lawn.services.find((s) => s.id === "lawn.mow")!;
@@ -116,16 +124,17 @@ export function shopSeasonEnd(season: Season, lasts: ISODate[]): ISODate | undef
 }
 
 /**
- * Whether a seasonal regular has stopped coming, by `asOf`. He has when he didn't come back in the first four weeks of
- * his usual season (the shop's, or later when he started later than that in the season of his last visit), or when he
- * stopped mid-season: his routine's last visit (`last.visit`) came three or more of his usual visits (`every` days
- * apart; with no rhythm to go on, quiet for `quietDays`) before his season ended. It ends where the shop's own regular
- * work ended that year (`shopEnded`, once it has: see shopSeasonEnd), or earlier where he usually stops: his routine's
- * last visit in the seasons before (`ended`, latest first) when it came late in the season (one who mows only the
- * summer), or at the same time two seasons running. One season that ended early (he quit in May, and was won back) says
- * nothing about this one. Only the season counts: whoever was here at the end of his season isn't gone over the winter.
- * Other work of ours since (a fall clean-up, a bill) makes up for no missed visit, but it's being back for a season
- * (`last.seen`).
+ * Whether a seasonal regular has stopped coming, by `asOf` (as far as the shop's records reach: see dataThrough). He
+ * has when he didn't come back in the first four weeks of his usual season (the shop's, or later when he started later
+ * than that in the season of his last visit; mid-April with no visits of his to say), or when he stopped mid-season: his
+ * routine's last visit (`last.visit`) came three or more of his usual visits (`every` days apart; two of a monthly bill,
+ * months running up to three days short of it; with no rhythm to go on, quiet for `quietDays`) before his season
+ * ended. It ends where the shop's own regular work ended that year (`shopEnded`, once it has: see shopSeasonEnd), or
+ * earlier where he usually stops: his routine's last visit in the seasons before (`ended`, latest first) when it came
+ * late in the season (one who mows only the summer), or at the same time two seasons running. One season that ended
+ * early (he quit in May, and was won back) says nothing about this one. Only the season counts: whoever was here at the
+ * end of his season isn't gone over the winter. Other work of ours since (a fall clean-up, a bill) makes up for no
+ * missed visit, but it's being back for a season (`last.seen`).
  */
 export function goneForSeason(
   season: Season,
@@ -136,7 +145,7 @@ export function goneForSeason(
 ): boolean {
   const year = last.visit.slice(0, 4);
   const closes = `${year}-${season.closes}`;
-  const missed = usual.every ? usual.every * 3 : usual.quietDays;
+  const missed = !usual.every ? usual.quietDays : usual.every >= BILLED_MONTHLY ? usual.every * 2 - 3 : usual.every * 3;
   // a shop that did its regular work this past week is still in its season
   const shopEnds = shopEnded && shopEnded < closes && daysBetween(shopEnded, asOf) > 7 ? shopEnded : closes;
   const [before, prior] = (usual.ended ?? []).map((d) => `${year}${d.slice(4)}`);
@@ -146,7 +155,7 @@ export function goneForSeason(
   // his usual season opens with the shop's or with his own start, but four weeks before it closes at the latest
   const opensIn = (y: number) => {
     const shop = `${y}-${season.opens}`;
-    const his = usual.startedOn ? `${y}${usual.startedOn.slice(4)}` : shop;
+    const his = `${y}${usual.startedOn ? usual.startedOn.slice(4) : `-${UNSEEN_START}`}`;
     const latest = addDays(`${y}-${season.closes}`, -28);
     return his <= shop ? shop : his < latest ? his : latest;
   };

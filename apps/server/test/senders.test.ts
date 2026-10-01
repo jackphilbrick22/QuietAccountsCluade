@@ -1024,4 +1024,63 @@ describe("a lawn shop's seasons on the sending platform", () => {
       ]);
     }
   });
+
+  it("in its season, records over two weeks old hold the nightly top-up, and Jack is asked once for a fresh export", async () => {
+    const s = setup();
+    const { h } = s;
+    h.setNow("2026-09-08T15:00:00Z");
+    await h.business("cap", { name: "Capital City Landscaping", trade: "lawn", fromEmails: [SARAH], state: "NH", mailingAddress: ADDRESS.NH });
+    expect((await h.api("PATCH", "/api/businesses/cap", { plan: { stage: "paying", paidOn: "2026-09-01" } })).status).toBe(200);
+    /** The Visits report as exported on `on`: Pat, mowed every week from April until he stopped in July. */
+    const exportOn = async (on: string) => {
+      h.setNow(`${on}T15:00:00Z`);
+      const rows: string[] = [];
+      for (let d = "2026-04-21"; d <= "2026-07-07"; d = addDays(d, 7)) rows.push(`701,${d},Weekly mowing,Pat Lee,${PAT},Yes,45.00,Recurring`);
+      const text = ["Job #,Date,Visit title,Client name,Client email,Visit completed,Visit based ($),Job type", ...rows].join("\n");
+      expect((await h.api("POST", "/api/businesses/cap/imports", { files: [{ name: "Visits Report.csv", text }] })).status).toBe(200);
+    };
+    const wrote = () => h.d.accounts.peek("cap")!.state.events.filter((e) => e.agent === "writer" && e.title.startsWith("Wrote")).length;
+    const stale = async () => ((await h.api("GET", "/api/review")).json.items as { kind: string; alertKind?: string; title: string; detail: string }[]).filter((x) => x.kind === "alert" && x.alertKind === "stale_records");
+    /** The worker's night (3:10am in New Hampshire) on `on`: whether it planned. */
+    const night = async (on: string) => {
+      const before = wrote();
+      h.setNow(`${on}T07:10:00Z`);
+      expect((await tick(h.d)).errors).toEqual([]);
+      return wrote() > before;
+    };
+    await exportOn("2026-09-08");
+    expect(await night("2026-09-09")).toBe(true);
+    expect(touches(s).filter((t) => t.step === 1)).toHaveLength(1);
+    expect(await night("2026-09-22")).toBe(true);
+    // fifteen days on, nothing new is planned from them, and Jack is asked, once
+    expect(await night("2026-09-23")).toBe(false);
+    expect(await night("2026-09-24")).toBe(false);
+    expect((await stale()).map((x) => [x.title, x.detail])).toEqual([
+      ["Capital City Landscaping's records are 15 days old", "The newest is from 2026-09-08, so who stopped since can't be told from them, and nothing new is planned. Ask for a fresh Visits report (or invoices)."],
+    ]);
+    await exportOn("2026-09-24");
+    expect(await night("2026-09-25")).toBe(true);
+    // after the season, the records are as old as the season's end: nothing to ask for
+    expect(await night("2026-11-20")).toBe(true);
+  }, 30_000);
+
+  it("a note 1 taken back from the platform may have gone (its “sent” never came back): nobody plans him a second first note", async () => {
+    const s = setup();
+    const { h } = s;
+    await lawnShop(s, "PA", "2026-11-17T15:00:00Z");
+    await h.sms("OK");
+    await sync(s, "cap");
+    expect(pushes(s)).toBe(1);
+    // the platform sends note 1 the next morning, but its webhook never comes: by December it's still waiting, as far as we know
+    h.setNow("2026-12-02T15:00:00Z");
+    await sync(s, "cap");
+    expect(touches(s).map((t) => [t.step, t.status, t.lastError])).toEqual([
+      [1, "cancelled", OFF_SEASON],
+      [2, "cancelled", OFF_SEASON],
+    ]);
+    // the spring window: the free round's top-up, and Jack's plan, leave him be
+    h.setNow("2027-01-05T13:00:00Z");
+    expect((await h.api("POST", "/api/businesses/cap/plan", {})).json).toMatchObject({ people: 0, notes: 0 });
+    expect(touches(s)).toHaveLength(2);
+  });
 });

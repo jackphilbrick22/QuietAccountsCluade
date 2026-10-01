@@ -73,14 +73,17 @@ export interface VisitBook {
  * decides too. A visit the export says went by undone ("Skipped", "No show") was missed, whatever the marking. Undone
  * visits of a job since its last one done, running as long as it takes a regular of theirs to go quiet, are a
  * schedule that stopped though the owner never closed the job: the rest of it, past or still to come, is no sign
- * they're back.
+ * they're back. A visits file knows nothing past the day it was read: a visit it had on the calendar after that, not
+ * marked done, is neither done nor missed once its day has passed, until a newer file says which.
  */
 export function visitBook(ds: Dataset): VisitBook {
   const asOf = ds.asOf;
+  const read = ds.imports.filter((i) => i.kind === "visit").map((i) => i.importedAt.slice(0, 10)).sort().pop();
+  const told = (j: Job) => !j.visit || !read || (jobDate(j) ?? "9999") <= read;
   const dated = (j: Job) => (jobDate(j) ?? "9999") <= asOf;
-  const plain = (j: Job) => (DONE_JOB.has(j.status) || j.status === "unknown") && dated(j);
+  const plain = (j: Job) => (DONE_JOB.has(j.status) || (j.status === "unknown" && told(j))) && dated(j);
   // a dated visit, by now, not marked done: missed, or not marked yet
-  const unmarked = (j: Job) => !!j.visit && !plain(j) && j.status !== "cancelled" && !!jobDate(j) && dated(j);
+  const unmarked = (j: Job) => !!j.visit && !plain(j) && j.status !== "cancelled" && !!jobDate(j) && dated(j) && told(j);
   const ref = (customerId: string, n: string | undefined) => `${customerId}|${(n ?? "").replace(/^#/, "")}`;
   const jobOf = (j: Job) => ref(j.customerId, j.jobRef);
   // visits by now, by day, for the whole shop ("") and for each crew: how many, and how many marked done

@@ -4,7 +4,7 @@ import { backupIfDue } from "./backup.ts";
 import { localIso } from "./clock.ts";
 import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
-import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
+import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, staleRecords, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
 /**
  * The heartbeat. Every minute, for every business, in its own local time:
@@ -206,8 +206,9 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
         await d.accounts.withAccount(bid, (state) => find(state, local, features(d.cfg)));
         d.accounts.repo.markScanned(bid, now.toISOString());
       }
-      // with Instantly, a client with no inbox of its own isn't planned (its page says so)
-      if (!isOnePass(biz.profile.plan) && biz.profile.plan.stage === "paying" && !biz.paused && !noInbox(d, biz.profile)) {
+      // with Instantly, a client with no inbox of its own isn't planned (its page says so); nor is a lawn shop's in its
+      // season from records two weeks old (Jack is asked for fresh ones)
+      if (!isOnePass(biz.profile.plan) && biz.profile.plan.stage === "paying" && !biz.paused && !noInbox(d, biz.profile) && !(await staleRecords(d, bid))) {
         const p = await plan(d, bid, { approve: true });
         report.planned += p.people;
       }

@@ -178,16 +178,18 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
       : !monthly && a && a.silent.count && a.rate > 0
         ? `In the last two years, ${Math.round(a.rate * 100)}% of your quotes never got a yes or a no. All told, ${a.silent.count.toLocaleString("en-US")} quotes, ${fmtMoney(a.silent.value, { compact: true })}, are sitting quiet. Nobody said no to that money; nobody asked.`
         : `We went through everything you sent and found the people worth a note.`;
-  const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
+  const day = dayWords(firstDay);
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
   const onDay = firsts.filter((t) => t.dueAt.slice(0, 10) === firstDay).length;
+  // The note they'll see first, word for word (the footer is the same on every note, so it's left off).
+  const sample = [...firsts].sort((x, y) => (x.dueAt < y.dueAt ? -1 : x.dueAt > y.dueAt ? 1 : 0))[0];
+  // a seasonal shop's round that runs past its selling window goes on in the next one: when the last of them go
+  const later = firsts.filter((t) => sample?.season && t.season && t.season !== sample.season);
   const pass = isOnePass(b.plan);
   const lastDay = state.touches.filter((t) => t.status === "planned" || t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort().pop() ?? firstDay;
   const rest = pass
     ? `then the rest of your ${people}, newest first, each one about their own job. It's one pass through your list: the last notes go out ${monthName(lastDay)} ${Number(lastDay.slice(8))}.`
-    : `then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer.`;
-  // The note they'll see first, word for word (the footer is the same on every note, so it's left off).
-  const sample = [...firsts].sort((x, y) => (x.dueAt < y.dueAt ? -1 : x.dueAt > y.dueAt ? 1 : 0))[0];
+    : `then the rest of your ${people} over the next few weeks${later.length ? ` (the last ${later.length} from ${dayWords(later.map((t) => t.dueAt.slice(0, 10)).sort()[0]!)})` : ""} — each one about their own job, to the people most likely to answer.`;
   const cut = sample ? sample.body.lastIndexOf(`\n\n${b.name}`) : -1;
   const body = sample ? (cut > 0 ? sample.body.slice(0, cut) : sample.body).trim() : "";
   return [
@@ -259,6 +261,11 @@ export function passEndText(state: AccountState, asOf: ISODate): string {
       ? `About ${refill.perMonth} more of your past customers stop coming or come due each month. That's enough to keep this going monthly: reply here and Jack will text you how it works.`
       : `I'll check back next season.`,
   ].join("\n\n");
+}
+
+/** "Tuesday, November 10" */
+function dayWords(d: ISODate): string {
+  return `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${d}T12:00:00Z`).getUTCDay()]}, ${monthName(d)} ${Number(d.slice(8))}`;
 }
 
 /** The people we won't email — big quotes and phone-only — handed over once, biggest first. */
@@ -449,7 +456,7 @@ export function totals(state: AccountState): { booked: number; bookedValue: Mone
  * Leads with what came back (names), counts second, then the offer and the guarantee. The year is offered only
  * where the server sells it.
  */
-export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string } & Features = {}): string {
+export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string; nextBatchOn?: ISODate } & Features = {}): string {
   const b = state.dataset.business;
   const quotes = !soldMonthly(b.trade);
   const t = totals(state);
@@ -475,7 +482,7 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
     opts.yearly && offerYear(state, t.bookedValue)
       ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. If the jobs we trace to our notes don't add up to what you paid, we refund the difference. A quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), your price is locked, and nothing renews without your yes.`
       : "",
-    opts.sayYesBy ? `Say yes by ${opts.sayYesBy} and the next batch goes out next week.` : "",
+    opts.sayYesBy ? `Say yes by ${opts.sayYesBy} and the next batch goes out ${opts.nextBatchOn ? dayWords(opts.nextBatchOn) : "next week"}.` : "",
     opts.payLink ?? "",
     opts.signature ?? "",
   ];

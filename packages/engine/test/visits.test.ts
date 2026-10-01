@@ -528,7 +528,9 @@ describe("client lists", () => {
       const { dataset: ds } = read(CSV, "Clients.csv", lawn({ trade }), "2026-01-15");
       expect(ds.jobs.map((j) => j.everyDays)).toEqual([7, 14]);
       expect(scan(ds).opportunities).toEqual([]);
-      const june = scan({ ...ds, asOf: "2026-06-01" });
+      // the January list, never sent again, says nothing of the spring; the same list sent in June does
+      expect(scan({ ...ds, asOf: "2026-06-01" }).opportunities).toEqual([]);
+      const june = scan(read(CSV, "Clients.csv", lawn({ trade }), "2026-06-01").dataset);
       expect(june.opportunities.map((o) => [o.type, o.suppressed, o.reason])).toEqual([
         ["lapsed_regular", undefined, "On your client list as a regular (about every 7 days). Last visit last November — then nothing."],
         ["lapsed_regular", undefined, "On your client list as a regular (about every 2 weeks). Last visit last October — then nothing."],
@@ -614,11 +616,15 @@ describe("one row per recurring job", () => {
       // Linda's job runs past today: on the calendar until its end date, though the Recurring Jobs report has no status
       expect(ds.jobs.find((j) => j.customerId === who("linda@gmail.com"))!.status).toBe(name === "Jobs Report.csv" ? "active" : "unknown");
       expect(oppsFor(r, who("linda@gmail.com"))).toEqual([]);
-      // once it's ended, with no export since, it has ended: at the season's close, so she's gone once the next season
-      // is four weeks open without her, not over the winter
+      // once it's ended, with no export since, it has ended: at the season's close, so she isn't gone over the winter. The
+      // same report sent the next June says she's gone, the next season four weeks open without her; the August one,
+      // never sent again, can't say it
       if (name !== "Jobs Report.csv") {
         expect(oppsFor(scan({ ...ds, asOf: addDays(LAWN_ASOF, 80 + 60) }), who("linda@gmail.com"))).toEqual([]);
-        expect(oneOpp(scan({ ...ds, asOf: "2027-06-01" }), who("linda@gmail.com"), "lapsed_regular").anchorDate).toBe(addDays(LAWN_ASOF, 80));
+        expect(oppsFor(scan({ ...ds, asOf: "2027-06-01" }), who("linda@gmail.com"))).toEqual([]);
+        const june = read(csv, name, lawn(), "2027-06-01").dataset;
+        const linda = june.customers.find((c) => c.emails.includes("linda@gmail.com"))!.id;
+        expect(oneOpp(scan(june), linda, "lapsed_regular").anchorDate).toBe(addDays(LAWN_ASOF, 80));
       }
     }
   });

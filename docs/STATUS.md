@@ -284,7 +284,27 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     the end (B6); with direct mail (not Instantly) follow-ups go on the templates' own days.
   - Engine 1,596, server 443, site 108.
 
+- **Re-check 2 of A2 and B2** (the ledger and seasons code where B2 and B3 met it; findings verified, then fixed).
+  - A2 (12): an owner's NO after a BOOKED holds once visits replace the booking; a BOOKED and a later list or Jobs
+    report are one booking, never a second $0 one; a record with no price keeps the owner's figure; a re-pointed list
+    booking never comes back under the same id; a job begun before our note is never a comeback; a job cancelled before
+    any work comes off even when the next Visits report covers only a range; a customer back on his own never-closed
+    job stays counted; an Active job protects a regular when the export ends today.
+  - B2 (9): a free 150 planned late in a selling window is planned whole (whoever can't start before it closes starts
+    in the next one, and the welcome text says when); a lawn shop's free round isn't closed while some of the 150
+    haven't heard from us; the close names the next batch's real day, never "next week" in December. With no visits of
+    his own, a regular's season opens mid-April everywhere (no March flags in warm states). Two missed monthly bills is
+    gone mid-season. The season is read only as far as the records reach, so active regulars aren't "stopped" between
+    exports; in season, records over two weeks old hold the nightly top-up and Jack is asked once for a fresh export.
+    A visit past its day on an old calendar isn't done work. A note 1 taken back at season's end is never planned
+    twice. Plow customers aren't lapsed mowing regulars.
+  - Merge notes: B3's one pass keeps its paced days (the next-window roll-over is for a limited round only), and the
+    welcome text keeps B3's one-pass wording with B2's "the last N from <day>" on the monthly one.
+  - Engine 1,625, server 446, site 108.
+
 **Live steps for Jack**
+- (B2 re-check) In a lawn shop's season, send a fresh Visits report (or invoices) at least every two weeks. When one
+  is older, Needs a person asks for it and nothing new is planned until it comes.
 - (B3) On a one pass, check in Instantly that each of its inboxes shows a daily limit of 30 after its first activation.
 - (B1) Keep /fence off every link until January. Look at /tree and /painting on a phone after deploying.
 - (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about

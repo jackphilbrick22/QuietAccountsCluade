@@ -12,7 +12,7 @@ import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODate
 import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { isOnePass, ONE_PASS } from "../plans.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
-import { detectTrade, growingSeason, playbook, sellingFrom, sellingSeason } from "../trades/index.ts";
+import { detectTrade, growingSeason, playbook, SEASONAL_TRADES, sellingFrom, sellingSeason } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
@@ -139,7 +139,10 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   // or the quote sent after it) are theirs like anyone's, and for a month only those (nothing older dug up the next day).
   // An answer still on its way holds them until it goes.
   const answered = (t: Touch) => !!t.instant && (t.status === "sent" || t.status === "delivered" || t.status === "bounced");
-  const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped" && !answered(t)).map((t) => t.customerId));
+  // A note handed to a sending platform and taken back when its season closed may have gone (its "sent" can come late,
+  // or never): whoever it was for has been written to, and never gets a second first note.
+  const takenBack = (t: Touch) => t.status === "cancelled" && t.lastError === OFF_SEASON && !!t.providerId;
+  const active = new Set(state.touches.filter((t) => (t.status !== "cancelled" && t.status !== "skipped" && !answered(t)) || takenBack(t)).map((t) => t.customerId));
   const askedOn = new Map<string, string>();
   for (const t of state.touches) {
     if (!answered(t)) continue;
@@ -427,7 +430,8 @@ export interface DueTouch {
 /**
  * A seasonal note held past its season (an OK that came late, a pause): it never goes. A late OK writes the round again
  * itself (approveRound). Otherwise someone whose first note never went is planned again like anyone not yet written to,
- * and someone whose first note went hears nothing more.
+ * and someone whose first note went hears nothing more, nor does one whose first note a sending platform held: it may
+ * have gone (planBatch).
  */
 export const OFF_SEASON = "Not sent: its season closed";
 
@@ -1128,9 +1132,14 @@ export function reportWeek(state: AccountState, now: ISODateTime): OwnerMessage 
   return ownerMsg(state, now, "weekly", text);
 }
 
-/** The close after the free round, once replies have had a week to come in. */
+/**
+ * The close after the free round, once replies have had a week to come in. A seasonal shop's round that its selling
+ * window cut short (a pause held its notes past it) isn't over: whoever of the free people hadn't heard from us is
+ * written to in the next window, and the close waits for them. It ends once nobody's left to write to.
+ */
 export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLink?: string; signature?: string } & Features = {}): OwnerMessage | undefined {
   const b = state.dataset.business;
+  const seasonal = SEASONAL_TRADES.has(b.trade);
   // a one pass has no free round to close: it ends with its own text (passEndIfDue)
   if (isOnePass(b.plan) || b.plan.stage !== "trial" || state.ownerMessages.some((m) => m.kind === "close")) return undefined;
   const sent = state.touches.filter((t) => t.status === "sent");
@@ -1143,10 +1152,20 @@ export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLin
   if (pending.length) {
     for (const t of pending) t.status = "cancelled";
     event(state, now, "guard", "warning", `Free round ended early — the send brake held ${plural(pending.length, "note")}`, brake?.reason);
+  } else if (seasonal) {
+    const started = new Set(state.touches.filter((t) => t.step === 1 && t.status !== "cancelled").map((t) => t.customerId)).size;
+    const rest = started < b.plan.trialSize ? planBatch(state, now, { startOn: addDays(now.slice(0, 10), 1), limitPeople: b.plan.trialSize - started, approve: true, kickoff: false, features: opts }) : undefined;
+    if (rest?.firstDay) {
+      event(state, now, "sender", "action", "The rest of the free round is planned", `${plural(rest.people.length, "person", "people")} of the free ${b.plan.trialSize} hadn't heard from us yet: their notes go out from ${rest.firstDay}, in their selling window.`);
+      return undefined;
+    }
   }
   state.trialCompletedOn = last.slice(0, 10);
   const friday = addDays(now.slice(0, 10), (5 - weekday(now.slice(0, 10)) + 7) % 7 || 7);
-  const text = closeMessage(state, { ...opts, sayYesBy: `Friday ${Number(friday.slice(8))}` });
+  // a seasonal shop's next batch goes out when its next selling window opens: not "next week" in December
+  const monday = addDays(friday, 3);
+  const opens = seasonal ? nextAllowed(state.dataset, sellingFrom(growingSeason(b), monday)) : monday;
+  const text = closeMessage(state, { ...opts, sayYesBy: `Friday ${Number(friday.slice(8))}`, ...(opens > addDays(monday, 6) ? { nextBatchOn: opens } : {}) });
   event(state, now, "reporter", "action", "Your free round is done — results sent", text.split("\n")[0]);
   return ownerMsg(state, now, "close", text);
 }

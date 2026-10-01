@@ -4,7 +4,7 @@ import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
 import { paceOnePass, type Pace } from "./pace.ts";
-import { climateOf, comesBackEachSeason, findService, growingSeason, SEASONAL_TRADES, seasonFit, sellingSeason, sellingWindow, stateOf } from "../trades/index.ts";
+import { climateOf, comesBackEachSeason, findService, growingSeason, SEASONAL_TRADES, seasonFit, sellingFrom, sellingSeason, sellingWindow, stateOf } from "../trades/index.ts";
 import { addDays, hash, makeId, mondayOf, monthOf, weekday } from "../util.ts";
 
 export interface PlanOptions {
@@ -129,6 +129,7 @@ export function sendTime(ds: Dataset, key: string): string {
 export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions): Plan {
   const b = ds.business;
   const seasonal = SEASONAL_TRADES.has(b.trade);
+  const season = seasonal ? growingSeason(b) : undefined;
   const byId = new Map(ds.customers.map((c) => [c.id, c]));
   const holdout: string[] = [];
   const skipped: Plan["skipped"] = [];
@@ -202,19 +203,26 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     const c = byId.get(o.customerId);
     if (!c) continue;
     const held = !!heldFrom && (!!pace || HOLD_WHEN_BOOKED.has(o.type));
+    // the first start day from `from` with room in the day and the week
+    const roomFrom = (from: ISODate) => {
+      let d = from;
+      for (let guard = 0; guard < 400 && !room(d); guard++) d = nextAllowed(ds, addDays(d, 1));
+      return d;
+    };
     // a one pass: each person's notes go on the days its pace gave them (someone left off only leaves their days empty)
     const paced = pace?.people[i];
-    let day = paced?.[0] ?? (held ? heldDay : nowDay);
-    let free = pace ? !!paced : room(day);
-    if (!pace) for (let guard = 0; guard < 400 && !free; guard++) free = room((day = nextAllowed(ds, addDays(day, 1))));
-    if (!free) {
+    let day = paced?.[0] ?? roomFrom(held ? heldDay : nowDay);
+    // Seasonal notes go out in their season (goesOutOn): a start that would land past it waits for the next scan in
+    // season (a one pass has no next one, so it's listed as skipped), and a follow-up past it is left off. Nothing plans
+    // a limited round (the free 150) again, so a seasonal shop's start past its selling window starts in the next one
+    // instead (fall clean-up, then spots for spring from January). A seasonal shop's notes carry the selling season
+    // they're written for.
+    const inSeason = (d: ISODate) => goesOutOn(b, o, d);
+    if (!pace && !inSeason(day) && season && opts.limitPeople) day = roomFrom(nextAllowed(ds, sellingFrom(season, day)));
+    if (pace ? !paced : !room(day)) {
       skipped.push({ customerId: c.id, why: "No day with room to start them" });
       continue;
     }
-    // Seasonal notes go out in their season (goesOutOn): a start that would land past it waits for the next scan in
-    // season (a one pass has no next one, so it's listed as skipped), and a follow-up past it is left off. A seasonal
-    // shop's notes carry the selling season they're written for.
-    const inSeason = (d: ISODate) => goesOutOn(b, o, d);
     if (!inSeason(day)) {
       if (pace) skipped.push({ customerId: c.id, why: `Out of season${o.type === "service_due" && findService(o.serviceId) ? `: ${findService(o.serviceId)!.service.label}` : ""}` });
       continue;

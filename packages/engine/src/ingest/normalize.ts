@@ -556,6 +556,21 @@ export function importTable(
     requests: [...requests.values()],
   };
   linkRecords(next);
+  // the file's own record first: what its visits can say depends on the day it was read (visitBook); the warnings below
+  // join it
+  const record: ImportRecord = {
+    id: makeId("imp", opts.fileName, opts.importedAt),
+    fileName: opts.fileName,
+    importedAt: opts.importedAt,
+    source,
+    kind,
+    rows: table.rows.length,
+    accepted,
+    rejected,
+    mapping: Object.fromEntries(Object.entries(mapping.fields).map(([f, i]) => [f, table.headers[i as number] ?? ""])),
+    warnings,
+  };
+  next.imports = [...dataset.imports, record];
   // A visit not marked done that its job or its crew has marked past was missed; one nobody has got to yet (an owner
   // who marks them when he invoices, or never) may not be marked yet, and its date says whether it happened.
   if (marks.size) {
@@ -574,19 +589,6 @@ export function importTable(
       );
   }
 
-  const record: ImportRecord = {
-    id: makeId("imp", opts.fileName, opts.importedAt),
-    fileName: opts.fileName,
-    importedAt: opts.importedAt,
-    source,
-    kind,
-    rows: table.rows.length,
-    accepted,
-    rejected,
-    mapping: Object.fromEntries(Object.entries(mapping.fields).map(([f, i]) => [f, table.headers[i as number] ?? ""])),
-    warnings,
-  };
-  next.imports = [...dataset.imports, record];
   if (dataset.business.software === "unknown" && source !== "spreadsheet") next.business = { ...dataset.business, software: source };
   return { dataset: next, record };
 }
