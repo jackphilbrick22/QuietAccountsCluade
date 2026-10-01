@@ -35,11 +35,18 @@ export function inboxTaken(d: Deps, bid: string, inboxes: readonly string[]): { 
 
 /**
  * Why a homeowner can't be answered from the inbox their reply came in on, if they can't: it sends for another client
- * now, named for that client, so the answer would go out under the other business's name.
+ * now, named for that client, so the answer would go out under the other business's name. That's whose name it
+ * carries, not who may claim it: one that went to another client keeps that client's name after it's cancelled (a
+ * cancel never names it back).
  */
 export function answerRefused(d: Deps, bid: string, inbox: string): string | undefined {
-  const taken = inboxTaken(d, bid, [inbox.trim().toLowerCase()]);
-  return taken && `${taken.inbox} sends for ${taken.by} now, and one inbox sends for one client: answer them by hand`;
+  const x = inbox.trim().toLowerCase();
+  const taken = inboxTaken(d, bid, [x]);
+  if (taken) return `${taken.inbox} sends for ${taken.by} now, and one inbox sends for one client: answer them by hand`;
+  const all = d.accounts.repo.listBusinesses();
+  if (all.some((b) => b.id === bid && b.profile.fromEmails?.includes(x))) return undefined;
+  const went = all.find((b) => b.id !== bid && b.profile.fromEmails?.includes(x));
+  return went && `${x} went to ${went.profile.name}, and may still carry its name in Instantly: answer them by hand`;
 }
 
 /** Why this client can't be planned: with Instantly, it has no inbox of its own to send from. */
@@ -121,9 +128,10 @@ async function checkInboxes(d: Deps, bid: string, seq: SequencerProvider): Promi
     if (refused && refused !== before) st.events.push({ id: `ev_senders_${at}`, at, agent: "guard", kind: "warning", title: "Nothing goes out for this client until its inboxes are fixed", detail: `${refused}.` });
     if (!refused) st.events.push({ id: `ev_senders_${at}`, at, agent: "sender", kind: "action", title: `Its inboxes send as “${clean(`${name.first} ${name.last}`)}” in Instantly`, detail: `${inboxes.join(", ")}: name set and read back, in no campaign this server didn't make.` });
   });
-  // one open alert at most, with the reason as it is now
+  // one open alert at most, with the reason as it is now; one marked handled while it still holds is back on the next check
+  const open = d.accounts.repo.openAlerts(bid).some((a) => a.kind === "senders");
   if (!refused || refused !== before) closeInboxAlerts(d, bid);
-  if (refused && refused !== before) d.accounts.repo.addAlert({ businessId: bid, at: d.clock().toISOString(), kind: "senders", title: `${b.name}: nothing goes out until its inboxes are fixed`, detail: `${refused}. Checked again within 15 minutes, or as soon as Settings change.` });
+  if (refused && (refused !== before || !open)) d.accounts.repo.addAlert({ businessId: bid, at: d.clock().toISOString(), kind: "senders", title: `${b.name}: nothing goes out until its inboxes are fixed`, detail: `${refused}. Checked again within 15 minutes, or as soon as Settings change.` });
   return !refused;
 }
 

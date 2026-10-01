@@ -8,6 +8,7 @@ import { handleInbound, syncSequencer } from "../src/core/ops.ts";
 import { senderName } from "../src/core/senders.ts";
 import { tick } from "../src/core/worker.ts";
 import { inboxesText, parseInboxes } from "../../web/src/live/inboxes.ts";
+import { diff, settingsKey } from "../../web/src/live/settings.ts";
 import type { Llm } from "../src/agents/llm.ts";
 import { createInstantlyProvider, parseInstantlyWebhook, type InstantlyProvider } from "../src/integrations/instantly/index.ts";
 import { fakeInstantly, type Call } from "./fake-instantly.ts";
@@ -84,7 +85,7 @@ const account = (method: string, path: string, email: string) => (c: Call) => c.
 const named = (s: Setup, email: string) => s.api.calls.filter(account("PATCH", "/accounts", email)).map((c) => c.body);
 const pushes = (s: Setup) => s.api.callsTo("POST", "/leads/add").length;
 const hook = (h: Harness, body: unknown) => h.app.request(`/webhooks/instantly/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-const alerts = async (h: Harness) => ((await h.api("GET", "/api/review")).json.items as { kind: string; alertKind?: string; businessId: string; title: string; detail: string }[]).filter((x) => x.kind === "alert" && x.alertKind === "senders");
+const alerts = async (h: Harness) => ((await h.api("GET", "/api/review")).json.items as { kind: string; alertKind?: string; businessId: string; seq: number; title: string; detail: string }[]).filter((x) => x.kind === "alert" && x.alertKind === "senders");
 
 /** A lawn client with notes approved and due tomorrow, as an existing account would have them. */
 async function client(s: Pick<Setup, "h">, bid: string, over: Record<string, unknown> = {}, people: string[] = [PAT]): Promise<void> {
@@ -220,6 +221,64 @@ describe("a client's own inboxes", () => {
     expect(named(s, SARAH)).toHaveLength(2);
     expect(profile(s.h, "ridge").senders?.refused).toBeUndefined();
     expect(await alerts(s.h)).toEqual([]);
+  });
+
+  it("an inbox alert marked handled while the client is still refused is back in Needs a person on the next check", async () => {
+    const s = setup();
+    s.api.inbox(SARAH).keepsName = true;
+    await client(s, "ridge", { fromEmails: [SARAH] });
+    await sync(s, "ridge");
+    const why = `${SARAH} reads “Jack Philbrick” in Instantly, not “Sarah at Capital City Landscaping”`;
+    const [open] = await alerts(s.h);
+    // Jack changes something in Instantly that doesn't cure it, and marks it handled
+    expect((await s.h.api("POST", `/api/businesses/ridge/alerts/${open!.seq}/done`)).status).toBe(200);
+    expect(await alerts(s.h)).toEqual([]);
+    s.h.setNow("2026-09-29T14:16:00Z");
+    await sync(s, "ridge");
+    expect(profile(s.h, "ridge").senders?.refused).toBe(why);
+    expect((await alerts(s.h)).map((a) => a.detail)).toEqual([`${why}. Checked again within 15 minutes, or as soon as Settings change.`]);
+    // still one, check after check
+    s.h.setNow("2026-09-29T14:32:00Z");
+    await sync(s, "ridge");
+    expect(await alerts(s.h)).toHaveLength(1);
+    expect(pushes(s)).toBe(0);
+  });
+
+  it("a check that finds the same reason again leaves Jack's unsaved Settings alone", async () => {
+    const s = setup();
+    s.api.inbox(SARAH).keepsName = true;
+    await client(s, "ridge", { fromEmails: [SARAH] });
+    await sync(s, "ridge");
+    const saved = async () => (await s.h.api("GET", "/api/businesses/ridge")).json.business as BusinessProfile;
+    const before = await saved();
+    s.h.setNow("2026-09-29T14:16:00Z");
+    await sync(s, "ridge");
+    const after = await saved();
+    // the check's own record moved on (when it last looked); nothing the form edits did, so the form isn't started over
+    expect(after.senders).not.toEqual(before.senders);
+    expect(settingsKey(after)).toBe(settingsKey(before));
+    // a save (his own, or anyone's) does start it over
+    await s.h.api("PATCH", "/api/businesses/ridge", { fromEmails: [OFFICE] });
+    expect(settingsKey(await saved())).not.toBe(settingsKey(after));
+  });
+
+  it("a From name emptied in Settings goes back to who signs, at the business, on the inboxes too", async () => {
+    const s = setup();
+    await client(s, "dows", { name: "Dow's Tree Service", signerName: "Sarah", fromName: "Sarah Mills", fromEmails: [SARAH] });
+    await sync(s, "dows");
+    expect(s.api.inbox(SARAH)).toMatchObject({ first_name: "Sarah", last_name: "Mills" });
+    // Mike signs now, and the From name is emptied as its hint says: the save sends both
+    const was = structuredClone(profile(s.h, "dows"));
+    const patch = diff(was, { ...was, signerName: "Mike", fromName: "" });
+    expect(patch).toEqual({ signerName: "Mike", fromName: null });
+    expect((await s.h.api("PATCH", "/api/businesses/dows", patch)).status).toBe(200);
+    expect(profile(s.h, "dows").fromName).toBeUndefined();
+    await sync(s, "dows");
+    expect(s.api.inbox(SARAH)).toMatchObject({ first_name: "Mike", last_name: "at Dow's Tree Service" });
+    // emptied on its own, it's a change to save (not “Everything saved”); empty and still empty is nothing to save
+    expect(diff(was, { ...was, fromName: " " })).toEqual({ fromName: null });
+    const now = profile(s.h, "dows");
+    expect(diff(now, { ...now, fromName: "" })).toEqual({});
   });
 
   it("a refusal once it's live pauses the campaigns it already has, until its inboxes are right again", async () => {
@@ -584,6 +643,35 @@ describe("one inbox sends for one client", () => {
     expect(replies().find((r) => r.from === KIM)!.ack).toMatchObject({ error: refused });
     expect(replies().find((r) => r.from === KIM)!.ack?.sentAt).toBeUndefined();
     expect(answered()).toHaveLength(3);
+  });
+  it("a reply isn't answered from an inbox that went to another client, even once that client is cancelled: it carries their name", async () => {
+    const theirs = (id: string, lead: string) => ({ id, thread_id: `th-${id}`, from_address_email: lead, to_address_email_list: SARAH, lead, i_sent: false });
+    const s = setup({ emails: [theirs("em-pat", PAT)] });
+    await client(s, "capital", { fromEmails: [SARAH] }, [PAT]);
+    await client(s, "dows", { name: "Dow's Tree Service", signerName: "Ed", ownerPhone: ED_CELL }, [LEE]);
+    await s.h.d.accounts.withAccount("capital", (st) => void (st.dataset.business.autoAck = true));
+    await sync(s, "capital");
+    const [camp] = [...s.campaigns.keys()];
+    // sarah@ off Capital City and on Dow's, renamed for it; then Dow's cancels, and a cancel never names it back
+    await s.h.api("PATCH", "/api/businesses/capital", { fromEmails: [OFFICE] });
+    await sync(s, "capital");
+    expect((await s.h.api("PATCH", "/api/businesses/dows", { fromEmails: [SARAH] })).status).toBe(200);
+    expect((await sync(s, "dows")).sent).toBe(1);
+    await s.h.api("PATCH", "/api/businesses/dows", { plan: { stage: "cancelled" } });
+    expect(s.api.inbox(SARAH)).toMatchObject({ first_name: "Ed", last_name: "at Dow's Tree Service" });
+    // Pat answers Capital City's note on it: no instant answer, and none from the console
+    await hook(s.h, { event_type: "reply_received", timestamp: s.h.now().toISOString(), campaign_id: camp, lead_email: PAT, email_account: SARAH, email_id: "em-pat", reply_subject: "Re: the hedges", reply_text: "Yes please, come do the hedges." });
+    const r = s.h.d.accounts.peek("capital")!.state.replies[0]!;
+    const refused = `${SARAH} went to Dow's Tree Service, and may still carry its name in Instantly: answer them by hand`;
+    expect(r.ack).toMatchObject({ error: refused });
+    const answer = await s.h.api("POST", `/api/businesses/capital/replies/${r.id}/answer`, { text: "Thursday morning works. Sarah" });
+    expect(answer.status).toBe(400);
+    expect(answer.json.error).toBe(refused);
+    expect(s.api.callsTo("POST", "/emails/reply")).toEqual([]);
+    // Dow's own late replies on it are still answered: it's named for Dow's
+    await s.h.d.accounts.withAccount("dows", (st) => void st.replies.push({ ...r, id: "rep-dows", customerId: undefined }));
+    expect((await s.h.api("POST", "/api/businesses/dows/replies/rep-dows/answer", { text: "Thanks. Ed" })).status).toBe(200);
+    expect(s.api.callsTo("POST", "/emails/reply").map((c) => c.body.eaccount)).toEqual([SARAH]);
   });
 });
 

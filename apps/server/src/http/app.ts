@@ -135,6 +135,8 @@ const ProfilePatch = CreateBusiness.partial().extend({
   trade: z.enum(TRADES).optional(),
   signerRole: z.enum(["owner", "office"]).optional(),
   timezone: TimeZone.optional(),
+  // null clears it: the inboxes go back to "<signer> at <business>" (and are renamed)
+  fromName: z.string().min(2).max(80).nullable().optional(),
   // none would leave its campaigns in Instantly unable to take any change
   sendDays: z.array(z.number().int().min(0).max(6)).min(1).optional(),
   sendWindow: z.tuple([z.number().int().min(0).max(23), z.number().int().min(1).max(24)]).optional(),
@@ -348,10 +350,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
       const b = state.dataset.business;
       stageBefore = b.plan.stage;
       tradeBefore = b.trade;
-      const { voice, persistence, plan: planPatch, ...rest } = patch;
+      const { voice, persistence, plan: planPatch, fromName, ...rest } = patch;
       // an inbox taken off still gets the replies to the notes it sent: they're never read as cold email
       const gone = rest.fromEmails ? (b.fromEmails ?? []).filter((x) => !rest.fromEmails!.includes(x)) : [];
       Object.assign(b, rest);
+      if (fromName !== undefined) b.fromName = fromName ?? undefined;
       if (gone.length) b.pastInboxes = [...new Set([...(b.pastInboxes ?? []), ...gone])];
       // the operator set this owner's cell: a sign-up's unconfirmed one is settled
       if (rest.ownerPhone && b.signup?.sharedCell) b.signup = { from: b.signup.from };

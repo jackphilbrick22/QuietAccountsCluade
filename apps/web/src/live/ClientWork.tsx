@@ -10,6 +10,7 @@ import { api, type AgentEvent, type FileRow, type ImportResult, type Links, type
 import { copy, useAction, useApi } from "./store";
 import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
 import { inboxesText, parseInboxes } from "./inboxes";
+import { diff, settingsKey } from "./settings";
 import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, usePeople, when } from "./parts";
 import { Field } from "./Clients";
 
@@ -526,11 +527,10 @@ export function FilesTab({ id, o }: { id: string; o: Overview }) {
 
 /* ------------------------------ Settings ------------------------------ */
 
-type Patch = Partial<Omit<BusinessProfile, "voice" | "persistence" | "plan">> & { voice?: Partial<BusinessProfile["voice"]>; persistence?: Partial<BusinessProfile["persistence"]>; plan?: Partial<BusinessProfile["plan"]> };
-
 export function SettingsTab({ id, o }: { id: string; o: Overview }) {
-  // keyed by the saved profile, so a save (or someone else's change) resets the draft
-  return <SettingsForm key={JSON.stringify(o.business)} id={id} b={o.business} sellsYear={!!o.features?.yearly} />;
+  // keyed by what it edits in the saved profile, so a save (or someone else's change) resets the draft, and the
+  // server's own notes on it (an inbox recheck every 15 minutes) don't
+  return <SettingsForm key={settingsKey(o.business)} id={id} b={o.business} sellsYear={!!o.features?.yearly} />;
 }
 
 const TEXT_FIELDS: [keyof BusinessProfile, string, string?][] = [
@@ -713,35 +713,6 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
       </div>
     </div>
   );
-}
-
-function diff(a: BusinessProfile, b: BusinessProfile): Patch {
-  const out: Record<string, unknown> = {};
-  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "trade", "timezone", "fromName", "fromEmails", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
-  for (const k of keys) {
-    let v: unknown = b[k];
-    if (JSON.stringify(v) === JSON.stringify(a[k])) continue;
-    if (typeof v === "string") v = v.trim();
-    if (v === "" || v === undefined) continue; // the API can't clear optional fields; leave them
-    if (k === "voice") v = { mentionPrice: b.voice.mentionPrice, offerOptions: b.voice.offerOptions, ...(b.voice.freeLook !== undefined ? { freeLook: b.voice.freeLook } : {}) };
-    if (k === "plan") {
-      const p = b.plan;
-      const yearly = p.billing === "annual";
-      // a yearly plan sends its price too (left out, the server would keep it billed monthly); the paid years go whenever
-      // they changed, whatever the billing (a year taken off before going monthly stays off)
-      v = {
-        stage: p.stage,
-        trialSize: p.trialSize,
-        monthlyPrice: p.monthlyPrice,
-        ...(p.paidOn ? { paidOn: p.paidOn } : {}),
-        billing: yearly ? "annual" : "monthly",
-        ...(yearly && p.annualPrice !== undefined ? { annualPrice: p.annualPrice } : {}),
-        ...(JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
-      };
-    }
-    out[k] = v;
-  }
-  return out as Patch;
 }
 
 type Plan = BusinessProfile["plan"];
