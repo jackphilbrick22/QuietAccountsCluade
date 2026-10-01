@@ -6,7 +6,7 @@ import { Box, Btn, Chip, PageHead, selectCls } from "../components/table";
 import { api, type Overview, type ReviewItem, type ReviewQueue } from "./api";
 import { copy, useAction, useApi, useLive, type ClientTab, type Query } from "./store";
 import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
-import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, OutcomeForm, ReplyActions, when } from "./parts";
+import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, noteChanged, OutcomeForm, ReplyActions, when } from "./parts";
 import { ClearBrake } from "./Client";
 
 type Kind = ReviewItem["kind"];
@@ -185,7 +185,7 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn disabled={!!busy} onClick={() => void run("again", () => api("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(it.touchId)}`, { status: "approved" }), "It'll go on the next send")}>
               It didn't — send it
             </Btn>
-            <Btn variant="danger" disabled={!!busy} onClick={() => void run("drop", () => api("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(it.touchId)}`, { status: "cancelled" }), "Won't be sent")}>
+            <Btn variant="danger" disabled={!!busy} onClick={() => void run("drop", () => api<{ alsoStopped?: number }>("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(it.touchId)}`, { status: "cancelled" }), noteChanged("Won't be sent"))}>
               Don't send it
             </Btn>
           </div>
@@ -350,7 +350,7 @@ function Item({ it }: { it: ReviewItem }) {
                 <Btn
                   variant="danger"
                   disabled={!!busy}
-                  onClick={() => void run("cancel", () => api("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(it.touchId)}`, { status: "cancelled" }), "Note won't be sent")}
+                  onClick={() => void run("cancel", () => api<{ alsoStopped?: number }>("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(it.touchId)}`, { status: "cancelled" }), noteChanged("Note won't be sent"))}
                 >
                   Don't send it
                 </Btn>

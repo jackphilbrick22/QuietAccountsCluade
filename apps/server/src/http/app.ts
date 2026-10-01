@@ -65,6 +65,7 @@ import {
   sign,
   staleLinkToken,
   syncFsm,
+  takeBackForChange,
   unsubscribeByToken,
   verifySigned,
   type Deps,
@@ -455,8 +456,12 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.patch("/businesses/:id/touches/:tid", async (c) => {
     // "sent" only settles a note stuck "sending" (the mail server may have taken it): a person checked the mailbox
     const body = z.object({ subject: z.string().min(1).max(120).optional(), body: z.string().min(20).max(4000).optional(), status: z.enum(["approved", "planned", "cancelled", "sent"]).optional() }).parse(await c.req.json());
+    // a note the sending platform holds is taken back first, or the change would never reach it
+    const taken = await takeBackForChange(d, c.req.param("id"), c.req.param("tid"), body);
+    if (taken.refuse) return c.json({ ok: false, error: taken.refuse }, taken.status ?? 409);
     let ok = false;
     let flags: string[] = [];
+    let alsoStopped = 0;
     await d.accounts.withAccount(c.req.param("id"), async (state) => {
       const t = state.touches.find((x) => x.id === c.req.param("tid"));
       if (!t || t.status === "sent") return;
@@ -471,6 +476,28 @@ export function createApp(d: HttpDeps): Hono<Env> {
         return;
       }
       if (body.status === "sent") return;
+      if (taken.pulled) {
+        for (const x of state.touches) {
+          if (!taken.pulled.includes(x.id) || x.sentAt || x.status === "sent" || x.status === "delivered") continue;
+          x.providerId = undefined;
+          // part-way through: the platform can't skip one note, so the rest of theirs stop with it
+          if (taken.underway && x.id !== t.id && (x.status === "approved" || x.status === "planned")) {
+            x.status = "cancelled";
+            x.lastError = "Stopped with a later note the operator pulled: the sending platform can't skip one note";
+            alsoStopped++;
+          }
+        }
+        const who = state.dataset.customers.find((x) => x.id === t.customerId)?.name ?? "this person";
+        state.events.push({
+          id: `ev_takeback_${t.id}_${at}`,
+          at,
+          agent: "sender",
+          kind: "action",
+          title: taken.underway ? `Stopped the rest of ${who}'s notes on the sending platform` : `Took ${who}'s notes back from the sending platform`,
+          detail: taken.underway ? "They were part-way through, so nothing more goes to them." : "They go again, as they read now, when they're due.",
+          refs: [{ kind: "customer", id: t.customerId }],
+        });
+      }
       if (body.subject) t.subject = body.subject;
       if (body.body) t.body = body.body;
       if (body.status) t.status = body.status;
@@ -482,7 +509,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       flags = t.flags;
       ok = true;
     });
-    return c.json({ ok, flags });
+    return c.json({ ok, flags, ...(alsoStopped ? { alsoStopped } : {}) });
   });
 
   op.get("/businesses/:id/replies", (c) => {
@@ -1025,8 +1052,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const inReplyTo = header(/^in-reply-to$/i) ?? (body["In-Reply-To"] as string | undefined);
     const references = (header(/^references$/i) ?? (body.References as string | undefined) ?? "").split(/\s+/).filter(Boolean);
     const attachments = ((body.Attachments as { Name: string; Content: string; ContentType?: string }[] | undefined) ?? []).filter((a) => /\.(csv|tsv|txt)$/i.test(a.Name) || /csv/.test(a.ContentType ?? ""));
+    // Our requests+/import+ address may not be in To: a Gmail filter's forward or a BCC keeps the original To.
+    const link = linkAddress(deliveredTo(body, headers));
     // New requests the owner forwards: the whole message (a forward is "quoted" text to a reply parser)
-    const requestsToken = to.match(/requests\+([A-Za-z0-9_.-]+)@/)?.[1];
+    const requestsToken = link?.kind === "requests" ? link.token : undefined;
     if (requestsToken) {
       const bid = readLinkToken(d, "requests", requestsToken);
       const html = String(body.HtmlBody ?? body["body-html"] ?? body.html ?? "");
@@ -1046,7 +1075,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       repo.finishWebhook(id, res.taken ? "processed" : "ignored", bid, res.why);
       return c.json({ ok: true, ...res });
     }
-    const importToken = to.match(/import\+([A-Za-z0-9_.-]+)@/)?.[1];
+    const importToken = link?.kind === "import" ? link.token : undefined;
     if (importToken) {
       const bid = readLinkToken(d, "import", importToken);
       if (!bid || !attachments.length) {
@@ -1170,6 +1199,44 @@ function safeJson(s: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+/** Headers that name the mailbox a message really went to when To doesn't (a filter's forward, a BCC, a redirect). */
+const DELIVERY_HEADER = /^(delivered-to|x-original-to|x-forwarded-to|x-forwarded-for|envelope-to|x-envelope-to|x-rcpt-to|resent-to)$/i;
+
+/**
+ * Every address an inbound email was delivered or written to, the delivery address first: Postmark's
+ * OriginalRecipient, Mailgun's envelope recipient, SendGrid's envelope, the delivery headers, then To, Cc and Bcc
+ * (Postmark's ToFull/CcFull/BccFull too). A Gmail filter's forward keeps the original To (the shop's own inbox), so
+ * our address is only in the first of these.
+ */
+function deliveredTo(body: Record<string, unknown>, headers: { Name: string; Value: string }[]): string[] {
+  const out: string[] = [];
+  const add = (v: unknown): void => {
+    if (typeof v === "string") out.push(v);
+    else if (Array.isArray(v)) v.forEach(add);
+    else if (v && typeof v === "object") add((v as { Email?: unknown; email?: unknown }).Email ?? (v as { email?: unknown }).email);
+  };
+  const parsed = (v: unknown) => (typeof v === "string" ? safeJson(v) : v);
+  add(body.OriginalRecipient);
+  add(body.recipient);
+  add((parsed(body.envelope) as { to?: unknown } | null | undefined)?.to);
+  for (const h of headers) if (DELIVERY_HEADER.test(h.Name)) add(h.Value);
+  // Mailgun sends the headers as JSON [[name, value], ...], and sometimes flattened onto the body
+  const mailgun = parsed(body["message-headers"]);
+  if (Array.isArray(mailgun)) for (const h of mailgun) if (Array.isArray(h) && DELIVERY_HEADER.test(String(h[0]))) add(h[1]);
+  for (const [k, v] of Object.entries(body)) if (DELIVERY_HEADER.test(k)) add(v);
+  for (const k of ["ToFull", "To", "to", "CcFull", "Cc", "cc", "BccFull", "Bcc", "bcc"]) add(body[k]);
+  return out;
+}
+
+/** The first of our requests+<token> / import+<token> addresses among them. */
+function linkAddress(addresses: string[]): { kind: "requests" | "import"; token: string } | undefined {
+  for (const a of addresses) {
+    const m = a.match(/(requests|import)\+([A-Za-z0-9_.-]+)@/);
+    if (m) return { kind: m[1] as "requests" | "import", token: m[2]! };
+  }
+  return undefined;
 }
 
 function escapeHtml(s: string): string {

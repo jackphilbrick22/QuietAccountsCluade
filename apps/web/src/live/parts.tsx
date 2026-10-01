@@ -244,12 +244,16 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
 
 /* ------------------------------ edit a note ------------------------------ */
 
+/** The toast after a note change; on a sending platform, pulling one note part-way through stops the rest. */
+export const noteChanged = (msg: string) => (r: { alsoStopped?: number }) =>
+  r.alsoStopped ? `${msg}. ${r.alsoStopped === 1 ? "Their other note" : `Their other ${r.alsoStopped} notes`} stopped too: the sending platform can't skip one.` : msg;
+
 export function NoteEditor({ bid, touch, onDone }: { bid: string; touch: { id: string; subject?: string; body: string; status: string; flags: string[] }; onDone?: () => void }) {
   const { busy, run } = useAction();
   const [subject, setSubject] = useState(touch.subject ?? "");
   const [body, setBody] = useState(touch.body);
   const sent = touch.status === "sent" || touch.status === "delivered";
-  const patch = (b: Record<string, unknown>, msg: string) => run("save", () => api<{ ok: boolean }>("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(touch.id)}`, b), (r) => (r.ok ? msg : "That note has already gone out.")).then((r) => r?.ok && onDone?.());
+  const patch = (b: Record<string, unknown>, msg: string) => run("save", () => api<{ ok: boolean; alsoStopped?: number }>("PATCH", `/businesses/${encodeURIComponent(bid)}/touches/${encodeURIComponent(touch.id)}`, b), (r) => (r.ok ? noteChanged(msg)(r) : "That note has already gone out.")).then((r) => r?.ok && onDone?.());
   const changed = subject !== (touch.subject ?? "") || body !== touch.body;
   return (
     <div className="flex flex-col gap-2">

@@ -31,6 +31,7 @@ export {
   campaignName,
   dailyNewLeads,
   instantCampaignName,
+  legacyCampaignName,
   toInstantlyHtml,
   toInstantlyLead,
   toReplyHtml,

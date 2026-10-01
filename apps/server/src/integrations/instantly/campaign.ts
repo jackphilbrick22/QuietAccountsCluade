@@ -125,13 +125,27 @@ export interface InstantlyLeadInput {
   custom_variables: Record<string, string>;
 }
 
-export function campaignName(business: Pick<BusinessProfile, "name">, steps: number): string {
-  return `QA · ${business.name.replace(/\s+/g, " ").trim()} · ${steps}-step`;
+const displayName = (business: Pick<BusinessProfile, "name">) => business.name.replace(/\s+/g, " ").trim();
+
+/**
+ * Campaigns are found by name after a restart, so the name carries the business id: two clients with the same name
+ * (franchise locations, a test copy of a client) must never share a mailbox, a schedule or a pause.
+ */
+export function campaignName(business: Pick<BusinessProfile, "id" | "name">, steps: number): string {
+  return `QA · ${displayName(business)} · ${business.id} · ${steps}-step`;
 }
 
 /** The business's always-open campaign for answers to new requests. */
-export function instantCampaignName(business: Pick<BusinessProfile, "name">): string {
-  return `QA · ${business.name.replace(/\s+/g, " ").trim()} · instant`;
+export function instantCampaignName(business: Pick<BusinessProfile, "id" | "name">): string {
+  return `QA · ${displayName(business)} · ${business.id} · instant`;
+}
+
+/**
+ * The name campaigns had before it carried the business id. A business whose notes already sit in one keeps using
+ * it; nobody else is given it (see ensureCampaign).
+ */
+export function legacyCampaignName(business: Pick<BusinessProfile, "name">, steps: number | "instant"): string {
+  return `QA · ${displayName(business)} · ${steps === "instant" ? "instant" : `${steps}-step`}`;
 }
 
 export function checkSteps(maxSteps: number): number {

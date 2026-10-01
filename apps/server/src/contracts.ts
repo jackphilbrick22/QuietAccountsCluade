@@ -66,8 +66,10 @@ export interface SequencerProvider {
   /**
    * Make sure the business has a campaign ready to receive leads; returns its id. `instant` is the business's
    * separate 1-step campaign for answers to new requests: it sends new leads first, uncapped, every day 7:00–20:00.
+   * `used` is the campaigns this business's own records already handed notes to: proof that an older campaign,
+   * found by a name another client could share, is really this business's.
    */
-  ensureCampaign(business: BusinessProfile, opts: { maxSteps: number; instant?: boolean }): Promise<{ campaignId: string }>;
+  ensureCampaign(business: BusinessProfile, opts: { maxSteps: number; instant?: boolean; used?: readonly string[] }): Promise<{ campaignId: string }>;
   /** Add or update leads (idempotent by email). */
   upsertLeads(business: BusinessProfile, campaignId: string, leads: SequencedLead[]): Promise<{ added: number; skipped: { email: string; why: string }[] }>;
   /**

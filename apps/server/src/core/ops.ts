@@ -559,6 +559,7 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     (byLead.get(key) ?? byLead.set(key, []).get(key)!).push(t);
   }
   const groups = new Map<string, { instant: boolean; steps: number; leads: SequencedLead[] }>();
+  const held = new Set(state.touches.filter((x) => !x.instant && x.status === "planned").map((x) => x.opportunityId));
   // One person, one answer: a second request in the same sync doesn't get a second "thanks".
   const extra: string[] = [];
   for (const [key, all] of byLead) {
@@ -570,6 +571,8 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     if (!ts[0] || ts[0].step !== 1 || ts[0].dueAt.slice(0, 10) > horizon) continue;
     // a note missing what the law requires waits for a fix (it's on the review queue as a flagged note)
     if (ts.some((t) => t.flags.some((f) => REQUIRED_FLAG.test(f)))) continue;
+    // a person's notes go to the platform together, so one held for review holds the rest of theirs
+    if (!instant && held.has(ts[0].opportunityId)) continue;
     const c = customerById(state.dataset, ts[0].customerId);
     const email = c ? sendableEmail(c.emails, state.suppressions) : undefined;
     if (!c || !email) continue;
@@ -593,9 +596,11 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const done = new Map<string, string>();
   const refused: { lead: SequencedLead; why: string }[] = [];
   let pushError: string | undefined;
+  // an older campaign the platform finds by name is only reused if this business's own notes are in it
+  const used = campaignsOf(d, state);
   for (const g of groups.values()) {
     try {
-      const { campaignId } = await seq.ensureCampaign(b, g.instant ? { maxSteps: 1, instant: true } : { maxSteps: g.steps });
+      const { campaignId } = await seq.ensureCampaign(b, g.instant ? { maxSteps: 1, instant: true, used } : { maxSteps: g.steps, used });
       const res = await seq.upsertLeads(b, campaignId, g.leads);
       const skipped = new Map(res.skipped.map((s) => [s.email.toLowerCase(), s.why]));
       for (const l of g.leads) {
@@ -837,6 +842,40 @@ export async function finishCancelWithdrawals(d: Deps, bid: string): Promise<boo
 /** The owner moved queued work (BUSY / OPEN): notes the platform already holds are taken back, and pushed again when due. */
 export async function withdrawMoved(d: Deps, bid: string, providerIds: string[]): Promise<void> {
   await withdrawLeads(d, bid, providerIds, { inline: 25 });
+}
+
+/**
+ * The operator changed a note (Don't send, Hold, new words). A note the sending platform already holds goes as it was
+ * handed over: Instantly keeps each note's words on the lead. So the person's notes are taken back first, and pushed
+ * again (with the new words) when due. A sequence already under way can't be handed over again without starting at
+ * note 1: there only Don't send works, and it stops the rest of that person's notes too.
+ * `refuse` says why nothing changed; otherwise `pulled` is the notes that lost their platform copy.
+ */
+export async function takeBackForChange(
+  d: Deps,
+  bid: string,
+  touchId: string,
+  change: { subject?: string; body?: string; status?: string },
+): Promise<{ refuse?: string; status?: 409 | 502; pulled?: string[]; underway?: boolean }> {
+  if (d.email.kind !== "sequencer") return {};
+  const state = d.accounts.peek(bid)?.state;
+  const t = state?.touches.find((x) => x.id === touchId);
+  if (!state || !t?.providerId?.startsWith(`${d.email.name}:`) || t.sentAt || (t.status !== "approved" && t.status !== "planned")) return {};
+  const differs = (change.subject !== undefined && change.subject !== t.subject) || (change.body !== undefined && change.body !== t.body) || (change.status !== undefined && change.status !== "sent" && change.status !== t.status);
+  if (!differs) return {};
+  const [, campaignId, email] = t.providerId.split(":");
+  const lead = `${d.email.name}:${campaignId}:${email}:`;
+  const mine = state.touches.filter((x) => x.opportunityId === t.opportunityId && x.providerId?.startsWith(lead));
+  const gone = (x: Touch) => !!x.sentAt || x.status === "sent" || x.status === "delivered" || x.status === "bounced";
+  const underway = mine.some(gone);
+  if (underway && change.status !== "cancelled")
+    return { refuse: "This person is part-way through their notes on the sending platform, which can't change one note without starting them over at note 1. Use Don't send to stop the rest of their notes.", status: 409 };
+  try {
+    await d.email.stopLead(state.dataset.business, campaignId!, email!, "withdrawn");
+  } catch (e) {
+    return { refuse: `Couldn't take the note back from the sending platform (${(e as Error).message}). Nothing changed; try again in a minute.`, status: 502 };
+  }
+  return { pulled: mine.filter((x) => !gone(x)).map((x) => x.id), underway };
 }
 
 /* ------------------------------------------------------------------ */

@@ -323,6 +323,85 @@ describe("the Guard's brake in Instantly mode", () => {
   });
 });
 
+describe("the operator's changes to notes Instantly already holds", () => {
+  const NEW_WORDS = `Note 2, now about the oaks too. Want us to look at both?\n\nX · 14 Mill Rd\nYou're getting this because we quoted you. Reply "stop" to opt out.`;
+  const added = (email: string) => api.callsTo("POST", "/leads/add").flatMap((c) => c.body.leads as { email: string; custom_variables: Record<string, string> }[]).filter((l) => l.email === email);
+
+  it("before the first note goes, Don't send, Hold and new words take the person's notes back; they go again as they read now", async () => {
+    await pushed("fir", "Fir Tree", ["nia.lee@gmail.com", "oz.lee@gmail.com", "pia.lee@gmail.com"]);
+    expect(leadsIn("fir")).toEqual(["nia.lee@gmail.com", "oz.lee@gmail.com", "pia.lee@gmail.com"]);
+    const edit = await op("PATCH", "/api/businesses/fir/touches/fir-c-nia-2", { body: NEW_WORDS });
+    expect(edit).toMatchObject({ status: 200, json: { ok: true } });
+    expect(st("fir").touches.filter((t) => t.customerId === "c-nia").map((t) => [t.status, t.providerId])).toEqual([["approved", undefined], ["approved", undefined]]);
+    expect((await op("PATCH", "/api/businesses/fir/touches/fir-c-oz-2", { status: "cancelled" })).status).toBe(200);
+    expect((await op("PATCH", "/api/businesses/fir/touches/fir-c-pia-2", { status: "planned" })).status).toBe(200);
+    expect(leadsIn("fir")).toEqual([]);
+    expect(st("fir").events.some((e) => e.title === "Took Nia Lee's notes back from the sending platform")).toBe(true);
+
+    await syncSequencer(d, "fir", d.email);
+    // Nia's go again with the new words, Oz's note 1 goes alone, and Pia waits while her note 2 is held
+    expect(leadsIn("fir")).toEqual(["nia.lee@gmail.com", "oz.lee@gmail.com"]);
+    expect(added("nia.lee@gmail.com").at(-1)!.custom_variables.b2).toContain("now about the oaks too");
+    expect(added("oz.lee@gmail.com").at(-1)!.custom_variables.b2).toBeUndefined();
+    expect(st("fir").touches.find((t) => t.id === "fir-c-pia-1")).toMatchObject({ status: "approved", providerId: undefined });
+
+    // fixed and approved again: her notes go together
+    expect(await op("PATCH", "/api/businesses/fir/touches/fir-c-pia-2", { body: NEW_WORDS, status: "approved" })).toMatchObject({ status: 200, json: { ok: true } });
+    await syncSequencer(d, "fir", d.email);
+    expect(leadsIn("fir")).toEqual(["nia.lee@gmail.com", "oz.lee@gmail.com", "pia.lee@gmail.com"]);
+    expect(added("pia.lee@gmail.com")).toHaveLength(2);
+  });
+
+  it("part-way through, a change to one note is refused with the reason, and Don't send stops the rest of theirs", async () => {
+    await d.accounts.create(profile("yew", "Yew Tree", "paying"), "2026-09-29");
+    await d.accounts.withAccount("yew", (s) => {
+      const c = person("rae.lee@gmail.com");
+      s.dataset = { ...s.dataset, customers: [c] };
+      s.touches.push(note("yew", c, 1), note("yew", c, 2), note("yew", c, 3, { dueAt: "2026-10-12T09:15" }));
+    });
+    await syncSequencer(d, "yew", d.email);
+    expect(leadsIn("yew")).toEqual(["rae.lee@gmail.com"]);
+    await d.accounts.withAccount("yew", (s) => {
+      const first = s.touches.find((t) => t.step === 1)!;
+      first.status = "sent";
+      first.sentAt = "2026-09-30T09:15:00";
+    });
+    const edit = await op("PATCH", "/api/businesses/yew/touches/yew-c-rae-3", { body: NEW_WORDS });
+    expect(edit.status).toBe(409);
+    expect(edit.json.error).toMatch(/part-way through their notes/);
+    expect((await op("PATCH", "/api/businesses/yew/touches/yew-c-rae-3", { status: "planned" })).status).toBe(409);
+    expect(leadsIn("yew")).toEqual(["rae.lee@gmail.com"]);
+    expect(st("yew").touches.find((t) => t.step === 3)!.body).not.toContain("now about the oaks");
+
+    expect(await op("PATCH", "/api/businesses/yew/touches/yew-c-rae-3", { status: "cancelled" })).toMatchObject({ status: 200, json: { ok: true, alsoStopped: 1 } });
+    expect(leadsIn("yew")).toEqual([]);
+    expect(st("yew").touches.map((t) => t.status)).toEqual(["sent", "cancelled", "cancelled"]);
+    // never handed over again: that would start them over at note 1
+    await syncSequencer(d, "yew", d.email);
+    expect(leadsIn("yew")).toEqual([]);
+  });
+});
+
+describe("two clients with the same name (franchise locations)", () => {
+  it("each gets its own campaign: one's PAUSE never holds the other's notes, and one's RESUME never restarts the other's", async () => {
+    const boston = await pushed("mts-boston", "Monster Tree Service", ["kate.lee@gmail.com"]);
+    const denver = await pushed("mts-denver", "Monster Tree Service", ["lou.lee@gmail.com"]);
+    expect(campaignsOf("mts-boston")).toHaveLength(1);
+    expect(campaignsOf("mts-denver")).toHaveLength(1);
+    expect(campaignsOf("mts-denver")[0]).not.toBe(campaignsOf("mts-boston")[0]);
+    expect(campaigns.get(campaignsOf("mts-denver")[0]!)!.name).toBe("QA · Monster Tree Service · mts-denver · 2-step");
+    expect(leadsIn("mts-boston")).toEqual(["kate.lee@gmail.com"]);
+    expect(leadsIn("mts-denver")).toEqual(["lou.lee@gmail.com"]);
+    expect(await sms(denver.ownerPhone!, "PAUSE")).toMatch(/Paused/);
+    expect(statusOf("mts-denver")).toEqual([2]);
+    expect(statusOf("mts-boston")).toEqual([1]);
+    await sms(boston.ownerPhone!, "PAUSE");
+    await sms(boston.ownerPhone!, "RESUME");
+    expect(statusOf("mts-boston")).toEqual([1]);
+    expect(statusOf("mts-denver")).toEqual([2]);
+  });
+});
+
 describe("a lead Instantly won't take", () => {
   it("is marked skipped with the reason and shown, is never re-uploaded, and doesn't hold up the free round's close", async () => {
     await pushed("maple", "Maple Tree", ["kay.lee@gmail.com", BLOCKED], "trial");

@@ -81,7 +81,7 @@ const campaignWithSteps = (id: string, steps: number, status: number) => ({ id, 
 describe("ensureCampaign", () => {
   it("creates the campaign with the business's schedule, variable-only steps and plain-text settings, then reuses it", async () => {
     const api = fakeInstantly({
-      "GET /campaigns": () => ({ body: { items: [{ id: "near-miss", name: "QA · Oak & Sons Tree · 3-step (old)" }], next_starting_after: null } }),
+      "GET /campaigns": () => ({ body: { items: [{ id: "near-miss", name: "QA · Oak & Sons Tree · biz_oak · 3-step (old)" }], next_starting_after: null } }),
       "POST /campaigns": (c) => ({ body: { id: "camp-3", name: c.body.name, status: 0 } }),
     });
     const p = createInstantlyProvider({ apiKey: "key_123", fetch: api.fetch, sendingAccounts: ["sarah@oaksons-mail.com", " dave@oaksons-mail.com "], dailyLimit: 40 });
@@ -89,14 +89,14 @@ describe("ensureCampaign", () => {
     expect(await p.ensureCampaign(business(), { maxSteps: 3 })).toEqual({ campaignId: "camp-3" });
 
     const [list] = api.callsTo("GET", "/campaigns");
-    expect(list!.query.search).toBe("QA · Oak & Sons Tree · 3-step");
+    expect(list!.query.search).toBe("QA · Oak & Sons Tree · biz_oak · 3-step");
     expect(list!.headers.Authorization).toBe("Bearer key_123");
     expect(list!.headers["Content-Type"]).toBeUndefined();
 
     const [create] = api.callsTo("POST", "/campaigns");
     expect(create!.headers["Content-Type"]).toBe("application/json");
     expect(create!.body).toEqual({
-      name: "QA · Oak & Sons Tree · 3-step",
+      name: "QA · Oak & Sons Tree · biz_oak · 3-step",
       campaign_schedule: {
         schedules: [
           {
@@ -139,14 +139,14 @@ describe("ensureCampaign", () => {
 
     // A different step count is a different campaign.
     await p.ensureCampaign(business(), { maxSteps: 1 });
-    expect(api.callsTo("POST", "/campaigns").at(-1)!.body.name).toBe("QA · Oak & Sons Tree · 1-step");
+    expect(api.callsTo("POST", "/campaigns").at(-1)!.body.name).toBe("QA · Oak & Sons Tree · biz_oak · 1-step");
     expect(api.callsTo("POST", "/campaigns").at(-1)!.body.sequences[0].steps).toEqual([
       { type: "email", delay: 0, delay_unit: "days", variants: [{ subject: "{{s1}}", body: "{{b1}}" }] },
     ]);
   });
 
   it("finds an existing campaign by exact name on a cold start, and concurrent calls share one lookup", async () => {
-    const exact = "QA · Oak & Sons Tree · 2-step";
+    const exact = "QA · Oak & Sons Tree · biz_oak · 2-step";
     const api = fakeInstantly({
       "GET /campaigns": () => ({
         body: {
@@ -167,7 +167,7 @@ describe("ensureCampaign", () => {
   });
 
   it("re-checks by name when a create fails with an unknown outcome", async () => {
-    const exact = "QA · Oak & Sons Tree · 2-step";
+    const exact = "QA · Oak & Sons Tree · biz_oak · 2-step";
     const api = fakeInstantly({
       "GET /campaigns": [() => ({ body: { items: [] } }), () => ({ body: { items: [{ id: "landed", name: exact }] } })],
       "POST /campaigns": () => ({ status: 502, body: { statusCode: 502, error: "Bad Gateway", message: "upstream" } }),
@@ -187,6 +187,55 @@ describe("ensureCampaign", () => {
     expect((await p.ensureCampaign(business(), { maxSteps: 2 })).campaignId).toBe("camp-old");
     await expect(p.upsertLeads(business(), "camp-old", [lead(0)])).rejects.toMatchObject({ status: 404 });
     expect((await p.ensureCampaign(business(), { maxSteps: 2 })).campaignId).toBe("camp-new");
+  });
+
+  it("gives two clients with the same name their own campaigns, with their own mailbox, even after a restart", async () => {
+    const made: { id: string; name: string; email_list?: string[]; timezone: string }[] = [];
+    const api = fakeInstantly({
+      "GET /campaigns": (c) => ({ body: { items: made.filter((x) => x.name === c.query.search) } }),
+      "POST /campaigns": (c) => {
+        made.push({ id: `camp-${made.length + 1}`, name: c.body.name, email_list: c.body.email_list, timezone: c.body.campaign_schedule.schedules[0].timezone });
+        return { body: { id: made.at(-1)!.id, status: 0 } };
+      },
+    });
+    const boston = business({ id: "mts-boston", name: "Monster Tree Service", fromEmail: "office@mts-boston.com" });
+    const denver = business({ id: "mts-denver", name: "Monster Tree Service", fromEmail: "office@mts-denver.com", timezone: "America/Denver" });
+    const first = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const b = (await first.ensureCampaign(boston, { maxSteps: 2 })).campaignId;
+    // a restart: nothing cached, every campaign found by name
+    const second = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const dv = (await second.ensureCampaign(denver, { maxSteps: 2 })).campaignId;
+    expect(dv).not.toBe(b);
+    expect(made).toEqual([
+      { id: b, name: "QA · Monster Tree Service · mts-boston · 2-step", email_list: ["office@mts-boston.com"], timezone: "America/Detroit" },
+      { id: dv, name: "QA · Monster Tree Service · mts-denver · 2-step", email_list: ["office@mts-denver.com"], timezone: "America/Boise" },
+    ]);
+    const third = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    expect((await third.ensureCampaign(boston, { maxSteps: 2 })).campaignId).toBe(b);
+    expect((await third.ensureCampaign(denver, { maxSteps: 2 })).campaignId).toBe(dv);
+    expect((await third.ensureCampaign(denver, { maxSteps: 1, instant: true })).campaignId).not.toBe(dv);
+    expect(made.at(-1)!.name).toBe("QA · Monster Tree Service · mts-denver · instant");
+  });
+
+  it("a campaign named the old way (no business id) is kept by the business whose notes are in it, and nobody else", async () => {
+    const legacy = "QA · Oak & Sons Tree · 2-step";
+    const api = fakeInstantly({
+      "GET /campaigns": (c) => ({ body: { items: c.query.search === legacy ? [{ id: "camp-old", name: legacy }] : [] } }),
+      "POST /campaigns": (c) => ({ body: { id: `new-${c.body.name}`, status: 0 } }),
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    // the business that pushed into it before the rename keeps using it
+    expect(await p.ensureCampaign(business(), { maxSteps: 2, used: ["camp-other", "camp-old"] })).toEqual({ campaignId: "camp-old" });
+    expect(api.callsTo("GET", "/campaigns").map((c) => c.query.search)).toEqual(["QA · Oak & Sons Tree · biz_oak · 2-step", legacy]);
+    expect(api.callsTo("POST", "/campaigns")).toHaveLength(0);
+    // another client with the same name, whose notes were never in it, gets its own
+    const twin = business({ id: "biz_oak_2" });
+    expect(await p.ensureCampaign(twin, { maxSteps: 2, used: ["camp-other"] })).toEqual({ campaignId: "new-QA · Oak & Sons Tree · biz_oak_2 · 2-step" });
+    // and a business with no notes out yet never looks at old names at all
+    const fresh = business({ id: "biz_oak_3" });
+    const lookups = api.callsTo("GET", "/campaigns").length;
+    await p.ensureCampaign(fresh, { maxSteps: 2 });
+    expect(api.callsTo("GET", "/campaigns").length).toBe(lookups + 1);
   });
 
   it("rejects step counts Instantly campaigns aren't built for, and bad schedules", async () => {
@@ -339,9 +388,9 @@ describe("instant campaign", () => {
     const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@oaksons-mail.com"], dailyLimit: 40 });
     expect(await p.ensureCampaign(business({ timezone: "America/Chicago" }), { maxSteps: 1, instant: true })).toEqual({ campaignId: "camp-now" });
     const [create] = api.callsTo("POST", "/campaigns");
-    expect(api.callsTo("GET", "/campaigns")[0]!.query.search).toBe("QA · Oak & Sons Tree · instant");
+    expect(api.callsTo("GET", "/campaigns")[0]!.query.search).toBe("QA · Oak & Sons Tree · biz_oak · instant");
     expect(create!.body).toEqual({
-      name: "QA · Oak & Sons Tree · instant",
+      name: "QA · Oak & Sons Tree · biz_oak · instant",
       campaign_schedule: {
         schedules: [
           {
@@ -373,13 +422,13 @@ describe("instant campaign", () => {
     // cached apart from the 1-step nurture campaign
     expect(await p.ensureCampaign(business(), { maxSteps: 1, instant: true })).toEqual({ campaignId: "camp-now" });
     expect(await p.ensureCampaign(business(), { maxSteps: 1 })).toEqual({ campaignId: "camp-1" });
-    expect(api.callsTo("POST", "/campaigns").map((c) => c.body.name)).toEqual(["QA · Oak & Sons Tree · instant", "QA · Oak & Sons Tree · 1-step"]);
+    expect(api.callsTo("POST", "/campaigns").map((c) => c.body.name)).toEqual(["QA · Oak & Sons Tree · biz_oak · instant", "QA · Oak & Sons Tree · biz_oak · 1-step"]);
     await expect(p.ensureCampaign(business(), { maxSteps: 2, instant: true })).rejects.toThrow(/one note/);
   });
 
   it("answers a returning homeowner again: a Completed lead is replaced, a still-sending one is left alone", async () => {
     const api = fakeInstantly({
-      "GET /campaigns": () => ({ body: { items: [{ id: "camp-now", name: "QA · Oak & Sons Tree · instant" }] } }),
+      "GET /campaigns": () => ({ body: { items: [{ id: "camp-now", name: "QA · Oak & Sons Tree · biz_oak · instant" }] } }),
       "GET /campaigns/camp-now": () => ({ body: campaignWithSteps("camp-now", 1, 3) }),
       "POST /leads/list": () => ({
         body: {

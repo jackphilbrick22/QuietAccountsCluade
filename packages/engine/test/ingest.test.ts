@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
 import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
-import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones } from "../src/util.ts";
+import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones, makeId, sha256Hex } from "../src/util.ts";
 import type { BusinessProfile, Dataset, QuoteStatus } from "../src/model.ts";
 import { scan } from "../src/breakage/detect.ts";
 
@@ -97,6 +97,37 @@ describe("util parsing", () => {
     expect(extractPhones("603-224-1234, 603-224-1234")).toEqual(["+16032241234"]);
     expect(extractPhones("")).toEqual([]);
     expect(extractPhones(null)).toEqual([]);
+  });
+});
+
+describe("record ids", () => {
+  it("are SHA-256 based: the same parts give the same id, always the prefix plus 14 base-36 characters", () => {
+    expect(sha256Hex("")).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(sha256Hex("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    // two blocks, and UTF-8 for the accents and curly quotes in Excel names
+    expect(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")).toBe("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+    expect(sha256Hex("José O’Brien")).toBe("79a6bd6286c32585db73e56f7519c403902ad89baecd167006a920d62b5d78a5");
+    // pinned: ids are stored keys, so the scheme must not drift
+    expect(makeId("q", "jobber", "1042")).toBe("q_1gmxx9p1dom3dm");
+    expect(makeId("q", "jobber", "1042")).toBe(makeId("q", "jobber", 1042));
+    expect(makeId("c", "")).toMatch(/^c_[0-9a-z]{14}$/);
+    expect(makeId("c", "x".repeat(5000))).toMatch(/^c_[0-9a-z]{14}$/);
+    expect(makeId("c", "a", "b")).not.toBe(makeId("c", "b", "a"));
+  });
+
+  it("never collide across 200,000 ordinary addresses (32-bit ids had a few collisions at this size)", () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 200_000; i++) seen.add(makeId("c", `person${i}@gmail.com`));
+    expect(seen.size).toBe(200_000);
+  });
+
+  it("two homeowners whose old 32-bit ids collided stay two people, each with their own quote", () => {
+    expect(makeId("c", "john.gonzalez@gmail.com")).not.toBe(makeId("c", "patricia.roberts81@gmail.com"));
+    const csv = "Client name,Client email,Title,Total,Sent date,Quote #\nJohn Gonzalez,john.gonzalez@gmail.com,Remove dead oak over driveway,2400,2026-06-03,1001\nPatricia Roberts,patricia.roberts81@gmail.com,Prune maples,900,2026-06-05,1002\n";
+    const { dataset } = ingestFile(emptyDataset(biz, "2026-09-29"), csv, "quotes.csv", "2026-09-29T12:00:00Z", { kind: "quote" });
+    expect(dataset.customers.map((c) => c.name).sort()).toEqual(["John Gonzalez", "Patricia Roberts"]);
+    const john = dataset.customers.find((c) => c.name === "John Gonzalez")!;
+    expect(dataset.quotes.find((q) => /dead oak/.test(q.title))!.customerId).toBe(john.id);
   });
 });
 

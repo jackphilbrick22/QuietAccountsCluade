@@ -97,6 +97,69 @@ describe("new requests the owner forwards", () => {
     expect(items.some((i) => i.businessId === "ridge-trial" && i.kind === "alert" && /Forwarded request from Karen Whitfield/.test(i.title ?? ""))).toBe(true);
   });
 
+  /** A raw inbound-email payload, as Postmark or Mailgun would post it. */
+  const inbound = async (payload: Record<string, unknown>) => {
+    const res = await app.request(`/webhooks/inbound-email/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ MessageID: `fwd-${++n}`, ...payload }) });
+    return (await res.json()) as Record<string, unknown>;
+  };
+  // Wix's own email, as a Gmail filter forwards it: no "Forwarded message" wrapper, and From and To untouched
+  const FORM_AS_SENT = WEB_FORM.split("\n").slice(4).join("\n");
+  const answersTo = (email: string) => (d.email as LogEmailProvider).sent.filter((m) => m.to === email).length;
+
+  it("a request the owner's Gmail filter forwards is read from where it was delivered, not the To it kept", async () => {
+    const l = await make("ridge-filter", true);
+    const before = answersTo("karen.whitfield@gmail.com");
+    const r = await inbound({
+      From: "Wix Forms <no-reply@wix.com>",
+      FromFull: { Email: "no-reply@wix.com", Name: "Wix Forms" },
+      To: "office@ridgelinetree.com",
+      ToFull: [{ Email: "office@ridgelinetree.com", Name: "", MailboxHash: "" }],
+      OriginalRecipient: l.requestsAddress,
+      Subject: "New form submission: Request a quote",
+      TextBody: FORM_AS_SENT,
+      Headers: [
+        { Name: "X-Forwarded-To", Value: l.requestsAddress },
+        { Name: "X-Forwarded-For", Value: `office@ridgelinetree.com ${l.requestsAddress}` },
+      ],
+    });
+    expect(r).toMatchObject({ ok: true, taken: true, answered: 1 });
+    const st = d.accounts.peek("ridge-filter")!.state;
+    expect(st.dataset.requests).toHaveLength(1);
+    expect(answersTo("karen.whitfield@gmail.com")).toBe(before + 1);
+    // never taken for a homeowner's reply from the form's no-reply address
+    expect(st.replies).toHaveLength(0);
+    expect((d.notifier as LogNotifier).sent.some((m) => m.text.includes("no-reply@wix.com"))).toBe(false);
+  });
+
+  it("the requests address is found in a Bcc, a Cc, a delivery header or Mailgun's envelope recipient too", async () => {
+    const l = await make("ridge-bcc", true);
+    const form = (who: string) => FORM_AS_SENT.replace("karen.whitfield@gmail.com", who);
+    const base = { From: "Wix Forms <no-reply@wix.com>", To: "office@ridgelinetree.com", Subject: "New form submission: Request a quote" };
+    expect(await inbound({ ...base, BccFull: [{ Email: l.requestsAddress, Name: "" }], TextBody: form("a.bcc@example.org") })).toMatchObject({ taken: true, answered: 1 });
+    expect(await inbound({ ...base, Cc: `Dave <dave@ridgelinetree.com>, Requests <${l.requestsAddress}>`, TextBody: form("b.cc@example.org") })).toMatchObject({ taken: true, answered: 1 });
+    expect(await inbound({ ...base, Headers: [{ Name: "Delivered-To", Value: l.requestsAddress }], TextBody: form("c.hdr@example.org") })).toMatchObject({ taken: true, answered: 1 });
+    expect(await inbound({ from: base.From, To: base.To, recipient: l.requestsAddress, subject: base.Subject, "body-plain": form("d.mg@example.org"), "message-headers": JSON.stringify([["X-Original-To", l.requestsAddress]]) })).toMatchObject({ taken: true, answered: 1 });
+    expect(d.accounts.peek("ridge-bcc")!.state.dataset.requests).toHaveLength(4);
+    // a forged token in a header is still just ignored
+    expect(await inbound({ ...base, OriginalRecipient: "requests+not-a-real-token@in.qa.test", TextBody: form("e.x@example.org") })).toMatchObject({ ignored: true });
+  });
+
+  it("an export a Gmail filter forwards to the import address is read too", async () => {
+    await make("ridge-export", true);
+    const { importAddress } = (await api("GET", "/businesses/ridge-export/links")) as { importAddress: string };
+    const csv = "Client name,Client email,Title,Total,Sent date\nMia Stone,mia.stone@gmail.com,Oak removal,1200,2025-06-03\n";
+    const r = await inbound({
+      From: "Jobber <no-reply@getjobber.com>",
+      To: "dave@ridgelinetree.com",
+      OriginalRecipient: importAddress,
+      Subject: "Your quotes export is ready",
+      TextBody: "",
+      Attachments: [{ Name: "quotes.csv", Content: Buffer.from(csv).toString("base64"), ContentType: "text/csv" }],
+    });
+    expect(r).toMatchObject({ ok: true, imported: expect.anything() });
+    expect(d.accounts.peek("ridge-export")!.state.dataset.customers.map((c) => c.name)).toContain("Mia Stone");
+  });
+
   it("a forged address is ignored", async () => {
     expect(await forward("requests+not-a-real-token@in.qa.test", "Fwd: hi", WEB_FORM)).toMatchObject({ ignored: true });
   });

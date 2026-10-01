@@ -35,8 +35,9 @@
  *  - A new campaign is a Draft (status 0) and a campaign whose leads all finished becomes Completed (3). Neither
  *    sends to new leads until activated, so upsertLeads activates 0/3 after adding leads (activateDrafts). It never
  *    resumes a campaign someone Paused (2).
- *  - Campaign-name search may be fuzzy, so we filter for an exact name. Two businesses with the same name would share
- *    a lookup on cold start. The in-memory cache is keyed by business id and is not affected.
+ *  - Campaign-name search may be fuzzy, so we filter for an exact name. The name carries the business id, so two
+ *    clients with the same name never find each other's campaign after a restart. A campaign named the old way
+ *    (without the id) is reused only by a business whose own notes are already in it.
  *  - A POST /block-lists-entries for an existing entry errors (400/409). We then confirm it via ?search= and treat it
  *    as done.
  *  - After a lead replies, Instantly (stop_on_reply) stops it: it moves to Completed and/or email_reply_count > 0.
@@ -52,6 +53,7 @@ import {
   checkSteps,
   instantCampaignName,
   leadProblem,
+  legacyCampaignName,
   looksLikeEmail,
   normalizeEmail,
   toInstantlyLead,
@@ -98,7 +100,7 @@ export type InstantlyProvider = SequencerProvider & {
   /** Register workspace webhooks → url. Idempotent (lists first). Defaults to ["all_events"]. */
   ensureWebhooks(url: string, events?: readonly string[], opts?: { name?: string; headers?: Record<string, string> }): Promise<EnsureWebhooksResult>;
   /** The campaign name ensureCampaign uses. */
-  campaignName(business: Pick<BusinessProfile, "name">, steps: number): string;
+  campaignName(business: Pick<BusinessProfile, "id" | "name">, steps: number): string;
 };
 
 type StopReason = Parameters<SequencerProvider["stopLead"]>[3];
@@ -160,19 +162,26 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
 
   const campaignPath = (id: string) => `/campaigns/${encodeURIComponent(id)}`;
 
-  async function findCampaignByName(name: string): Promise<InstantlyCampaign | undefined> {
+  /** The oldest campaign named exactly `name`; with `among`, only one of those ids. */
+  async function findCampaignByName(name: string, among?: ReadonlySet<string>): Promise<InstantlyCampaign | undefined> {
     const matches: InstantlyCampaign[] = [];
     for await (const c of client.paginate<InstantlyCampaign>("/campaigns", { search: name }, { maxPages: 5 })) {
-      if (c?.id && c.name?.trim() === name) matches.push(c);
+      if (c?.id && c.name?.trim() === name && (!among || among.has(c.id))) matches.push(c);
     }
     // Oldest first: if a retried create ever made a twin, everyone keeps converging on the same one.
     matches.sort((a, b) => (a.timestamp_created ?? "").localeCompare(b.timestamp_created ?? ""));
     return matches[0];
   }
 
-  async function resolveCampaign(name: string, build: () => CreateCampaignBody): Promise<string> {
+  async function resolveCampaign(name: string, legacy: string, used: ReadonlySet<string>, build: () => CreateCampaignBody): Promise<string> {
     const found = await findCampaignByName(name);
     if (found) return found.id;
+    // Before names carried the business id, a campaign was named after the business alone, and another client with
+    // the same name would find it too. Only a business whose own notes are already in it keeps it.
+    if (used.size) {
+      const old = await findCampaignByName(legacy, used);
+      if (old) return old.id;
+    }
     const body = build();
     try {
       const created = await client.post<InstantlyCampaign>("/campaigns", body, { idempotent: false });
@@ -270,7 +279,7 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     client,
     campaignName,
 
-    async ensureCampaign(business, { maxSteps, instant }) {
+    async ensureCampaign(business, { maxSteps, instant, used }) {
       const steps = checkSteps(maxSteps);
       if (instant && steps !== 1) throw new ProviderError(`The instant campaign sends one note (got ${steps})`, INSTANTLY);
       const key = `${business.id}:${instant ? "instant" : steps}`;
@@ -278,10 +287,11 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
       if (cached) return { campaignId: cached };
       let pending = inflight.get(key);
       if (!pending) {
+        const mine = new Set(used ?? []);
         pending = (
           instant
-            ? resolveCampaign(instantCampaignName(business), () => buildInstantCampaignBody(business, settings, now()))
-            : resolveCampaign(campaignName(business, steps), () => buildCampaignBody(business, steps, settings, now()))
+            ? resolveCampaign(instantCampaignName(business), legacyCampaignName(business, "instant"), mine, () => buildInstantCampaignBody(business, settings, now()))
+            : resolveCampaign(campaignName(business, steps), legacyCampaignName(business, steps), mine, () => buildCampaignBody(business, steps, settings, now()))
         ).finally(() => inflight.delete(key));
         inflight.set(key, pending);
       }
