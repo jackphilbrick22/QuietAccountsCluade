@@ -368,6 +368,24 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       body: "Hi {first},\n\n{signer} at {company}. We haven't been by for {job} since {quietSince}, and I wanted to make sure you're all set.\n\nWant us back on your usual schedule? Reply with a day that works and I'll put you back on.\n\n{signer}",
     },
   ],
+  // A lawn or landscape shop's lapsed regulars hear from it only in its selling windows, each with its own timing line:
+  // {springWindow} (January to March) and {fallWindow} (fall clean-up, to mid-November in the north).
+  "regular.timing": [
+    {
+      id: "g2s",
+      angle: "timing",
+      subject: "Re: {job}",
+      needs: ["springWindow"],
+      body: "{first}, we're setting the spring routes now. Want me to keep your spot for spring? Just reply and I'll hold it.\n\n{signer}",
+    },
+    {
+      id: "g2f",
+      angle: "timing",
+      subject: "Re: {job}",
+      needs: ["fallWindow"],
+      body: "{first}, we're putting the fall clean-up schedule together now. If you'd like the leaves taken care of this year, reply and I'll put you on it.\n\n{signer}",
+    },
+  ],
   "regular.close_file": [
     {
       id: "g3",
@@ -570,7 +588,7 @@ export const SEQUENCES: Record<BreakageType, { family: string; steps: StepPlan[]
     family: "regular",
     steps: [
       { step: 1, day: 0, angles: ["check_in"] },
-      { step: 2, day: 6, angles: ["close_file"] },
+      { step: 2, day: 6, angles: ["timing", "close_file"] },
     ],
   },
   service_due: {

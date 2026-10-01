@@ -1,1 +1,1 @@
-export { planOutreach, inHoldout, sendTime, type Plan, type PlanOptions } from "./plan.ts";
+export { goesOutOn, planOutreach, inHoldout, sendTime, type Plan, type PlanOptions } from "./plan.ts";

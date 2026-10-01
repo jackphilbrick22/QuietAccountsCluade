@@ -11,7 +11,7 @@ import {
   readRequestEmail,
   takeRequest,
   answerTime,
-  approveAll,
+  approveRound,
   clearBrake,
   counted,
   doNotContact,
@@ -39,20 +39,27 @@ import {
   makeId,
   markContacted,
   markSent,
+  maxDate,
   mergePulled,
+  OFF_SEASON,
   oppById,
+  outOfSeason,
+  ownerApproves,
   parseTable,
   planBatch,
+  plural,
   quoteById,
   readReply,
   receiveReply,
   renewPlan,
   repliedCheck,
   stopSequence,
+  weekday,
   type AccountState,
   type BusinessProfile,
   type FileIn,
   type Reply,
+  type RoundApproval,
   type Touch,
 } from "@qa/engine";
 import { features, type Config } from "../config.ts";
@@ -336,8 +343,22 @@ export function nextSendDay(state: AccountState, from: string): string {
   return from;
 }
 
-export async function approve(d: Deps, bid: string): Promise<number> {
-  return d.accounts.withAccount(bid, (state) => approveAll(state, nowLocal(d, state)));
+/**
+ * Approve the planned round: the owner said OK to the first note (`byText`, or to Jack in the console), or Jack looked
+ * it over. When the OK came too late for some of it to go in its season, theirs is written again for the next selling
+ * window (approveRound), and Jack looks it over.
+ */
+export async function approve(d: Deps, bid: string, byText = false): Promise<RoundApproval> {
+  const r = await d.accounts.withAccount(bid, (state) => (byText ? ownerApproves : approveRound)(state, nowLocal(d, state)));
+  if (r.late)
+    await raiseAlert(d, bid, {
+      kind: "off_season_ok",
+      title: `${d.accounts.peek(bid)!.state.dataset.business.name}'s OK came after the season closed for ${plural(r.late.people, "person", "people")}`,
+      detail: r.late.firstDay
+        ? `Their notes were cancelled, and the round written again for the next selling window, the first on ${r.late.firstDay}. Look it over before then.`
+        : "Their notes were cancelled, and nobody's due in the next selling window yet. Plan their round when it opens.",
+    });
+  return r;
 }
 
 /* ------------------------------------------------------------------ */
@@ -560,7 +581,9 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const state = loaded.state;
   const b = state.dataset.business;
   const at = nowLocal(d, state);
-  const horizon = new Date(Date.parse(`${at.slice(0, 10)}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
+  const today = at.slice(0, 10);
+  const horizon = new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
+  const onSendDay = (day: string) => (b.sendDays.includes(weekday(day)) ? day : nextSendDay(state, day));
   const byLead = new Map<string, Touch[]>();
   for (const t of state.touches) {
     if (t.status !== "approved" || t.providerId) continue;
@@ -571,6 +594,7 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const held = new Set(state.touches.filter((x) => !x.instant && x.status === "planned").map((x) => x.opportunityId));
   // One person, one answer: a second request in the same sync doesn't get a second "thanks".
   const extra: string[] = [];
+  const offSeason: string[] = [];
   for (const [key, all] of byLead) {
     const instant = key.startsWith("instant|");
     all.sort((x, y) => x.step - y.step || x.dueAt.localeCompare(y.dueAt));
@@ -578,6 +602,19 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     const ts = inFlight ? [] : instant ? all.slice(0, 1) : all;
     if (instant) extra.push(...all.slice(ts.length).map((t) => t.id));
     if (!ts[0] || ts[0].step !== 1 || ts[0].dueAt.slice(0, 10) > horizon) continue;
+    // A seasonal note is handed over only in its season. Each goes on its own day or the platform's, whichever is
+    // later: note 1 as soon as the platform has it, each follow-up the campaign's wait after the note before, on a send
+    // day. One past its season (an OK that came late, a pause) is cancelled with the notes after it, and the ones
+    // before go as a shorter sequence. Before the season opens, they wait: the platform would send note 1 at once.
+    if (!instant) {
+      let on = today;
+      const past = ts.findIndex((t, i) => {
+        on = maxDate(t.dueAt.slice(0, 10), i ? onSendDay(addDays(on, seq.stepDelays[i - 1] ?? 0)) : on)!;
+        return outOfSeason(state, t, on);
+      });
+      if (past >= 0) offSeason.push(...ts.splice(past).map((t) => t.id));
+      if (!ts[0] || outOfSeason(state, ts[0], today)) continue;
+    }
     // a note missing what the law requires waits for a fix (it's on the review queue as a flagged note)
     if (ts.some((t) => t.flags.some((f) => REQUIRED_FLAG.test(f)))) continue;
     // a person's notes go to the platform together, so one held for review holds the rest of theirs
@@ -598,6 +635,14 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     const gk = instant ? "instant" : String(ts.length);
     (groups.get(gk) ?? groups.set(gk, { instant, steps: ts.length, leads: [] }).get(gk)!).leads.push(lead);
   }
+  if (offSeason.length)
+    await d.accounts.withAccount(bid, (s) => {
+      for (const t of s.touches)
+        if (offSeason.includes(t.id) && t.status === "approved") {
+          t.status = "cancelled";
+          t.lastError = OFF_SEASON;
+        }
+    });
   if (!groups.size) return { sent: 0, failed: 0, held: 0 };
   let pushed = 0;
   let answers = 0;
@@ -715,7 +760,8 @@ async function releasePlatform(d: Deps, bid: string): Promise<void> {
   if (d.email.kind !== "sequencer") return;
   // turned back on only as its inboxes and settings are now (else the worker tries again next minute)
   if (!(await readyToSend(d, bid, d.email))) return;
-  // answers to requests that sat in a paused campaign are pulled before it restarts: they'd go days late
+  // answers to requests that sat in a paused campaign are pulled before it restarts: they'd go days late; so are notes
+  // whose season ended while it was paused
   const stale = await d.accounts.withAccount(bid, (s) => {
     const at = nowLocal(d, s);
     const out: string[] = [];
@@ -724,6 +770,10 @@ async function releasePlatform(d: Deps, bid: string): Promise<void> {
         t.status = "cancelled";
         t.lastError = `Not sent: ${staleAnswer(s, t, at)}`;
         out.push(t.providerId);
+      } else if (pastSeason(d, s, t, at)) {
+        t.status = "cancelled";
+        t.lastError = OFF_SEASON;
+        out.push(t.providerId!);
       }
     return out;
   });
@@ -776,10 +826,16 @@ function pushedUnsent(d: Deps, state: AccountState): string[] {
   return state.touches.filter((t) => t.providerId?.startsWith(p) && !t.sentAt && t.status !== "sent" && t.status !== "delivered" && t.status !== "bounced").map((t) => t.providerId!);
 }
 
+/** A note the platform holds that can't go today in its season (a pause, or the platform's own pace, ran past it). */
+function pastSeason(d: Deps, s: AccountState, t: Touch, at: string): boolean {
+  return t.status === "approved" && !!t.providerId?.startsWith(`${d.email.name}:`) && outOfSeason(s, t, at.slice(0, 10));
+}
+
 /**
  * Notes still queued for people we can no longer write to leave the platform too: the owner marked them
  * do-not-contact in their software, they (or someone at their address) wrote back, an answer to a request went stale
- * before it was handed over, or a sync shows the quote a follow-up chases approved, the job booked or a new quote sent.
+ * before it was handed over, a sync shows the quote a follow-up chases approved, the job booked or a new quote sent,
+ * or the season they were for is over.
  */
 async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise<void> {
   const state = d.accounts.peek(bid)!.state;
@@ -794,13 +850,13 @@ async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise
     return (t: Touch) => !t.instant && (t.status === "approved" || t.status === "planned") && replied(t.customerId);
   };
   const wrote = repliedTo(state);
-  if (!state.touches.some((t) => dnc(state, t) || stale(state, t) || done(t) || wrote(t))) return;
+  if (!state.touches.some((t) => dnc(state, t) || stale(state, t) || done(t) || wrote(t) || pastSeason(d, state, t, at))) return;
   const pulled = await d.accounts.withAccount(bid, (s) => {
     dropStaleAnswers(s, at);
     const out: string[] = dropSettled(s, at).filter((t) => t.providerId?.startsWith(`${seq.name}:`)).map((t) => t.providerId!);
     const wrote = repliedTo(s);
     for (const t of s.touches) {
-      const why = dnc(s, t) ? "Do not contact — the owner's setting in their software" : wrote(t) ? "They replied — the sequence stops" : undefined;
+      const why = dnc(s, t) ? "Do not contact — the owner's setting in their software" : wrote(t) ? "They replied — the sequence stops" : pastSeason(d, s, t, at) ? OFF_SEASON : undefined;
       if (!why) continue;
       t.status = "cancelled";
       t.lastError = why;

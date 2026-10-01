@@ -296,7 +296,7 @@ describe("detectors", () => {
       expect(lapsed(ds).map((o) => o.suppressed)).toEqual(["active_work"]);
     });
 
-    it("every other trade keeps the old clock: a biweekly mowing client isn't quiet at three weeks", async () => {
+    it("every other trade keeps the old clock: a biweekly mowing client isn't quiet at three weeks, but after three missed visits", async () => {
       const { lapseAfter } = await import("../src/breakage/visits.ts");
       expect(lapseAfter("cleaning", 14)).toEqual({ days: 21, byTrade: true });
       expect(lapseAfter("cleaning", 7)).toEqual({ days: 21, byTrade: true });
@@ -307,11 +307,14 @@ describe("detectors", () => {
       for (const trade of ["lawn", "pool", "pest", "tree"] as const) expect(lapseAfter(trade, 14)).toEqual({ days: 60, byTrade: false });
       const mow = (last: number) => {
         const jobs = Array.from({ length: 8 }, (_, i) => job(`j${i}`, "c1", { title: "Mowing visit", recurring: true, total: 55, completedOn: ago(last + (7 - i) * 14) }));
-        return oppsFor(scan(dataset({ business: { trade: "lawn", avgJobValue: 55, minQuoteValue: 150 }, customers: [customer("c1")], jobs })), "c1", "lapsed_regular");
+        // the shop still mows: another regular was here this week
+        jobs.push(job("k1", "c2", { title: "Mowing visit", recurring: true, total: 55, completedOn: ago(3) }));
+        return oppsFor(scan(dataset({ business: { trade: "lawn", avgJobValue: 55, minQuoteValue: 150 }, customers: [customer("c1"), customer("c2")], jobs })), "c1", "lapsed_regular");
       };
+      // lawn goes by the season: gone once three of their usual visits went by
       expect(mow(30)).toEqual([]);
-      expect(mow(59)).toEqual([]);
-      expect(mow(60)).toHaveLength(1);
+      expect(mow(42)).toEqual([]);
+      expect(mow(43)).toHaveLength(1);
     });
 
     it("one-time, deep and move-out cleans get the 'regular schedule?' ask within about ten days", () => {
@@ -1003,7 +1006,7 @@ describe("work whose title names no service we know", () => {
     ["tree", "Arborist consultation", 100],
     ["hvac", "Diagnostic - no cool", 190],
     ["hvac", "No heat", 190],
-    ["landscape", "Fall cleanup", 340],
+    ["landscape", "Snow plowing - driveway", 340],
   ])("%s: “%s” is never taken for the trade's first service", (trade, title, daysAgo) => {
     const r = scan(past(trade, title, daysAgo));
     expect(oppsFor(r, "c1", "service_due")).toEqual([]);
@@ -1011,7 +1014,7 @@ describe("work whose title names no service we know", () => {
     for (const o of oppsFor(r, "c1")) expect(o.serviceId).toBe("gen.work");
   });
   it("a past customer's note about it says the trade's plain words, not a service they never had", () => {
-    const ds = past("landscape", "Fall cleanup", 340);
+    const ds = past("landscape", "Snow plowing - driveway", 340);
     const o = oneOpp(scan(ds), "c1", "one_and_done");
     expect(o.jobPhrase).toBe("the landscaping");
     const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;

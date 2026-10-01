@@ -2,14 +2,14 @@ import { scan } from "../breakage/detect.ts";
 import { summarize } from "../breakage/forecast.ts";
 import { quietRateOf } from "../breakage/quiet.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
-import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
+import { goesOutOn, HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
 import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
-import { detectTrade, playbook } from "../trades/index.ts";
+import { detectTrade, growingSeason, playbook, sellingFrom, sellingSeason } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
@@ -186,23 +186,58 @@ export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: 
   return ownerMsg(state, now, "kickoff", kickoffText(state, firstDay, people, { awaitOk: opts.awaitOk }));
 }
 
-/** The owner texted OK to the first note: the batch is approved and goes out on schedule. */
-export function ownerApproves(state: AccountState, now: ISODateTime): { approved: number; firstDay?: string } {
-  state.awaitingOwnerOk = undefined;
-  // An OK that comes after the planned first day moves the whole round forward, spacing kept: it never sends
-  // the backlog at once.
+export interface RoundApproval {
+  /** Notes approved, any written again for the next selling window included. */
+  approved: number;
+  /** When the round's first note goes out: none when nothing was waiting, or none of it can go in its season. */
+  firstDay?: string;
+  /**
+   * People whose first note the OK moved past its season (it came late): their notes are cancelled and the round is
+   * written again for as many in the next selling window, its first note going out `firstDay` (none when nobody's due).
+   */
+  late?: { people: number; firstDay?: string };
+}
+
+/**
+ * The planned round is approved and goes out on schedule: the owner said OK to the first note (by text, or to Jack,
+ * who approves it in the console), or Jack looked it over. An OK that comes after the planned first day moves the
+ * whole round forward, spacing kept: it never sends the backlog at once. A seasonal shop's notes that the move takes
+ * past their season (fall notes OK'd in December, or in a week that runs past mid-November) are cancelled, and
+ * whoever's first note went with them is written again for the next selling window.
+ */
+export function approveRound(state: AccountState, now: ISODateTime): RoundApproval {
   const planned = state.touches.filter((t) => t.status === "planned");
   const earliest = planned.map((t) => t.dueAt.slice(0, 10)).sort()[0];
   const today = now.slice(0, 10);
-  const start = nextAllowed(state.dataset, Number(now.slice(11, 13)) >= state.dataset.business.sendWindow[1] ? addDays(today, 1) : today);
+  const b = state.dataset.business;
+  const start = nextAllowed(state.dataset, Number(now.slice(11, 13)) >= b.sendWindow[1] ? addDays(today, 1) : today);
   if (earliest && earliest < start) {
     const shift = daysBetween(earliest, start);
     for (const t of planned) t.dueAt = `${nextAllowed(state.dataset, addDays(t.dueAt.slice(0, 10), shift))}${t.dueAt.slice(10)}`;
   }
+  const past = planned.filter((t) => outOfSeason(state, t, t.dueAt.slice(0, 10)));
+  for (const t of past) {
+    t.status = "cancelled";
+    t.lastError = OFF_SEASON;
+  }
+  const lateFirsts = past.filter((t) => t.step === 1);
+  const people = new Set(lateFirsts.map((t) => t.customerId)).size;
+  const firstDay = planned.filter((t) => t.status === "planned").map((t) => t.dueAt.slice(0, 10)).sort()[0];
+  const from = lateFirsts.map((t) => t.dueAt.slice(0, 10)).sort()[0];
+  const again = from ? planBatch(state, now, { startOn: nextAllowed(state.dataset, sellingFrom(growingSeason(b), from)), limitPeople: people, kickoff: false }) : undefined;
   const approved = approveAll(state, now);
-  const firstDay = state.touches.filter((t) => t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort()[0];
-  event(state, now, "sender", "action", "The owner said OK by text", approved ? `${plural(approved, "note")} approved; the first go out ${firstDay}.` : "Nothing was waiting.");
-  return { approved, firstDay };
+  return { approved, firstDay, ...(again ? { late: { people, firstDay: again.firstDay } } : {}) };
+}
+
+/** The owner texted OK to the first note: the round is approved (approveRound) and goes out on schedule. */
+export function ownerApproves(state: AccountState, now: ISODateTime): RoundApproval {
+  const r = approveRound(state, now);
+  const first = r.firstDay ?? r.late?.firstDay;
+  const late = r.late
+    ? ` ${plural(r.late.people, "person's", "people's")} first notes would have gone after their season closed: ${r.late.firstDay ? `the round was written again for the next one, from ${r.late.firstDay}` : "nobody's due in the next one yet"}.`
+    : "";
+  event(state, now, "sender", "action", "The owner said OK by text", `${r.approved ? `${plural(r.approved, "note")} approved; the first go out ${first}.` : "Nothing was waiting."}${late}`);
+  return r;
 }
 
 export function approveAll(state: AccountState, now: ISODateTime): number {
@@ -226,8 +261,26 @@ export interface DueTouch {
   customerName: string;
 }
 
+/**
+ * A seasonal note held past its season (an OK that came late, a pause): it never goes. A late OK writes the round again
+ * itself (approveRound). Otherwise someone whose first note never went is planned again like anyone not yet written to,
+ * and someone whose first note went hears nothing more.
+ */
+export const OFF_SEASON = "Not sent: its season closed";
+
+/**
+ * Whether a note can't go out on `day` for its season. A seasonal shop's note goes only in the selling season it was
+ * written for, its words being that season's, and only on the days goesOutOn allows: judged by its opportunity in the
+ * latest scan, else by what it was planned about, since a rescan drops work gone out of season (December's clean-ups).
+ */
+export function outOfSeason(state: AccountState, t: Touch, day: ISODate): boolean {
+  if (t.season && t.season !== sellingSeason(day)) return true;
+  const about = t.instant ? undefined : (oppById(state.scan?.opportunities, t.opportunityId) ?? t.chases);
+  return !!about && !goesOutOn(state.dataset.business, about, day);
+}
+
 /** Why a held note will never go: the Sender cancels these for good. Anything else only waits. */
-export const HELD_FOR_GOOD = /No sendable email|They replied|Do not contact|Note \d+ never went|No longer needed/;
+export const HELD_FOR_GOOD = new RegExp(`No sendable email|They replied|Do not contact|Note \\d+ never went|No longer needed|${OFF_SEASON}`);
 /** Lint flags for what the law or honesty requires (opt-out, address, no fake "Re:", no made-up stats): the note waits for a fix. */
 export const REQUIRED_FLAG = /Missing the|Unfilled blank|Fake Re:|unsourced stat/;
 /** "Dave will call you today" is only true for a while: past this, an unsent answer to a request is dropped. */
@@ -307,6 +360,10 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
     const done = settled(t);
     if (done) {
       held.push({ touch: t, why: `No longer needed: ${done}` });
+      continue;
+    }
+    if (outOfSeason(state, t, day)) {
+      held.push({ touch: t, why: OFF_SEASON });
       continue;
     }
     const required = t.flags.find((f) => REQUIRED_FLAG.test(f));

@@ -1,13 +1,14 @@
 /**
  * Lawn and cleaning exports, made the same way on every run (seeded, never random between runs): a mowing shop's 40
  * clients and their 1,640 visits as Jobber's Visits report writes them, newest-first and oldest-first; the same
- * history as a bookings export; and a cleaning shop's client list with and without a frequency column.
+ * history as a bookings export; a cleaning shop's client list with and without a frequency column; and a mowing shop
+ * through the seasons, its Visits report as it stands on any day.
  */
 import { toCSV } from "../src/ingest/csv.ts";
 import type { ISODate } from "../src/model.ts";
 import { addDays, pick, rng } from "../src/util.ts";
 
-/** Mid-August, inside the mowing season: who stopped is plain before lawn seasons exist. */
+/** Mid-August, inside the mowing season: who stopped is plain, and their notes wait for the fall window. */
 export const LAWN_ASOF: ISODate = "2026-08-14";
 export const VISIT_ROWS = 1640;
 
@@ -207,3 +208,79 @@ export function cleaningThreshold(f: Frequency | undefined): number {
   return f === "Weekly" || f === "Every other week" ? 21 : 45;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* A mowing shop through the seasons                                    */
+/* ------------------------------------------------------------------ */
+
+/** The days it's scanned: mid-fall, the dead of winter, the end of winter and early summer. */
+export const SEASON_SCANS: ISODate[] = ["2026-10-15", "2027-01-15", "2027-03-01", "2027-06-15"];
+
+/**
+ * Who a client is: a regular still on the schedule (one also had last fall's clean-up, one is new in 2026, one always
+ * starts in mid-June, one only mows mid-June to late September); a regular who finishes 2026 as usual and doesn't come
+ * back in 2027; one who stopped mid-season in July 2026; one who stopped at the end of 2025 and never came back; and
+ * one-off customers whose fall clean-up, spring clean-up or aeration comes back each season.
+ */
+export type Story = "regular" | "regularWithCleanup" | "newIn2026" | "lateStarter" | "summerOnly" | "doneAfter2026" | "stoppedJuly2026" | "stoppedAfter2025" | "fallCleanup" | "springCleanup" | "aeration";
+
+export interface SeasonalClient extends LawnClient {
+  story: Story;
+}
+
+/** The shop mows from the third week of April to the end of October, inside New Hampshire's season. */
+export const NH_MOWING: [string, string] = ["04-20", "10-29"];
+
+/**
+ * Each client's visits as the Visits report has them on `asOf`: done by then, and half the regulars' rest of the season
+ * on the calendar. The shop mows each year from `mows[0]` to `mows[1]` ("MM-DD").
+ */
+export function seasonalClients(asOf: ISODate, mows = NH_MOWING): SeasonalClient[] {
+  const stories: [Story, 7 | 14][] = [
+    ...Array.from({ length: 8 }, (): [Story, 7 | 14] => ["regular", 7]),
+    ...Array.from({ length: 4 }, (): [Story, 7 | 14] => ["regular", 14]),
+    ["regularWithCleanup", 7], ["regularWithCleanup", 14],
+    ["doneAfter2026", 7], ["doneAfter2026", 7], ["doneAfter2026", 14],
+    ["stoppedJuly2026", 7], ["stoppedJuly2026", 7], ["stoppedJuly2026", 14],
+    ["stoppedAfter2025", 7], ["stoppedAfter2025", 14],
+    ["fallCleanup", 7], ["fallCleanup", 7], ["fallCleanup", 7],
+    ["springCleanup", 7], ["springCleanup", 7],
+    ["aeration", 7],
+    ["lateStarter", 7], ["summerOnly", 7], ["newIn2026", 7],
+  ];
+  const lastSeason: Partial<Record<Story, number>> = { regular: 2027, regularWithCleanup: 2027, newIn2026: 2027, lateStarter: 2027, summerOnly: 2027, doneAfter2026: 2026, stoppedJuly2026: 2026, stoppedAfter2025: 2025 };
+  const span: Partial<Record<Story, [string, string]>> = { lateStarter: ["06-16", mows[1]], summerOnly: ["06-16", "09-25"] };
+  let job = 5000;
+  return stories.map(([story, every], i): SeasonalClient => {
+    const [town, zip] = TOWNS[i % TOWNS.length]!;
+    const c: SeasonalClient = {
+      name: `${FIRST[i]} ${LAST[i]}`,
+      email: `${FIRST[i]!.toLowerCase()}.${LAST[i]!.toLowerCase()}@comcast.net`,
+      phone: `603-225-${1300 + i}`,
+      street: `${30 + i * 4} ${STREETS[i % STREETS.length]}`,
+      city: town,
+      zip,
+      every,
+      lapsed: story === "stoppedJuly2026" || story === "stoppedAfter2025" || (story === "doneAfter2026" && asOf >= "2027-06-01"),
+      visits: [],
+      story,
+    };
+    const stop = story === "stoppedJuly2026" ? "2026-07-10" : "9999";
+    for (let year = story === "newIn2026" ? 2026 : 2024; year <= (lastSeason[story] ?? 0); year++) {
+      const [open, close] = (span[story] ?? mows).map((md) => `${year}-${md}`) as [ISODate, ISODate];
+      if (open > asOf) break;
+      const num = ++job;
+      for (let d = addDays(open, i % 5); d <= close && d <= stop && (d <= asOf || i % 2 === 0); d = addDays(d, every)) {
+        c.visits.push({ job: num, date: d, title: every === 7 ? "Weekly mowing" : "Biweekly mowing", done: d <= asOf, recurring: true, amount: every === 7 ? 45 : 55 });
+      }
+    }
+    const oneOff = (date: ISODate, title: string, amount: number) => {
+      if (date <= asOf) c.visits.push({ job: ++job, date, title, done: true, recurring: false, amount });
+    };
+    if (story === "regularWithCleanup" || story === "fallCleanup") oneOff("2025-10-21", "Fall cleanup", 180);
+    if (story === "springCleanup") oneOff("2026-04-14", "Spring cleanup", 160);
+    if (story === "aeration") oneOff("2025-09-16", "Fall aeration & overseed", 220);
+    c.visits.sort((a, b) => (a.date < b.date ? -1 : 1));
+    return c;
+  });
+}

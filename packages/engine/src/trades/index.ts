@@ -4,6 +4,7 @@ import { climateOf, type Climate, type ServiceDef, type TradePlaybook } from "./
 
 export { OFFERED_TRADES, PLAYBOOKS, TRADE_OPTIONS } from "./playbooks.ts";
 export { climateOf, WARM_STATES, type Climate, type ServiceDef, type TradePlaybook } from "./types.ts";
+export { comesBackEachSeason, goneForSeason, growingSeason, SEASONAL_TRADES, sellingFrom, sellingSeason, sellingWindow, shopSeasonEnd, stateOf, tradesOf, type Season } from "./seasons.ts";
 
 export function playbook(trade: TradeId | undefined): TradePlaybook {
   return PLAYBOOKS[trade ?? "general"] ?? PLAYBOOKS.general;

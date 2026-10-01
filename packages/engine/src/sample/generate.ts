@@ -1,6 +1,6 @@
 import type { BusinessProfile, Dataset, ISODate, TradeId } from "../model.ts";
 import { emptyDataset, ingestFile, toCSV } from "../ingest/index.ts";
-import { playbook } from "../trades/index.ts";
+import { growingSeason, playbook, SEASONAL_TRADES } from "../trades/index.ts";
 import { addDays, addMonths, daysBetween, monthOf, rng } from "../util.ts";
 import { CATALOG, EMAIL_DOMAINS, FIRST_NAMES, LAST_NAMES, MONTH_WEIGHT, QUOTES_PER_MONTH, RECURRING_VISIT, STREETS, TOWNS, type CatalogItem } from "./catalog.ts";
 
@@ -235,8 +235,8 @@ export function generateSample(opts: SampleOptions): Sample {
   let inn = 2001;
   let rn = 301;
 
-  const addJob = (client: RawClient, title: string, total: number, created: ISODate, quoteNum?: number, type = "One-off") => {
-    const startD = addDays(created, 5 + Math.floor(r() * 30));
+  const addJob = (client: RawClient, title: string, total: number, created: ISODate, quoteNum?: number, type = "One-off", on?: ISODate) => {
+    const startD = on ?? addDays(created, 5 + Math.floor(r() * 30));
     const done = startD < opts.asOf;
     const j: RawJob = {
       num: jn++,
@@ -372,15 +372,18 @@ export function generateSample(opts: SampleOptions): Sample {
     }
   }
 
-  // Recurring customers that lapsed (lawn / wash): regular visits, then a stop.
+  // Recurring customers that lapsed (lawn / wash): regular visits, then a stop. A lawn shop mows on its visit days
+  // in the growing season only, never through the winter.
   if (recurring) {
+    const season = SEASONAL_TRADES.has(trade) ? growingSeason(business) : undefined;
     const regulars = clients.slice(0, Math.min(60, clients.length));
     for (const c of regulars) {
       const every = visit!.everyDays;
       let d = addDays(start, Math.floor(r() * 60));
       const stopAt = r() < 0.4 ? addDays(opts.asOf, -Math.floor(120 + r() * 300)) : opts.asOf;
       while (d < stopAt && d < addDays(opts.asOf, -3)) {
-        addJob(c, visit!.title, visit!.price, d, undefined, "Recurring");
+        if (!season) addJob(c, visit!.title, visit!.price, d, undefined, "Recurring");
+        else if (d.slice(5) >= season.opens && d.slice(5) <= season.closes) addJob(c, visit!.title, visit!.price, addDays(d, -7), undefined, "Recurring", d);
         d = addDays(d, every);
       }
     }

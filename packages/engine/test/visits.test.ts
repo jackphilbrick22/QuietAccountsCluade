@@ -318,15 +318,16 @@ describe("Jobber's Visits report", () => {
     for (const c of clients.filter((x) => x.lapsed)) {
       const o = oneOpp(r, ds.customers.find((x) => x.emails.includes(c.email))!.id, "lapsed_regular");
       expect(o.suppressed).toBeUndefined();
-      // with no mowing of the shop's own priced, the trade's smallest ticket, a mow, each week or every other week
-      expect(o.value).toBe(45 * (c.every === 7 ? 52 : 26));
+      // with no mowing of the shop's own priced, the trade's smallest ticket, a mow, each week or every other week of
+      // New Hampshire's 28-week season
+      expect(o.value).toBe(45 * (c.every === 7 ? 28 : 14));
       expect(o.evidence).toContain("No amount on file for their visits — valued at your typical visit ($45).");
     }
     // a regular whose mowing is priced is worth their own visits, never their fall cleanup's price
     const { dataset: priced } = read(newest, "Visits Report.csv");
     const c = clients.find((x) => x.lapsed && x.visits.some((v) => !v.recurring))!;
     const mow = c.visits.find((v) => v.recurring)!.amount;
-    expect(oneOpp(scan(priced), priced.customers.find((x) => x.emails.includes(c.email))!.id, "lapsed_regular").value).toBe(mow * (c.every === 7 ? 52 : 26));
+    expect(oneOpp(scan(priced), priced.customers.find((x) => x.emails.includes(c.email))!.id, "lapsed_regular").value).toBe(mow * (c.every === 7 ? 28 : 14));
   });
 
   it("names no crew from a schedule that stopped: what's left on a never-closed calendar is no crew coming", () => {
@@ -398,12 +399,15 @@ describe("a bookings export", () => {
 });
 
 describe("notes to the people it finds", () => {
+  /** The fall window's first send day: a lawn shop's past customers hear from it from September, never in August. */
+  const FALL: ISODate = "2026-09-01";
   /** The scan's finds planned and approved, and what goes the morning the last note 1 is due (the day moved on to it, as each night does). */
   const firstNotes = (ds: Dataset) => {
     const now = `${ds.asOf}T12:00:00Z`;
     const st = emptyState(ds, now);
     find(st, now);
-    const planned = planBatch(st, now, { startOn: ds.asOf, approve: true }).people;
+    expect(planBatch(st, now, { startOn: ds.asOf, approve: true }).people).toEqual([]);
+    const planned = planBatch(st, now, { startOn: FALL, approve: true }).people;
     const at = st.touches.filter((t) => t.step === 1).map((t) => t.dueAt).sort().at(-1)!;
     st.dataset.asOf = at.slice(0, 10);
     const { due, held } = dueTouches(st, at);
@@ -505,18 +509,39 @@ describe("client lists", () => {
     });
   });
 
-  it("a lawn client list with no frequency waits for seasons: two months quiet is not yet gone", () => {
-    const CSV = `Client name,Email,Last Visit\nMike Sanderson,mike@gmail.com,${addDays(LAWN_ASOF, -60)}\n`;
-    const { dataset: ds } = read(CSV, "Clients.csv");
-    expect(scan(ds).opportunities).toEqual([]);
+  it("a lawn client list with no frequency counts the season: two months quiet in summer is gone, last fall's date isn't over the winter", () => {
+    const listed = (last: ISODate, asOf: ISODate) => {
+      const { dataset: ds } = read(`Client name,Email,Last Visit\nMike Sanderson,mike@gmail.com,${last}\n`, "Clients.csv", lawn(), asOf);
+      return scan(ds).opportunities.map((o) => [o.type, o.suppressed, o.reason]);
+    };
+    // past the trade's longest quiet spell in the season (53 days), not the 300 a one-off job waits
+    expect(listed(addDays(LAWN_ASOF, -52), LAWN_ASOF)).toEqual([]);
+    expect(listed(addDays(LAWN_ASOF, -60), LAWN_ASOF)).toEqual([["one_and_done", undefined, "Your client list has them last here back in June, and nothing since."]]);
+    expect(listed("2025-10-28", "2026-01-15")).toEqual([]);
+    expect(listed("2025-10-28", "2026-05-01")).toEqual([]);
+    expect(listed("2025-10-28", "2026-06-01")).toHaveLength(1);
   });
 
-  it("a lawn list's frequency waits for seasons too: in January, last fall's weekly regulars aren't gone", () => {
+  it("a lawn list's frequency counts the season too: in January, last fall's weekly regulars aren't gone; four weeks into spring without them, they are", () => {
     for (const trade of ["lawn", "landscape"] as TradeId[]) {
       const CSV = `Client name,Email,Last Visit,Frequency\nMike Sanderson,mike@gmail.com,2025-11-04,Weekly\nLinda Whitfield,linda@gmail.com,2025-10-30,Every other week\n`;
       const { dataset: ds } = read(CSV, "Clients.csv", lawn({ trade }), "2026-01-15");
       expect(ds.jobs.map((j) => j.everyDays)).toEqual([7, 14]);
       expect(scan(ds).opportunities).toEqual([]);
+      const june = scan({ ...ds, asOf: "2026-06-01" });
+      expect(june.opportunities.map((o) => [o.type, o.suppressed, o.reason])).toEqual([
+        ["lapsed_regular", undefined, "On your client list as a regular (about every 7 days). Last visit last November — then nothing."],
+        ["lapsed_regular", undefined, "On your client list as a regular (about every 2 weeks). Last visit last October — then nothing."],
+      ]);
+    }
+  });
+
+  it("a lawn list from a shop that stops mowing in early October: its regulars' last visits that week aren't gone over the winter", () => {
+    const CSV = `Client name,Email,Last Visit,Frequency\nMike Sanderson,mike@gmail.com,2026-10-06,Weekly\nLinda Whitfield,linda@gmail.com,2026-10-08,Weekly\nTom Alvarez,tom@gmail.com,2026-07-10,Weekly\n`;
+    for (const asOf of ["2026-11-02", "2027-01-15"]) {
+      const { dataset: ds } = read(CSV, "Clients.csv", lawn(), asOf);
+      const tom = ds.customers.find((c) => c.emails.includes("tom@gmail.com"))!.id;
+      expect(scan(ds).opportunities.map((o) => [o.customerId, o.type]), asOf).toEqual([[tom, "lapsed_regular"]]);
     }
   });
 
@@ -589,8 +614,12 @@ describe("one row per recurring job", () => {
       // Linda's job runs past today: on the calendar until its end date, though the Recurring Jobs report has no status
       expect(ds.jobs.find((j) => j.customerId === who("linda@gmail.com"))!.status).toBe(name === "Jobs Report.csv" ? "active" : "unknown");
       expect(oppsFor(r, who("linda@gmail.com"))).toEqual([]);
-      // once it's ended, with no export since, it has ended
-      if (name !== "Jobs Report.csv") expect(oneOpp(scan({ ...ds, asOf: addDays(LAWN_ASOF, 80 + 60) }), who("linda@gmail.com"), "lapsed_regular").anchorDate).toBe(addDays(LAWN_ASOF, 80));
+      // once it's ended, with no export since, it has ended: at the season's close, so she's gone once the next season
+      // is four weeks open without her, not over the winter
+      if (name !== "Jobs Report.csv") {
+        expect(oppsFor(scan({ ...ds, asOf: addDays(LAWN_ASOF, 80 + 60) }), who("linda@gmail.com"))).toEqual([]);
+        expect(oneOpp(scan({ ...ds, asOf: "2027-06-01" }), who("linda@gmail.com"), "lapsed_regular").anchorDate).toBe(addDays(LAWN_ASOF, 80));
+      }
     }
   });
 
@@ -673,18 +702,17 @@ describe("readiness for lawn and cleaning shops", () => {
     expect(ask(invoicesOnly).no_quotes).toBeUndefined();
   });
 
-  it("a client list alone: a lawn shop is still asked for its visits before it can start; a cleaning shop starts and is asked for them", () => {
-    const listOnly = read(`Client name,Email,Last Visit,Frequency\nMike Sanderson,mike@gmail.com,${addDays(LAWN_ASOF, -60)},Weekly\n`, "Clients.csv").dataset;
-    const r = readiness(listOnly);
-    expect(r.ready).toBe(false);
-    expect(r.have.job).toBe(0);
-    expect(r.gaps.find((g) => g.level === "blocker")?.ask).toBe("The visits export (all time).");
+  it("a client list alone: a lawn or cleaning shop starts from it, by the season for lawn, and is asked for its visits", () => {
+    const lawnList = read(`Client name,Email,Last Visit,Frequency\nMike Sanderson,mike@gmail.com,${addDays(LAWN_ASOF, -60)},Weekly\n`, "Clients.csv").dataset;
     const clean = read(cleaningClientList(cleaningClients(), true), "Clients.csv", cleaning(), CLEANING_ASOF).dataset;
-    const c = readiness(clean);
-    expect(c.ready).toBe(true);
-    expect(c.have.job).toBe(0);
-    expect(ask(clean).no_jobs?.ask).toBe("The visits export (all time).");
-    expect(c.headline).not.toBe("Ready to start. We have everything we need.");
+    for (const ds of [lawnList, clean]) {
+      const r = readiness(ds);
+      expect(r.ready).toBe(true);
+      expect(r.have.job).toBe(0);
+      expect(ask(ds).no_jobs?.ask).toBe("The visits export (all time).");
+      expect(r.headline).not.toBe("Ready to start. We have everything we need.");
+    }
+    expect(reachable(scan(lawnList), lawnList.customers[0]!.id, "lapsed_regular")).toHaveLength(1);
   });
 
   it("a tree shop is still asked for its quotes first", () => {
@@ -782,7 +810,8 @@ describe("the jobs report beside the Visits report", () => {
       const now = `${LAWN_ASOF}T12:00:00Z`;
       const st = emptyState(ds, now);
       find(st, now);
-      planBatch(st, now, { startOn: LAWN_ASOF, approve: true });
+      // planned for the fall window: a lawn shop's past customers never hear from it in August
+      planBatch(st, now, { startOn: "2026-09-01", approve: true });
       const at = st.touches.filter((t) => t.customerId === id && t.step === 1)[0]!.dueAt;
       st.dataset.asOf = at.slice(0, 10);
       expect(dueTouches(st, at).due.some((d) => d.touch.customerId === id)).toBe(true);

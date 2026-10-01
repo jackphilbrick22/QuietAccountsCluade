@@ -536,10 +536,15 @@ export interface Touch {
   askedAt?: ISODateTime;
   /** When a sender claimed it (status "sending"), before the provider saw it. */
   claimedAt?: ISODateTime;
-  /** What the follow-up chases (the kind of leak and its record), so a later sync can tell when it's settled. */
-  chases?: { type: BreakageType; kind: RecordKind; id: string };
+  /**
+   * What the follow-up chases (the kind of leak, its record and its service), so a later sync can tell when it's
+   * settled, and its season is known after a rescan drops work gone out of season.
+   */
+  chases?: { type: BreakageType; kind: RecordKind; id: string; serviceId?: string };
   /** The day it was planned: a job booked or a quote sent after this means the follow-up isn't needed any more. */
   plannedOn?: ISODate;
+  /** A seasonal shop's note: the selling season it was written for ("2026-fall", sellingSeason), the only one it goes in. */
+  season?: string;
 }
 
 export type ReplyIntent =

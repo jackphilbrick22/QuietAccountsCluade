@@ -220,6 +220,34 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     about 1 time in 4,096) now never picks the link's own characters; the links' 144-bit MAC was never the problem.
   - Site 108, engine 1,489, server 395.
 
+- **B2. Lawn seasons.**
+  - Lawn and landscape mowing and maintenance run in a growing season set by where the business is (the profile's
+    state, else the mailing address; the north's season with neither). New Hampshire is mid-April to October 31,
+    about 28 weeks. The playbook's arrays alone said about 35, so the north's season opens six weeks later.
+  - A regular is gone only when he didn't come back in the first four weeks of his usual season, or stopped mid-season
+    missing three of his usual visits. His season ends where the shop's own regular work ended that year (where three
+    in four of its regulars still on it in the last six weeks had stopped), or earlier if he usually stops earlier. So
+    nobody who was here at the end of his season is flagged over the winter.
+  - A weekly regular is worth 28 weeks of visits, not 52. Lawn client lists follow the season, and a lawn shop can
+    start from one.
+  - Clean-ups, aeration and mulch are due in their season and wait outside it. A lawn shop's past customers hear from
+    it only in fall clean-up season (September 1 to mid-November in the north) or January to March; nothing in summer
+    or December. The lapsed regulars' second note carries the matching fall or spring line.
+  - Each note belongs to one selling season and never goes out in another: a pause or a late OK can't send the fall
+    line in January; notes past their season are never sent or handed to Instantly, and ones Instantly holds are taken
+    back. An OK that lands past the window rewrites those notes for the next window's first send day and says so.
+  - The sample shop mows in season only.
+  - Fixture: scans on Oct 15, Jan 15, Mar 1 and Jun 15 flag 0 active customers; October finds last season's fall
+    clean-up customers; January to March finds lapsed regulars with spring wording; nothing is planned in December.
+    Minnesota and Georgia shops ending early October and November 1 flag nobody active either.
+  - Left: notes a pause holds past their season are cancelled, not rewritten (the next plan picks them up); warm
+    states use the north's selling months; in March, last fall's clean-up customers get a clean-up due-again note
+    (the playbook treats spring and fall clean-up as one service).
+  - Merge notes: A2's tests that plan in August now plan from September 1; the January-window tests pin Tue-Thu sends.
+    With A6's Monday-to-Friday sends, a lawn shop's January round can start on January 1. Nothing in the engine skips
+    holidays (New Year's, Memorial Day, July 4, Labor Day, Thanksgiving); worth a rule if Jack wants one.
+  - Engine 1,534, server 405, site 108.
+
 **Live steps for Jack**
 - (B1) Keep /fence off every link until January. Look at /tree and /painting on a phone after deploying.
 - (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about

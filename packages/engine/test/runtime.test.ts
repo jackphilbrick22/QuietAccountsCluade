@@ -915,7 +915,7 @@ describe("always-on: someone whose request we answered is still followed up", ()
     const st = answered();
     const p = planOn(st, "2026-10-05");
     expect(p.people).toEqual(["c1"]);
-    expect(touchesOf(st, "c1").find((t) => !t.instant)!.chases).toEqual({ type: "unquoted_request", kind: "request", id: "r1" });
+    expect(touchesOf(st, "c1").find((t) => !t.instant)!.chases).toEqual({ type: "unquoted_request", kind: "request", id: "r1", serviceId: "gen.work" });
   });
 
   it("never a second note on the heels of the answer: nothing older is dug up, and an answer still on its way holds them", () => {

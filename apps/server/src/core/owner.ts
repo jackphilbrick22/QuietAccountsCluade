@@ -1,8 +1,8 @@
-import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
-import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -375,10 +375,17 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (!explicit && otherOpen(b))
       return { businessId: b.id, reply: `${tag(b)}Is that OK for the first note? Text "OK first note"${multi ? ` ${tags.get(b.id)}` : ""} to start it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.`, handled: "ask_ok" };
     if (bare === "yes") await setOwnerTexts(d, fromPhone, undefined); // YES is a carrier opt-in word too
-    let r: { approved: number; firstDay?: string } = { approved: 0 };
-    await d.accounts.withAccount(b.id, (state) => {
-      r = ownerApproves(state, nowLocal(d, state));
-    });
+    const r = await approve(d, b.id, true);
+    // the OK came too late for some of the round (or all of it) to go in its season: theirs is written again for the next one
+    if (r.late) {
+      const asks = " When someone asks to come back, you'll get a text with their name and number.";
+      const reply = r.firstDay
+        ? `Done — the first notes go out ${fmtDay(r.firstDay)}. The season closes before ${plural(r.late.people, "more person", "more people")} could hear from you, so ${r.late.firstDay ? `theirs are written again for the next one, and go out from ${fmtDay(r.late.firstDay)}` : "theirs wait until Jack sets up the next round"}.${asks}`
+        : r.late.firstDay
+          ? `Done. The season for these notes has closed, so they're written again for the next one, and the first go out ${fmtDay(r.late.firstDay)}.${asks}`
+          : "Done. The season for these notes has closed, so nothing goes out until Jack sets up the next round.";
+      return { businessId: b.id, reply: `${tag(b)}${reply}`, handled: "approved_first_note" };
+    }
     const when = r.firstDay ? fmtDay(r.firstDay) : "your next send day";
     return { businessId: b.id, reply: `${tag(b)}Done — the first notes go out ${when}. When someone ${wantedWords(b.profile.plan).present}, you'll get a text with their name and number.`, handled: "approved_first_note" };
   }

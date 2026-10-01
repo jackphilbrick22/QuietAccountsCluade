@@ -1,6 +1,5 @@
 import type { Dataset, RecordKind, SourceSystem, TradeId } from "../model.ts";
 import { addDays, daysBetween } from "../util.ts";
-import { LISTS_WAIT } from "./detect.ts";
 
 /**
  * What we still need from the owner, in the words the operator will use to ask for it.
@@ -96,10 +95,10 @@ export function readiness(ds: Dataset): Readiness {
   const people = ds.customers.filter((c) => !c.isCommercial);
   const emailShare = people.length ? people.filter((c) => c.emails.length > 0).length / people.length : 0;
   // A lawn or cleaning shop's list is past customers who stopped coming: their visits (or invoices) are the main file,
-  // and quotes find nothing either offer works for them. A cleaning list's last dates find who stopped too; a lawn
-  // list's dates wait for seasons, so a lawn shop can't start from one alone.
+  // and quotes find nothing either offer works for them. A client list's last dates find who stopped too, a lawn
+  // list's by the season.
   const visits = VISIT_TRADES.has(ds.business.trade);
-  const main = visits ? have.job + have.invoice + (LISTS_WAIT.has(ds.business.trade) ? 0 : listed) : have.quote;
+  const main = visits ? have.job + have.invoice + listed : have.quote;
 
   if (visits ? !main : !have.quote && !have.job && !listed && !have.invoice) {
     gaps.push(

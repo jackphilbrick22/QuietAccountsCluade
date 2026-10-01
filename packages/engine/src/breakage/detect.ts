@@ -14,7 +14,7 @@ import type {
   TradeId,
 } from "../model.ts";
 import { cautionReasons, isBadCustomer, MARKETPLACE_SOURCE, medianByService, REFERRAL_SOURCE, type CautionContext } from "./caution.ts";
-import { classifyService, climateOf, findService, jobPhrase, playbook, seasonFit, type ServiceDef } from "../trades/index.ts";
+import { classifyService, comesBackEachSeason, findService, goneForSeason, growingSeason, jobPhrase, playbook, SEASONAL_TRADES, seasonFit, shopSeasonEnd, tradesOf, type Climate, type Season, type ServiceDef } from "../trades/index.ts";
 import {
   addMonths,
   clamp,
@@ -82,7 +82,11 @@ interface Ctx {
   ds: Dataset;
   asOf: ISODate;
   trades: TradeId[];
-  climate: ReturnType<typeof climateOf>;
+  climate: Climate;
+  /** The growing season where the business is: when a seasonal shop's regulars come and go. */
+  season: Season;
+  /** Where the shop's own regular work ended each year, by service ("lawn.mow|2026"): see seasonEnds. */
+  seasonEnds: Map<string, ISODate>;
   month: number;
   byCustomer: Map<string, Customer>;
   quotesBy: Map<string, Quote[]>;
@@ -110,9 +114,6 @@ function quoteDate(q: Quote): ISODate | undefined {
 
 const OPEN_JOB = new Set(["unscheduled", "scheduled", "active", "late", "requires_invoicing", "on_hold"]);
 
-/** Trades whose client lists wait for seasons: a lawn list's one date and frequency can't tell who's between seasons. */
-export const LISTS_WAIT = new Set<TradeId>(["lawn", "landscape"]);
-
 /** Typical (median) paid job, used when a record has no dollar value and to size the shop. */
 export function averageJob(ds: Dataset): number {
   if (ds.business.avgJobValue) return ds.business.avgJobValue;
@@ -133,12 +134,15 @@ function typicalVisit(ds: Dataset): number {
 }
 
 export function scan(ds: Dataset, contact: ContactState = {}, features: Features = {}): ScanResult {
-  const trades: TradeId[] = [ds.business.trade, ...ds.business.otherTrades];
+  const trades = tradesOf(ds.business);
+  const season = growingSeason(ds.business);
   const ctx: Ctx = {
     ds,
     asOf: ds.asOf,
     trades,
-    climate: climateOf(ds.business.state),
+    climate: season.climate,
+    season,
+    seasonEnds: new Map(),
     month: monthOf(ds.asOf),
     byCustomer: new Map(ds.customers.map((c) => [c.id, c])),
     quotesBy: bucket(ds.quotes),
@@ -159,6 +163,8 @@ export function scan(ds: Dataset, contact: ContactState = {}, features: Features
     // Jobber's "Approved" means no job yet; anyone else's "Won" can't be checked without a jobs file
     noJobsToCheck: !ds.jobs.length && ds.business.software !== "jobber",
   };
+  const histories = ds.customers.flatMap((c) => historyOf(ctx, c) ?? []);
+  ctx.seasonEnds = seasonEnds(ctx, histories);
 
   const opps: Opportunity[] = [];
   for (const q of ds.quotes) {
@@ -174,7 +180,7 @@ export function scan(ds: Dataset, contact: ContactState = {}, features: Features
     const o = unscheduledJob(ctx, j);
     if (o) opps.push(o);
   }
-  for (const c of ds.customers) opps.push(...fromHistory(ctx, c));
+  for (const h of histories) opps.push(...fromHistory(ctx, h));
   if (contact.includeInvoices !== false) for (const inv of ds.invoices) {
     const o = fromInvoice(ctx, inv);
     if (o) opps.push(o);
@@ -391,11 +397,44 @@ function addDaysISO(d: ISODate, n: number): ISODate {
   return t.toISOString().slice(0, 10);
 }
 
+/**
+ * Where a seasonal shop's own regular work ended each year, by service: where its regulars' routines did (see
+ * shopSeasonEnd), from each one's last visit of it that year (or, with no jobs file, his last bill for it) up to the
+ * climate's close. A shop that stops mowing in early October ended its season there, so a regular whose last mow was
+ * its last missed nothing. Only a regular's routine counts: a one-off "Final mow & leaf cleanup" for someone else at the
+ * end of October doesn't carry the season on for everyone.
+ */
+function seasonEnds(ctx: Ctx, histories: History[]): Map<string, ISODate> {
+  const lasts = new Map<string, ISODate[]>();
+  for (const { seasonal, routine, work, svcOf } of histories) {
+    if (!seasonal) continue;
+    // his routine's last record each year (his work is oldest first)
+    const his = new Map<string, ISODate>();
+    for (const w of work) {
+      const id = svcOf.get(w)!.id;
+      if ((!routine || id === routine.svc.id) && w.date.slice(5) <= ctx.season.closes) his.set(`${id}|${w.date.slice(0, 4)}`, w.date);
+    }
+    for (const [k, on] of his) (lasts.get(k) ?? lasts.set(k, []).get(k)!).push(on);
+  }
+  const ends = new Map<string, ISODate>();
+  for (const [k, on] of lasts) {
+    const end = shopSeasonEnd(ctx.season, on);
+    if (end) ends.set(k, end);
+  }
+  return ends;
+}
+
 /** Invoices that show we did the work: sent or paid, never a draft or a void. */
 const BILLED = new Set<Invoice["status"]>(["paid", "awaiting_payment", "past_due"]);
 
-/** Past-customer plays: one-and-done, lapsed regulars, service due, missed upsells. */
-function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
+/** What we did for someone: a job or visit, or with no jobs file an invoice we issued. */
+type Work = { date: ISODate; title: string; total: number; id: string; kind: "job" | "invoice"; recurring?: boolean; lineItems: Job["lineItems"]; run?: Run };
+
+/**
+ * A customer's work done, oldest first, and the routine he's on, if any. Read for everyone before the past-customer
+ * plays: a seasonal shop's season ends where its regulars' routines did (seasonEnds).
+ */
+function historyOf(ctx: Ctx, c: Customer) {
   // work done is work dated by now: a visit still to come never makes someone who stopped look like they're still here.
   // A one-off job's visits are one job: a patio laid over four days is no weekly regular.
   const done = oneOffJobs(
@@ -404,64 +443,24 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
   // a client list's last date stands in for the visits only past where the real records reach
   const reached = done.reduce((m, j) => (!j.fromList && jobDate(j)! > m ? jobDate(j)! : m), "");
   const jobs = done.filter((j) => !j.fromList || jobDate(j)! > reached);
-  // A lawn list's frequency is in-season only, so until seasons are known its one date reads like any past customer's;
-  // a frequency nobody can read gives no rhythm either
-  const listedOnly = (j: Job) => j.fromList && (LISTS_WAIT.has(ctx.ds.business.trade) || !j.everyDays);
+  // a client list's frequency nobody can read gives no rhythm
+  const listedOnly = (j: Job) => j.fromList && !j.everyDays;
   // Invoices are proof of work when there's no jobs file. For a customer who pays us, every invoice issued counts,
   // not only the paid ones: a weekly client billed on net terms was there last week though that invoice is still
   // open. Someone who has never paid is not a past customer to win back or pitch.
   const billed = (ctx.invoicesBy.get(c.id) ?? []).filter((i) => BILLED.has(i.status) && (i.issuedOn ?? i.paidOn));
   const paying = billed.some((i) => i.status === "paid") ? billed : [];
-  type Work = { date: ISODate; title: string; total: number; id: string; kind: "job" | "invoice"; recurring?: boolean; lineItems: Job["lineItems"]; run?: Run };
   const work: Work[] = jobs.length
     ? jobs.map((j) => ({ date: jobDate(j)!, title: j.title, total: j.total, id: j.id, kind: "job" as const, recurring: listedOnly(j) ? undefined : j.recurring, lineItems: j.lineItems, run: listedOnly(j) ? { listed: true } : runOf(j) }))
     : paying
         .map((i) => ({ date: (i.issuedOn ?? i.paidOn)!, title: i.subject, total: i.total, id: i.id, kind: "invoice" as const, lineItems: [] }))
         .sort((a, b) => (a.date < b.date ? -1 : 1));
-  if (!work.length) return [];
-
-  const out: Opportunity[] = [];
-  const last = work[work.length - 1]!;
-  // gone quiet is measured from the latest sign we were there: the last visit, or an invoice issued after it
-  const lastBilled = billed.reduce<ISODate | undefined>((m, i) => (i.issuedOn && i.issuedOn <= ctx.asOf && (!m || i.issuedOn > m) ? i.issuedOn : m), undefined);
-  const sinceLast = daysBetween(lastBilled && lastBilled > last.date ? lastBilled : last.date, ctx.asOf);
-  const evWork = (w: (typeof work)[number]) => `${w.kind === "job" ? "Job" : "Invoice"}: “${w.title || "work"}” — ${w.total ? fmtMoney(w.total) : "no amount"}, ${spokenWhen(w.date, ctx.asOf)}`;
+  if (!work.length) return undefined;
   const svcOf = new Map(work.map((w) => [w, classifyService(w.title, w.lineItems, ctx.trades).service]));
-
-  // Service due: the last time each clock-based service was done.
-  const seenServices = new Map<string, (typeof work)[number]>();
-  for (const w of work) seenServices.set(svcOf.get(w)!.id, w);
-  let dueFound = false;
-  // Seasonal work between seasons: not due yet, or due and waiting for its selling season to come back around.
-  const betweenSeasons = new Set<string>();
-  for (const [sid, w] of seenServices) {
-    const svc = findService(sid)?.service;
-    if (!svc?.reserviceMonths || svc.kind === "recurring") continue;
-    const dueOn = dueDate(svc, w.date);
-    const until = daysBetween(ctx.asOf, dueOn); // negative = overdue
-    const overdueDays = -until;
-    if (overdueDays > svc.reserviceMonths * 30 * 2) continue;
-    // Work that comes back each season ("Want the lights up again this year?") is only asked about in its selling
-    // season: past it, the note waits for the next one rather than going out in January. Until then they're between
-    // seasons, not gone, so no lapsed-regular or past-customer note goes out in its place.
-    if (svc.dueMonth && (until > 45 || seasonFit(svc, ctx.climate, ctx.month) !== "now")) {
-      betweenSeasons.add(svc.id);
-      continue;
-    }
-    if (until > 45) continue;
-    const o = base(ctx, "service_due", c.id, { kind: w.kind, id: w.id }, w.total, dueOn < ctx.asOf ? dueOn : ctx.asOf, w.title, w.lineItems,
-      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : svc.dueMonth ? `due in ${monthName(dueOn)}` : "due next month"} — ${intervalWords(svc.reserviceMonths).toLowerCase()} is the rule of thumb.`,
-      [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
-    if (o) {
-      o.lastDoneOn = w.date;
-      out.push(o);
-      dueFound = true;
-    }
-  }
 
   // The routine they're on, if any: the recurring or maintenance service they've had most. A record standing for a
   // whole run of visits says outright what they were on.
-  const routineCount = new Map<string, { svc: ServiceDef; n: number; last: (typeof work)[number]; run: boolean }>();
+  const routineCount = new Map<string, { svc: ServiceDef; n: number; last: Work; run: boolean }>();
   for (const w of work) {
     const service = svcOf.get(w)!;
     if (service.kind !== "recurring" && service.kind !== "maintenance") continue;
@@ -478,6 +477,76 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
   // the visits themselves: a record standing for a whole run of them has no gaps of its own
   const rounds = beat.filter((w) => !w.run);
   const pace = rhythmOf(rounds);
+  // A real routine: two unrelated one-off jobs are not one. A record that stands for a whole run of visits (a recurring
+  // job's own row, a client list's last date) has no gaps of its own: the frequency the export gave is the usual gap,
+  // else the visits beside it, else the trade's longest quiet spell.
+  const runRow = routine?.last.run ? routine.last : beat.findLast((w) => w.run);
+  const run = runRow?.run;
+  const steady = pace.recurring || !!runRow?.recurring;
+  const regular = (rounds.length >= 2 || !!run) && (steady || (routine?.n ?? 0) >= 2);
+  const expected = run?.every ?? (rounds.length >= 2 ? (steady ? Math.max(pace.median, 7) : pace.median) : undefined);
+  const routineTrade = routine ? (findService(routine.svc.id)?.trade ?? ctx.ds.business.trade) : ctx.ds.business.trade;
+  // Mowing and maintenance contracts run in the growing season, and so does other upkeep a regular has more than three
+  // times a season (weekly "Bed maintenance & weeding"). Their regular, on his schedule or between seasons after one
+  // that ended as usual, isn't a past customer: nothing is written to him, not even about last fall's clean-up.
+  const seasonal = regular && expected !== 0 && SEASONAL_TRADES.has(routineTrade) && (!routine || routine.svc.kind === "recurring" || (expected ?? Infinity) * 3 < ctx.season.days);
+  return { c, work, billed, svcOf, routine, beat, rounds, pace, runRow, run, steady, regular, expected, routineTrade, seasonal };
+}
+type History = NonNullable<ReturnType<typeof historyOf>>;
+
+/** Past-customer plays: one-and-done, lapsed regulars, service due, missed upsells. */
+function fromHistory(ctx: Ctx, { c, work, billed, svcOf, routine, beat, rounds, pace, runRow, run, steady, regular, expected, routineTrade, seasonal }: History): Opportunity[] {
+  const out: Opportunity[] = [];
+  const last = work[work.length - 1]!;
+  // gone quiet is measured from the latest sign we were there: the last visit, or an invoice issued after it
+  const lastBilled = billed.reduce<ISODate | undefined>((m, i) => (i.issuedOn && i.issuedOn <= ctx.asOf && (!m || i.issuedOn > m) ? i.issuedOn : m), undefined);
+  const lastSeen = lastBilled && lastBilled > last.date ? lastBilled : last.date;
+  const sinceLast = daysBetween(lastSeen, ctx.asOf);
+  const evWork = (w: Work) => `${w.kind === "job" ? "Job" : "Invoice"}: “${w.title || "work"}” — ${w.total ? fmtMoney(w.total) : "no amount"}, ${spokenWhen(w.date, ctx.asOf)}`;
+  // the routine's last visit; his usual season starts where it did in that visit's season, and ends where it did in the
+  // seasons before (latest first)
+  const lastRound = routine?.last ?? last;
+  const his = rounds.filter((w) => !routine || svcOf.get(w)!.id === routine.svc.id);
+  const startedOn = his.find((w) => w.date.slice(0, 4) === lastRound.date.slice(0, 4))?.date;
+  const seasonEnd = new Map(his.map((w) => [w.date.slice(0, 4), w.date]));
+  const ended = [...seasonEnd.values()].filter((d) => d.slice(0, 4) < lastRound.date.slice(0, 4)).reverse();
+  // where the shop's own season of that work ended that year
+  const shopEnded = (w: Work) => ctx.seasonEnds.get(`${svcOf.get(w)!.id}|${w.date.slice(0, 4)}`);
+  if (seasonal && !goneForSeason(ctx.season, { visit: lastRound.date, seen: lastSeen }, ctx.asOf, { every: expected, quietDays: lapseAfter(routineTrade).days, startedOn, ended }, shopEnded(lastRound))) return [];
+
+  // Service due: the last time each clock-based service was done.
+  const seenServices = new Map<string, (typeof work)[number]>();
+  for (const w of work) seenServices.set(svcOf.get(w)!.id, w);
+  let dueFound = false;
+  // Seasonal work between seasons: not due yet, or due and waiting for its selling season to come back around.
+  const betweenSeasons = new Set<string>();
+  for (const [sid, w] of seenServices) {
+    const svc = findService(sid)?.service;
+    // a seasonal regular's own routine isn't work coming due: he's still on it, or he's gone (below)
+    if (!svc?.reserviceMonths || svc.kind === "recurring" || (seasonal && sid === routine?.svc.id)) continue;
+    const dueOn = dueDate(svc, w.date);
+    const until = daysBetween(ctx.asOf, dueOn); // negative = overdue
+    const overdueDays = -until;
+    if (overdueDays > svc.reserviceMonths * 30 * 2) continue;
+    // Work that comes back each season ("Want the lights up again this year?", a lawn shop's clean-ups, aeration and
+    // mulch) is only asked about in its season: past it, the note waits for the next one rather than going out in
+    // January. Until then they're between seasons, not gone, so no lapsed-regular or past-customer note goes out in its
+    // place.
+    if (comesBackEachSeason(svc) && (until > 45 || seasonFit(svc, ctx.climate, ctx.month) !== "now")) {
+      betweenSeasons.add(svc.id);
+      continue;
+    }
+    if (until > 45) continue;
+    const o = base(ctx, "service_due", c.id, { kind: w.kind, id: w.id }, w.total, dueOn < ctx.asOf ? dueOn : ctx.asOf, w.title, w.lineItems,
+      `Last ${svc.label.toLowerCase()} was ${spokenWhen(w.date, ctx.asOf)}. That's ${until <= 0 ? "due now" : svc.dueMonth ? `due in ${monthName(dueOn)}` : "due next month"} — ${intervalWords(svc.reserviceMonths).toLowerCase()} is the rule of thumb.`,
+      [evWork(w), `Due ${monthName(dueOn)} ${dueOn.slice(0, 4)}`], svc);
+    if (o) {
+      o.lastDoneOn = w.date;
+      out.push(o);
+      dueFound = true;
+    }
+  }
+
   // Already on a regular schedule, so "Want it on a regular schedule?" doesn't fit: this job was part of one, they've
   // had us back since (or have a visit coming), or they were on one when they booked it: a visit marked recurring or
   // called that ("Weekly clean"), or a steady rhythm, with their visit before it inside the time a regular goes quiet.
@@ -518,23 +587,15 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
     }
   }
 
-  // Lapsed regulars: a real routine that stopped. Two unrelated one-off jobs are not a routine. A record that stands
-  // for a whole run of visits (a recurring job's own row, a client list's last date) has no gaps of its own: the
-  // frequency the export gave is the usual gap, else the visits beside it, else the trade's longest quiet spell.
-  const runRow = routine?.last.run ? routine.last : beat.findLast((w) => w.run);
-  const run = runRow?.run;
-  let regular = false;
-  if (rounds.length >= 2 || run) {
-    const { median, recurring } = pace;
-    const steady = recurring || !!runRow?.recurring;
-    regular = steady || (routine?.n ?? 0) >= 2;
-    const expected = run?.every ?? (rounds.length >= 2 ? (steady ? Math.max(median, 7) : median) : undefined);
+  // Lapsed regulars: a real routine that stopped. A seasonal one stopped when the season says so (above).
+  if (regular) {
     // a cleaning client every other week is gone at three weeks, not two months: the trade says when
-    const lapse = lapseAfter(routine ? (findService(routine.svc.id)?.trade ?? ctx.ds.business.trade) : ctx.ds.business.trade, expected);
+    const lapse = lapseAfter(routineTrade, expected);
     // a routine that comes back each season and is between seasons hasn't stopped
     const waiting = !!routine && betweenSeasons.has(routine.svc.id);
-    if (regular && expected !== 0 && sinceLast >= lapse.days && !dueFound && !waiting) {
-      const perYear = Math.min(52, Math.max(1, Math.round(365 / Math.max(expected ?? 7, 7))));
+    if (expected !== 0 && (seasonal || sinceLast >= lapse.days) && !dueFound && !waiting) {
+      // visits a year: a seasonal regular's come in the season's weeks, not all 52
+      const perYear = Math.max(1, Math.round((seasonal ? ctx.season.days : 365) / Math.max(expected ?? 7, 7)));
       // what a visit of theirs bills: the routine's visits that carry an amount (a fixed-price contract's carry none,
       // and a one-off job's price is no visit's), else the shop's typical visit
       const paid = (rounds.some((w) => w.recurring) ? rounds.filter((w) => w.recurring) : rounds).filter((w) => w.total > 0);
@@ -546,8 +607,7 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
       // a run's own row with no visits beside it to count
       const alone = !!run && rounds.length < 2;
       // the note is about the routine ("the mowing"), and "the last time" is the last time it was done
-      const w = routine?.last ?? last;
-      const o = base(ctx, "lapsed_regular", c.id, { kind: w.kind, id: w.id }, annual, w.date, w.title, w.lineItems,
+      const o = base(ctx, "lapsed_regular", c.id, { kind: lastRound.kind, id: lastRound.id }, annual, lastRound.date, lastRound.title, lastRound.lineItems,
         `${alone ? (run?.from ? "On a recurring job" : "On your client list as a regular") : `Used you ${beat.length} times`}${steady ? every : ""}. Last visit ${spokenWhen(last.date, ctx.asOf)} — then nothing.`,
         [
           evWork(last),
@@ -555,7 +615,7 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
           steady ? `Worth about ${fmtMoney(annual)} a year as a regular` : `Average visit ${fmtMoney(avg)}`,
           ...(paid.length || whole ? [] : [`No amount on file for their visits — valued at your typical visit (${fmtMoney(ctx.visitValue)}).`]),
         ],
-        routine?.svc, undefined, lapse.byTrade ? lapse.days : undefined);
+        routine?.svc, undefined, seasonal ? 0 : lapse.byTrade ? lapse.days : undefined);
       if (o) out.push(o);
     }
   }
@@ -563,15 +623,17 @@ function fromHistory(ctx: Ctx, c: Customer): Opportunity[] {
   // One and done — or a few one-off jobs with no routine: the same "past customer" note fits both. Someone whose
   // seasonal work is between seasons hasn't "never come back": the season's note is theirs when it comes.
   // A client list's one date says when they were last here, not that it was once: past the trade's longest quiet spell
-  // (cleaning: 45 days) they've stopped coming, without waiting out the months a true one-off gets.
-  if (!regular && !dueFound && !betweenSeasons.size) {
+  // (cleaning: 45 days) they've stopped coming, without waiting out the months a true one-off gets. A seasonal shop's
+  // list counts the season only: last fall's date isn't gone over the winter.
+  const listed = work.length === 1 && last.run?.listed;
+  const quiet = lapseAfter(ctx.ds.business.trade);
+  const seasonalList = !!listed && SEASONAL_TRADES.has(ctx.ds.business.trade);
+  if (!regular && !dueFound && !betweenSeasons.size && (!seasonalList || goneForSeason(ctx.season, { visit: last.date, seen: lastSeen }, ctx.asOf, { quietDays: quiet.days }, shopEnded(last)))) {
     const pb = playbook(ctx.ds.business.trade);
-    const listed = work.length === 1 && last.run?.listed;
-    const quiet = lapseAfter(ctx.ds.business.trade);
     const o = base(ctx, "one_and_done", c.id, { kind: last.kind, id: last.id }, Math.max(last.total * 0.6, pb.ticket.low), last.date, last.title, last.lineItems,
       listed ? `Your client list has them last here ${spokenWhen(last.date, ctx.asOf)}, and nothing since.`
       : work.length === 1 ? `Hired you once, ${spokenWhen(last.date, ctx.asOf)}, and never came back.` : `Hired you ${work.length} times for one-off jobs, most recently ${spokenWhen(last.date, ctx.asOf)}, and hasn't been back.`,
-      work.length === 1 ? [evWork(last)] : [evWork(last), `${work.length} jobs on file, no routine service`], undefined, undefined, listed && quiet.byTrade ? quiet.days : undefined);
+      work.length === 1 ? [evWork(last)] : [evWork(last), `${work.length} jobs on file, no routine service`], undefined, undefined, seasonalList ? 0 : listed && quiet.byTrade ? quiet.days : undefined);
     if (o) out.push(o);
   }
   return out;

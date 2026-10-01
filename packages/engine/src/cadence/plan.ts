@@ -1,9 +1,9 @@
-import type { BreakageType, Dataset, Features, ISODate, Opportunity, Touch } from "../model.ts";
+import type { BreakageType, BusinessProfile, Dataset, Features, ISODate, Opportunity, Touch } from "../model.ts";
 import { pickWorked, type ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
-import { climateOf, findService, seasonFit } from "../trades/index.ts";
+import { climateOf, comesBackEachSeason, findService, growingSeason, SEASONAL_TRADES, seasonFit, sellingSeason, sellingWindow, stateOf } from "../trades/index.ts";
 import { addDays, hash, makeId, mondayOf, monthOf, weekday } from "../util.ts";
 
 export interface PlanOptions {
@@ -83,6 +83,21 @@ export function nextAllowed(ds: Dataset, d: ISODate): ISODate {
   return d;
 }
 
+/**
+ * Whether a note about `o` may go out on `day`. Work that comes back each season ("Want the lights up again this
+ * year?", a lawn shop's clean-ups) is asked about in its season. A seasonal shop's other past customers hear from it in
+ * its selling windows (fall clean-up, spots for spring), and nothing of a seasonal shop's goes out once fall clean-up
+ * selling ends (mid-November in the north) until the new year: never in December.
+ */
+export function goesOutOn(b: BusinessProfile, o: { type: BreakageType; serviceId?: string }, day: ISODate): boolean {
+  const svc = o.type === "service_due" && o.serviceId ? findService(o.serviceId)?.service : undefined;
+  const comesBack = svc && comesBackEachSeason(svc) ? svc : undefined;
+  if (comesBack && seasonFit(comesBack, climateOf(stateOf(b)), monthOf(day)) !== "now") return false;
+  if (!SEASONAL_TRADES.has(b.trade)) return true;
+  const season = growingSeason(b);
+  return day.slice(5) <= season.fallEnds && (!!comesBack || !!sellingWindow(season, day));
+}
+
 /** Local wall-clock send time inside the window, spread so notes don't all land at 7:00. */
 export function sendTime(ds: Dataset, key: string): string {
   const [start, end] = ds.business.sendWindow;
@@ -93,6 +108,7 @@ export function sendTime(ds: Dataset, key: string): string {
 
 export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions): Plan {
   const b = ds.business;
+  const seasonal = SEASONAL_TRADES.has(b.trade);
   const byId = new Map(ds.customers.map((c) => [c.id, c]));
   const holdout: string[] = [];
   const skipped: Plan["skipped"] = [];
@@ -166,10 +182,9 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
       if ((dayCount.get(day) ?? 0) < perDay && (weekCount.get(wk) ?? 0) < weeklyNew) break;
       day = nextAllowed(ds, addDays(day, 1));
     }
-    // Work that comes back each season ("Want the lights up again this year?") is only asked about in its selling
-    // season: a start that would land past it waits for the next scan in season, and a follow-up past it is left off.
-    const seasonal = o.type === "service_due" ? findService(o.serviceId)?.service : undefined;
-    const inSeason = (d: ISODate) => !seasonal?.dueMonth || seasonFit(seasonal, climateOf(b.state), monthOf(d)) === "now";
+    // Seasonal notes go out in their season (goesOutOn): a start that would land past it waits for the next scan in
+    // season, and a follow-up past it is left off. A seasonal shop's notes carry the selling season they're written for.
+    const inSeason = (d: ISODate) => goesOutOn(b, o, d);
     if (!inSeason(day)) continue;
     if (held) heldDay = day;
     else nowDay = day;
@@ -207,8 +222,9 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
         body: n.body,
         flags: n.flags,
         ...(seq === FRESH_SEQUENCE ? { track: "fresh_quote" as const } : {}),
-        chases: { type: o.type, kind: o.source.kind, id: o.source.id },
+        chases: { type: o.type, kind: o.source.kind, id: o.source.id, serviceId: o.serviceId },
         plannedOn: ds.asOf,
+        ...(seasonal ? { season: sellingSeason(sendOn) } : {}),
       });
     }
     if (!ok || !notes.length) continue;

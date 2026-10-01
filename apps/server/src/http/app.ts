@@ -453,7 +453,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json(await plan(d, c.req.param("id"), body));
   });
 
-  op.post("/businesses/:id/approve", async (c) => c.json({ approved: await approve(d, c.req.param("id")) }));
+  op.post("/businesses/:id/approve", async (c) => c.json(await approve(d, c.req.param("id"))));
 
   // The owner wanted to undo a cancel that set up a yearly refund (or the platform was down): a person restores it.
   // Refused once a refund text went out, since money may already be back with them.

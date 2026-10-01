@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { generateSample, type BusinessProfile, type Customer } from "@qa/engine";
+import { addDays, generateSample, OFF_SEASON, type BusinessProfile, type Customer } from "@qa/engine";
 import { pollReplies } from "../src/core/backstop.ts";
-import { handleInbound, syncSequencer } from "../src/core/ops.ts";
+import { handleInbound, rescan, sendDue, syncSequencer } from "../src/core/ops.ts";
 import { senderName } from "../src/core/senders.ts";
 import { tick } from "../src/core/worker.ts";
 import { inboxesText, parseInboxes } from "../../web/src/live/inboxes.ts";
@@ -811,5 +811,217 @@ describe("cold email in the same workspace", () => {
     await hook(s.h, { ...error, email_account: OFFICE, timestamp: "2026-09-29T15:01:00.000Z" });
     expect(warnings("dows").map((e) => e.title)).toEqual([`Instantly: ${OFFICE} has an error`]);
     expect(warnings("capital")).toEqual([]);
+  });
+});
+
+describe("a lawn shop's seasons on the sending platform", () => {
+  const ADDRESS = { NH: "14 Mill Rd, Concord, NH 03301", PA: "5 Market St, Harrisburg, PA 17101" };
+
+  /**
+   * A lawn shop with Pat, mowed every week from April until he stopped in July (and, when asked, Kim, whose fall
+   * clean-up last October is due again, and Lee, mowed every other week until he stopped in June), planned at `now`
+   * at the shop's pace: the round waits for the owner's OK.
+   */
+  async function lawnShop(s: Pick<Setup, "h">, state: keyof typeof ADDRESS, now: string, more: { kim?: boolean; lee?: boolean; weeklyNewContacts?: number } = {}) {
+    const { h } = s;
+    h.setNow(now);
+    await h.business("cap", { name: "Capital City Landscaping", trade: "lawn", fromEmails: [SARAH], state, mailingAddress: ADDRESS[state] });
+    // Tuesday to Thursday, as these windows were worked out for (new accounts send Monday to Friday)
+    expect((await h.api("PATCH", "/api/businesses/cap", { sendDays: [2, 3, 4] })).status).toBe(200);
+    if (more.weeklyNewContacts) expect((await h.api("PATCH", "/api/businesses/cap", { weeklyNewContacts: more.weeklyNewContacts })).status).toBe(200);
+    const rows: string[] = [];
+    for (let d = "2026-04-21"; d <= "2026-07-07"; d = addDays(d, 7)) rows.push(`701,${d},Weekly mowing,Pat Lee,${PAT},Yes,45.00,Recurring`);
+    if (more.lee) for (let d = "2026-04-23"; d <= "2026-06-04"; d = addDays(d, 14)) rows.push(`703,${d},Biweekly mowing,Lee Ross,${LEE},Yes,55.00,Recurring`);
+    if (more.kim) rows.push(`702,2025-10-21,Fall cleanup,Kim Ng,${KIM},Yes,180.00,One-off`);
+    const text = ["Job #,Date,Visit title,Client name,Client email,Visit completed,Visit based ($),Job type", ...rows].join("\n");
+    expect((await h.api("POST", "/api/businesses/cap/imports", { files: [{ name: "Visits Report.csv", text }] })).status).toBe(200);
+    return (await h.api("POST", "/api/businesses/cap/plan", {})).json;
+  }
+  const touches = (s: Pick<Setup, "h">) => s.h.d.accounts.peek("cap")!.state.touches;
+  const offSeasonAlerts = async (h: Harness) => ((await h.api("GET", "/api/review")).json.items as { kind: string; alertKind?: string; title: string; detail: string }[]).filter((x) => x.kind === "alert" && x.alertKind === "off_season_ok");
+  const leads = (s: Setup) => s.api.callsTo("POST", "/leads/add").flatMap((c) => c.body.leads as { email: string; custom_variables: Record<string, string> }[]);
+  const withdrawn = (s: Setup) => s.api.callsTo("POST", "/leads/list").flatMap((c) => c.body.contacts as string[]);
+
+  it("an OK that comes after the fall window closed is told the truth: the round is written again for January, and Jack sees it", async () => {
+    const s = setup();
+    const { h } = s;
+    expect(await lawnShop(s, "NH", "2026-11-10T15:00:00Z")).toMatchObject({ people: 1, notes: 1, firstDay: "2026-11-11", awaitingOk: true });
+    h.setNow("2026-12-01T13:00:00Z");
+    expect(await h.sms("OK")).toBe("Done. The season for these notes has closed, so they're written again for the next one, and the first go out Jan 5. When someone asks to come back, you'll get a text with their name and number.");
+    expect((await offSeasonAlerts(h)).map((x) => [x.title, x.detail])).toEqual([
+      ["Capital City Landscaping's OK came after the season closed for 1 person", "Their notes were cancelled, and the round written again for the next selling window, the first on 2027-01-05. Look it over before then."],
+    ]);
+    expect(touches(s).map((t) => [t.status, t.dueAt.slice(0, 10), t.lastError])).toEqual([
+      ["cancelled", "2026-12-01", OFF_SEASON],
+      ["approved", "2027-01-05", undefined],
+      ["approved", "2027-01-12", undefined],
+    ]);
+    // nothing reaches the platform in December, not even the week before it opens (it would send note 1 at once)
+    await sync(s, "cap");
+    h.setNow("2026-12-29T15:00:00Z");
+    await sync(s, "cap");
+    expect(pushes(s)).toBe(0);
+    h.setNow("2027-01-04T15:00:00Z");
+    await sync(s, "cap");
+    expect(leads(s).map((l) => Object.keys(l.custom_variables).filter((k) => /^b\d$/.test(k)))).toEqual([["b1", "b2"]]);
+  });
+
+  it("an OK Jack records in the console goes the same way: in December the round is written again for January, and he's told why", async () => {
+    const s = setup();
+    const { h } = s;
+    await lawnShop(s, "NH", "2026-11-10T15:00:00Z");
+    h.setNow("2026-12-01T13:00:00Z");
+    expect((await h.api("POST", "/api/businesses/cap/approve")).json).toEqual({ approved: 2, late: { people: 1, firstDay: "2027-01-05" } });
+    expect(touches(s).map((t) => [t.status, t.dueAt.slice(0, 10), t.lastError])).toEqual([
+      ["cancelled", "2026-12-01", OFF_SEASON],
+      ["approved", "2027-01-05", undefined],
+      ["approved", "2027-01-12", undefined],
+    ]);
+    expect((await offSeasonAlerts(h)).map((x) => x.title)).toEqual(["Capital City Landscaping's OK came after the season closed for 1 person"]);
+    expect(h.d.accounts.peek("cap")!.state.awaitingOwnerOk).toBeUndefined();
+  });
+
+  it("an OK that leaves part of the round past the window tells the owner how many wait, and Jack sees it", async () => {
+    // two new people a day: planned for November 3rd and 4th, OK'd on Thursday the 12th, the second day's would go the 17th
+    const s = setup();
+    const { h } = s;
+    expect(await lawnShop(s, "NH", "2026-11-02T15:00:00Z", { kim: true, lee: true, weeklyNewContacts: 5 })).toMatchObject({ people: 3, firstDay: "2026-11-03" });
+    const email = (t: { customerId: string }) => h.d.accounts.peek("cap")!.state.dataset.customers.find((c) => c.id === t.customerId)!.emails[0];
+    const firsts = () => touches(s).filter((t) => t.step === 1).map((t) => [email(t), t.dueAt.slice(0, 10), t.status]);
+    expect(firsts()).toEqual([
+      [KIM, "2026-11-03", "planned"],
+      [PAT, "2026-11-03", "planned"],
+      [LEE, "2026-11-04", "planned"],
+    ]);
+    h.setNow("2026-11-12T13:00:00Z");
+    expect(await h.sms("OK")).toBe(
+      "Done — the first notes go out Nov 12. The season closes before 1 more person could hear from you, so theirs are written again for the next one, and go out from Jan 5. When someone asks to come back, you'll get a text with their name and number.",
+    );
+    expect(firsts()).toEqual([
+      [KIM, "2026-11-12", "approved"],
+      [PAT, "2026-11-12", "approved"],
+      [LEE, "2026-11-17", "cancelled"],
+      [LEE, "2027-01-05", "approved"],
+    ]);
+    expect((await offSeasonAlerts(h)).map((x) => x.title)).toEqual(["Capital City Landscaping's OK came after the season closed for 1 person"]);
+  });
+
+  it("a pause from November to January takes the fall follow-ups back from the platform before it restarts", async () => {
+    const s = setup();
+    const { h } = s;
+    expect(await lawnShop(s, "NH", "2026-11-02T15:00:00Z")).toMatchObject({ people: 1, notes: 2, firstDay: "2026-11-03" });
+    await h.sms("OK");
+    await sync(s, "cap");
+    expect(leads(s).map((l) => l.custom_variables.b2)).toEqual([expect.stringMatching(/we're putting the fall clean-up schedule together now/)]);
+    // the platform sends note 1 on the 3rd, then the owner pauses until January, when the spring window is open
+    const n1 = touches(s)[0]!;
+    await hook(h, { event_type: "email_sent", timestamp: "2026-11-03T14:30:00.000Z", campaign_id: n1.providerId!.split(":")[1], lead_email: PAT, step: 1, email_id: "em-1", qa_touch_1: n1.id });
+    await h.sms("PAUSE");
+    h.setNow("2027-01-05T15:00:00Z");
+    await h.sms("RESUME");
+    const calls = s.api.calls.map((c) => `${c.method} ${c.path}`);
+    expect(calls.indexOf("POST /leads/list")).toBeLessThan(calls.lastIndexOf("POST /campaigns/camp-1/activate"));
+    expect(withdrawn(s)).toEqual([PAT]);
+    expect(touches(s).map((t) => [t.step, t.status, t.lastError])).toEqual([
+      [1, "sent", undefined],
+      [2, "cancelled", OFF_SEASON],
+    ]);
+  });
+
+  it.each([
+    ["the fall follow-up, paused from November into the spring window", "2026-11-02T15:00:00Z", "2026-11-03T14:59:00Z", "2027-01-05T14:59:00Z"],
+    ["the spring follow-up, paused from March into the fall window", "2027-03-22T14:00:00Z", "2027-03-23T13:59:00Z", "2027-09-01T13:59:00Z"],
+  ])("sent directly, %s never goes", async (_, planned, sent, back) => {
+    const h = harness();
+    open.push(h);
+    expect(await lawnShop({ h }, "NH", planned)).toMatchObject({ people: 1, notes: 2 });
+    await h.sms("OK");
+    h.setNow(sent);
+    expect((await sendDue(h.d, "cap")).sent).toBe(1);
+    await h.sms("PAUSE");
+    h.setNow(back);
+    await h.sms("RESUME");
+    expect((await sendDue(h.d, "cap")).sent).toBe(0);
+    expect(touches({ h }).map((t) => [t.step, t.status, t.lastError])).toEqual([
+      [1, "sent", undefined],
+      [2, "cancelled", OFF_SEASON],
+    ]);
+  });
+
+  it("a late OK hands over only the notes still inside the window: note 2 past it is cancelled, in Pennsylvania and in the north", async () => {
+    for (const [state, planned, ok, kept, cut] of [
+      ["PA", "2026-11-17T15:00:00Z", "2026-11-25T13:00:00Z", "2026-11-25", "2026-12-01"],
+      ["NH", "2026-11-03T15:00:00Z", "2026-11-12T13:00:00Z", "2026-11-12", "2026-11-18"],
+    ] as const) {
+      const s = setup();
+      const { h } = s;
+      expect(await lawnShop(s, state, planned)).toMatchObject({ people: 1, notes: 2 });
+      h.setNow(ok);
+      await h.sms("OK");
+      await sync(s, "cap");
+      expect(leads(s).map((l) => [l.email, l.custom_variables.b1 !== undefined, l.custom_variables.b2])).toEqual([[PAT, true, undefined]]);
+      expect(s.api.callsTo("POST", "/campaigns").map((c) => c.body.sequences[0].steps.length)).toEqual([1]);
+      expect(touches(s).map((t) => [t.step, t.dueAt.slice(0, 10), t.status, t.lastError])).toEqual([
+        [1, kept, "approved", undefined],
+        [2, cut, "cancelled", OFF_SEASON],
+      ]);
+    }
+  });
+
+  it("notes held past their day are judged by when the platform would send them: note 2 four days after note 1", async () => {
+    const s = setup();
+    const { h } = s;
+    // planned Tuesday the 17th for the 18th and 24th, OK'd at once, then paused before anything went
+    expect(await lawnShop(s, "PA", "2026-11-17T15:00:00Z")).toMatchObject({ people: 1, notes: 2 });
+    await h.sms("OK");
+    await h.sms("PAUSE");
+    // back on Friday the 27th: note 1 goes now, so the platform would send note 2 on December 1st
+    h.setNow("2026-11-27T15:00:00Z");
+    await h.sms("RESUME");
+    await sync(s, "cap");
+    expect(leads(s).map((l) => l.custom_variables.b2)).toEqual([undefined]);
+    expect(touches(s).map((t) => [t.step, t.status, t.lastError])).toEqual([
+      [1, "approved", undefined],
+      [2, "cancelled", OFF_SEASON],
+    ]);
+  });
+
+  it("after a pause that outlasted the window, nothing is handed over, the clean-up a rescan dropped included", async () => {
+    const s = setup();
+    const { h } = s;
+    expect(await lawnShop(s, "NH", "2026-11-10T15:00:00Z", { kim: true })).toMatchObject({ people: 2, firstDay: "2026-11-11" });
+    await h.sms("OK");
+    await h.sms("PAUSE");
+    h.setNow("2026-12-01T08:00:00Z"); // 3am New York: the nightly rescan
+    await rescan(h.d, "cap");
+    expect(h.d.accounts.peek("cap")!.state.scan!.opportunities.map((o) => o.type)).toEqual(["lapsed_regular"]);
+    h.setNow("2026-12-01T15:00:00Z");
+    await h.sms("RESUME");
+    await sync(s, "cap");
+    expect(pushes(s)).toBe(0);
+    expect(touches(s).map((t) => [t.status, t.lastError])).toEqual(touches(s).map(() => ["cancelled", OFF_SEASON]));
+  });
+
+  it("notes the platform already holds are taken back once the window's over: on a resume, before the campaigns restart, or on the next sync", async () => {
+    for (const resume of [true, false]) {
+      const s = setup();
+      const { h } = s;
+      await lawnShop(s, "PA", "2026-11-17T15:00:00Z");
+      await h.sms("OK");
+      await sync(s, "cap");
+      expect(leads(s).map((l) => l.custom_variables.b2 !== undefined)).toEqual([true]);
+      if (resume) await h.sms("PAUSE");
+      h.setNow("2026-12-02T15:00:00Z");
+      if (resume) {
+        await h.sms("RESUME");
+        const calls = s.api.calls.map((c) => `${c.method} ${c.path}`);
+        expect(calls.indexOf("POST /leads/list")).toBeLessThan(calls.lastIndexOf("POST /campaigns/camp-1/activate"));
+      } else await sync(s, "cap");
+      expect(withdrawn(s)).toEqual([PAT]);
+      expect(touches(s).map((t) => [t.status, t.lastError])).toEqual([
+        ["cancelled", OFF_SEASON],
+        ["cancelled", OFF_SEASON],
+      ]);
+    }
   });
 });

@@ -66,6 +66,8 @@ import {
   legacyCampaignName,
   looksLikeEmail,
   normalizeEmail,
+  STEP2_DELAY_DAYS,
+  STEP3_DELAY_DAYS,
   toInstantlyLead,
   toReplyHtml,
   type CampaignSettings,
@@ -284,6 +286,7 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
   const provider: InstantlyProvider = {
     kind: "sequencer",
     name: INSTANTLY,
+    stepDelays: [STEP2_DELAY_DAYS, STEP3_DELAY_DAYS],
     client,
     campaignName,
 

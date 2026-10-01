@@ -63,6 +63,8 @@ export interface SequencedLead {
 export interface SequencerProvider {
   kind: "sequencer";
   name: string;
+  /** Days a campaign waits after each note before the next (it sends follow-ups on its own clock, not our dates). */
+  stepDelays: readonly number[];
   /**
    * Make sure the business has a campaign ready to receive leads; returns its id. `instant` is the business's
    * separate 1-step campaign for answers to new requests: it sends new leads first, uncapped, every day 7:00–20:00.

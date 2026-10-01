@@ -1,5 +1,5 @@
 import type { BusinessProfile, Customer, Dataset, Features, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
-import { classifyService, climateOf, findService, jobPhrase, monthsUntilSeason, playbook, seasonFit, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
+import { classifyService, climateOf, findService, growingSeason, jobPhrase, monthsUntilSeason, playbook, SEASONAL_TRADES, seasonFit, sellingWindow, stateOf, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
@@ -62,7 +62,7 @@ function titleCaseWords(s: string): string {
 
 function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderContext): Record<string, string> {
   const svc = findService(o.serviceId)?.service;
-  const climate = climateOf(b.state);
+  const climate = climateOf(stateOf(b));
   const anchor = o.anchorDate;
   // "We did {job} for you {when}" is about their job, not the day it came due.
   const doneOn = o.lastDoneOn ?? anchor;
@@ -77,6 +77,8 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   const lineMonths = svc?.timingMonths?.[climate] ?? svc?.season[climate] ?? svc?.season.cold ?? [];
   const timingLine = svc?.timingLine?.[climate] && (!lineMonths.length || lineMonths.includes(month)) ? svc.timingLine[climate]! : "";
   const dueAsk = holdForSeason ? "" : svc?.dueAsk ?? "";
+  // a seasonal shop's lapsed regulars hear about the window the note goes out in: fall clean-up, or spots for spring
+  const window = o.type === "lapsed_regular" && SEASONAL_TRADES.has(b.trade) ? sellingWindow(growingSeason(b), rc.sendOn) : undefined;
   const t: Record<string, string> = {
     first: greetingName(c.firstName),
     signer: b.signerName,
@@ -117,6 +119,8 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     noAsk: "yes",
     quietSince: "",
     notRecent: "yes",
+    springWindow: window === "spring" ? "yes" : "",
+    fallWindow: window === "fall" ? "yes" : "",
   };
   // Work no service names ("Fall cleanup") keeps the trade's plain words for it, and the trade's own clock
   const known = svc && o.serviceId !== UNKNOWN_SERVICE_ID ? svc : undefined;

@@ -267,7 +267,8 @@ describe("the leaks each trade's offer works (both offers, every plan)", () => {
       const notWorked = r.primary.filter((o) => !worksLeak(trade, o) && o.channels.includes("email"));
       const fallback = worked(s.dataset, r).filter((o) => notWorked.some((x) => x.customerId === o.customerId));
       expect(fallback.length, trade).toBeGreaterThan(0);
-      const all = planOutreach(s.dataset, r, { startOn: START, applyHoldout: false });
+      // everyone at once, inside the lawn shop's fall window
+      const all = planOutreach(s.dataset, r, { startOn: START, applyHoldout: false, weeklyNew: 5000 });
       for (const o of fallback.filter((x) => !x.caution?.length)) expect(all.touches.find((t) => t.customerId === o.customerId && t.step === 1)?.opportunityId).toBe(o.id);
       expect(plan.people.length).toBe(150);
     }
