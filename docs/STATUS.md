@@ -180,6 +180,22 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     booted and backed up); Render's and Railway's proxy hop counts unconfirmed; the Setup box is desktop-only.
   - Server 389.
 
+- **Re-check of A2 and A3** (their last fixes had not been reviewed again): 24 reported, 20 confirmed, 18 fixed.
+  - A2 (14 confirmed, 7 serious, all about what the ledger counts, which B4 bills from): a re-sent client list now
+    keeps one last-visit date per client (it was stacking dates, so the month's drop-offs were missed and each list
+    added a $0 booking); an owner's BOOKED keeps its date and is never taken off the ledger because the job's first
+    visit isn't done yet; "schedule stopped" is judged per job, so a rebooked regular's new job counts and the old
+    job's leftovers don't; a never-closed job's Active status no longer hides the lapse its visits show; a job made
+    before the first note is never a comeback; visits removed by a re-sent report stay removed after a restart; a
+    BOOKED text and the same booking seen in visits later are one booking; a quote tracker with a "Booking Date"
+    column reads as quotes again; skipped, no-show and lockout visits aren't work done; a Visits report without "Job
+    type" doesn't turn multi-day one-off jobs into weekly regulars. Left: two visits of one job on consecutive days
+    can still set a rhythm.
+  - A3 (6 confirmed): an answer never goes from an inbox that went to another client, even after a cancel; an inbox
+    alert marked handled comes back while the client is still refused; the 15-minute inbox check no longer throws
+    away Jack's unsaved Settings edits; emptying "Notes come from (name)" goes back to "<signer> at <business>".
+  - Engine 1,489, server 395 (timing tests rerun alone under load).
+
 **Live steps for Jack**
 - (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about
   16 times the database or with BACKUP_DIR on a second volume. Run the first real `docker build` on the host (the
