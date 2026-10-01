@@ -35,8 +35,8 @@ const state = (h: Harness, bid: string) => h.d.accounts.peek(bid)!.state;
 const items = async (h: Harness) => (await h.api("GET", "/api/review")).json.items as Record<string, unknown>[];
 const texts = (h: Harness) => (h.d.notifier as LogNotifier).sent.map((m) => m.text);
 /** A client paying month to month, as the console's Settings sets it. */
-const payingClient = async (h: Harness, bid: string) => {
-  await h.business(bid);
+const payingClient = async (h: Harness, bid: string, over: Record<string, unknown> = {}) => {
+  await h.business(bid, over);
   expect((await h.api("PATCH", `/api/businesses/${bid}`, { plan: { stage: "paying", billing: "monthly", paidOn: "2026-08-01" } })).status).toBe(200);
 };
 
@@ -92,7 +92,7 @@ describe("a new account", () => {
       again.close();
       const third = harness({ dir });
       expect(JSON.parse(third.d.accounts.repo.db.get<{ profile: string }>("SELECT profile FROM businesses WHERE id = 'acked'")!.profile).persistence.holdoutPct).toBe(0.1);
-      expect(third.d.accounts.repo.db.get("SELECT v FROM schema_version")).toEqual({ v: 4 });
+      expect(third.d.accounts.repo.db.get("SELECT v FROM schema_version")).toEqual({ v: 5 });
       third.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -161,8 +161,8 @@ describe("new-request answering, off (the default)", () => {
         verifyWebhook: () => true,
         parseWebhook: () => undefined,
       };
-      const h = make({ ...opts, fsm: { jobber }, email: createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@mail.test"], sleep: async () => {}, maxRetries: 0 }) });
-      await payingClient(h, "ridge");
+      const h = make({ ...opts, fsm: { jobber }, email: createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sleep: async () => {}, maxRetries: 0 }) });
+      await payingClient(h, "ridge", { fromEmails: ["sarah@mail.test"] });
       h.d.accounts.repo.putIntegration("ridge", "jobber", { accountId: "acct-1", secret: encrypt(SECRET, JSON.stringify({ accessToken: "a", refreshToken: "r" })), status: "connected", lastSyncAt: "2026-09-29T12:00:00Z" });
       await syncFsm(h.d, "ridge", "jobber");
       return { h, campaigns: api.callsTo("POST", "/campaigns").map((c) => String(c.body.name)) };

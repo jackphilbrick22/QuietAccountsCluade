@@ -9,6 +9,7 @@ import { hourLabel, WEEKDAYS } from "../lib/labels";
 import { api, type AgentEvent, type FileRow, type ImportResult, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
 import { copy, useAction, useApi } from "./store";
 import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
+import { inboxesText, parseInboxes } from "./inboxes";
 import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, usePeople, when } from "./parts";
 import { Field } from "./Clients";
 
@@ -537,8 +538,7 @@ const TEXT_FIELDS: [keyof BusinessProfile, string, string?][] = [
   ["ownerPhone", "Owner's cell", "Hand-offs and reports are texted here."],
   ["ownerEmail", "Owner's email", "Hand-offs go here when a text can't (no cell, or they texted STOP)."],
   ["signerName", "Who signs the notes"],
-  ["fromName", "Notes come from (name)", "Leave empty for “Sarah at Ridgeline Tree Co.”"],
-  ["fromEmail", "Notes come from (address)", "This client's own sending mailbox. Empty: the server's sender."],
+  ["fromName", "Notes come from (name)", "Sets the name on this client's inboxes in Instantly. Empty: who signs, at the business (“Sarah at Ridgeline Tree Co.”)."],
   ["replyTo", "Reply-to email", "Leave empty unless it forwards to our inbound address: replies we never see can't be read, answered or stopped."],
   ["businessPhone", "Business phone"],
   ["mailingAddress", "Mailing address", "Required in every email footer (CAN-SPAM)."],
@@ -557,6 +557,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
   const yearly = d.plan.billing === "annual";
   // a billing switch waits for the day it starts, so the two are saved together
   const needsDay = (d.plan.billing ?? "monthly") !== (b.plan.billing ?? "monthly") && !!b.plan.paidOn && !d.plan.paidOn;
+  const noDays = !d.sendDays.length;
   const num = (v: string, lo: number, hi: number, fallback: number) => {
     const n = Number(v.replace(/[^0-9.]/g, ""));
     return Number.isFinite(n) && v !== "" ? Math.max(lo, Math.min(hi, n)) : fallback;
@@ -570,6 +571,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               <input id={`ls-${k}`} className={smallInputCls} value={String(d[k] ?? "")} onChange={(e) => set(k, (k === "state" ? e.target.value.toUpperCase().slice(0, 2) : e.target.value) as never)} />
             </Field>
           ))}
+          <InboxesField value={d.fromEmails ?? []} onChange={(v) => set("fromEmails", v)} />
           <Field id="ls-role" label="Signer's role">
             <select id="ls-role" className={cx(selectCls, "w-full")} value={d.signerRole} onChange={(e) => set("signerRole", e.target.value as BusinessProfile["signerRole"])}>
               <option value="office">Office</option>
@@ -677,13 +679,13 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
       </Group>
 
       <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t border-line bg-bg/95 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-lg sm:border sm:px-4">
-        <Btn variant="primary" disabled={!dirty || !!busy || needsDay} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
+        <Btn variant="primary" disabled={!dirty || !!busy || needsDay || noDays} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
           {busy === "save" ? "Saving…" : "Save changes"}
         </Btn>
         <Btn variant="ghost" disabled={!dirty} onClick={() => setD(b)}>
           Discard
         </Btn>
-        <span className="text-[12.5px] text-ink-3">{needsDay ? "Set the first paid day for the new billing to save" : dirty ? `${Object.keys(patch).length} change${Object.keys(patch).length === 1 ? "" : "s"} not saved` : "Everything saved"}</span>
+        <span className="text-[12.5px] text-ink-3">{needsDay ? "Set the first paid day for the new billing to save" : noDays ? "Pick at least one send day to save" : dirty ? `${Object.keys(patch).length} change${Object.keys(patch).length === 1 ? "" : "s"} not saved` : "Everything saved"}</span>
         <span className="ml-auto">
           <ConfirmBtn note="Delete this client and all its data?" confirmLabel="Yes, delete" onConfirm={() => void run("delete", () => api("DELETE", `/businesses/${encodeURIComponent(id)}`), `Deleted ${b.name}`).then((r) => r && go({ area: "live", tab: "clients" }))}>
             Delete client
@@ -696,7 +698,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
 
 function diff(a: BusinessProfile, b: BusinessProfile): Patch {
   const out: Record<string, unknown> = {};
-  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "fromName", "fromEmail", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
+  const keys: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "fromName", "fromEmails", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
   for (const k of keys) {
     let v: unknown = b[k];
     if (JSON.stringify(v) === JSON.stringify(a[k])) continue;
@@ -757,6 +759,25 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
       <h2 className="font-body text-[15px] font-bold tracking-normal">{title}</h2>
       {children}
     </Box>
+  );
+}
+
+/** The client's own sending inboxes, typed as a list (commas or spaces between them). */
+function InboxesField({ value, onChange }: { value: string[]; onChange: (v: string[]) => void }) {
+  const [typed, setTyped] = useState(value.join(", "));
+  return (
+    <Field id="ls-inboxes" label="Notes come from (inboxes)" hint="This client's own inboxes, connected in Instantly; each sends for this client only. With Instantly nothing goes out without one. Direct mail sends from the first." wide>
+      <input
+        id="ls-inboxes"
+        className={smallInputCls}
+        value={inboxesText(typed, value)}
+        placeholder="sarah@capitalcitymail.com"
+        onChange={(e) => {
+          setTyped(e.target.value);
+          onChange(parseInboxes(e.target.value));
+        }}
+      />
+    </Field>
   );
 }
 

@@ -82,6 +82,8 @@ export class Repo {
     this.db.tx(() => {
       for (const t of ["records", "contacts", "opportunities", "touches", "replies", "recoveries", "outreach", "suppressions", "events", "owner_messages", "integrations", "tasks", "owner_texts", "oauth_states", "worker_marks", "alerts"])
         this.db.run(`DELETE FROM ${t} WHERE business_id = ?`, id);
+      // its campaigns are still ones the server made, but no longer anyone's
+      this.db.run("UPDATE campaigns SET business_id = NULL WHERE business_id = ?", id);
       this.db.run("DELETE FROM businesses WHERE id = ?", id);
     });
   }
@@ -318,6 +320,22 @@ export class Repo {
   businessesForProvider(prefix: string): string[] {
     const like = `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
     return this.db.all<{ business_id: string }>("SELECT DISTINCT business_id FROM touches WHERE provider_id LIKE ? ESCAPE '\\'", like).map((r) => r.business_id);
+  }
+
+  /* ----------------------------- campaigns the server made ----------------------------- */
+
+  addCampaign(provider: string, id: string, bid: string, kind: "nurture" | "instant", at: string): void {
+    this.db.run("INSERT OR IGNORE INTO campaigns (provider, id, business_id, kind, created_at) VALUES (?, ?, ?, ?, ?)", provider, id, bid, kind, at);
+  }
+
+  /** The campaign, when this server made it (`businessId` null: its client was deleted). */
+  campaign(provider: string, id: string): { businessId: string | null; kind: "nurture" | "instant" } | undefined {
+    const r = this.db.get<{ business_id: string | null; kind: "nurture" | "instant" }>("SELECT business_id, kind FROM campaigns WHERE provider = ? AND id = ?", provider, id);
+    return r ? { businessId: r.business_id, kind: r.kind } : undefined;
+  }
+
+  campaignsOf(provider: string, bid: string): { id: string; kind: "nurture" | "instant" }[] {
+    return this.db.all("SELECT id, kind FROM campaigns WHERE provider = ? AND business_id = ? ORDER BY created_at, id", provider, bid);
   }
 
   /* ----------------------------- owner message delivery ----------------------------- */

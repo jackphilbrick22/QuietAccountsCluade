@@ -100,7 +100,7 @@ const profile = (id: string, name: string, stage: "trial" | "paying"): BusinessP
   minQuoteAgeDays: 21, maxQuoteAgeMonths: 36, weeklyNewContacts: 50, openCrewWeeks: [], voice: { mentionPrice: false, offerOptions: true, wordSwaps: [] },
   persistence: { seasonalCheckIn: true, maxNotesPerYear: 5, holdoutPct: 0 }, channels: { email: "live" }, mailingAddress: "14 Mill Rd, Concord, NH 03301",
   plan: stage === "paying" ? { stage, trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: "2026-08-01" } : { stage, trialSize: 150, monthlyPrice: 497, freeMonths: [] },
-  createdOn: "2026-08-01",
+  createdOn: "2026-08-01", fromEmails: [`${id}@mail.test`],
 });
 const note = (bid: string, c: Customer, step: number, over: Partial<Touch> = {}): Touch => ({
   id: `${bid}-${c.id}-${step}`, opportunityId: `${bid}-${c.id}`, customerId: c.id, channel: "email", step, angle: "check_in",
@@ -130,7 +130,7 @@ const review = async () => (await op("GET", "/api/review")).json.items as { kind
 beforeAll(() => {
   // written with new-request answering and the yearly plan sold: their tests run with both on
   const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: TOKEN, APP_SECRET: SECRET, WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false", FEATURE_NEW_REQUESTS: "on", FEATURE_YEARLY: "on" });
-  const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@mail.test"], sleep: async () => {}, maxRetries: 0 });
+  const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sleep: async () => {}, maxRetries: 0 });
   d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email, notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: { instantly: (b) => parseInstantlyWebhook(b, now) } };
   app = createApp(d);
 });

@@ -21,7 +21,6 @@ const schema = z.object({
   SMTP_URL: z.string().optional(),
   SMTP_FROM: z.string().optional(),
   INSTANTLY_API_KEY: z.string().optional(),
-  INSTANTLY_SENDING_ACCOUNTS: z.string().optional(),
   INSTANTLY_DAILY_LIMIT: z.coerce.number().optional(),
 
   /** "log" | "twilio" — texts to business owners (hand-offs, nudges, weekly report). */

@@ -35,7 +35,7 @@ const profile: BusinessProfile = {
   signerName: "Sarah", signerRole: "office", timezone: "America/New_York", sendDays: [2, 3, 4], sendWindow: [8, 11], blackoutWeeks: [], minQuoteValue: 0,
   minQuoteAgeDays: 21, maxQuoteAgeMonths: 36, weeklyNewContacts: 50, openCrewWeeks: [], voice: { mentionPrice: false, offerOptions: true, wordSwaps: [] },
   persistence: { seasonalCheckIn: true, maxNotesPerYear: 5, holdoutPct: 0 }, channels: { email: "live" }, mailingAddress: "14 Mill Rd, Concord, NH 03301",
-  plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: "2026-08-01" }, createdOn: "2026-08-01",
+  plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: "2026-08-01" }, createdOn: "2026-08-01", fromEmails: [MAILBOX],
 };
 
 /* ------------------------------ fake Instantly ------------------------------ */
@@ -70,7 +70,7 @@ const webhook = (body: unknown) => app.request(`/webhooks/instantly/${WH}`, { me
 
 beforeAll(async () => {
   const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: "test-operator-token-321", APP_SECRET: "test-app-secret-0123456789", WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false", FEATURE_NEW_REQUESTS: "on" });
-  const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: [MAILBOX] });
+  const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
   d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email, notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: { instantly: (b) => parseInstantlyWebhook(b, now) } };
   app = createApp(d);
   await d.accounts.create(profile, "2026-09-29");

@@ -1,6 +1,7 @@
 import type { InboundEvent, PlatformEmail, SequencerProvider } from "../contracts.ts";
 import { webhookUrlFor } from "../integrations/instantly/webhooks.ts";
 import { alertOperator, handleInbound, whoIs, type Deps } from "./ops.ts";
+import { coldEvent } from "./senders.ts";
 
 /**
  * The sending platform's webhooks are not enough on their own:
@@ -49,6 +50,13 @@ export async function pollReplies(d: Deps, opts: { force?: boolean } = {}): Prom
         if (e.createdAt > newest) newest = e.createdAt;
         const key = replyEmailKey(seq.name, e.id);
         if (e.sentByUs || repo.hasWebhook(key) || unmatched.has(key)) continue;
+        // cold email in the same workspace: logged, never matched or read
+        const cold = coldEvent(d, { campaignId: e.campaignId, inbox: e.account });
+        if (cold) {
+          if (repo.logWebhook(key, `${seq.name}-poll`, JSON.stringify(e), now.toISOString())) repo.finishWebhook(key, "ignored", undefined, `cold email: ${cold}`);
+          d.log(`[backstop] skipped ${e.from}'s email: ${cold}`);
+          continue;
+        }
         const match = await matchEmail(d, seq, e, () => lookups++ < MAX_THREAD_LOOKUPS);
         if (match === "later") {
           if (!deferred || e.createdAt < deferred) deferred = e.createdAt;

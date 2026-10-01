@@ -97,6 +97,8 @@ export function LiveClient({ id }: { id: string }) {
       />
 
       <ReadinessPanel r={o.readiness} ownerFirst={b.ownerFirstName} />
+      {/* Instantly refused its inboxes: the reason, until it's fixed (Settings, or in Instantly) */}
+      <ErrorNote error={b.senders?.refused && `Nothing goes out for this client: ${b.senders.refused}.`} />
 
       <div className="-mx-4 flex gap-1 overflow-x-auto border-b border-line px-4 sm:mx-0 sm:px-0" role="tablist" aria-label="Client sections">
         {TABS.map((t) => (

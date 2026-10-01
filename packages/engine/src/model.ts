@@ -253,10 +253,21 @@ export interface BusinessProfile {
   /** How the signer is described: "office", "owner". */
   signerRole: "owner" | "office";
   replyTo?: string;
-  /** This client's sending address (the From on direct mail). Unset: the server's global sender. */
-  fromEmail?: string;
-  /** The display name on this client's notes. Unset: "<signer> at <business>". */
+  /**
+   * This client's own sending inboxes (lowercase). With Instantly its notes go only from these, and nothing goes out
+   * without one; one inbox sends for one client. Direct mail sends from the first (none: the server's global sender).
+   */
+  fromEmails?: string[];
+  /** Inboxes it sent from before, taken off in Settings: replies to its notes, and stops, may still come in on them. */
+  pastInboxes?: string[];
+  /** The display name on this client's notes, and on its inboxes in Instantly. Unset: "<signer> at <business>". */
   fromName?: string;
+  /**
+   * With Instantly: the inboxes and the name last set on them and checked there (`key`), and why they can't send
+   * (`refused`: no inbox of its own, one another client has, a name that didn't stick, or one in a campaign this
+   * server didn't make). A refusal holds the client's notes like a pause until it's fixed.
+   */
+  senders?: { key: string; at: ISODateTime; refused?: string };
   /** The owner texted STOP, or their carrier opted them out: nothing is texted; owner messages go by email or to the operator. */
   ownerTextsOff?: { at: ISODateTime; by: "owner" | "carrier" };
   businessPhone?: string;

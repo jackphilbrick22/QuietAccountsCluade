@@ -239,6 +239,27 @@ const MIGRATIONS: string[] = [
   -- back as a comparison group. Once, for the accounts made before; new ones start this way.
   UPDATE businesses SET profile = json_set(profile, '$.autoAck', json('false'), '$.persistence.holdoutPct', 0);
   `,
+  /* 5 */ `
+  -- A client's sending inboxes are a list: the one address an account had becomes its one inbox.
+  UPDATE businesses SET profile = json_set(profile, '$.fromEmails', json_array(lower(trim(json_extract(profile, '$.fromEmail')))))
+    WHERE trim(coalesce(json_extract(profile, '$.fromEmail'), '')) <> '';
+  UPDATE businesses SET profile = json_remove(profile, '$.fromEmail');
+  -- The campaigns this server made for its clients. Cold email runs in the same workspace, in campaigns that aren't
+  -- here. A deleted client's campaigns stay (business_id NULL): the server still made them.
+  CREATE TABLE IF NOT EXISTS campaigns (
+    provider TEXT NOT NULL,
+    id TEXT NOT NULL,
+    business_id TEXT,
+    kind TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (provider, id)
+  ) WITHOUT ROWID;
+  CREATE INDEX IF NOT EXISTS campaigns_business ON campaigns(business_id);
+  INSERT OR IGNORE INTO campaigns (provider, id, business_id, kind, created_at)
+    SELECT 'instantly', substr(provider_id, 11, instr(substr(provider_id, 11), ':') - 1), business_id,
+      CASE WHEN json_extract(data, '$.instant') THEN 'instant' ELSE 'nurture' END, datetime('now')
+    FROM touches WHERE provider_id LIKE 'instantly:%:%';
+  `,
 ];
 
 export class Db {

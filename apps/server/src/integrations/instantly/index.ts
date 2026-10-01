@@ -10,8 +10,8 @@
  *    step delays https://help.instantly.ai/en/articles/7916860-time-to-wait-between-steps
  *  - Instantly's official CLI on npm (@instantlyai/cli 0.2.7): default schedule, body HTML conversion, retry rules.
  *
- * Wiring: createInstantlyProvider({ apiKey: INSTANTLY_API_KEY, sendingAccounts: INSTANTLY_SENDING_ACCOUNTS split on
- * commas, dailyLimit: INSTANTLY_DAILY_LIMIT }). On boot, call provider.ensureWebhooks(webhookUrlFor(PUBLIC_URL,
+ * Wiring: createInstantlyProvider({ apiKey: INSTANTLY_API_KEY, dailyLimit: INSTANTLY_DAILY_LIMIT }). Each client's
+ * campaigns send from its own inboxes (BusinessProfile.fromEmails). On boot, call provider.ensureWebhooks(webhookUrlFor(PUBLIC_URL,
  * WEBHOOK_SECRET)). Mount POST `${INSTANTLY_WEBHOOK_PATH}/:secret`, check it with webhookSecretMatches, dedupe with
  * instantlyWebhookKey, then call parseInstantlyWebhook. The worker (core/backstop.ts) also reads received emails
  * the webhooks missed and resumes webhooks Instantly disabled.
@@ -24,6 +24,7 @@ export {
   MAX_LEADS_PER_REQUEST,
   VAR,
   buildCampaignBody,
+  buildCampaignUpdate,
   buildInstantCampaignBody,
   buildInstantSchedule,
   buildSchedule,

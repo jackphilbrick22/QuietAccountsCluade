@@ -28,6 +28,9 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
 };
 const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "owner_text", "owner_message", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
 
+/** An owner's UNDO a person finishes with Restore plan: a refund set up, the platform down, or an inbox another client has now. */
+const RESTORE = ["undo_refund", "undo_platform", "undo_inbox"];
+
 const itemKey = (it: ReviewItem) =>
   `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "seq" in it ? it.seq : "id" in it ? it.id : ""}`;
 
@@ -269,7 +272,7 @@ function Item({ it }: { it: ReviewItem }) {
           <div className="text-[14px] font-semibold">{it.title}</div>
           {it.detail && <p className="text-[13px] text-ink-2">{it.detail}</p>}
           <div className="flex flex-wrap gap-2">
-            {(it.alertKind === "undo_refund" || it.alertKind === "undo_platform") && (
+            {RESTORE.includes(it.alertKind ?? "") && (
               <Btn
                 variant="primary"
                 disabled={!!busy}
@@ -287,7 +290,7 @@ function Item({ it }: { it: ReviewItem }) {
                 Restore plan
               </Btn>
             )}
-            <Btn variant={it.alertKind === "undo_refund" || it.alertKind === "undo_platform" ? "ghost" : "primary"} disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
+            <Btn variant={RESTORE.includes(it.alertKind ?? "") ? "ghost" : "primary"} disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
             <Btn variant="ghost" onClick={() => open("activity")}>

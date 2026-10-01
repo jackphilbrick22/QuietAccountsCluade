@@ -30,6 +30,15 @@
  *  - A deleted lead that gets re-uploaded restarts at step 1, and Instantly recommends not deleting leads that
  *    replied. https://help.instantly.ai/en/articles/13886841-why-follow-ups-are-still-sending-to-leads-who-replied
  *    So stopLead keeps leads Instantly has already stopped, which keeps reply tracking and the workspace skip intact.
+ *  - An inbox's sender name is its account's first_name + last_name ("Sender first name" / "Sender last name" in
+ *    Instantly's CLI). PATCH /api/v2/accounts/{email} { first_name, last_name } sets it (→ Account);
+ *    GET /api/v2/accounts/{email} → Account { email, first_name, last_name, ... }.
+ *    https://developer.instantly.ai/api-reference/account/patch-account ,
+ *    https://developer.instantly.ai/api-reference/account/get-account
+ *  - GET /api/v2/account-campaign-mappings/{email}?limit&starting_after → { items[{ campaign_id, campaign_name,
+ *    timestamp_created, status }], next_starting_after }: every campaign the inbox sends in.
+ *    https://developer.instantly.ai/api-reference/accountcampaignmapping/get-campaigns-associated-with-an-email
+ *  - Path parameters (an inbox's address) go through encodeURIComponent, as in Instantly's CLI (src/core/handler.ts).
  *
  * ASSUMED
  *  - A new campaign is a Draft (status 0) and a campaign whose leads all finished becomes Completed (3). Neither
@@ -48,6 +57,7 @@ import { ProviderError } from "../../contracts.ts";
 import {
   MAX_LEADS_PER_REQUEST,
   buildCampaignBody,
+  buildCampaignUpdate,
   buildInstantCampaignBody,
   campaignName,
   checkSteps,
@@ -70,8 +80,6 @@ export interface InstantlyProviderOptions {
   apiKey: string;
   fetch?: Fetch;
   sleep?: Sleep;
-  /** Mailboxes the campaign rotates through (Instantly `email_list`). */
-  sendingAccounts?: string[];
   /** Instantly campaign `daily_limit`. */
   dailyLimit?: number;
   baseUrl?: string;
@@ -146,7 +154,6 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
     random: opts.random,
   });
   const settings: CampaignSettings = {
-    sendingAccounts: opts.sendingAccounts,
     dailyLimit: opts.dailyLimit,
     threadFollowUps: opts.threadFollowUps ?? true,
     insertUnsubscribeHeader: opts.insertUnsubscribeHeader ?? true,
@@ -161,6 +168,7 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
   const inflight = new Map<string, Promise<string>>();
 
   const campaignPath = (id: string) => `/campaigns/${encodeURIComponent(id)}`;
+  const accountPath = (inbox: string) => `/accounts/${encodeURIComponent(normalizeEmail(inbox))}`;
 
   /** The oldest campaign named exactly `name`; with `among`, only one of those ids. */
   async function findCampaignByName(name: string, among?: ReadonlySet<string>): Promise<InstantlyCampaign | undefined> {
@@ -424,6 +432,27 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
 
     async pauseCampaign(_business, campaignId, paused) {
       await client.post(`${campaignPath(campaignId)}/${paused ? "pause" : "activate"}`, undefined, { idempotent: true });
+    },
+
+    async updateCampaign(business, campaignId, { instant }) {
+      await client.patch(campaignPath(campaignId), buildCampaignUpdate(business, { instant }, settings, now()));
+    },
+
+    async setInboxName(inbox, name) {
+      await client.patch(accountPath(inbox), { first_name: name.first, last_name: name.last });
+    },
+
+    async inboxName(inbox) {
+      const a = await client.get<{ first_name?: string | null; last_name?: string | null }>(accountPath(inbox));
+      return { first: a?.first_name ?? "", last: a?.last_name ?? "" };
+    },
+
+    async inboxCampaigns(inbox) {
+      const out: { id: string; name: string }[] = [];
+      for await (const m of client.paginate<{ campaign_id?: string; campaign_name?: string }>(`/account-campaign-mappings/${encodeURIComponent(normalizeEmail(inbox))}`)) {
+        if (m?.campaign_id) out.push({ id: m.campaign_id, name: m.campaign_name ?? "" });
+      }
+      return out;
     },
 
     ensureWebhooks(url, events, webhookOpts) {

@@ -78,6 +78,14 @@ export interface SequencerProvider {
    */
   stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained" | "withdrawn"): Promise<void>;
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
+  /** Bring a campaign made earlier up to the business's send days, window, timezone and inboxes. */
+  updateCampaign(business: BusinessProfile, campaignId: string, opts: { instant?: boolean }): Promise<void>;
+  /** Set the name a sending inbox sends under. */
+  setInboxName(inbox: string, name: { first: string; last: string }): Promise<void>;
+  /** The name a sending inbox sends under, as the platform holds it. */
+  inboxName(inbox: string): Promise<{ first: string; last: string }>;
+  /** Every campaign a sending inbox sends in. */
+  inboxCampaigns(inbox: string): Promise<{ id: string; name: string }[]>;
   /** Answer a reply in its own thread, from the mailbox it came in on. Refuses when the thread isn't addressed to `to`. */
   replyTo?(business: BusinessProfile, thread: { replyEmailId: string; account: string; to: string; subject: string }, text: string): Promise<void>;
   /** Emails the platform received since `since` (ISO): the backstop for replies its webhooks never announced. */

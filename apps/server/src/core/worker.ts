@@ -1,6 +1,7 @@
 import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { localIso } from "./clock.ts";
+import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
 import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
@@ -194,7 +195,8 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
         await d.accounts.withAccount(bid, (state) => find(state, local, features(d.cfg)));
         d.accounts.repo.markScanned(bid, now.toISOString());
       }
-      if (biz.profile.plan.stage === "paying" && !biz.paused) {
+      // with Instantly, a client with no inbox of its own isn't planned (its page says so)
+      if (biz.profile.plan.stage === "paying" && !biz.paused && !noInbox(d, biz.profile)) {
         const p = await plan(d, bid, { approve: true });
         report.planned += p.people;
       }

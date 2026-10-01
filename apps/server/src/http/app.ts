@@ -46,6 +46,7 @@ import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
 import { NotFound, NotReady } from "../core/accounts.ts";
 import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
+import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import {
   answerInThread,
@@ -89,6 +90,12 @@ const TRADES = ["tree", "lawn", "landscape", "septic", "fence", "concrete", "pre
 // a trade the engine knows but this list leaves out fails the typecheck here
 const _everyTrade: Record<Exclude<TradeId, (typeof TRADES)[number]>, never> = {};
 
+/** A client's own sending inboxes: lowercase, each once. */
+const Inboxes = z
+  .array(z.string().trim().toLowerCase().email())
+  .max(20)
+  .transform((xs) => [...new Set(xs)]);
+
 const CreateBusiness = z.object({
   id: z
     .string()
@@ -107,16 +114,21 @@ const CreateBusiness = z.object({
   state: z.string().length(2).optional(),
   timezone: z.string().default("America/New_York"),
   replyTo: z.string().email().optional(),
-  /** This client's own sending address and name (direct mail). Left out: the server's sender, "<signer> at <business>". */
-  fromEmail: z.string().email().optional(),
+  /** This client's own sending inboxes and the name on them. Left out: no inbox (direct mail: the server's sender), "<signer> at <business>". */
+  fromEmails: Inboxes.optional(),
   fromName: z.string().min(2).max(80).optional(),
   businessPhone: z.string().optional(),
   avgJobValue: z.number().positive().optional(),
   annualRevenue: z.number().positive().optional(),
 });
 
+// .partial() keeps .default(): a field a patch leaves out must stay as it is, not go back to its default
 const ProfilePatch = CreateBusiness.partial().extend({
-  sendDays: z.array(z.number().int().min(0).max(6)).optional(),
+  trade: z.enum(TRADES).optional(),
+  signerRole: z.enum(["owner", "office"]).optional(),
+  timezone: z.string().optional(),
+  // none would leave its campaigns in Instantly unable to take any change
+  sendDays: z.array(z.number().int().min(0).max(6)).min(1).optional(),
   sendWindow: z.tuple([z.number().int().min(0).max(23), z.number().int().min(1).max(24)]).optional(),
   weeklyNewContacts: z.number().int().min(5).max(1000).optional(),
   minQuoteValue: z.number().min(0).optional(),
@@ -157,7 +169,7 @@ function defaultProfile(input: z.infer<typeof CreateBusiness>, id: string, today
     signerName: input.signerName,
     signerRole: input.signerRole,
     replyTo: input.replyTo,
-    fromEmail: input.fromEmail,
+    fromEmails: input.fromEmails,
     fromName: input.fromName,
     businessPhone: input.businessPhone,
     mailingAddress: input.mailingAddress,
@@ -287,6 +299,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const input = CreateBusiness.parse(await c.req.json());
     const cell = ownerCell(input.ownerPhone);
     if (cell === null) return badCell(c);
+    const taken = inboxTaken(d, input.id ?? "", input.fromEmails ?? []);
+    if (taken) return inboxClash(c, taken);
     const id = input.id ?? `${input.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 32)}-${createHash("sha1").update(input.name + d.clock().toISOString()).digest("hex").slice(0, 5)}`;
     const today = localIso(d.clock(), input.timezone).slice(0, 10);
     await d.accounts.create(defaultProfile({ ...input, ownerPhone: cell }, id, today), today);
@@ -313,12 +327,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
       patch.ownerPhone = cell;
     }
     const id = c.req.param("id");
+    // one inbox sends for one client: new inboxes, or a client taking its inboxes back (no longer cancelled), are
+    // refused when another client holds one of them
+    const now = d.accounts.peek(id)?.state.dataset.business;
+    const next = now && { ...now, fromEmails: patch.fromEmails ?? now.fromEmails, plan: { ...now.plan, ...patch.plan } };
+    const taken = next && holdsInboxes(next) && (patch.fromEmails || !holdsInboxes(now)) ? inboxTaken(d, id, next.fromEmails ?? []) : undefined;
+    if (taken) return inboxClash(c, taken);
     let stageBefore: string | undefined;
     await d.accounts.withAccount(id, (state) => {
       const b = state.dataset.business;
       stageBefore = b.plan.stage;
       const { voice, persistence, plan: planPatch, ...rest } = patch;
+      // an inbox taken off still gets the replies to the notes it sent: they're never read as cold email
+      const gone = rest.fromEmails ? (b.fromEmails ?? []).filter((x) => !rest.fromEmails!.includes(x)) : [];
       Object.assign(b, rest);
+      if (gone.length) b.pastInboxes = [...new Set([...(b.pastInboxes ?? []), ...gone])];
       // the operator set this owner's cell: a sign-up's unconfirmed one is settled
       if (rest.ownerPhone && b.signup?.sharedCell) b.signup = { from: b.signup.from };
       if (rest.ownerName) b.ownerFirstName = rest.ownerName.split(/\s+/)[0] ?? b.ownerFirstName;
@@ -371,6 +394,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
     repo.audit(id, "operator", "business.update", patch);
     return c.json({ ok: true, warnings: patch.ownerPhone ? sharedCell(id, patch.ownerPhone) : [] });
   });
+
+  function inboxClash(c: Context<Env>, t: { inbox: string; by: string }) {
+    return c.json({ error: `${t.inbox} already sends for ${t.by}. One inbox sends for one client: give this one its own.` }, 409);
+  }
 
   /** One owner may run two brands from one cell; that works, but texts that don't say which one get a question back. */
   function sharedCell(id: string, cell: string | undefined): string[] {
@@ -425,6 +452,9 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const args = [id, cancelled.at.slice(0, 19), cancelled.refund?.yearStart ?? ""] as const;
     const sent = !!cancelled.refund && !!repo.db.get(`SELECT 1 FROM owner_messages WHERE ${theirs} AND delivery = 'sent'`, ...args);
     if (sent) return c.json({ error: "The refund text already went out. Settle the refund with them first, then set the plan up by hand." }, 409);
+    // one inbox sends for one client: one of theirs another client was given after the cancel is refused, as in Settings
+    const taken = inboxTaken(d, id, l.state.dataset.business.fromEmails ?? []);
+    if (taken) return inboxClash(c, taken);
     if (!(await finishCancelWithdrawals(d, id))) return c.json({ error: "The sending platform didn't take back the cancelled notes yet. Try again in a few minutes." }, 409);
     let res: ReturnType<typeof undoCancel>;
     await d.accounts.withAccount(id, (state) => {
@@ -1041,6 +1071,13 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const ev = d.parsers.instantly?.(safeJson(raw));
     if (!ev) {
       repo.finishWebhook(id, "ignored");
+      return c.json({ ok: true, ignored: true });
+    }
+    // Jack's cold email shares the workspace: its events are logged, never read
+    const cold = coldEvent(d, { campaignId: ev.campaignId, inbox: ev.type === "reply" ? ev.toAccount : ev.type === "account_error" ? ev.account : undefined });
+    if (cold) {
+      d.log(`[instantly] ${ev.type} left alone, cold email: ${cold}`);
+      repo.finishWebhook(id, "ignored", undefined, `cold email: ${cold}`);
       return c.json({ ok: true, ignored: true });
     }
     // One reply, one reading: the reply backstop claims the same key when it reads this email first.

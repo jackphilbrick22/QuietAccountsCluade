@@ -228,7 +228,7 @@ describe("each client can send as itself (n51)", () => {
   it("uses the client's From name and address when set, the server's otherwise", async () => {
     const h = make();
     const email = h.d.email as LogEmailProvider;
-    await h.business("ridge", { fromEmail: "sarah@ridgelinetree.com", fromName: "Sarah at Ridgeline" });
+    await h.business("ridge", { fromEmails: ["Sarah@RidgelineTree.com", "office@ridgelinetree.com"], fromName: "Sarah at Ridgeline" });
     await h.business("plain", { name: "Plain Tree" });
     await addLead(h, "ridge", "r1", "Kim Tran", "2026-09-29T08:00:00", { intent: "question" });
     await addLead(h, "plain", "r2", "Dan Ruiz", "2026-09-29T08:00:00", { intent: "question" });
@@ -237,11 +237,10 @@ describe("each client can send as itself (n51)", () => {
     expect((await h.api("POST", "/api/businesses/plain/replies/r2/answer", { text: "Yes, we can grind the stump the same day." })).status).toBe(200);
     expect(email.sent.at(-1)).toMatchObject({ fromName: "Sarah at Plain Tree" });
     expect(email.sent.at(-1)!.fromEmail).toBeUndefined();
-    expect((await h.api("PATCH", "/api/businesses/plain", { fromEmail: "not an email" })).status).toBe(400);
-    // Instantly: the client's own mailbox, else the server's rotation
-    const pool = { sendingAccounts: ["box1@qa-mail.com", "box2@qa-mail.com"] };
-    expect(buildCampaignBody(h.d.accounts.peek("ridge")!.state.dataset.business, 3, pool).email_list).toEqual(["sarah@ridgelinetree.com"]);
-    expect(buildCampaignBody(h.d.accounts.peek("plain")!.state.dataset.business, 3, pool).email_list).toEqual(pool.sendingAccounts);
+    expect((await h.api("PATCH", "/api/businesses/plain", { fromEmails: ["not an email"] })).status).toBe(400);
+    // Instantly: the client's own inboxes, and no campaign at all without one (never a server-wide pool)
+    expect(buildCampaignBody(h.d.accounts.peek("ridge")!.state.dataset.business, 3).email_list).toEqual(["sarah@ridgelinetree.com", "office@ridgelinetree.com"]);
+    expect(() => buildCampaignBody(h.d.accounts.peek("plain")!.state.dataset.business, 3)).toThrow(/Plain Tree has no sending inbox of its own/);
   });
 });
 

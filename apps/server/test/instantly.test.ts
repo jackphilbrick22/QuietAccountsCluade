@@ -47,6 +47,7 @@ function business(over: Partial<BusinessProfile> = {}): BusinessProfile {
     channels: { email: "live" },
     plan: { stage: "trial", trialSize: 50, monthlyPrice: 500, freeMonths: [] },
     createdOn: "2026-09-01",
+    fromEmails: ["sarah@oaksons-mail.com"],
     ...over,
   };
 }
@@ -84,9 +85,9 @@ describe("ensureCampaign", () => {
       "GET /campaigns": () => ({ body: { items: [{ id: "near-miss", name: "QA · Oak & Sons Tree · biz_oak · 3-step (old)" }], next_starting_after: null } }),
       "POST /campaigns": (c) => ({ body: { id: "camp-3", name: c.body.name, status: 0 } }),
     });
-    const p = createInstantlyProvider({ apiKey: "key_123", fetch: api.fetch, sendingAccounts: ["sarah@oaksons-mail.com", " dave@oaksons-mail.com "], dailyLimit: 40 });
+    const p = createInstantlyProvider({ apiKey: "key_123", fetch: api.fetch, dailyLimit: 40 });
 
-    expect(await p.ensureCampaign(business(), { maxSteps: 3 })).toEqual({ campaignId: "camp-3" });
+    expect(await p.ensureCampaign(business({ fromEmails: ["sarah@oaksons-mail.com", "dave@oaksons-mail.com"] }), { maxSteps: 3 })).toEqual({ campaignId: "camp-3" });
 
     const [list] = api.callsTo("GET", "/campaigns");
     expect(list!.query.search).toBe("QA · Oak & Sons Tree · biz_oak · 3-step");
@@ -198,8 +199,8 @@ describe("ensureCampaign", () => {
         return { body: { id: made.at(-1)!.id, status: 0 } };
       },
     });
-    const boston = business({ id: "mts-boston", name: "Monster Tree Service", fromEmail: "office@mts-boston.com" });
-    const denver = business({ id: "mts-denver", name: "Monster Tree Service", fromEmail: "office@mts-denver.com", timezone: "America/Denver" });
+    const boston = business({ id: "mts-boston", name: "Monster Tree Service", fromEmails: ["office@mts-boston.com"] });
+    const denver = business({ id: "mts-denver", name: "Monster Tree Service", fromEmails: ["office@mts-denver.com"], timezone: "America/Denver" });
     const first = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
     const b = (await first.ensureCampaign(boston, { maxSteps: 2 })).campaignId;
     // a restart: nothing cached, every campaign found by name
@@ -264,6 +265,63 @@ describe("ensureCampaign", () => {
     expect(INSTANTLY_TIMEZONES).toContain(paris);
     expect(["Arctic/Longyearbyen", "Europe/Belgrade", "Africa/Ceuta", "Europe/Sarajevo"]).toContain(paris);
     expect(() => toInstantlyTimezone("Mars/Olympus_Mons")).toThrow(ProviderError);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Sending inboxes and campaign updates                                */
+/* ------------------------------------------------------------------ */
+
+describe("sending inboxes", () => {
+  it("sets an inbox's name and reads it back at /accounts/{email}, and lists every campaign it's in, page by page", async () => {
+    const api = fakeInstantly({
+      "PATCH /accounts/:email": (c) => ({ body: { email: "sarah@oaksons-mail.com", ...c.body } }),
+      "GET /accounts/:email": () => ({ body: { email: "sarah@oaksons-mail.com", first_name: "Sarah", last_name: null, status: 1 } }),
+      "GET /account-campaign-mappings/:email": [
+        () => ({ body: { items: [{ campaign_id: "camp-2", campaign_name: "QA · Oak & Sons Tree · biz_oak · 2-step", timestamp_created: "2026-09-02T00:00:00Z", status: 1 }], next_starting_after: "2026-09-02T00:00:00Z" } }),
+        () => ({ body: { items: [{ campaign_id: "cold-1", campaign_name: "Cold: tree owners", timestamp_created: "2026-09-01T00:00:00Z", status: 2 }] } }),
+      ],
+    });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await p.setInboxName(" Sarah@OakSons-Mail.com", { first: "Sarah", last: "at Oak & Sons Tree" });
+    const [patch] = api.calls;
+    expect(patch).toMatchObject({ method: "PATCH", path: "/accounts/sarah%40oaksons-mail.com", body: { first_name: "Sarah", last_name: "at Oak & Sons Tree" } });
+    expect(await p.inboxName("sarah@oaksons-mail.com")).toEqual({ first: "Sarah", last: "" });
+    expect(await p.inboxCampaigns("sarah@oaksons-mail.com")).toEqual([
+      { id: "camp-2", name: "QA · Oak & Sons Tree · biz_oak · 2-step" },
+      { id: "cold-1", name: "Cold: tree owners" },
+    ]);
+    const pages = api.calls.filter((c) => c.path === "/account-campaign-mappings/sarah%40oaksons-mail.com");
+    expect(pages.map((c) => c.query.starting_after)).toEqual([undefined, "2026-09-02T00:00:00Z"]);
+  });
+
+  it("a missing inbox is a 404 the caller can tell apart", async () => {
+    const api = fakeInstantly({});
+    api.inbox("gone@oaksons-mail.com").missing = true;
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await expect(p.setInboxName("gone@oaksons-mail.com", { first: "Sarah", last: "" })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("brings a campaign made earlier up to the business's schedule and inboxes (PATCH /campaigns/{id})", async () => {
+    const api = fakeInstantly({ "GET /campaigns": () => ({ body: { items: [] } }) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, dailyLimit: 40 });
+    const b = business({ sendDays: [1, 3], sendWindow: [9, 12], timezone: "America/Chicago", fromEmails: ["sarah@oaksons-mail.com", "dave@oaksons-mail.com"] });
+    await p.updateCampaign(b, "camp-2", {});
+    await p.updateCampaign(b, "camp-now", { instant: true });
+    const [nurture, instant] = api.callsTo("PATCH", "/campaigns/camp-2").concat(api.callsTo("PATCH", "/campaigns/camp-now"));
+    expect(nurture!.body).toEqual({
+      campaign_schedule: { schedules: [{ name: "Quiet Accounts", timing: { from: "09:00", to: "12:00" }, days: { "0": false, "1": true, "2": false, "3": true, "4": false, "5": false, "6": false }, timezone: "America/Chicago" }] },
+      email_list: ["sarah@oaksons-mail.com", "dave@oaksons-mail.com"],
+      daily_max_leads: 25,
+    });
+    // the instant campaign keeps its every-day hours; only the timezone and inboxes move
+    expect(instant!.body.campaign_schedule.schedules[0]).toMatchObject({ timing: { from: "07:00", to: "20:00" }, timezone: "America/Chicago" });
+    expect(instant!.body.email_list).toEqual(["sarah@oaksons-mail.com", "dave@oaksons-mail.com"]);
+    expect(instant!.body.daily_max_leads).toBeUndefined();
+    // a business with no inbox of its own gets no campaign at all, made or updated
+    await expect(p.updateCampaign(business({ fromEmails: [] }), "camp-2", {})).rejects.toThrow(/Oak & Sons Tree has no sending inbox of its own/);
+    await expect(p.ensureCampaign(business({ id: "biz_new", fromEmails: undefined }), { maxSteps: 2 })).rejects.toThrow(/no sending inbox/);
+    expect(api.callsTo("POST", "/campaigns")).toHaveLength(0);
   });
 });
 
@@ -385,7 +443,7 @@ describe("instant campaign", () => {
       "GET /campaigns": () => ({ body: { items: [] } }),
       "POST /campaigns": (c) => ({ body: { id: c.body.name.endsWith("instant") ? "camp-now" : "camp-1", status: 0 } }),
     });
-    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@oaksons-mail.com"], dailyLimit: 40 });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, dailyLimit: 40 });
     expect(await p.ensureCampaign(business({ timezone: "America/Chicago" }), { maxSteps: 1, instant: true })).toEqual({ campaignId: "camp-now" });
     const [create] = api.callsTo("POST", "/campaigns");
     expect(api.callsTo("GET", "/campaigns")[0]!.query.search).toBe("QA · Oak & Sons Tree · biz_oak · instant");

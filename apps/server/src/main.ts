@@ -33,7 +33,7 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
   let email: OutboundProvider;
   if (cfg.EMAIL_PROVIDER === "smtp") email = new SmtpEmailProvider(cfg.SMTP_URL!, { from: cfg.SMTP_FROM });
   else if (cfg.EMAIL_PROVIDER === "instantly")
-    email = createInstantlyProvider({ apiKey: cfg.INSTANTLY_API_KEY!, sendingAccounts: cfg.INSTANTLY_SENDING_ACCOUNTS?.split(",").map((s) => s.trim()).filter(Boolean), dailyLimit: cfg.INSTANTLY_DAILY_LIMIT });
+    email = createInstantlyProvider({ apiKey: cfg.INSTANTLY_API_KEY!, dailyLimit: cfg.INSTANTLY_DAILY_LIMIT });
   else email = new LogEmailProvider();
   // No log fallback behind Twilio: an owner without a cell is emailed or lands in review (deliverOwnerMessages),
   // never quietly "sent" to stdout.

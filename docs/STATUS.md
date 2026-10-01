@@ -64,8 +64,38 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     10k-quote performance test, two copy tests, four server files), each green when rerun on its own; the scan
     takes the same time with and without A2 at the same load.
 
+- **A3. The sender's name and per-client inboxes.**
+  - A client's sending inboxes are a list (fromEmails); an existing account's one address became its one inbox.
+    With Instantly, a client with no inbox of its own isn't planned and nothing of its goes out; the server-wide
+    INSTANTLY_SENDING_ACCOUNTS pool is gone.
+  - One inbox sends for one client (one helper, `holdsInboxes`, that B3 extends with "one pass done"), checked in
+    Settings, Restore plan and before every send.
+  - Before a client's first activation and whenever its inboxes, signer or name change, each inbox is checked: in
+    no campaign this server didn't make, in no other sending client's campaign, named for the client ("Sarah" / "at
+    Capital City Landscaping", or the From name split at its first word), and the name read back. A refusal holds
+    the client like a pause, shows on its page and in Needs a person (one alert per client), and is retried every 15
+    minutes or at once on a Settings change.
+  - Later changes to send days, hours, timezone, pace or inboxes go to the client's existing Instantly campaigns.
+  - Cold email: webhook and reply-check events from campaigns the server didn't make, or inboxes no client uses or
+    used, are only logged (no Claude read, no queue item); an error on an unused inbox warns nobody.
+  - Also fixed: every Settings save was resetting trade, timezone and signer role to their defaults (zod's
+    `.partial()` keeps `.default()`).
+  - Brief notes: the three Instantly calls run campaigns-check first, so an inbox in a cold campaign is refused
+    before it is renamed (renaming first would change the cold campaign's sender name); accounts without fromEmail
+    used to send from the server pool and now send nothing until they get an inbox.
+  - Left: the one-pass inbox math (B3); ending a pass must clear the inbox check the way a cancel does (B3); the
+    new-client form has no inbox field (add it in Settings).
+  - Server 340.
+
 **Live steps for Jack**
 - (A1) Leave FEATURE_NEW_REQUESTS and FEATURE_YEARLY unset (off) in production.
+- (A3) Give each client its own inbox, connected in Instantly, in Settings before planning; keep client inboxes out
+  of your cold campaigns. Check the Instantly API key can update accounts and campaigns and read account-campaign
+  mappings (a client page saying "Instantly wouldn't name <inbox>" means it can't), and that Instantly takes an empty
+  last name for a one-word From name. PATCH /campaigns has never run against live Instantly: if a client's activity
+  says "Couldn't update this client's campaigns in Instantly", that campaign is still on its old settings.
+- (A3) To move an inbox between clients, take it off the first client in Settings first; the second starts sending
+  from it within about 15 minutes.
 
 ## 2026-09-30 — iteration 3
 

@@ -37,6 +37,11 @@
  *    daily_max_leads, email_gap minutes apart plus a random wait, inside its schedule. That is right for a
  *    nurture sequence and wrong for the answer to a new request, so each business has a second, 1-step
  *    "instant" campaign: new leads first, no new-lead cap, minimal gaps, every day 7:00–20:00 local.
+ *  - PATCH /api/v2/campaigns/{id} takes the create fields, all optional (`minProperties: 1`): campaign_schedule,
+ *    email_list, daily_max_leads... A campaign is made once and kept, so later changes to the schedule or the
+ *    inboxes go through it. https://developer.instantly.ai/api-reference/campaign/patch-campaign
+ *  - email_list is the inboxes the campaign sends from. A client's campaigns list only the client's own inboxes;
+ *    nothing falls back to a server-wide pool.
  *
  * ASSUMED
  *  - The API accepts "" as a follow-up subject, as the UI does. (The spec requires the field and sets no minLength.)
@@ -74,7 +79,6 @@ export const VAR = {
 } as const;
 
 export interface CampaignSettings {
-  sendingAccounts?: string[];
   dailyLimit?: number;
   /** Follow-ups reply in note 1's thread (empty template subject). Default true. */
   threadFollowUps?: boolean;
@@ -224,25 +228,32 @@ function baseBody(name: string, schedule: InstantlySchedule, steps: InstantlySte
     prioritize_new_leads: false,
     match_lead_esp: false,
   };
-  const accounts = (settings.sendingAccounts ?? []).map((a) => a.trim()).filter(Boolean);
-  if (accounts.length) body.email_list = accounts;
   if (settings.dailyLimit && settings.dailyLimit > 0) body.daily_limit = settings.dailyLimit;
   return body;
 }
 
 /**
- * A client with its own sending mailbox (connected in Instantly) sends only from it, so one client's list never
- * spends another's reputation; everyone else rotates through the server's mailboxes. Applies when a campaign is created.
+ * A client sends only from its own inboxes, so one client's list never spends another's reputation, and never from
+ * the cold-email ones. With none there's no campaign to make.
  */
-function mailboxesFor(business: Pick<BusinessProfile, "fromEmail">, settings: CampaignSettings): CampaignSettings {
-  return business.fromEmail?.trim() ? { ...settings, sendingAccounts: [business.fromEmail.trim()] } : settings;
+function inboxesOf(business: Pick<BusinessProfile, "name" | "fromEmails">): string[] {
+  const inboxes = business.fromEmails ?? [];
+  if (!inboxes.length) throw new ProviderError(`${displayName(business)} has no sending inbox of its own`, "instantly");
+  return inboxes;
 }
 
 export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
-  const body = baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), mailboxesFor(business, settings));
+  const body = { ...baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), settings), email_list: inboxesOf(business) };
   const perDay = dailyNewLeads(business, settings.dailyLimit);
   if (perDay !== undefined) body.daily_max_leads = perDay;
   return body;
+}
+
+/** What a later change to the business moves in a campaign made earlier: its schedule, its inboxes, its new-lead pace. */
+export function buildCampaignUpdate(business: BusinessProfile, opts: { instant?: boolean }, settings: CampaignSettings = {}, ref?: Date): Pick<CreateCampaignBody, "campaign_schedule" | "email_list" | "daily_max_leads"> {
+  if (opts.instant) return { campaign_schedule: buildInstantSchedule(business, ref), email_list: inboxesOf(business) };
+  const perDay = dailyNewLeads(business, settings.dailyLimit);
+  return { campaign_schedule: buildSchedule(business, ref), email_list: inboxesOf(business), ...(perDay !== undefined ? { daily_max_leads: perDay } : {}) };
 }
 
 /** Every day, ANSWER_HOURS (7:00–20:00) local: a request that lands at night is answered at 7:00. */
@@ -253,7 +264,8 @@ export function buildInstantSchedule(business: Pick<BusinessProfile, "timezone">
 /** The 1-step campaign that answers a new request within minutes: new leads first, no new-lead cap, minimal gaps. */
 export function buildInstantCampaignBody(business: BusinessProfile, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
   return {
-    ...baseBody(instantCampaignName(business), buildInstantSchedule(business, ref), buildSteps(1), mailboxesFor(business, settings)),
+    ...baseBody(instantCampaignName(business), buildInstantSchedule(business, ref), buildSteps(1), settings),
+    email_list: inboxesOf(business),
     prioritize_new_leads: true,
     email_gap: 1,
     random_wait_max: 1,

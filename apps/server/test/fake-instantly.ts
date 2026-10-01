@@ -16,18 +16,71 @@ export function json(status: number, body: unknown, headers: Record<string, stri
   return new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
-/** Routes are "METHOD /path" with optional ":param" segments. An array answers call 1, 2, 3... in turn (the last repeats). */
+/** One sending inbox as the fake holds it: the name it sends under, and campaigns it's in that the fake didn't see made. */
+export interface FakeInbox {
+  first_name: string;
+  last_name: string;
+  /** Campaigns made elsewhere (Jack's cold email), on top of the ones made or changed through the fake with it listed. */
+  campaigns: { campaign_id: string; campaign_name: string }[];
+  /** The name never changes, whatever is PATCHed (a read-back that doesn't match). */
+  keepsName?: boolean;
+  /** Not connected in the workspace: 404. */
+  missing?: boolean;
+}
+
+/**
+ * Routes are "METHOD /path" with optional ":param" segments. An array answers call 1, 2, 3... in turn (the last repeats).
+ * Unless a test routes them itself, the fake also serves the sending inboxes: PATCH / GET /accounts/{email} (every inbox
+ * starts out as "Jack Philbrick"), GET /account-campaign-mappings/{email} and PATCH /campaigns/{id}. `inbox(email)` is
+ * what it holds for one inbox; `made` is every campaign made (POST /campaigns) or changed through it, with its inboxes.
+ */
 export function fakeInstantly(routes: Record<string, Handler | Handler[]>) {
   const calls: Call[] = [];
   const seen = new Map<string, number>();
+  const inboxes = new Map<string, FakeInbox>();
+  const inbox = (email: string): FakeInbox => {
+    const key = decodeURIComponent(email).toLowerCase();
+    if (!inboxes.has(key)) inboxes.set(key, { first_name: "Jack", last_name: "Philbrick", campaigns: [] });
+    return inboxes.get(key)!;
+  };
+  const made = new Map<string, { name: string; email_list: string[] }>();
+  const account = (c: Call) => {
+    const email = decodeURIComponent(c.path.split("/")[2]!);
+    return { email, x: inbox(email) };
+  };
+  const notFound: Reply = { status: 404, body: { statusCode: 404, error: "Not Found", message: "Resource not found" } };
+  const builtIn: Record<string, Handler> = {
+    "PATCH /accounts/:email": (c) => {
+      const { email, x } = account(c);
+      if (x.missing) return notFound;
+      if (!x.keepsName) Object.assign(x, { first_name: c.body.first_name ?? x.first_name, last_name: c.body.last_name ?? x.last_name });
+      return { body: { email, first_name: x.first_name, last_name: x.last_name } };
+    },
+    "GET /accounts/:email": (c) => {
+      const { email, x } = account(c);
+      return x.missing ? notFound : { body: { email, first_name: x.first_name, last_name: x.last_name } };
+    },
+    "GET /account-campaign-mappings/:email": (c) => {
+      const { email, x } = account(c);
+      const ours = [...made].filter(([, m]) => m.email_list.includes(email)).map(([id, m]) => ({ campaign_id: id, campaign_name: m.name }));
+      return x.missing ? notFound : { body: { items: [...x.campaigns, ...ours].map((m) => ({ ...m, timestamp_created: "2026-09-01T00:00:00.000Z", status: 1 })) } };
+    },
+    "PATCH /campaigns/:id": (c) => {
+      const id = c.path.split("/")[2]!;
+      const m = made.get(id) ?? { name: id, email_list: [] };
+      made.set(id, { ...m, ...(c.body.email_list ? { email_list: c.body.email_list } : {}) });
+      return { body: { id, name: m.name } };
+    },
+  };
   const find = (method: string, path: string) => {
-    for (const [key, h] of Object.entries(routes)) {
-      const [m, pattern] = key.split(" ") as [string, string];
-      if (m !== method) continue;
-      const a = pattern.split("/");
-      const b = path.split("/");
-      if (a.length === b.length && a.every((seg, i) => seg.startsWith(":") || seg === b[i])) return { key, h };
-    }
+    for (const table of [routes, builtIn])
+      for (const [key, h] of Object.entries(table)) {
+        const [m, pattern] = key.split(" ") as [string, string];
+        if (m !== method) continue;
+        const a = pattern.split("/");
+        const b = path.split("/");
+        if (a.length === b.length && a.every((seg, i) => seg.startsWith(":") || seg === b[i])) return { key, h };
+      }
     return undefined;
   };
   const fetch: Fetch = async (input, init) => {
@@ -51,9 +104,11 @@ export function fakeInstantly(routes: Record<string, Handler | Handler[]>) {
       handler = handler[Math.min(n, handler.length - 1)]!;
     }
     const out = await handler(call);
+    const id = (out.body as { id?: unknown } | undefined)?.id;
+    if (method === "POST" && path === "/campaigns" && (out.status ?? 200) < 300 && typeof id === "string") made.set(id, { name: call.body.name, email_list: call.body.email_list ?? [] });
     return json(out.status ?? 200, out.body, out.headers);
   };
-  return { fetch, calls, callsTo: (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path) };
+  return { fetch, calls, callsTo: (method: string, path: string) => calls.filter((c) => c.method === method && c.path === path), inbox, made };
 }
 
 export function recordingSleep() {

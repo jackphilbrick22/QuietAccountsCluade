@@ -1,6 +1,7 @@
 import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { readLeadTextWithClaude } from "../agents/ownerText.ts";
+import { inboxTaken } from "./senders.ts";
 import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
@@ -504,6 +505,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (pool.length > 1) return askWhich();
     const b = pool[0];
     if (!b) return { businessId: fallback().id, reply: "There's nothing to undo. Text HELP for what you can text us.", handled: "undo_nothing" };
+    // one inbox sends for one client: one of theirs went to another client after the cancel, so a person sets them up
+    const taken = inboxTaken(d, b.id, b.profile.fromEmails ?? []);
+    if (taken) {
+      await raiseAlert(d, b.id, { kind: "undo_inbox", title: `${b.profile.name} wants to undo their cancel`, detail: `${taken.inbox} sends for ${taken.by} now, and one inbox sends for one client. Give them an inbox of their own in Settings, then restore the plan.` });
+      return { businessId: b.id, reply: `${tag(b)}Glad you're staying. Jack will set you back up himself and text you.`, handled: "undo_inbox", needsPerson: true };
+    }
     // the cancel's platform withdrawals run now, before anything is pushed again; if the platform refuses, a person does it
     const cleared = d.accounts.peek(b.id)?.state.cancelled?.refund ? true : await finishCancelWithdrawals(d, b.id);
     if (!cleared) {

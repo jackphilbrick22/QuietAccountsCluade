@@ -68,6 +68,7 @@ import { suggestMapping } from "../agents/mapping.ts";
 import { NotReady, type Accounts } from "./accounts.ts";
 import { localIso } from "./clock.ts";
 import { decrypt, encrypt } from "./crypto.ts";
+import { answerRefused, clientsOn, closeInboxAlerts, noInbox, readyToSend } from "./senders.ts";
 
 export interface Deps {
   cfg: Config;
@@ -184,9 +185,9 @@ export function connectJobberLink(d: Deps, bid: string): string {
   return `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/oauth/jobber/start?state=${encodeURIComponent(linkToken(d, "oauth|jobber", bid))}`;
 }
 
-/** Who a client's mail comes from: their own name and address when set, else "<signer> at <business>" from the server's sender. */
+/** Who a client's mail comes from: their own name and first inbox when set, else "<signer> at <business>" from the server's sender. */
 export function sender(b: BusinessProfile): { fromName: string; fromEmail?: string; replyTo?: string } {
-  return { fromName: b.fromName?.trim() || `${b.signerName} at ${b.name}`, fromEmail: b.fromEmail?.trim() || undefined, replyTo: b.replyTo };
+  return { fromName: b.fromName?.trim() || `${b.signerName} at ${b.name}`, fromEmail: b.fromEmails?.[0], replyTo: b.replyTo };
 }
 
 function nowLocal(d: Deps, state: AccountState): string {
@@ -263,6 +264,8 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
   // Every note carries the business's postal address (CAN-SPAM); a sign-up from the site doesn't have one yet.
   const known = d.accounts.peek(bid);
   if (known && (known.state.dataset.business.mailingAddress?.trim() ?? "").length < 8) throw new NotReady("Add the business's mailing address first. It goes at the bottom of every note, and the law requires it.");
+  const inbox = known && noInbox(d, known.state.dataset.business);
+  if (inbox) throw new NotReady(inbox);
   const result = await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     const b = state.dataset.business;
@@ -535,9 +538,11 @@ export async function clearSendBrake(d: Deps, bid: string, by: string): Promise<
  * caps new leads a day and sends on weekdays only, so an evening request could wait days for its "thanks".
  */
 export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider): Promise<{ sent: number; failed: number; held: number }> {
-  let loaded = d.accounts.peek(bid);
-  if (!loaded) return { sent: 0, failed: 0, held: 0 };
-  // Whatever holds the business (a pause, a cancel, the Guard's brake) holds its campaigns: notes already
+  if (!d.accounts.peek(bid)) return { sent: 0, failed: 0, held: 0 };
+  // its own inboxes named for it, and its campaigns up to date, before any of its notes go (a refusal holds it)
+  const ready = await readyToSend(d, bid, seq);
+  let loaded = d.accounts.peek(bid)!;
+  // Whatever holds the business (a pause, a cancel, the Guard's brake, its inboxes) holds its campaigns: notes already
   // pushed would otherwise keep going on the platform's schedule. The hold lifts here too once nothing holds it.
   const hold = holdReason(loaded);
   if (hold) {
@@ -546,8 +551,11 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
     if (h.paused) await noteBrake(d, bid, h.reason);
     return { sent: 0, failed: 0, held: 0 };
   }
-  if (loaded.state.dataset.business.platformPaused) await releasePlatform(d, bid);
+  if (ready && loaded.state.dataset.business.platformPaused) await releasePlatform(d, bid);
+  // not ready (a campaign update that hasn't gone through) leaves its campaigns sending: people it can no longer
+  // write to are taken back all the same
   await tidyPushed(d, bid, seq);
+  if (!ready) return { sent: 0, failed: 0, held: 0 };
   loaded = d.accounts.peek(bid)!;
   const state = loaded.state;
   const b = state.dataset.business;
@@ -597,11 +605,13 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const done = new Map<string, string>();
   const refused: { lead: SequencedLead; why: string }[] = [];
   let pushError: string | undefined;
-  // an older campaign the platform finds by name is only reused if this business's own notes are in it
-  const used = campaignsOf(d, state);
+  // an older campaign the platform finds by name is only reused if it's one made for this business
+  const used = campaignsOf(d, bid);
   for (const g of groups.values()) {
     try {
       const { campaignId } = await seq.ensureCampaign(b, g.instant ? { maxSteps: 1, instant: true, used } : { maxSteps: g.steps, used });
+      // ours from the moment it exists: its events are read, and its inboxes aren't in a cold campaign
+      d.accounts.repo.addCampaign(seq.name, campaignId, bid, g.instant ? "instant" : "nurture", d.clock().toISOString());
       const res = await seq.upsertLeads(b, campaignId, g.leads);
       const skipped = new Map(res.skipped.map((s) => [s.email.toLowerCase(), s.why]));
       for (const l of g.leads) {
@@ -669,13 +679,13 @@ export function holdReason(l: Loaded): string | undefined {
   if (b.plan.stage === "cancelled") return "cancelled";
   if (l.paused || b.plan.stage === "paused") return "paused";
   const h = sendHealth(l.state);
-  return h.paused ? `the Guard's brake: ${h.reason}` : undefined;
+  if (h.paused) return `the Guard's brake: ${h.reason}`;
+  return b.senders?.refused ? `its inboxes (${b.senders.refused})` : undefined;
 }
 
-/** Campaigns this business handed notes to (the platform's campaigns are per business). */
-function campaignsOf(d: Deps, state: AccountState): string[] {
-  const p = `${d.email.name}:`;
-  return [...new Set(state.touches.filter((t) => t.providerId?.startsWith(p)).map((t) => t.providerId!.split(":")[1]!).filter(Boolean))];
+/** Campaigns made for this business (the platform's campaigns are per business). */
+function campaignsOf(d: Deps, bid: string): string[] {
+  return d.accounts.repo.campaignsOf(d.email.name, bid).map((c) => c.id);
 }
 
 /** Pause (or restart) one campaign; a failure is retried by the worker, which re-checks what's wanted then. */
@@ -689,11 +699,11 @@ async function setCampaign(d: Deps, bid: string, b: BusinessProfile, campaignId:
   }
 }
 
-async function holdPlatform(d: Deps, bid: string, why: string): Promise<void> {
+export async function holdPlatform(d: Deps, bid: string, why: string): Promise<void> {
   if (d.email.kind !== "sequencer") return;
   const state = d.accounts.peek(bid)?.state;
   if (!state) return;
-  for (const cid of campaignsOf(d, state)) await setCampaign(d, bid, state.dataset.business, cid, true);
+  for (const cid of campaignsOf(d, bid)) await setCampaign(d, bid, state.dataset.business, cid, true);
   await d.accounts.withAccount(bid, (s) => {
     const at = nowLocal(d, s);
     s.dataset.business.platformPaused = { at, why };
@@ -703,6 +713,8 @@ async function holdPlatform(d: Deps, bid: string, why: string): Promise<void> {
 
 async function releasePlatform(d: Deps, bid: string): Promise<void> {
   if (d.email.kind !== "sequencer") return;
+  // turned back on only as its inboxes and settings are now (else the worker tries again next minute)
+  if (!(await readyToSend(d, bid, d.email))) return;
   // answers to requests that sat in a paused campaign are pulled before it restarts: they'd go days late
   const stale = await d.accounts.withAccount(bid, (s) => {
     const at = nowLocal(d, s);
@@ -718,7 +730,7 @@ async function releasePlatform(d: Deps, bid: string): Promise<void> {
   await withdrawLeads(d, bid, stale, { inline: 25 });
   const state = d.accounts.peek(bid)?.state;
   if (!state) return;
-  for (const cid of campaignsOf(d, state)) await setCampaign(d, bid, state.dataset.business, cid, false);
+  for (const cid of campaignsOf(d, bid)) await setCampaign(d, bid, state.dataset.business, cid, false);
   await d.accounts.withAccount(bid, (s) => {
     s.dataset.business.platformPaused = undefined;
     const at = nowLocal(d, s);
@@ -813,10 +825,14 @@ export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume"
     return;
   }
   d.accounts.setPaused(bid, true);
-  if (mode === "cancel")
+  if (mode === "cancel") {
     await d.accounts.withAccount(bid, (s) => {
       for (const t of s.touches) if (t.status === "approved" || t.status === "planned") t.status = "cancelled";
+      // its inboxes are free for another client, who has them renamed: checked again if it ever takes them back
+      s.dataset.business.senders = undefined;
     });
+    closeInboxAlerts(d, bid);
+  }
   const l = d.accounts.peek(bid)!;
   if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : "a pause");
   if (mode === "cancel") await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0, reason: "cancel" });
@@ -963,14 +979,14 @@ export function routeInbound(d: Deps, ev: InboundEvent, email?: string, intent?:
 
 /**
  * Something about the sending platform needs a person (a broken mailbox, a webhook it switched off). It becomes a
- * warning in the activity of each client it affects — where the console already shows warnings — once a day.
- * Returns the clients warned; with none sending through the platform yet, it is only logged.
+ * warning in the activity of each client it affects (`businessIds`; left out, every client sending through the
+ * platform) — where the console already shows warnings — once a day. Returns the clients warned; with none, it is
+ * only logged.
  */
-export async function alertOperator(d: Deps, a: { key: string; title: string; detail: string; campaignId?: string; businessId?: string }): Promise<string[]> {
+export async function alertOperator(d: Deps, a: { key: string; title: string; detail: string; businessIds?: string[] }): Promise<string[]> {
   d.log(`[alert] ${a.title} ${a.detail}`);
   const repo = d.accounts.repo;
-  let bids = a.businessId && repo.exists(a.businessId) ? [a.businessId] : a.campaignId ? repo.businessesForProvider(`${d.email.name}:${a.campaignId}:`) : [];
-  if (!bids.length) bids = repo.businessesForProvider(`${d.email.name}:`);
+  const bids = a.businessIds ?? repo.businessesForProvider(`${d.email.name}:`);
   for (const bid of bids)
     await d.accounts.withAccount(bid, (state) => {
       const at = nowLocal(d, state);
@@ -990,13 +1006,17 @@ export interface InboundOutcome {
 export async function handleInbound(d: Deps, ev: InboundEvent): Promise<InboundOutcome> {
   if (ev.type === "account_error") {
     const who = ev.account ?? "a sending mailbox";
-    const bids = await alertOperator(d, {
-      key: `acct_${ev.account ?? "unknown"}`,
-      title: `Instantly: ${who} has an error`,
-      detail: `${ev.detail ? `${ev.detail} ` : ""}Notes from ${who} may not go out until it's fixed in Instantly.`,
-      campaignId: ev.campaignId,
-      businessId: ev.businessId,
-    });
+    // the clients that send from it (else the one whose campaign it was): an error on an inbox no client uses, a
+    // cold-email one, warns nobody
+    const repo = d.accounts.repo;
+    const owner = ev.campaignId ? repo.campaign(d.email.name, ev.campaignId)?.businessId : undefined;
+    const using = ev.account ? clientsOn(d, ev.account) : [];
+    const bids = using.length ? using : owner ? [owner] : ev.businessId && repo.exists(ev.businessId) ? [ev.businessId] : [];
+    if (!bids.length) {
+      d.log(`[inbound] ${who} has an error, and no client sends from it: ${ev.detail ?? "no detail"}`);
+      return { businessIds: [] };
+    }
+    await alertOperator(d, { key: `acct_${ev.account ?? "unknown"}`, title: `Instantly: ${who} has an error`, detail: `${ev.detail ? `${ev.detail} ` : ""}Notes from ${who} may not go out until it's fixed in Instantly.`, businessIds: bids });
     return { businessIds: bids };
   }
   const email = (ev.type === "reply" ? ev.from : ev.email).toLowerCase().match(/[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}/)?.[0];
@@ -1417,7 +1437,7 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
  * says, none of them is the person asking. A free mailbox domain (gmail.com) is never taken as the business's.
  */
 function ownContact(b: BusinessProfile, forwarder: string): { ignore: string[]; ignoreDomains: string[]; ignorePhones: string[] } {
-  const emails = [b.ownerEmail, b.replyTo, b.fromEmail].filter((x): x is string => !!x?.trim()).map((x) => x.trim().toLowerCase());
+  const emails = [b.ownerEmail, b.replyTo, ...(b.fromEmails ?? [])].filter((x): x is string => !!x?.trim()).map((x) => x.trim().toLowerCase());
   const site = b.website?.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").split(/[/?#:]/)[0]?.replace(/^www\./, "");
   return {
     ignore: [...emails, ...extractEmails(forwarder)],
@@ -1664,7 +1684,8 @@ export async function sendAck(d: Deps, bid: string, task: AckTask): Promise<void
         references: refs.length ? refs : undefined,
       });
     } else if (d.email.replyTo && task.replyEmailId && task.toAccount) {
-      await d.email.replyTo(b, { replyEmailId: task.replyEmailId, account: task.toAccount, to: task.to, subject }, r.ack.text);
+      error = answerRefused(d, bid, task.toAccount);
+      if (!error) await d.email.replyTo(b, { replyEmailId: task.replyEmailId, account: task.toAccount, to: task.to, subject }, r.ack.text);
     } else {
       error = "No thread to answer in";
     }
@@ -1714,6 +1735,8 @@ export async function answerInThread(d: Deps, bid: string, replyId: string, text
         references: r.thread?.messageId ? [r.thread.messageId] : undefined,
       });
     } else if (d.email.replyTo && r.thread?.replyEmailId && r.thread.toAccount) {
+      const refused = answerRefused(d, bid, r.thread.toAccount);
+      if (refused) return { ok: false, error: refused };
       await d.email.replyTo(b, { replyEmailId: r.thread.replyEmailId, account: r.thread.toAccount, to: r.from, subject }, clean);
     } else return { ok: false, error: "No thread to answer in" };
   } catch (e) {
