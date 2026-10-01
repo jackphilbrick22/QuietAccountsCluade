@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { closeIfDue, find, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Quote, type Reply, type Touch } from "@qa/engine";
+import { closeIfDue, find, ledgerPass, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Quote, type Reply, type Touch } from "@qa/engine";
 import { loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
@@ -240,6 +240,44 @@ describe("stopping a business reaches Instantly", () => {
     expect(st("birch").touches.filter((t) => t.status === "approved").every((t) => !t.providerId)).toBe(true);
     const adds = api.callsTo("POST", "/leads/add").length;
     await syncSequencer(d, "birch", d.email);
+    expect(api.callsTo("POST", "/leads/add").length).toBe(adds);
+  });
+});
+
+describe("a sync that shows the quote approved", () => {
+  it("takes back the follow-ups Instantly still holds, so a booked customer gets no more", async () => {
+    await d.accounts.create(profile("oak", "Oak Tree", "paying"), "2026-09-29");
+    await d.accounts.withAccount("oak", (s) => {
+      const c = person("kim.lee@gmail.com");
+      const q: Quote = { id: "q1", customerId: c.id, title: "Dead oak over the garage", lineItems: [], total: 1800, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-07-01", jobIds: [] };
+      s.dataset = { ...s.dataset, customers: [c], quotes: [q] };
+      find(s, "2026-09-29T10:00:00");
+      planBatch(s, "2026-09-29T10:00:00", { startOn: "2026-09-30", approve: true });
+    });
+    await syncSequencer(d, "oak", d.email);
+    const cids = campaignsOf("oak");
+    const held = () => [...leads.values()].filter((l) => cids.includes(l.campaign)).map((l) => l.email);
+    expect(held()).toEqual(["kim.lee@gmail.com"]);
+    expect(st("oak").touches.length).toBeGreaterThan(1);
+    expect(st("oak").touches.every((t) => t.providerId)).toBe(true);
+    // note 1 went; then Kim approves the quote online, and the next Jobber sync brings in the job it became
+    await d.accounts.withAccount("oak", (s) => {
+      markSent(s, s.touches.find((t) => t.step === 1)!.id, "2026-09-30T09:15:00");
+      s.dataset = {
+        ...s.dataset,
+        quotes: s.dataset.quotes.map((q) => ({ ...q, status: "converted" as const, approvedOn: "2026-10-01", convertedOn: "2026-10-01", jobIds: ["j1"] })),
+        jobs: [{ id: "j1", customerId: "c-kim", title: "Dead oak over the garage", lineItems: [], total: 1800, status: "scheduled", rawStatus: "Scheduled", createdOn: "2026-10-01", scheduledOn: "2026-10-09", quoteId: "q1" }],
+      };
+      ledgerPass(s, "2026-10-01T12:00:00");
+    });
+    await syncSequencer(d, "oak", d.email);
+    expect(held()).toEqual([]);
+    const rest = st("oak").touches.filter((t) => t.step > 1);
+    expect(rest.map((t) => [t.status, t.lastError])).toEqual(rest.map(() => ["cancelled", "No longer needed: the quote became a job"]));
+    expect(st("oak").events.some((e) => e.title === "Stopped the follow-ups to Kim Lee")).toBe(true);
+    // and nothing is pushed again
+    const adds = api.callsTo("POST", "/leads/add").length;
+    await syncSequencer(d, "oak", d.email);
     expect(api.callsTo("POST", "/leads/add").length).toBe(adds);
   });
 });

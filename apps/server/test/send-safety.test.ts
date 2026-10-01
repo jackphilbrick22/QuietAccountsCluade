@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { sendHealth, type BusinessProfile, type Customer, type Touch } from "@qa/engine";
+import { answerNewRequests, find, ledgerPass, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Touch } from "@qa/engine";
 import { loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
@@ -183,5 +183,59 @@ describe("the quality gate", () => {
   it("follow-ups are linted as follow-ups: a threaded 'Re:' isn't flagged", async () => {
     const res = await op("PATCH", "/api/businesses/six/touches/six-c-jo-2", { body: `${BODY(2)}` });
     expect(res.json.flags).not.toEqual(expect.arrayContaining([expect.stringMatching(/Fake Re/)]));
+  });
+});
+
+describe("what a sync or a blocked mailbox changes", () => {
+  it("a quote approved after note 1: the follow-ups due later never go, and all of them stop at once", async () => {
+    now = new Date("2026-09-30T14:00:00Z"); // Wed 10:00 New York
+    await d.accounts.create(profile("eight"), "2026-09-30");
+    await d.accounts.withAccount("eight", (s) => {
+      const c = person("lu.lee@gmail.com");
+      s.dataset = { ...s.dataset, customers: [c], quotes: [{ id: "q1", customerId: c.id, title: "Dead oak over the garage", lineItems: [], total: 1800, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-07-01", jobIds: [] }] };
+      find(s, "2026-09-30T10:00:00");
+      planBatch(s, "2026-09-30T10:00:00", { startOn: "2026-09-30", approve: true });
+      const n1 = s.touches.find((t) => t.step === 1)!;
+      markSent(s, n1.id, `${n1.dueAt}:00`, "<n1@mail.test>");
+      s.dataset = {
+        ...s.dataset,
+        quotes: s.dataset.quotes.map((q) => ({ ...q, status: "converted" as const, approvedOn: "2026-10-02", convertedOn: "2026-10-02", jobIds: ["j1"] })),
+        jobs: [{ id: "j1", customerId: c.id, title: "Dead oak over the garage", lineItems: [], total: 1800, status: "scheduled", rawStatus: "Scheduled", createdOn: "2026-10-02", scheduledOn: "2026-10-09", quoteId: "q1" }],
+      };
+      ledgerPass(s, "2026-10-02T12:00:00");
+    });
+    const rest = touches("eight", "lu.lee@gmail.com").filter((t) => t.step > 1);
+    expect(rest.length).toBeGreaterThan(0);
+    // the day note 2 comes due, nothing goes, and every note after it is cancelled too
+    now = new Date(Date.parse(`${rest[0]!.dueAt}:00Z`) + 4 * 3_600_000);
+    await sendDue(d, "eight");
+    expect(to("lu.lee@gmail.com")).toHaveLength(0);
+    expect(touches("eight", "lu.lee@gmail.com").filter((t) => t.step > 1).map((t) => t.status)).toEqual(rest.map(() => "cancelled"));
+  });
+
+  it("an answer to a new request is never sent at night or a day late still saying 'today': it's dropped and the owner told to call", async () => {
+    now = new Date("2026-09-30T14:00:00Z"); // Wed 10:00 New York
+    await d.accounts.create(profile("seven"), "2026-09-30");
+    await d.accounts.withAccount("seven", (s) => {
+      const c = { ...person("kay.lee@gmail.com"), phones: ["+16035550142"] };
+      s.dataset = { ...s.dataset, customers: [c], requests: [{ id: "r1", customerId: c.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-30", createdAt: "2026-09-30T13:55:00Z" }] };
+      expect(answerNewRequests(s, "2026-09-30T10:00:00")).toBe(1);
+    });
+    const answer = () => st("seven").touches.find((t) => t.track === "new_request")!;
+    expect(answer().body).toMatch(/call today/);
+    // a Workspace throttle that lasts all day
+    d.email.script.set("kay.lee@gmail.com", Array.from({ length: 12 }, () => new ProviderError("421 4.7.0 Try again later, closing connection", "smtp", 421, true)));
+    for (let i = 0; i < 12 && answer().status === "approved"; i++) {
+      await sendDue(d, "seven");
+      // the next try, at the time the retry was moved to (New York is UTC-4)
+      now = new Date(Math.max(now.getTime() + 60_000, Date.parse(`${answer().dueAt}:00Z`) + 4 * 3_600_000));
+    }
+    const t = answer();
+    expect(to("kay.lee@gmail.com")).toHaveLength(0);
+    expect(t.status).toBe("cancelled");
+    expect(t.lastError).toBe("Not sent: it would have gone after 8pm, past the day it was written for");
+    // dropped at the 5:30pm refusal, before it could go at 8:30pm
+    expect(t.attempts).toBe(6);
+    expect(st("seven").ownerMessages.at(-1)!.text).toMatch(/our answer to Kay Lee's request didn't go out.*Call them/);
   });
 });

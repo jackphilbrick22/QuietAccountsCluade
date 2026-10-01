@@ -496,6 +496,10 @@ export interface Touch {
   askedAt?: ISODateTime;
   /** When a sender claimed it (status "sending"), before the provider saw it. */
   claimedAt?: ISODateTime;
+  /** What the follow-up chases (the kind of leak and its record), so a later sync can tell when it's settled. */
+  chases?: { type: BreakageType; kind: RecordKind; id: string };
+  /** The day it was planned: a job booked or a quote sent after this means the follow-up isn't needed any more. */
+  plannedOn?: ISODate;
 }
 
 export type ReplyIntent =

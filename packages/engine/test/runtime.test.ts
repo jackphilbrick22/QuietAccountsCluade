@@ -1,7 +1,10 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import {
+  answerNewRequests,
   approveAll,
   billingCheck,
+  dropStaleAnswers,
+  HELD_FOR_GOOD,
   renewalIfDue,
   renewPlan,
   closeIfDue,
@@ -21,6 +24,7 @@ import {
   type DueTouch,
 } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
+import { dropSettled } from "../src/runtime/settled.ts";
 import { feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
 import { quietRates } from "../src/breakage/quiet.ts";
 import { summarize } from "../src/breakage/forecast.ts";
@@ -30,7 +34,7 @@ import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
 import type { Touch } from "../src/model.ts";
 import { addDays, mondayOf, weekday } from "../src/util.ts";
-import { ASOF, job, quote } from "./fixtures.ts";
+import { ago, ASOF, customer, dataset, job, quote, request } from "./fixtures.ts";
 
 const NOW = `${ASOF}T12:00:00Z`;
 const START = "2026-10-06"; // Tuesday; the sample sends Tue-Thu, 7-10am
@@ -781,5 +785,172 @@ describe("a sequence whose note was pulled", () => {
     n2.status = "cancelled";
     const { held } = dueTouches(s, `${n3.dueAt.slice(0, 10)}T09:30`);
     expect(held.find((h) => h.touch.id === n3.id)?.why).toBe("Note 2 never went out — the rest of the sequence stops");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Always-on accounts: what a sync changes about what's queued          */
+/* ------------------------------------------------------------------ */
+
+const paying = { plan: { stage: "paying" as const, trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } };
+
+describe("a follow-up stops once they've said yes", () => {
+  /** A paying tree shop: Mike's $1,800 oak quote planned and approved, and note 1 sent. */
+  const mike = (over: Partial<Parameters<typeof quote>[2]> = {}) => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Dead oak over the garage", total: 1800, sentOn: ago(60), ...over })] }), NOW);
+    find(st, NOW);
+    planBatch(st, NOW, { startOn: START, approve: true });
+    return st;
+  };
+  const yes = (st: AccountState, on: string) => {
+    st.dataset.quotes = st.dataset.quotes.map((q) => (q.id === "q1" ? { ...q, status: "converted" as const, approvedOn: on, convertedOn: on, jobIds: ["j1"] } : q));
+    st.dataset.jobs = [job("j1", "c1", { title: "Dead oak over the garage", total: 1800, status: "scheduled", createdOn: on, scheduledOn: addDays(on, 7), completedOn: undefined, quoteId: "q1" })];
+    ledgerPass(st, `${on}T12:00:00`);
+  };
+
+  it("approved online after note 1: the rest of the sequence never goes, and the operator sees why", () => {
+    const st = mike();
+    const [n1, ...rest] = touchesOf(st, "c1");
+    expect(rest.length).toBeGreaterThanOrEqual(2);
+    expect(sendDue(st, n1!.dueAt).map((d) => d.touch.id)).toEqual([n1!.id]);
+    yes(st, "2026-10-08");
+    // the ledger has the win...
+    expect(st.recoveries.some((r) => r.customerId === "c1" && r.value === 1800)).toBe(true);
+    // ...and note 2 is held for good, not sent to someone already booked
+    const { due, held } = dueTouches(st, rest[0]!.dueAt);
+    expect(due).toEqual([]);
+    const why = held.find((h) => h.touch.id === rest[0]!.id)!.why;
+    expect(why).toBe("No longer needed: the quote became a job");
+    expect(why).toMatch(HELD_FOR_GOOD);
+    // the Sender stops the whole rest at once
+    expect(dropSettled(st, `${rest[0]!.dueAt}:00`).map((t) => t.id)).toEqual(rest.map((t) => t.id));
+    expect(st.events.at(-1)).toMatchObject({ agent: "guard", title: "Stopped the follow-ups to Mike Sanderson", detail: "The quote became a job." });
+    for (const t of rest) expect(sendDue(st, t.dueAt)).toEqual([]);
+  });
+
+  it("approved before note 1 went: note 1 doesn't go either", () => {
+    const st = mike();
+    const [n1] = touchesOf(st, "c1");
+    st.dataset.quotes = st.dataset.quotes.map((q) => ({ ...q, status: "approved" as const, approvedOn: "2026-10-01" }));
+    ledgerPass(st, "2026-10-01T12:00:00");
+    expect(dueTouches(st, n1!.dueAt).held.find((h) => h.touch.id === n1!.id)!.why).toBe("No longer needed: the quote was approved");
+  });
+
+  it("a job they booked since, or a new quote sent since, stops it too; nothing new, and it carries on", () => {
+    const booked = mike();
+    const [b1] = touchesOf(booked, "c1");
+    expect(dueTouches(booked, b1!.dueAt).due.map((d) => d.touch.id)).toEqual([b1!.id]);
+    booked.dataset.jobs = [job("j2", "c1", { title: "Stump grinding", status: "completed", createdOn: "2026-10-02", completedOn: "2026-10-03" })];
+    expect(dueTouches(booked, b1!.dueAt).held[0]!.why).toBe("No longer needed: they've booked a job since");
+    const requoted = mike();
+    requoted.dataset.quotes = [...requoted.dataset.quotes, quote("q2", "c1", { title: "Dead oak, revised", sentOn: "2026-10-02" })];
+    expect(dueTouches(requoted, touchesOf(requoted, "c1")[0]!.dueAt).held[0]!.why).toBe("No longer needed: they've had a new quote since");
+  });
+
+  it("'want to get it on the schedule?' stops when the job is scheduled, not when it's made and still unscheduled", () => {
+    const st = mike({ status: "approved", approvedOn: ago(30) });
+    const [n1] = touchesOf(st, "c1");
+    expect(n1!.chases?.type).toBe("approved_unscheduled");
+    st.dataset.quotes = st.dataset.quotes.map((q) => ({ ...q, status: "converted" as const, jobIds: ["j1"] }));
+    st.dataset.jobs = [job("j1", "c1", { status: "unscheduled", createdOn: "2026-10-02", completedOn: undefined, quoteId: "q1" })];
+    expect(dueTouches(st, n1!.dueAt).due.map((d) => d.touch.id)).toEqual([n1!.id]);
+    st.dataset.jobs = [{ ...st.dataset.jobs[0]!, status: "scheduled", scheduledOn: "2026-10-20" }];
+    expect(dueTouches(st, n1!.dueAt).held[0]!.why).toBe("No longer needed: the work is on the schedule now");
+  });
+
+  it("the unquoted-request follow-up stops when the quote goes out", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { createdOn: ago(10) })] }), NOW);
+    find(st, NOW);
+    planBatch(st, NOW, { startOn: START, approve: true });
+    const [n1] = touchesOf(st, "c1");
+    expect(n1!.chases?.type).toBe("unquoted_request");
+    st.dataset.quotes = [quote("q9", "c1", { sentOn: "2026-10-02" })];
+    expect(dueTouches(st, n1!.dueAt).held[0]!.why).toBe("No longer needed: their request got a quote");
+  });
+});
+
+describe("always-on: someone whose request we answered is still followed up", () => {
+  /** Mike's request came in Tuesday and our answer went at once. */
+  const answered = (over: { quotes?: ReturnType<typeof quote>[]; sent?: boolean } = {}) => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: over.quotes ?? [], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
+    expect(answerNewRequests(st, `${ASOF}T10:00:00`)).toBe(1);
+    const a = st.touches.find((t) => t.track === "new_request")!;
+    if (over.sent !== false) markSent(st, a.id, `${ASOF}T10:02:00`, "msg-answer");
+    return st;
+  };
+  const planOn = (st: AccountState, day: string) => {
+    st.dataset.asOf = day;
+    find(st, `${day}T03:00:00`);
+    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true });
+  };
+
+  it("the quote Dave sent after our answer gets its fresh-quote follow-up", () => {
+    const st = answered();
+    st.dataset.quotes = [quote("q1", "c1", { title: "Oak over the garage", total: 1800, sentOn: "2026-10-01" })];
+    const p = planOn(st, "2026-10-05");
+    expect(p.people).toEqual(["c1"]);
+    expect(touchesOf(st, "c1").filter((t) => !t.instant).every((t) => t.track === "fresh_quote" && t.chases?.id === "q1")).toBe(true);
+  });
+
+  it("with no quote, the request's own follow-up takes over after two days", () => {
+    const st = answered();
+    const p = planOn(st, "2026-10-05");
+    expect(p.people).toEqual(["c1"]);
+    expect(touchesOf(st, "c1").find((t) => !t.instant)!.chases).toEqual({ type: "unquoted_request", kind: "request", id: "r1" });
+  });
+
+  it("never a second note on the heels of the answer: nothing older is dug up, and an answer still on its way holds them", () => {
+    const old = [quote("q0", "c1", { title: "Crown thinning, 3 maples", sentOn: ago(200) })];
+    // the day after: the old quote isn't chased at someone who just asked for new work
+    expect(planOn(answered({ quotes: old }), "2026-09-30").people).toEqual([]);
+    // an answer not yet gone: nothing is planned for them until it goes
+    expect(planOn(answered({ sent: false }), "2026-10-05").people).toEqual([]);
+    // a week on, the quote for the new work is followed up, not the old one
+    const st = answered({ quotes: old });
+    st.dataset.quotes = [...old, quote("q1", "c1", { title: "Oak over the garage", sentOn: "2026-10-01" })];
+    expect(planOn(st, "2026-10-05").people).toEqual(["c1"]);
+    expect(touchesOf(st, "c1").filter((t) => !t.instant).every((t) => t.chases?.id === "q1")).toBe(true);
+  });
+});
+
+describe("an answer to a new request held up by the mailbox", () => {
+  const queued = () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1", { phones: ["+16035550142"] })], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
+    answerNewRequests(st, `${ASOF}T10:00:00`); // Tuesday 10am: "Dave will give you a call today"
+    const t = st.touches.find((x) => x.track === "new_request")!;
+    expect(t.body).toMatch(/call today/);
+    return { st, t };
+  };
+
+  it("is judged from when it was first due: retries past midnight never send it at night, a day late, saying 'today'", () => {
+    const { st, t } = queued();
+    // six refusals moved it to 8:30pm: past the answer hours of the day it was written for
+    t.attempts = 6;
+    t.dueAt = `${ASOF}T20:30`;
+    const { due, held } = dueTouches(st, `${ASOF}T20:30`);
+    expect(due).toEqual([]);
+    expect(held[0]!.why).toBe("No longer needed: it would have gone after 8pm, past the day it was written for");
+    // seven moved it to midnight: the 12-hour limit is still counted from 10am, not from the moved time
+    t.attempts = 7;
+    t.dueAt = "2026-09-30T00:00";
+    expect(dueTouches(st, "2026-09-30T00:00").held[0]!.why).toBe("No longer needed: it would have gone 14 hours late");
+    t.dueAt = "2026-09-30T07:30";
+    expect(dueTouches(st, "2026-09-30T07:30").due).toEqual([]);
+  });
+
+  it("a retry moved past 8pm is dropped as soon as it's moved, and the owner is told to call", () => {
+    const { st, t } = queued();
+    t.attempts = 6;
+    t.dueAt = `${ASOF}T20:30`;
+    expect(dropStaleAnswers(st, `${ASOF}T17:30:00`).map((x) => x.id)).toEqual([t.id]);
+    expect(t.status).toBe("cancelled");
+    expect(st.ownerMessages.at(-1)!.text).toMatch(/didn't go out .*after 8pm.* Call them/);
+  });
+
+  it("an answer waiting for 7am is never dropped early", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { createdOn: ASOF, createdAt: `${ASOF}T21:30:00Z` })] }), NOW);
+    answerNewRequests(st, `${ASOF}T22:40:00`);
+    expect(dropStaleAnswers(st, `${ASOF}T23:00:00`)).toEqual([]);
+    expect(dueTouches(st, "2026-09-30T07:00").due).toHaveLength(1);
   });
 });

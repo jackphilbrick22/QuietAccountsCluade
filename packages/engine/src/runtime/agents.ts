@@ -10,10 +10,11 @@ import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, 
 import { ackFor, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
-import { alwaysOnFor } from "../breakage/assumptions.ts";
+import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
+import { settledCheck } from "./settled.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
 
@@ -114,7 +115,19 @@ export function find(state: AccountState, now: ISODateTime): AccountState {
 
 export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean; kickoff?: boolean }): Plan {
   if (!state.scan) find(state, now);
-  const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped").map((t) => t.customerId));
+  // Our answer to someone's own new request isn't a sequence: once it went, the always-on follow-ups (the request's own,
+  // or the quote sent after it) are theirs like anyone's, and for a month only those (nothing older dug up the next day).
+  // An answer still on its way holds them until it goes.
+  const answered = (t: Touch) => !!t.instant && (t.status === "sent" || t.status === "delivered" || t.status === "bounced");
+  const active = new Set(state.touches.filter((t) => t.status !== "cancelled" && t.status !== "skipped" && !answered(t)).map((t) => t.customerId));
+  const askedOn = new Map<string, string>();
+  for (const t of state.touches) {
+    if (!answered(t)) continue;
+    const sent = (t.sentAt ?? t.dueAt).slice(0, 10);
+    if (daysBetween(sent, opts.startOn) > FRESH_QUOTE_DAYS) continue;
+    const on = state.dataset.requests.find((r) => `req:${r.id}` === t.opportunityId)?.createdOn ?? sent;
+    if (on < (askedOn.get(t.customerId) ?? "9999")) askedOn.set(t.customerId, on);
+  }
   // the comparison group waits ~60 days, then gets worked too (nobody's quote is held back for good)
   const released = new Set(state.outreach.filter((o) => o.holdout && !o.treatedFrom && o.releaseOn && o.releaseOn <= opts.startOn).map((o) => o.customerId));
   for (const o of state.outreach) if (!released.has(o.customerId) || active.has(o.customerId)) active.add(o.customerId);
@@ -125,7 +138,7 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
   // Everything already on the calendar counts against the pace, so a top-up never doubles it.
   const existingStarts = state.touches.filter((t) => t.step === 1 && ["planned", "approved", "sent", "delivered"].includes(t.status)).map((t) => t.dueAt.slice(0, 10));
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts });
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts, askedOn });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   // Someone planned again after their notes were cancelled or skipped: the same opportunity and step give the same
   // id, and two notes with one id collide in the database (one is kept) and in every lookup by id.
@@ -213,15 +226,21 @@ export function doNotContact(state: AccountState, t: Touch): boolean {
   return !!customerById(state.dataset, t.customerId)?.doNotContact || oppById(state.scan?.opportunities, t.opportunityId)?.suppressed === "do_not_contact";
 }
 
-/** Why an answer to a new request should no longer go, if it shouldn't. */
+/** Why an answer to a new request should no longer go (at `now`, when it would go), if it shouldn't. */
 export function staleAnswer(state: AccountState, t: Touch, now: ISODateTime): string | undefined {
   if (!t.instant) return undefined;
   const ds = state.dataset;
   const r = t.opportunityId.startsWith("req:") ? ds.requests.find((x) => x.id === t.opportunityId.slice(4)) : undefined;
   if (r && (r.quoteId || r.status === "converted" || r.status === "archived" || ds.quotes.some((q) => q.customerId === t.customerId && (q.sentOn ?? q.createdOn ?? "") >= (r.createdOn ?? "9999"))))
     return "their request already has a quote or a visit";
-  const late = (Date.parse(`${now.slice(0, 16)}:00Z`) - Date.parse(`${t.dueAt.slice(0, 16)}:00Z`)) / 3_600_000;
+  // timed from when it was first due: a send the mailbox refused moves dueAt, never the "today" written in it
+  const first = t.askedAt ? answerTime(t.askedAt).slice(0, 16) : t.dueAt.slice(0, 16);
+  const due = first < t.dueAt.slice(0, 16) ? first : t.dueAt.slice(0, 16);
+  if (now.slice(0, 16) < due) return undefined;
+  const late = (Date.parse(`${now.slice(0, 16)}:00Z`) - Date.parse(`${due}:00Z`)) / 3_600_000;
   if (late > ANSWER_GOOD_FOR_HOURS) return `it would have gone ${Math.round(late)} hours late`;
+  // worded for its own day, 7am–8pm: never at night, never the day after
+  if (now.slice(0, 10) !== due.slice(0, 10) || answerTime(now).slice(0, 16) !== now.slice(0, 16)) return "it would have gone after 8pm, past the day it was written for";
   return undefined;
 }
 
@@ -238,6 +257,7 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   // by address too: another record with the same address is the same person
   const repliedFrom = new Set(wrote.map((r) => r.from.toLowerCase()));
   const health = sendHealth(state);
+  const settled = settledCheck(state);
   // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
   const firsts = new Map<string, Touch>();
   for (const t of state.touches) if (t.step === 1 && (!firsts.has(t.opportunityId) || t.status === "sent" || t.status === "delivered")) firsts.set(t.opportunityId, t);
@@ -262,6 +282,12 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
     // an instant answer to a NEW request goes even if they wrote to us about something else before
     if (!t.instant && (replied.has(c.id) || c.emails.some((e) => repliedFrom.has(e.toLowerCase())))) {
       held.push({ touch: t, why: "They replied — the sequence stops" });
+      continue;
+    }
+    // the quote it chases was approved, the job booked or a new quote sent since: the rest isn't needed
+    const done = settled(t);
+    if (done) {
+      held.push({ touch: t, why: `No longer needed: ${done}` });
       continue;
     }
     const required = t.flags.find((f) => REQUIRED_FLAG.test(f));
@@ -365,8 +391,9 @@ export function stopSequence(state: AccountState, customerId: string): number {
 export function dropStaleAnswers(state: AccountState, now: ISODateTime): Touch[] {
   const out: Touch[] = [];
   for (const t of state.touches) {
-    if (!t.instant || t.status !== "approved" || t.providerId || t.dueAt > now.slice(0, 16)) continue;
-    const why = staleAnswer(state, t, now);
+    if (!t.instant || t.status !== "approved" || t.providerId) continue;
+    // judged at the time it would go: a retry pushed past 8pm is dropped now, not sent at night
+    const why = staleAnswer(state, t, t.dueAt > now.slice(0, 16) ? t.dueAt : now);
     if (!why) continue;
     t.status = "cancelled";
     t.lastError = `Not sent: ${why}`;

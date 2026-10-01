@@ -40,6 +40,24 @@ export function quoteById(ds: Dataset, id: string): Quote | undefined {
   return memo(ds.quotes, "byId", () => new Map(ds.quotes.map((q) => [q.id, q]))).get(id);
 }
 
+function byCustomer<T extends { customerId: string }>(arr: T[], customerId: string): T[] {
+  return memo(arr, "byCustomer", () => {
+    const m = new Map<string, T[]>();
+    for (const x of arr) (m.get(x.customerId) ?? m.set(x.customerId, []).get(x.customerId)!).push(x);
+    return m;
+  }).get(customerId) ?? [];
+}
+
+/** One customer's quotes. */
+export function quotesOf(ds: Dataset, customerId: string): Quote[] {
+  return byCustomer(ds.quotes, customerId);
+}
+
+/** One customer's jobs. */
+export function jobsOf(ds: Dataset, customerId: string): Job[] {
+  return byCustomer(ds.jobs, customerId);
+}
+
 export function oppById(opps: Opportunity[] | undefined, id: string | undefined): Opportunity | undefined {
   if (!opps || !id) return undefined;
   return memo(opps, "byId", () => new Map(opps.map((o) => [o.id, o]))).get(id);

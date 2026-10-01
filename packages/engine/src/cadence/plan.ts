@@ -31,6 +31,11 @@ export interface PlanOptions {
   contacted?: Set<string>;
   /** First-note days already scheduled or sent, so a top-up counts them against the daily and weekly pace. */
   existingStarts?: ISODate[];
+  /**
+   * People who just asked for new work (we answered their request), with the day they asked: only what follows it is
+   * planned for them (the request's own follow-up, or the quote sent after it), never an old leak dug up the next day.
+   */
+  askedOn?: Map<string, ISODate>;
 }
 
 export interface Plan {
@@ -95,6 +100,8 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     if (opts.skipCustomers?.has(o.customerId)) continue;
     // taken off the list since the scan (SKIP): never planned again, whatever the scan still holds
     if (o.suppressed || byId.get(o.customerId)?.doNotContact) continue;
+    const asked = opts.askedOn?.get(o.customerId);
+    if (asked && !((o.source.kind === "quote" || o.source.kind === "request") && (o.anchorDate ?? "") >= asked)) continue;
     if (o.caution?.length && !opts.includeCaution) {
       skipped.push({ customerId: o.customerId, why: `Held for a look: ${o.caution.join("; ")}` });
       continue;
@@ -196,6 +203,8 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
         body: n.body,
         flags: n.flags,
         ...(seq === FRESH_SEQUENCE ? { track: "fresh_quote" as const } : {}),
+        chases: { type: o.type, kind: o.source.kind, id: o.source.id },
+        plannedOn: ds.asOf,
       });
     }
     if (!ok || !notes.length) continue;

@@ -15,6 +15,7 @@ import {
   clearBrake,
   counted,
   doNotContact,
+  dropSettled,
   dropStaleAnswers,
   extractEmails,
   fmtPhone,
@@ -23,6 +24,7 @@ import {
   sendableEmail,
   sendHealth,
   setBookedOut,
+  settledCheck,
   staleAnswer,
   totals,
   customerById,
@@ -349,12 +351,14 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
   const at0 = nowLocal(d, loaded.state);
   const { due, held: h } = dueTouches(loaded.state, at0);
   held = h.length;
-  // Held for good (replied, unsubscribed, do-not-contact, note 1 never went, a stale answer): cancel them.
+  // Held for good (replied, unsubscribed, do-not-contact, note 1 never went, a stale answer, a quote since approved): cancel them.
   const cancel = h.filter((x) => HELD_FOR_GOOD.test(x.why));
   if (cancel.length)
     await d.accounts.withAccount(bid, (state) => {
       // a late answer to a request also tells the owner it didn't go
       dropStaleAnswers(state, at0);
+      // a follow-up whose quote was approved or job booked stops whole, not one note at a time
+      dropSettled(state, at0);
       for (const c of cancel) {
         const t = state.touches.find((x) => x.id === c.touch.id);
         if (t && t.status === "approved") {
@@ -472,11 +476,15 @@ async function settleFailedSend(d: Deps, bid: string, touchId: string, item: { t
       live.dueAt = new Date(Date.parse(`${at.slice(0, 16)}:00Z`) + 30 * 60_000 * live.attempts).toISOString().slice(0, 16);
       const id = `ev_mailbox_${at.slice(0, 10)}`;
       if (!s.events.some((ev) => ev.id === id)) s.events.push({ id, at, agent: "guard", kind: "warning", title: "The sending mailbox is refusing mail — notes are waiting", detail: message });
+      // an answer to a new request ("Dave will call you today") whose retry would land after 8pm, the next day or too
+      // late is dropped now, and the owner told to call, instead of going out at night still saying "today"
+      if (live.instant) dropStaleAnswers(s, at);
       return;
     }
     if (how === "retry" && live.attempts < MAX_SEND_ATTEMPTS) {
       live.status = "approved";
       live.dueAt = new Date(Date.parse(`${live.dueAt}:00Z`) + 5 * 60000 * live.attempts).toISOString().slice(0, 16);
+      if (live.instant) dropStaleAnswers(s, at);
       return;
     }
     live.status = how === "bounced" ? "bounced" : "skipped";
@@ -751,17 +759,20 @@ function pushedUnsent(d: Deps, state: AccountState): string[] {
 
 /**
  * Notes still queued for people we can no longer write to leave the platform too: the owner marked them
- * do-not-contact in their software, or an answer to a request went stale before it was handed over.
+ * do-not-contact in their software, an answer to a request went stale before it was handed over, or a sync shows
+ * the quote a follow-up chases approved, the job booked or a new quote sent.
  */
 async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise<void> {
   const state = d.accounts.peek(bid)!.state;
   const at = nowLocal(d, state);
   const dnc = (s: AccountState, t: Touch) => t.status === "approved" && doNotContact(s, t);
   const stale = (s: AccountState, t: Touch) => t.instant && t.status === "approved" && !t.providerId && t.dueAt <= at.slice(0, 16) && !!staleAnswer(s, t, at);
-  if (!state.touches.some((t) => dnc(state, t) || stale(state, t))) return;
+  const settled = settledCheck(state);
+  const done = (t: Touch) => (t.status === "approved" || t.status === "planned") && !!settled(t);
+  if (!state.touches.some((t) => dnc(state, t) || stale(state, t) || done(t))) return;
   const pulled = await d.accounts.withAccount(bid, (s) => {
     dropStaleAnswers(s, at);
-    const out: string[] = [];
+    const out: string[] = dropSettled(s, at).filter((t) => t.providerId?.startsWith(`${seq.name}:`)).map((t) => t.providerId!);
     for (const t of s.touches)
       if (dnc(s, t)) {
         t.status = "cancelled";
