@@ -69,6 +69,23 @@ const STATUS = /^((status|stats|numbers)( update| report| please)?|how (s|is|are
  * today, will call her tomorrow" or "booked solid till spring" is not a command (the lead, or a person, reads it).
  */
 const BUSY = /^(we re |we are |were |i m |im |i am )?(busy|booked (out|solid|up|full)|slammed|full)( (until|till|til|thru|through) ((jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*( \d{1,2}(st|nd|rd|th)?)?|\d{1,2} \d{1,2})( 20\d\d)?| (for )?(the next )?\d{1,2} (days?|weeks?|wks?|months?|mos?))?$/;
+/**
+ * RENEW / MONTHLY / YEARLY, said as the command (matched against the words only): "Renew", "Monthly please", "Yearly
+ * plan", "Renew for another year". "Monthly cleaning booked 180" or "Annual service booked 250" is about a lead (the
+ * lead, or a person, reads it), never a plan change.
+ */
+const PLAN = /^(renew|yearly|annual|monthly|month to month)( (plan|it|please|pls|thanks|thank you|thx|ty|jack|for (another|a|one more) year))*$/;
+/**
+ * RESUME said as a go-ahead (matched against the words only): "Go", "Go ahead", "Go for it, thanks", "Go ahead and
+ * resume", "Go ahead and start it back up". With the close or the renewal out it's a yes to that instead. "Go with Hey
+ * instead" is not one.
+ */
+const GO_RESUME = /^go( ahead| for it)?( (and )?(resume|restart|unpause|start( it| them| sending)?( back)?( up| again)?|turn (it|them) back on|send (it|them)|keep (it )?going|thanks|thank you|thx|ty|jack|man|please|pls))*$/;
+/**
+ * A no and nothing else (matched against the words only): "No", "Nope", "No thanks", "Not interested", "Pass for now".
+ * With the close or the renewal out, that's the answer to it, not a lead.
+ */
+const BARE_NO = /^(no|nope|not interested|(we ll |i ll )?pass)( (thanks|thank you|thx|ty|jack|man|sorry|for now|not now|not right now|not this time|im good|i m good|we re good|were good))*$/;
 /** The whole text is a lead outcome with nothing after it: "No", "Nope", "Done", "Not a fit", "Called him". */
 const BARE_OUTCOME = /^(no|nope|lost|pass|passed|dead|not a fit|no go|not interested|no thanks|went with someone else|done|called|reached|talked|spoke)( (him|her|them|it|already|today))?$/;
 /**
@@ -371,7 +388,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   }
   // "Go ahead" / "Go for it" with the close or the renewal out is a yes to it (below), never RESUME
   const goYes = /^go\b/.test(command) && (one ? [one] : all).some((b) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal"));
-  if (/^(resume|unpause)\b|^go( ahead| for it)?$/.test(command) && !goYes) {
+  if ((/^(resume|unpause)\b/.test(command) || GO_RESUME.test(command)) && !goYes) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running. Want back in? Reply here and Jack will set it up.`, handled: "resume_cancelled", needsPerson: true };
     // The plan itself is paused (a year ran out with no renewal, or Jack paused it): RESUME can't start it again, so
@@ -399,7 +416,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return { businessId: fallback().id, reply: lines.join("\n"), handled: "status" };
   }
   // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
-  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(command)) {
+  if (PLAN.test(command)) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") {
       const c = d.accounts.peek(one.id)!.state.cancelled;
@@ -579,6 +596,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     }
     return { businessId: hits[0]?.b.id ?? fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
   }
+  // A bare "No" / "Not interested" with the close or the renewal out answers that, not a lead: it never marks one lost.
+  // A person reads it (it could still be about a lead, so the reply says how to name one).
+  if (lead?.outcome === "lost" && !hasCode && BARE_NO.test(bare)) {
+    const asked = (one ? [one] : all).find((b) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal"));
+    if (asked) return { businessId: asked.id, reply: `${tag(asked)}Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.`, handled: outstanding(d, asked.id, "close") ? "close_no" : "renewal_no", needsPerson: true };
+  }
   if (lead) {
     // a #code names the lead on its own; a business name mentioned in passing never overrides it
     const res = await leadCommand(d, text, lead, hasCode ? all : named ? [named] : all, multi, tags, named);
@@ -601,8 +624,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       });
       return { businessId: b.id, reply: `${tag(b)}Great — Jack will text you the payment link, and the next batch goes out next week.`, handled: "accepted_close", needsPerson: true };
     }
-    if (b) return { businessId: b.id, reply: `${tag(b)}Great — which one: RENEW for another year, or MONTHLY to go month to month?`, handled: "ask_renewal" };
-    return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack" };
+    // a paused owner's "Go ahead" may mean RESUME as much as the renewal: a person reads it too
+    const goPaused = !!b?.paused && /^go\b/.test(bare);
+    if (b) return { businessId: b.id, reply: `${tag(b)}Great — which one: RENEW for another year, or MONTHLY to go month to month?${goPaused ? " Your notes are still paused: text RESUME to restart them." : ""}`, handled: "ask_renewal", ...(goPaused ? { needsPerson: true } : {}) };
+    // nothing open to answer: a yes and nothing more is just a yes; more after it ("Ok resume", "Ok, also skip the
+    // Hendersons") goes to a person below, never swallowed by "Got it"
+    if (WHOLE_YES.test(bare)) return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack" };
   }
 
   // While the first note waits for their OK, anything else is a change they want made to it (one with a #code is
@@ -688,6 +715,10 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
   // reads it first.
   if (target.reply.outcome === "booked" && outcome !== "booked" && (!code || text.replace(CODE, " ").trim().split(/\s+/).length > 3))
     return { businessId: bid, reply: `${multi ? `${target.biz.profile.name}: ` : ""}${target.name} is booked on your results. To take that back, text NO #${leadCode(target.reply.id)}. Jack will read this too.`, handled: "booked_kept", needsPerson: true };
+  // A NO without a code whose only fit is a lead the owner already told us about (quoted, reached, no answer) may be
+  // about anything else we asked: it never closes that lead out on its own. A person reads it; NO + the #code does it.
+  if (outcome === "lost" && !code && !target.waiting)
+    return { businessId: bid, reply: `${multi ? `${target.biz.profile.name}: ` : ""}Is that about ${target.name}? To mark that lead not a fit, text NO #${leadCode(target.reply.id)}. Jack will read this too.`, handled: "lost_unsure", needsPerson: true };
   let reply = "";
   let note: FsmNote | undefined;
   await d.accounts.withAccount(bid, (state) => {

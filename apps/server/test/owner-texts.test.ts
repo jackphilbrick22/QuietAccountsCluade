@@ -909,4 +909,121 @@ describe("final review: the plan by text and in Settings", () => {
   });
 });
 
+describe("verification review: owner texts that read two ways", () => {
+  const latest = (h: Harness, bid: string) => h.d.accounts.repo.ownerTexts(bid)[0]!;
+  const plan = (h: Harness, bid: string) => state(h, bid).dataset.business.plan;
+  const renewalOut = (h: Harness, bid: string, paidOn: string, yearEnd: string) =>
+    h.d.accounts.withAccount(bid, (s) => {
+      s.dataset.business.plan = { ...s.dataset.business.plan, stage: "paying", billing: "annual", paidOn, yearsPaidOn: [paidOn] };
+      s.ownerMessages.push({ id: "om-renewal", at: "2026-09-20T09:00:00", kind: "renewal", text: "Your year with us ends soon.", refs: [{ kind: "year_end", id: yearEnd }] });
+    });
+
+  it("a lead text without a #code that starts with Monthly / Annual / Yearly is about the lead, never a plan change (sweep 3)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "monthly", paidOn: "2026-06-01" } });
+    await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
+    for (const text of ["Monthly cleaning booked 180", "Monthly maintenance booked 180"]) {
+      expect(await h.sms(text), text).not.toMatch(/month to month|another year|the year it is/);
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "unclear_lead", needs_person: 1 });
+    }
+    expect(plan(h, "ridge")).toMatchObject({ stage: "paying", billing: "monthly", paidOn: "2026-06-01" });
+    // read as Karen's booking, it goes on her lead
+    h.d.llm = { model: "stub", structured: async () => ({ outcome: "booked", amount: 180 }) } as never;
+    try {
+      expect(await h.sms("Monthly cleaning booked 180")).toBe("Booked: Karen Whitfield, $180. Added to your results.");
+    } finally {
+      h.d.llm = null;
+    }
+    // the command itself, with a harmless tail, still answers
+    expect(await h.sms("Monthly please")).toBe("You're already month to month at $497 a month. Nothing else to do.");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "monthly_already" });
+
+    // a yearly owner (year from Mar 1): no renewal recorded early, no switch to month to month
+    const y = make();
+    await y.business("ridge");
+    await y.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "annual", paidOn: "2026-03-01", yearsPaidOn: ["2026-03-01"] } });
+    await addLead(y, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
+    for (const text of ["Annual service booked 250", "Yearly contract booked 1200", "Monthly maintenance booked 180"]) {
+      expect(await y.sms(text), text).not.toMatch(/month to month|another year|the year it is/);
+      expect(latest(y, "ridge"), text).toMatchObject({ handled: "unclear_lead", needs_person: 1 });
+    }
+    expect(plan(y, "ridge")).toMatchObject({ billing: "annual", paidOn: "2026-03-01", yearsPaidOn: ["2026-03-01"] });
+    expect(plan(y, "ridge").priorFees).toBeUndefined();
+    expect(reply(y, "ridge", "r1").status).toBe("handed_off");
+    expect(await y.sms("Renew for another year")).toMatch(/^Done — another year from March 1/);
+    expect(plan(y, "ridge").yearsPaidOn).toEqual(["2026-03-01", "2027-03-01"]);
+  });
+
+  it("a bare No to the close or the renewal never marks a lead the owner already reported lost; a person reads it (sweep 6)", async () => {
+    const h = make({ now: "2026-09-24T14:00:00Z" });
+    await h.business("ridge");
+    await addLead(h, "ridge", "r-kim", "Kim Tran", "2026-09-24T09:00:00");
+    const kim = leadCode("r-kim");
+    expect(await h.sms(`Quoted her #${kim}`)).toBe("Got it — Kim Tran has a price. We'll count it when it books.");
+    h.setNow("2026-09-29T14:00:00Z");
+    await pushOwner(h, "ridge", { id: "om-close", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday 2 and the next batch goes out next week." });
+    for (const text of ["No", "Nope", "No thanks", "Not interested", "Pass for now"]) {
+      expect(await h.sms(text), text).toBe("Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.");
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "close_no", needs_person: 1 });
+    }
+    expect(reply(h, "ridge", "r-kim").outcome).toBe("quoted");
+
+    // nothing outstanding: a NO without the code still never closes her out on its own; NO #code does
+    const p = make({ now: "2026-09-24T14:00:00Z" });
+    await p.business("ridge");
+    await addLead(p, "ridge", "r-kim", "Kim Tran", "2026-09-24T09:00:00");
+    expect(await p.sms(`Called her, done #${kim}`)).toBe("Thanks — Kim Tran marked as reached.");
+    p.setNow("2026-09-29T14:00:00Z");
+    for (const text of ["No", "Pass for now"]) {
+      expect(await p.sms(text), text).toBe(`Is that about Kim Tran? To mark that lead not a fit, text NO #${kim}. Jack will read this too.`);
+      expect(latest(p, "ridge"), text).toMatchObject({ handled: "lost_unsure", needs_person: 1 });
+    }
+    expect(reply(p, "ridge", "r-kim").outcome).toBeUndefined();
+    expect(await p.sms(`NO #${kim}`)).toBe("Got it — Kim Tran marked not a fit.");
+    // a bare NO still answers a lead waiting on a call
+    await addLead(p, "ridge", "r-dan", "Dan Ruiz", "2026-09-29T09:00:00");
+    expect(await p.sms("No")).toBe("Got it — Dan Ruiz marked not a fit.");
+
+    // the renewal out: "No thanks" is about the renewal
+    const r = make({ now: "2026-09-24T14:00:00Z" });
+    await r.business("ridge");
+    await addLead(r, "ridge", "r-kim", "Kim Tran", "2026-09-24T09:00:00");
+    expect(await r.sms(`Quoted her #${kim}`)).toBe("Got it — Kim Tran has a price. We'll count it when it books.");
+    r.setNow("2026-09-29T14:00:00Z");
+    await renewalOut(r, "ridge", "2025-10-20", "2026-10-20");
+    expect(await r.sms("No thanks")).toBe("Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.");
+    expect(latest(r, "ridge")).toMatchObject({ handled: "renewal_no", needs_person: 1 });
+    expect(reply(r, "ridge", "r-kim").outcome).toBe("quoted");
+  });
+
+  it("a go-ahead after PAUSE resumes when nothing else is open; a yes with more after it reaches a person (sweep 7)", async () => {
+    const h = make();
+    await h.business("ridge");
+    for (const text of ["Go ahead and resume", "Go ahead and start it back up", "Go ahead, thanks", "Go for it, thanks"]) {
+      expect(await h.sms("PAUSE")).toMatch(/^Paused\./);
+      expect(await h.sms(text), text).toBe("Back on. Notes resume on your next send day.");
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "resume" });
+      expect(h.d.accounts.peek("ridge")!.paused, text).toBe(false);
+    }
+    // a yes with more after it and nothing open to answer: a person reads it, never a bare "Got it"
+    expect(await h.sms("PAUSE")).toMatch(/^Paused\./);
+    for (const text of ["Ok resume", "Go ahead and call her"]) {
+      expect(await h.sms(text), text).toMatch(/^Thanks — Jack will read this and get back to you\./);
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "unrecognized", needs_person: 1 });
+    }
+    expect(await h.sms("Ok thanks")).toBe("Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.");
+    expect(latest(h, "ridge")).toMatchObject({ handled: "ack", needs_person: 0 });
+
+    // paused with the renewal out: "Go" is the renewal's yes, and a person reads it too
+    const r = make();
+    await r.business("ridge");
+    await renewalOut(r, "ridge", "2025-10-20", "2026-10-20");
+    expect(await r.sms("PAUSE")).toMatch(/^Paused\./);
+    expect(await r.sms("Go")).toBe("Great — which one: RENEW for another year, or MONTHLY to go month to month? Your notes are still paused: text RESUME to restart them.");
+    expect(latest(r, "ridge")).toMatchObject({ handled: "ask_renewal", needs_person: 1 });
+    expect(r.d.accounts.peek("ridge")!.paused).toBe(true);
+  });
+});
+
 
