@@ -82,7 +82,7 @@ export function scheduledWork(ds: Dataset): ScheduledWork[] {
     const book = visitBook(ds);
     for (const j of ds.jobs as Job[]) {
       if (!(j.status === "scheduled" || j.status === "active" || j.status === "unknown") || !j.scheduledOn) continue;
-      if (j.visit && book.stopped(j.customerId)) continue;
+      if (j.visit && (j.undone || book.stopped(j))) continue;
       const p = j.property ?? customerById(ds, j.customerId)?.address;
       if (!p) continue;
       out.push({ date: j.scheduledOn, city: (p.city ?? "").toLowerCase(), street: streetName(p.street).toLowerCase(), customerId: j.customerId });

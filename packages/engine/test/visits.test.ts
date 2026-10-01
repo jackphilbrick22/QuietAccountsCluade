@@ -1,12 +1,14 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { scan, type ScanResult } from "../src/breakage/detect.ts";
 import { readiness } from "../src/breakage/readiness.ts";
+import { visitBook } from "../src/breakage/visits.ts";
 import { parseTable, toCSV } from "../src/ingest/csv.ts";
 import { detect, mapColumns } from "../src/ingest/detect.ts";
 import type { Field } from "../src/ingest/fields.ts";
 import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { scheduledWork } from "../src/lookup.ts";
 import type { BusinessProfile, Dataset, ISODate, TradeId } from "../src/model.ts";
+import { attribute } from "../src/ledger/attribution.ts";
 import { dueTouches, find, planBatch } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { addDays, daysBetween, round2 } from "../src/util.ts";
@@ -279,6 +281,9 @@ describe("Jobber's Visits report", () => {
       const { dataset: ds } = read([HEAD, ...rows].join("\n"), "Visits Report.csv", b, asOf);
       expect(ds.jobs.every((j) => j.recurring === false)).toBe(true);
       expect(scan(ds).opportunities.map((o) => o.type)).toEqual(types);
+      // the same as with the column
+      const { dataset: typed } = read([`${HEAD},Job type`, ...rows.map((r) => `${r},One-off`)].join("\n"), "Visits Report.csv", b, asOf);
+      expect(found(ds, scan(ds))).toEqual(found(typed, scan(typed)));
     }
     const { dataset: clean } = read([HEAD, ...cases[2]![2]].join("\n"), "Visits Report.csv", cleaning(), CLEANING_ASOF);
     expect(oneOpp(scan(clean), clean.customers[0]!.id, "service_due").evidence[0]).toBe("Job: “Deep clean” — $420, back in March");
@@ -684,5 +689,195 @@ describe("readiness for lawn and cleaning shops", () => {
 
   it("a tree shop is still asked for its quotes first", () => {
     expect(readiness(dataset()).gaps.find((g) => g.level === "blocker")?.ask).toBe("The quotes export (all time).");
+  });
+});
+
+describe("a client list sent again", () => {
+  const list = (on: string) => `First Name,Last Name,Email,Last Cleaning\nKaren,Brennan,karen@yahoo.com,${on}\n`;
+
+  it("moves each client's last date on, so the month's new drop-offs are found as on a first list", () => {
+    // September's list has Karen last cleaned August 25th; October's, September 2nd, 48 days back
+    const sept = read(list("08/25/2026"), "Clients.csv", cleaning(), "2026-09-01").dataset;
+    const oct = read(list("09/02/2026"), "Clients.csv", cleaning(), "2026-10-20", { ...sept, asOf: "2026-10-20" }).dataset;
+    expect(oct.jobs.map((j) => j.completedOn)).toEqual(["2026-09-02"]);
+    const alone = read(list("09/02/2026"), "Clients.csv", cleaning(), "2026-10-20").dataset;
+    expect(found(oct, scan(oct))).toEqual(found(alone, scan(alone)));
+    const o = oneOpp(scan(oct), oct.customers[0]!.id, "one_and_done");
+    expect(o.suppressed).toBeUndefined();
+    expect(o.reason).toMatch(/^Your client list has them last here/);
+    // an older list sent after it never takes the date back
+    const back = read(list("08/25/2026"), "Clients.csv", cleaning(), "2026-10-20", oct).dataset;
+    expect(back.jobs.map((j) => j.completedOn)).toEqual(["2026-09-02"]);
+  });
+
+  it("gives way to a visit on the day it names, and the earlier list's date goes too", () => {
+    const sept = read(list("08/25/2026"), "Clients.csv", cleaning(), "2026-09-01").dataset;
+    const visits = read(`${VISITS_HEAD}\n77,2026-09-02,Biweekly cleaning,Karen Brennan,karen@yahoo.com,Yes,160.00,Recurring`, "Visits Report.csv", cleaning(), "2026-10-20", { ...sept, asOf: "2026-10-20" }).dataset;
+    const oct = read(list("09/02/2026"), "Clients.csv", cleaning(), "2026-10-20", visits).dataset;
+    expect(oct.jobs.map((j) => [j.scheduledOn ?? j.completedOn, !!j.visit])).toEqual([["2026-09-02", true]]);
+  });
+});
+
+describe("a client back on a new job while the old one was never closed", () => {
+  // Mike's weekly job #100 was done through May 27th and never closed: its visits kept going by undone. The crew marks
+  // Linda's visits each week.
+  const mike = (closed: boolean) => visitRows(100, "Mike Sanderson", every("2026-04-08", closed ? "2026-05-27" : "2026-11-04", 7), "2026-05-27");
+  const linda = (to: ISODate) => visitRows(300, "Linda Whitfield", every("2026-04-07", "2026-11-03", 7), to, "Weekly mowing", 50);
+  const back = (doneTo: ISODate) => visitRows(200, "Mike Sanderson", every("2026-10-07", "2026-11-04", 7), doneTo);
+  const idOf = (ds: Dataset, email: string) => ds.customers.find((c) => c.emails.includes(email))!.id;
+
+  it("has a job on the go: the new job's visits are still to come, whatever the old job's calendar shows", () => {
+    // October 1st: Mike phoned and is booked weekly from October 7th on a new job, #200
+    for (const closed of [false, true]) {
+      const { dataset: ds } = read([VISITS_HEAD, ...mike(closed), ...back(""), ...linda("2026-09-29")].join("\n"), "Visits Report.csv", lawn(), "2026-10-01");
+      expect(oneOpp(scan(ds), idOf(ds, "mike@gmail.com"), "lapsed_regular").suppressed).toBe("active_work");
+    }
+  });
+
+  it("a note queued before he was booked again is stopped", () => {
+    const { dataset: ds } = read([VISITS_HEAD, ...mike(false), ...linda("2026-09-15")].join("\n"), "Visits Report.csv", lawn(), "2026-09-15");
+    const { st, at, sent } = firstNotes(ds);
+    expect(sent).toEqual([idOf(ds, "mike@gmail.com")]);
+    st.dataset = read([VISITS_HEAD, ...mike(false), ...back(""), ...linda("2026-09-15")].join("\n"), "Visits Report.csv", lawn(), LAWN_ASOF, st.dataset).dataset;
+    expect(dueTouches(st, at).held.map((h) => h.why)).toEqual(["No longer needed: they've booked a job since"]);
+  });
+
+  it("names a crew for the new job's visits, never for the old job's", () => {
+    const CSV = [`${VISITS_HEAD},Service street,Service city`, ...[...mike(false), ...back(""), ...linda("2026-09-29")].map((r) => `${r},14 Oak Ln,Concord`)].join("\n");
+    const { dataset: ds } = read(CSV, "Visits Report.csv", lawn(), "2026-10-01");
+    const days = scheduledWork(ds).filter((w) => w.customerId === idOf(ds, "mike@gmail.com") && w.date > "2026-10-01").map((w) => w.date);
+    expect(days).toEqual(every("2026-10-07", "2026-11-04", 7));
+  });
+
+  /** The scan's finds planned and approved, and who gets note 1 the morning the last one is due. */
+  function firstNotes(ds: Dataset) {
+    const now = `${ds.asOf}T12:00:00Z`;
+    const st = emptyState(ds, now);
+    find(st, now);
+    planBatch(st, now, { startOn: ds.asOf, approve: true });
+    const at = st.touches.filter((t) => t.step === 1).map((t) => t.dueAt).sort().at(-1)!;
+    st.dataset.asOf = at.slice(0, 10);
+    const { due } = dueTouches(st, at);
+    return { st, at, sent: due.filter((d) => d.touch.step === 1).map((d) => d.touch.customerId).sort() };
+  }
+});
+
+describe("the jobs report beside the Visits report", () => {
+  const clients = lawnClients();
+  const c = clients.find((x) => x.neverClosed)!;
+  const num = c.visits.at(-1)!.job;
+  const JOBS = (status: string) => `Job #,Client name,Client email,Title,Job status,Job type,Created date,Start date,Completed date,Total ($)\n${num},${c.name},${c.email},Weekly mowing,${status},Recurring,03/20/2026,04/06/2026,,0\n`;
+
+  it("a job the owner never closed is still 'Active' or 'Late' there: its visits say the schedule stopped", () => {
+    const visits = read(visitsReport(clients, "newest"), "Visits Report.csv").dataset;
+    const id = visits.customers.find((x) => x.emails.includes(c.email))!.id;
+    expect(oneOpp(scan(visits), id, "lapsed_regular").suppressed).toBeUndefined();
+    for (const status of ["Active", "Late"]) {
+      const ds = read(JOBS(status), "Jobs Report.csv", lawn(), LAWN_ASOF, visits).dataset;
+      expect(ds.jobs.find((j) => !j.visit)!.status).toBe(status.toLowerCase());
+      const o = oneOpp(scan(ds), id, "lapsed_regular");
+      expect(o.suppressed).toBeUndefined();
+      expect(o.anchorDate).toBe("2026-06-12");
+      // and nothing holds the note it gets: no job on the go
+      const now = `${LAWN_ASOF}T12:00:00Z`;
+      const st = emptyState(ds, now);
+      find(st, now);
+      planBatch(st, now, { startOn: LAWN_ASOF, approve: true });
+      const at = st.touches.filter((t) => t.customerId === id && t.step === 1)[0]!.dueAt;
+      st.dataset.asOf = at.slice(0, 10);
+      expect(dueTouches(st, at).due.some((d) => d.touch.customerId === id)).toBe(true);
+    }
+  });
+});
+
+describe("a quote tracker with a booking date", () => {
+  const TRACKER = `Customer,Email,Phone,Address,Job,Estimate Amount,Estimate Date,Booking Date,Status
+Mike Sanderson,mike@gmail.com,603-224-1100,12 Oak Ln,Cedar privacy fence,7850,${ago(40)},,Sent
+Linda Whitfield,linda@gmail.com,603-224-1101,15 Pine St,Vinyl fence,5200,${ago(50)},${ago(20)},Booked
+Tom Alvarez,tom@gmail.com,603-224-1102,18 Maple Ave,Chain link,4100,${ago(35)},,Pending
+Karen Brennan,karen@gmail.com,603-224-1103,21 Birch Rd,Picket fence,2600,${ago(45)},,Waiting on HOA
+Steve Coutu,steve@gmail.com,603-224-1104,24 Elm St,Split rail,3900,${ago(60)},${ago(30)},Booked
+`;
+
+  it("is quotes, never visits: every open quote is still there to follow up", () => {
+    for (const name of ["Fence tracker - Sheet1.csv", "export.csv"]) {
+      for (const csv of [TRACKER, TRACKER.replace("Booking Date", "Booking #")]) {
+        expect(detect(parseTable(csv), name).kind).toBe("quote");
+        const { dataset: ds } = read(csv, name, business({ trade: "fence" }), ASOF);
+        expect(ds.quotes).toHaveLength(5);
+        expect(ds.jobs).toEqual([]);
+      }
+    }
+    const { dataset: ds } = read(TRACKER, "export.csv", business({ trade: "fence" }), ASOF);
+    expect(scan(ds).opportunities.filter((o) => o.type === "unanswered_quote").map((o) => o.value).sort((a, b) => b - a)).toEqual([7850, 4100, 2600]);
+  });
+});
+
+describe("a recurring job's row with no end date and no status", () => {
+  it("is a job still running, never one job done the day it started", () => {
+    const SHEET = `Job #,Customer,Email,Service,Job Type,Start Date,End Date,Price\n611,Linda Whitfield,linda@gmail.com,Weekly mowing,Recurring,2025-04-07,,45\n`;
+    const RECURRING = `Job #,Job title,Client name,Client email,Billing type,Total ($),Completed visits,Schedule start date,Schedule end date\n611,Biweekly cleaning,Linda Whitfield,linda@gmail.com,Per visit,2900,50,04/07/2025,\n`;
+    for (const [csv, name, b] of [[SHEET, "Jobs.csv", lawn()], [RECURRING, "Recurring Jobs Report.csv", lawn()], [RECURRING, "Recurring Jobs Report.csv", cleaning()]] as const) {
+      const { dataset: ds, detection } = read(csv, name, b, LAWN_ASOF);
+      expect(detection.kind).toBe("job");
+      expect(ds.jobs.map((j) => [j.recurring, j.status])).toEqual([[true, "active"]]);
+      expect(scan(ds).opportunities.filter((o) => !o.suppressed)).toEqual([]);
+    }
+  });
+});
+
+describe("a Visits report exported without the 'Job type' column", () => {
+  const HEAD = "Job #,Date,Visit title,Client name,Client email,Visit completed,One-off job ($),Visit based ($)";
+  const oneOff = (job: number, name: string, title: string, dates: ISODate[], share: number) =>
+    dates.map((d) => `${job},${d},${title},${name},${name.split(" ")[0]!.toLowerCase()}@gmail.com,Yes,${share.toFixed(2)},`);
+
+  it("still reads a one-off job's visits as one job: a patio over four days is no weekly regular", () => {
+    const cases: [BusinessProfile, ISODate, string[], string[]][] = [
+      [lawn({ trade: "landscape" }), LAWN_ASOF, oneOff(2001, "Mike Sanderson", "Paver patio", every("2026-04-06", "2026-04-09", 1), 2000), ["missed_upsell"]],
+      [lawn({ trade: "landscape" }), LAWN_ASOF, oneOff(2002, "Linda Whitfield", "Retaining wall", every("2026-04-13", "2026-04-15", 1), 1500), ["missed_upsell"]],
+      [cleaning(), CLEANING_ASOF, oneOff(2003, "Karen Brennan", "Move-in deep clean", every("2026-03-10", "2026-03-12", 1), 210), []],
+    ];
+    for (const [b, asOf, rows, types] of cases) {
+      const { dataset: ds } = read([HEAD, ...rows].join("\n"), "Visits Report.csv", b, asOf);
+      expect(ds.jobs.every((j) => j.recurring === false)).toBe(true);
+      expect(scan(ds).opportunities.map((o) => o.type)).toEqual(types);
+      // the same as with the column
+      const { dataset: typed } = read([`${HEAD},Job type`, ...rows.map((r) => `${r},One-off`)].join("\n"), "Visits Report.csv", b, asOf);
+      expect(found(ds, scan(ds))).toEqual(found(typed, scan(typed)));
+    }
+    // a visit billed per visit is still a visit of a routine
+    const { dataset: ds } = read(`${HEAD}\n301,2026-07-07,Weekly mowing,Mike Sanderson,mike@gmail.com,Yes,0.00,45.00`, "Visits Report.csv");
+    expect(ds.jobs[0]!.recurring).toBeUndefined();
+  });
+});
+
+describe("a visit the export says went by undone", () => {
+  const HEAD = "Booking ID,Customer Name,Email,Service,Frequency,Booking Date,Price,Status";
+  const row = (id: number, name: string, on: ISODate, status: string, title = "Biweekly cleaning", freq = "Every other week") =>
+    `${id},${name},${name.split(" ")[0]!.toLowerCase()}@gmail.com,${title},${freq},${on},160.00,${status}`;
+
+  it("is never work done: skipped, no-show, missed, lockout, postponed, incomplete", () => {
+    // Karen was cleaned every other week through July 7th; the recurring booking stayed, and every one since was skipped
+    const karen = every("2026-03-03", "2026-11-17", 14).map((d, i) => row(5000 + i, "Karen Brennan", d, d <= "2026-07-07" ? "Completed" : d <= "2026-10-01" ? "Skipped" : "Upcoming"));
+    const { dataset: ds } = read([HEAD, ...karen].join("\n"), "Bookings.csv", cleaning(), "2026-10-01");
+    const o = oneOpp(scan(ds), ds.customers[0]!.id, "lapsed_regular");
+    expect(o.suppressed).toBeUndefined();
+    expect(o.anchorDate).toBe("2026-07-07");
+    // each of these on a visit gone by is no visit done, and none of them reads as completed; a status nobody can read
+    // is no proof either: like a visit not marked done, it was missed once the shop has marked past it
+    const words = ["Skipped", "Skip", "No Show", "No-show", "Lockout", "Locked out", "Missed", "Postponed", "Incomplete", "Not Completed", "Pending", "Unassigned"];
+    const name = (i: number) => `Client${String.fromCharCode(65 + i)} Test`;
+    const CSV = [HEAD, ...words.map((w, i) => row(6000 + i, name(i), "2026-09-15", w)), ...words.map((_, i) => row(6100 + i, name(i), "2026-09-22", "Completed"))].join("\n");
+    const { dataset: each } = read(CSV, "Bookings.csv", cleaning(), "2026-10-01");
+    const book = visitBook(each);
+    const said = each.jobs.filter((j) => j.scheduledOn === "2026-09-15");
+    expect(said.map((j) => [j.rawStatus, j.status, book.worked(j)])).toEqual(words.map((w) => [w, "scheduled", false]));
+    expect(said.map((j) => !!j.undone)).toEqual(words.map((w) => !["Pending", "Unassigned"].includes(w)));
+    // with nothing marked past them, only the export's own word says the visit didn't happen
+    const { dataset: alone } = read([HEAD, ...words.map((w, i) => row(6000 + i, name(i), "2026-09-15", w))].join("\n"), "Bookings.csv", cleaning(), "2026-10-01");
+    expect(alone.jobs.filter(visitBook(alone).worked).map((j) => j.rawStatus)).toEqual(["Pending", "Unassigned"]);
+    // and a booking skipped after a note is no comeback
+    const id = ds.customers[0]!.id;
+    expect(attribute(ds, [{ customerId: id, firstTouchOn: "2026-07-20", lastTouchOn: "2026-07-20" }], { replied: new Set([id]) })).toEqual([]);
   });
 });

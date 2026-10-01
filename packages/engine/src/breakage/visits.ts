@@ -43,10 +43,20 @@ export interface VisitBook {
   missed(j: Job): boolean;
   /** How far a visit's crew has marked its visits done: blank when it hasn't marked enough of them to say. */
   markedThrough(j: Job): ISODate;
-  /** Their schedule stopped being served: what's left of it on the calendar is what nobody cleared. */
-  stopped(customerId: string): boolean;
+  /**
+   * A visit's schedule stopped being served: what's left of it on the calendar is what nobody cleared. Each job keeps
+   * its own (a client booked on a new job while the old one was never closed is back); a visit with no job number
+   * goes by its client's.
+   */
+  stopped(j: Job): boolean;
   /** A visit still to come (dated after the day, or not dated and not done) on a schedule that's still served. */
   ahead(j: Job): boolean;
+  /**
+   * A job's own record (a jobs report row, a sync) whose visits the data has: whether one of them is still to come on
+   * a schedule still served. A job the owner never closed reads "Active" for good; its visits say whether it is.
+   * Undefined for a job with none of its visits here.
+   */
+  jobAhead(j: Job): boolean | undefined;
 }
 
 /**
@@ -56,9 +66,10 @@ export interface VisitBook {
  * marked done with at least half of the four weeks' visits up to it marked too, so a visit or two ticked off the day
  * they were done (a move-out clean invoiced on the spot) don't turn a month nobody has marked yet into a month of
  * misses. Otherwise the owner hasn't got to it (he ticks visits off when he invoices, or never does), and its date
- * decides too. Undone visits since a client's last one done, running as long as it takes a regular of theirs to go
- * quiet, are a schedule that stopped though the owner never closed the job: the rest of it, past or still to come, is
- * no sign they're back.
+ * decides too. A visit the export says went by undone ("Skipped", "No show") was missed, whatever the marking. Undone
+ * visits of a job since its last one done, running as long as it takes a regular of theirs to go quiet, are a
+ * schedule that stopped though the owner never closed the job: the rest of it, past or still to come, is no sign
+ * they're back.
  */
 export function visitBook(ds: Dataset): VisitBook {
   const asOf = ds.asOf;
@@ -66,14 +77,18 @@ export function visitBook(ds: Dataset): VisitBook {
   const plain = (j: Job) => (DONE_JOB.has(j.status) || j.status === "unknown") && dated(j);
   // a dated visit, by now, not marked done: missed, or not marked yet
   const unmarked = (j: Job) => !!j.visit && !plain(j) && j.status !== "cancelled" && !!jobDate(j) && dated(j);
-  const jobOf = (j: Job) => `${j.customerId}|${j.jobRef ?? ""}`;
+  const ref = (customerId: string, n: string | undefined) => `${customerId}|${(n ?? "").replace(/^#/, "")}`;
+  const jobOf = (j: Job) => ref(j.customerId, j.jobRef);
   // visits by now, by day, for the whole shop ("") and for each crew: how many, and how many marked done
   const days = new Map<string, Map<ISODate, [number, number]>>();
   // the last visit of each job marked done
   const jobTicked = new Map<string, ISODate>();
   const mine = new Map<string, Job[]>();
+  // each job's visits, by its number
+  const visitsOf = new Map<string, Job[]>();
   for (const j of ds.jobs) {
     (mine.get(j.customerId) ?? mine.set(j.customerId, []).get(j.customerId)!).push(j);
+    if (j.visit && j.jobRef) (visitsOf.get(jobOf(j)) ?? visitsOf.set(jobOf(j), []).get(jobOf(j))!).push(j);
     const done = !!j.visit && DONE_JOB.has(j.status) && dated(j);
     if (!done && !unmarked(j)) continue;
     const on = jobDate(j)!;
@@ -100,23 +115,27 @@ export function visitBook(ds: Dataset): VisitBook {
     if (at) through.set(crew, at);
   }
   const markedThrough = (j: Job) => (j.crew && through.get(j.crew)) || through.get("") || "";
-  const missed = (j: Job) => unmarked(j) && (jobDate(j)! <= markedThrough(j) || jobDate(j)! < (jobTicked.get(jobOf(j)) ?? ""));
+  const missed = (j: Job) => unmarked(j) && (!!j.undone || jobDate(j)! <= markedThrough(j) || jobDate(j)! < (jobTicked.get(jobOf(j)) ?? ""));
   const seen = new Map<string, boolean>();
-  const stopped = (customerId: string): boolean => {
-    let s = seen.get(customerId);
+  const stopped = (j: Job): boolean => {
+    const k = j.visit && j.jobRef ? jobOf(j) : j.customerId;
+    let s = seen.get(k);
     if (s === undefined) {
-      const jobs = mine.get(customerId) ?? [];
-      const done = jobs.filter(plain).map((j) => jobDate(j)!).sort();
+      const theirs = mine.get(j.customerId) ?? [];
+      const jobs = j.visit && j.jobRef ? visitsOf.get(k)! : theirs;
+      const done = jobs.filter(plain).map((x) => jobDate(x)!).sort();
       const last = done[done.length - 1] ?? "";
-      const since = jobs.filter((j) => missed(j) && jobDate(j)! > last).map((j) => jobDate(j)!).sort();
-      const gap = rhythmOf(done.map((date) => ({ date }))).median;
+      const since = jobs.filter((x) => missed(x) && jobDate(x)! > last).map((x) => jobDate(x)!).sort();
+      // how often they come is the client's, whichever job
+      const gap = rhythmOf(theirs.filter(plain).map((x) => jobDate(x)!).sort().map((date) => ({ date }))).median;
       s = since.length > 0 && daysBetween(last || since[0]!, since[since.length - 1]!) >= lapseAfter(ds.business.trade, gap || undefined).days;
-      seen.set(customerId, s);
+      seen.set(k, s);
     }
     return s;
   };
-  const ahead = (j: Job) => !!j.visit && j.status !== "cancelled" && (jobDate(j) ? !dated(j) : !DONE_JOB.has(j.status) && j.status !== "unknown") && !stopped(j.customerId);
-  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j.customerId)), missed, markedThrough, stopped, ahead };
+  const ahead = (j: Job) => !!j.visit && j.status !== "cancelled" && !j.undone && (jobDate(j) ? !dated(j) : !DONE_JOB.has(j.status) && j.status !== "unknown") && !stopped(j);
+  const jobAhead = (j: Job) => (j.visit || !j.number ? undefined : visitsOf.get(ref(j.customerId, j.number))?.some(ahead));
+  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j)), missed, markedThrough, stopped, ahead, jobAhead };
 }
 
 /**

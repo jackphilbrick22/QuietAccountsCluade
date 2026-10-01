@@ -66,7 +66,8 @@ export function ledgerRows(state: AccountState): LedgerRow[] {
         const j = all.find((x) => !x.visit) ?? all.find((x) => x.jobRef || x.createdOn === r.cameBackOn);
         const inv = j ? ds.invoices.find((i) => i.jobId === j.id) : undefined;
         const num = j?.jobRef ?? j?.number;
-        record = all.length ? `Job${num ? ` #${num}` : ""}${inv?.number ? ` · Invoice #${inv.number}` : ""}` : "Booked (you told us)";
+        // one no record stands for any more is still a job: only the owner's own word is "you told us"
+        record = all.length ? `Job${num ? ` #${num}` : ""}${inv?.number ? ` · Invoice #${inv.number}` : ""}` : r.match === "owner_reported" ? "Booked (you told us)" : "Job";
         paid = inv?.status === "paid";
       } else if (r.record.kind === "invoice") {
         const inv = ds.invoices.find((x) => x.id === r.record.id);

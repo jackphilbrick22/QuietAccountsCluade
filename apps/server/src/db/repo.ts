@@ -284,6 +284,16 @@ export class Repo {
           written++;
         }
       }
+      // Records an import took away (a visit a re-sent report no longer has, a client list's earlier date) and
+      // bookings taken off the ledger: gone from the arrays, so gone from disk, or a reload brings them back.
+      for (const k of [...l.hashes.keys()].filter((k) => ((!datasetUnchanged && k.startsWith("rec:")) || k.startsWith("recoveries:")) && !seen.has(k))) {
+        if (k.startsWith("rec:")) {
+          const [, kind = "", ...id] = k.split(":");
+          this.db.run("DELETE FROM records WHERE business_id = ? AND kind = ? AND id = ?", bid, kind, id.join(":"));
+        } else this.db.run("DELETE FROM recoveries WHERE business_id = ? AND id = ?", bid, k.slice("recoveries:".length));
+        l.hashes.delete(k);
+        written++;
+      }
       l.savedOpps = s.scan?.opportunities;
       l.savedOppsLength = s.scan?.opportunities.length;
       this.db.run(

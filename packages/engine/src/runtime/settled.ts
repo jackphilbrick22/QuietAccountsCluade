@@ -71,8 +71,9 @@ export function settledCheck(state: AccountState): (t: Touch) => string | undefi
     if (jobs.some((j) => booked(j) && !isSource("job", j.id) && (after(j.createdOn) || after(j.scheduledOn) || after(j.completedOn)))) return "they've booked a job since";
     if (quotes.some((q) => !isSource("quote", q.id) && (after(q.approvedOn) || after(q.convertedOn)))) return "they've said yes to a quote since";
     if (quotes.some((q) => !isSource("quote", q.id) && (after(q.sentOn) || after(q.createdOn)))) return "they've had a new quote since";
-    // a job on the go (one with no dates on it is still work in progress), or a visit still to come
-    if (jobs.some((j) => booked(j) && (j.visit ? visits().ahead(j) : OPEN_JOB.has(j.status)) && !isSource("job", j.id))) return "they have a job on the go";
+    // a job on the go (one with no dates on it is still work in progress), or a visit still to come; a job whose
+    // visits are here is on the go while one of them is
+    if (jobs.some((j) => booked(j) && (j.visit ? visits().ahead(j) : (visits().jobAhead(j) ?? OPEN_JOB.has(j.status))) && !isSource("job", j.id))) return "they have a job on the go";
     return undefined;
   };
 }

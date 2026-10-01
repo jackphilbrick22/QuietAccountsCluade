@@ -199,8 +199,11 @@ export function detectKind(table: Table, fileName = ""): { kind: RecordKind; con
   if (has(/^request #$|request status|assessment/)) scores.request += 3;
   if (has(/^visit|visit date|arrival/)) scores.visit += 2;
   if (visitRows) scores.visit += 6;
-  // a bookings export is visits too: one row per booking, never a quote
-  if (has(/^booking (id|#|number|date)$/)) scores.visit += 3;
+  // A quote's own price or date ("Estimate Amount", "Quote Date") makes the file quotes. A bookings export is visits:
+  // one row per booking, never a quote; but in a quote tracker, "Booking Date" is the day a quote booked.
+  const quoteCols = has(/^(quote|estimate|bid|proposal) (amount|total|value|price|date|sent|sent date)$|^(quoted|estimated) (amount|price|value)$/);
+  if (quoteCols) scores.quote += 3;
+  if (has(/^booking (id|#|number|date)$/) && !quoteCols) scores.visit += 3;
   // only a client list says when each person was last here
   if (has(/^last (visit|appointment|booking|cleaning|service|job|closed job)\b/)) scores.client += 3;
   if (has(/client since|customer since|client created|lead source/) && !has(/total|amount|status/)) scores.client += 3;

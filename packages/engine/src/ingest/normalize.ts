@@ -29,7 +29,7 @@ import {
 import { visitBook } from "../breakage/visits.ts";
 import type { Table } from "./csv.ts";
 import type { Detection } from "./detect.ts";
-import { INVOICE_STATUS_MAP, JOB_STATUS_MAP, QUOTE_STATUS_MAP, REQUEST_STATUS_MAP, SOURCE_QUOTE_STATUS, type Field } from "./fields.ts";
+import { INVOICE_STATUS_MAP, JOB_STATUS_MAP, QUOTE_STATUS_MAP, REQUEST_STATUS_MAP, SOURCE_QUOTE_STATUS, VISIT_UNDONE, type Field } from "./fields.ts";
 
 interface Person {
   sourceClientId?: string;
@@ -265,6 +265,9 @@ export function importTable(
     const id = listedOn.get(`${customerId}|${on}`);
     if (id) jobs.delete(id);
   };
+  // and by whose: one last date per client, the latest any list has given
+  const lastListed = new Map<string, Job[]>();
+  for (const j of dataset.jobs) if (j.fromList) (lastListed.get(j.customerId) ?? lastListed.set(j.customerId, []).get(j.customerId)!).push(j);
   // this file's past visits, by whether they were marked done, for the warning on those that weren't
   const marks = new Map<string, boolean>();
   // every visit this file has, whatever its date
@@ -370,6 +373,9 @@ export function importTable(
       accepted++;
     } else if (kind === "job") {
       const ended = parseDate(get("completedOn"));
+      const started = parseDate(get("scheduledOn"));
+      // Jobber's Recurring Jobs report says so in its name and its columns, never in a job type
+      const often = frequency(get("jobType") || (recurringReport ? "Recurring" : ""));
       const job: Job = {
         id: recId("job"),
         sourceId: number || undefined,
@@ -378,15 +384,17 @@ export function importTable(
         title,
         lineItems,
         total,
-        // with no status, the date decides when each scan runs: a recurring job whose "Schedule end date" is still to
-        // come is on the calendar until then, and done after
-        status: mapStatus(rawStatus, JOB_STATUS_MAP) ?? (ended && ended <= dataset.asOf ? "completed" : "unknown"),
+        // With no status, the date decides when each scan runs: a recurring job whose "Schedule end date" is still to
+        // come is on the calendar until then, and done after. One with a start and its end left blank, in a file with
+        // an end column, is still running: no one-time job done the day it started.
+        status:
+          mapStatus(rawStatus, JOB_STATUS_MAP) ??
+          (ended ? (ended <= dataset.asOf ? "completed" : "unknown") : often.recurring && started && (fields.completedOn !== undefined || recurringReport) ? "active" : "unknown"),
         rawStatus,
-        createdOn: parseDate(get("createdOn")) ?? parseDate(get("scheduledOn")),
-        scheduledOn: parseDate(get("scheduledOn")),
+        createdOn: parseDate(get("createdOn")) ?? started,
+        scheduledOn: started,
         completedOn: ended,
-        // Jobber's Recurring Jobs report says so in its name and its columns, never in a job type
-        ...frequency(get("jobType") || (recurringReport ? "Recurring" : "")),
+        ...often,
         property,
       };
       const qn = get("quoteNumber");
@@ -401,9 +409,18 @@ export function importTable(
       const on = parseDate(get("scheduledOn")) ?? parseDate(get("completedOn"));
       const marked = get("done");
       // Not marked done is no proof of work: a visit still to come, or one that went by undone (or not marked yet,
-      // which the scan tells apart). With no word either way, the date decides when the scan runs.
-      const status = mapStatus(rawStatus, JOB_STATUS_MAP) ?? (marked ? (truthy(marked) ? "completed" : on ? "scheduled" : "unscheduled") : parseDate(get("completedOn")) ? "completed" : "unknown");
+      // which the scan tells apart), and so is a status no rule reads ("Pending", "Unassigned"). "Skipped", "No show",
+      // "Lockout": it went by undone, whatever else the row says. With no word either way, the date decides when the
+      // scan runs.
+      const undone = VISIT_UNDONE.test(rawStatus);
+      const notDone = on ? "scheduled" : "unscheduled";
+      const status =
+        (undone ? notDone : mapStatus(rawStatus, JOB_STATUS_MAP)) ??
+        (marked ? (truthy(marked) ? "completed" : notDone) : rawStatus ? notDone : parseDate(get("completedOn")) ? "completed" : "unknown");
       const jobType = get("jobType");
+      // With no "Job type" column, Jobber's "One-off job ($)" filled in and "Visit based ($)" not says it all the same:
+      // the visit is a share of one job's price, however many days it took
+      const share = !jobType && fields.perVisit !== undefined && (parseMoney(get("total")) ?? 0) > 0 && !parseMoney(get("perVisit"));
       const visit: Job = {
         id: recId("visit"),
         sourceId: number || undefined,
@@ -419,8 +436,9 @@ export function importTable(
         scheduledOn: on,
         completedOn: status === "completed" ? (parseDate(get("completedOn")) ?? on) : undefined,
         // a visit of a job the export calls one-off is part of that one job, however many days it took
-        ...(jobType ? { recurring: false, ...frequency(jobType) } : {}),
+        ...(jobType ? { recurring: false, ...frequency(jobType) } : share ? { recurring: false } : {}),
         visit: true,
+        undone: undone || undefined,
         jobRef: get("jobNumber") || undefined,
         crew: get("crew") || undefined,
         property,
@@ -428,7 +446,10 @@ export function importTable(
       if (marked && on && on <= dataset.asOf) marks.set(visit.id, truthy(marked));
       filed.add(visit.id);
       const prev = jobs.get(visit.id);
-      jobs.set(visit.id, { ...prev, ...stripUndefined(visit), title: title || prev?.title || "" } as Job);
+      const merged = { ...prev, ...stripUndefined(visit), title: title || prev?.title || "" } as Job;
+      // a re-sent report's word on it is the word: a skipped visit since marked done was done
+      if (!undone) delete merged.undone;
+      jobs.set(visit.id, merged);
       unlist(customer.id, on);
       accepted++;
     } else if (kind === "invoice") {
@@ -485,11 +506,17 @@ export function importTable(
       // Jobber's Client Re-Engagement report only has "Last Closed Job", a cleaning list its "Last Cleaning": keep it
       // as a past job, with how often they came when the list says
       const lastJob = parseDate(get("lastJobOn"));
-      if (lastJob) {
+      // A list sent again moves each client's date on: the earlier list's date gives way, so a client cleaned since
+      // reads as on a first list (an older list sent after it never takes the date back)
+      const before = (lastListed.get(customer.id) ?? []).filter((j) => jobs.has(j.id));
+      if (lastJob && !before.some((j) => j.completedOn! > lastJob)) {
         const jid = makeId("j", source, "last", customer.id, lastJob);
+        for (const j of before) if (j.id !== jid) jobs.delete(j.id);
         if (!jobs.has(jid) && ![...jobs.values()].some((j) => j.customerId === customer.id && (j.completedOn ?? j.scheduledOn) === lastJob)) {
-          jobs.set(jid, { id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: "completed", rawStatus: "Last closed job", completedOn: lastJob, createdOn: lastJob, ...frequency(get("jobType")), fromList: true });
+          const listed: Job = { id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: "completed", rawStatus: "Last closed job", completedOn: lastJob, createdOn: lastJob, ...frequency(get("jobType")), fromList: true };
+          jobs.set(jid, listed);
           listedOn.set(`${customer.id}|${lastJob}`, jid);
+          lastListed.set(customer.id, [listed]);
         }
       }
       accepted++;

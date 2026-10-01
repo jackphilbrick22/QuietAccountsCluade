@@ -167,6 +167,8 @@ export interface Job {
   jobRef?: string;
   /** Who a visit was assigned to (Jobber's "Assigned to"): each crew marks its visits done on its own clock. */
   crew?: string;
+  /** A visit the export says went by undone ("Skipped", "No show", "Lockout"): missed, whatever the shop has marked. */
+  undone?: boolean;
   /** The last visit a client list gives ("Last Cleaning"): one date standing for every visit before it. */
   fromList?: boolean;
   property?: Address;
@@ -628,6 +630,12 @@ export interface Recovery {
   tier?: "traced" | "after_note" | "holdout";
   /** The owner said this one wasn't ours ("already booked by phone", "calls every spring"). Excluded everywhere. */
   disputed?: { at: ISODateTime; reason: string; by: string };
+  /**
+   * What the ledger knew this booking as before a job in their records took its place: the owner's BOOKED text or a
+   * quote they approved. It keeps that day, and goes back to it, never off the ledger, while none of the job's visits
+   * count.
+   */
+  from?: Pick<Recovery, "record" | "value" | "match" | "confidence">;
 }
 
 /* ------------------------------------------------------------------ */

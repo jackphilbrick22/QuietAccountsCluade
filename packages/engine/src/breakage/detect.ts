@@ -642,9 +642,10 @@ function applySuppressions(ctx: Ctx, o: Opportunity): void {
   const quotes = ctx.quotesBy.get(c.id) ?? [];
 
   // Open work right now: don't step on a live job or a quote the salesperson is still working. A visit is open while
-  // it's still to come, unless their schedule stopped being served; a job with no word either way, while it's dated
-  // after today.
-  const open = (j: Job) => (j.visit ? ctx.book.ahead(j) : (OPEN_JOB.has(j.status) && j.status !== "requires_invoicing") || (j.status === "unknown" && (jobDate(j) ?? "") > ctx.asOf));
+  // it's still to come, unless their schedule stopped being served, and so is a job whose visits are here (one never
+  // closed reads "Active" for good); a job with no word either way, while it's dated after today.
+  const open = (j: Job) =>
+    j.visit ? ctx.book.ahead(j) : (ctx.book.jobAhead(j) ?? ((OPEN_JOB.has(j.status) && j.status !== "requires_invoicing") || (j.status === "unknown" && (jobDate(j) ?? "") > ctx.asOf)));
   const openJob = jobs.some((j) => open(j) && !(o.source.kind === "job" && o.source.id === j.id));
   const freshQuote = quotes.some((q) => {
     const d = quoteDate(q);

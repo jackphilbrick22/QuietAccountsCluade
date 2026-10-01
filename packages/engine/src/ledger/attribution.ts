@@ -87,22 +87,29 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
    * New work for a customer in a window, earliest first. A visit is work once it's done, never while it's only on the
    * calendar or left there from a schedule that stopped, and one job's visits are one booking: a weekly regular back
    * on the schedule is one job that came back, worth what the visits done so far billed. The job's own record (a jobs
-   * report, a sync) is that same booking, dated when the job was made; with only its visits, it's dated by the first.
+   * report, a sync) is that same booking, dated when the job was made, and one made before the window is none,
+   * whatever its visits since; with only its visits, it's dated by the first in the window. A client list's last date
+   * stands in for the visits only when no job, visit or invoice in the window shows them back.
    */
   const bookings = (customerId: string, ok: (d: ISODate | undefined) => boolean): { jobs: Job[]; value: Money; on: ISODate; name: string }[] => {
     const byName = new Map<string, Job[]>();
     for (const j of jobsBy.get(customerId) ?? []) {
-      if (j.status === "cancelled" || used.has(j.id) || (j.visit && !book.worked(j)) || !ok(jobOn(j))) continue;
+      if (j.status === "cancelled" || used.has(j.id) || (j.visit && !book.worked(j))) continue;
       (byName.get(nameOf(j)) ?? byName.set(nameOf(j), []).get(nameOf(j))!).push(j);
     }
-    return [...byName]
-      .map(([name, jobs]) => {
-        const own = jobs.find((j) => !j.visit);
-        const visits = jobs.filter((j) => j.visit).sort((a, b) => (jobOn(a)! < jobOn(b)! ? -1 : 1));
-        const value = visits.reduce((s, v) => s + v.total, 0) || (own?.total ?? 0);
-        return { jobs, value, on: jobOn(own ?? visits[0]!)!, name };
-      })
-      .sort((a, b) => (a.on < b.on ? -1 : 1));
+    const byOn = (a: Job, b: Job) => (jobOn(a)! < jobOn(b)! ? -1 : 1);
+    const out: { jobs: Job[]; value: Money; on: ISODate; name: string; listed: boolean }[] = [];
+    for (const [name, all] of byName) {
+      const own = all.find((j) => !j.visit && !j.fromList);
+      if (own && !ok(jobOn(own))) continue;
+      const jobs = all.filter((j) => j === own || ok(jobOn(j))).sort(byOn);
+      if (!jobs.length) continue;
+      const value = jobs.filter((j) => j.visit).reduce((s, v) => s + v.total, 0) || (own?.total ?? 0);
+      out.push({ jobs, value, on: jobOn(own ?? jobs[0]!)!, name, listed: !own && jobs.every((j) => j.fromList) });
+    }
+    const real = out.filter((b) => !b.listed);
+    const billed = (invBy.get(customerId) ?? []).some((i) => i.status === "paid" && !used.has(i.id) && ok(i.issuedOn ?? i.paidOn));
+    return (real.length || billed ? real : out).sort((a, b) => (a.on < b.on ? -1 : 1));
   };
   const take = (b: { jobs: Job[] }) => {
     for (const j of b.jobs) {
@@ -178,6 +185,14 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
   return out;
 }
 
+const VISIT_BOOKING = "jv";
+const LIST_BOOKING = "jl";
+
+/** What a job booking's name says it was seen through: its visits, or a client list's last date. */
+export function bookedThrough(name: string): "visits" | "list" | undefined {
+  return name.startsWith(`${VISIT_BOOKING}_`) ? "visits" : name.startsWith(`${LIST_BOOKING}_`) ? "list" : undefined;
+}
+
 /** When a job was booked: the day it was made, else the day it was for, else the day it was done. */
 function jobOn(j: Job): ISODate | undefined {
   return j.createdOn ?? j.scheduledOn ?? j.completedOn;
@@ -185,14 +200,16 @@ function jobOn(j: Job): ISODate | undefined {
 
 /**
  * What a job's booking goes by on the ledger. Once the export has any of its visits, it's whose job it is and the
- * job's number: the same however many of them are done, and whether the job's own record is there too. A job known
- * only by its own record goes by that record.
+ * job's number: the same however many of them are done, and whether the job's own record is there too. A client
+ * list's last date is the client's one booking, whatever date the latest list gives. A job known only by its own
+ * record goes by that record.
  */
 export function bookingNames(ds: Dataset): (j: Job) => string {
-  const byVisits = (customerId: string, ref: string | undefined) => makeId("jv", customerId, ref?.replace(/^#/, "") ?? "");
+  const byVisits = (customerId: string, ref: string | undefined) => makeId(VISIT_BOOKING, customerId, ref?.replace(/^#/, "") ?? "");
   const seen = new Set(ds.jobs.filter((j) => j.visit).map((j) => byVisits(j.customerId, j.jobRef)));
   return (j) => {
     if (j.visit) return byVisits(j.customerId, j.jobRef);
+    if (j.fromList) return makeId(LIST_BOOKING, j.customerId);
     const name = j.number ? byVisits(j.customerId, j.number) : "";
     return seen.has(name) ? name : j.id;
   };

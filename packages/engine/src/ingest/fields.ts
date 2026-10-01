@@ -380,11 +380,15 @@ export const JOB_STATUS_MAP: [RegExp, import("../model.ts").JobStatus][] = [
   [/(late|overdue)/i, "late"],
   [/(cancel|void)/i, "cancelled"],
   [/(on hold|hold|paused)/i, "on_hold"],
-  [/(complete|done|finished|closed|invoiced|paid)/i, "completed"],
+  // "Incomplete" and "Not completed" are not
+  [/((?<!\bin|\bun|\bnot )complete|(?<!\bun|\bnot )done|finished|closed|invoiced|paid)/i, "completed"],
   [/(archiv)/i, "archived"],
   [/(scheduled|upcoming|booked|today)/i, "scheduled"],
   [/(active|in progress|ongoing|open|started|dispatched|en route)/i, "active"],
 ];
+
+/** A visit's status that says it went by undone ("Skipped", "No show", "Lockout"): never work done. */
+export const VISIT_UNDONE = /\b(skip(ped)?|no[- ]?show|missed|lock[- ]?out|locked out|postponed|incomplete|uncompleted|not (complete|completed|done))\b/i;
 
 export const INVOICE_STATUS_MAP: [RegExp, import("../model.ts").InvoiceStatus][] = [
   [/(bad debt|written off|write off|uncollect)/i, "bad_debt"],
