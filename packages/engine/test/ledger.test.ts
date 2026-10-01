@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { attribute, counted, COUNTING_RULES, lift, ownerReported, type OutreachRecord } from "../src/ledger/attribution.ts";
-import type { Recovery, Reply } from "../src/model.ts";
+import type { Dataset, ISODate, Recovery, Reply } from "../src/model.ts";
+import { ledgerRows } from "../src/reports/ledger.ts";
+import { totals, weeklyReport, weekNumbers } from "../src/reports/owner.ts";
+import { disputeRecovery, ledgerPass, reconcile } from "../src/runtime/agents.ts";
+import { emptyState } from "../src/runtime/state.ts";
 import { addDays } from "../src/util.ts";
-import { customer, dataset, invoice, job, quote } from "./fixtures.ts";
+import { business, customer, dataset, invoice, job, quote } from "./fixtures.ts";
+import { LAWN_ASOF, lawnClients, visitsReport, type LawnClient } from "./lawn-fixtures.ts";
 
 const FIRST = "2026-10-06";
 const LAST = "2026-10-15";
@@ -131,6 +137,123 @@ describe("attribute", () => {
     const ds = dataset({ customers: [customer("c1")], jobs: [job("j1", "c1", { createdOn: "2026-10-30" })] });
     const recs = attribute(ds, [worked(), worked({ opportunityId: "op2", sourceId: "q2" })], REPLIED);
     expect(recs).toHaveLength(1);
+  });
+
+  describe("on a Visits report", () => {
+    const clients = lawnClients();
+    const report = (cs: LawnClient[], asOf: ISODate) =>
+      ingestFile(emptyDataset(business({ trade: "lawn", name: "Greenline Lawn Care", avgJobValue: undefined }), asOf), visitsReport(cs, "newest"), "Visits Report.csv", `${asOf}T12:00:00Z`).dataset;
+    const idOf = (ds: Dataset, c: LawnClient) => ds.customers.find((x) => x.emails.includes(c.email))!.id;
+    /** We wrote to them the day of the fixture, and they wrote back. */
+    const noted = (ds: Dataset, c: LawnClient) => attribute(ds, [worked({ customerId: idOf(ds, c), sourceId: undefined, firstTouchOn: LAWN_ASOF, lastTouchOn: LAWN_ASOF })], { replied: new Set([idOf(ds, c)]) });
+
+    it("the calendar of a job the owner never closed is no comeback, as its visits go by undone", () => {
+      const c = clients.find((x) => x.neverClosed)!;
+      expect(c.visits.filter((v) => v.date > LAWN_ASOF).length).toBeGreaterThan(10);
+      // the end of the season, every one of them gone by
+      const ds = { ...report(clients, LAWN_ASOF), asOf: "2026-11-30" };
+      expect(noted(ds, c)).toEqual([]);
+    });
+
+    it("a weekly regular back on the schedule is one job that came back, worth the visits done so far", () => {
+      const c = clients.find((x) => x.lapsed && !x.neverClosed)!;
+      // the owner's next report: a new mowing job for them, done each week from August 24th and booked on to November
+      const back = clients.map((x) =>
+        x !== c ? x : { ...x, visits: [...x.visits, ...[0, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70].map((n) => ({ job: 9001, date: addDays("2026-08-24", n), title: "Weekly mowing", done: n <= 35, recurring: true, amount: 45 }))] },
+      );
+      const ds = report(back, "2026-10-01");
+      const recs = noted(ds, c);
+      expect(recs).toHaveLength(1);
+      expect(recs[0]).toMatchObject({ record: { kind: "job" }, value: 6 * 45, cameBackOn: "2026-08-24", tier: "traced" });
+      // the owner's texts count it once: one job came back that week, one booked since we started
+      const state = emptyState(ds, "2026-10-01T12:00:00Z");
+      state.recoveries = recs;
+      expect(totals(state)).toMatchObject({ booked: 1, bookedValue: 270 });
+      expect(weekNumbers(state, "2026-08-24")).toMatchObject({ booked: 1, bookedValue: 270 });
+      expect(weeklyReport(state, "2026-08-24")).toContain("1 job came back this week — $270.");
+    });
+
+    /** The lapsed regular we wrote to, and the owner's next Visits report: their new mowing job, #9001, on these days. */
+    const mike = clients.find((x) => x.lapsed && !x.neverClosed)!;
+    const withJob = (visits: [ISODate, boolean][], shopMarkedTo = LAWN_ASOF) =>
+      clients.map((x) => ({
+        ...x,
+        visits: [
+          // the shop's other visits since, marked done as it went (a schedule nobody closed stays undone)
+          ...x.visits.map((v) => (v.date > LAWN_ASOF && v.date <= shopMarkedTo && !x.neverClosed ? { ...v, done: true } : v)),
+          ...(x === mike ? visits.map(([date, done]) => ({ job: 9001, date, title: "Weekly mowing", done, recurring: true, amount: 45 })) : []),
+        ],
+      }));
+    const JOBS = `Job #,Client name,Client email,Title,Job status,Job type,Created date,Start date,Completed date,Total ($)\n9001,${mike.name},${mike.email},Weekly mowing,Active,Recurring,08/20/2026,08/24/2026,,135\n`;
+    const visitsFile = (visits: [ISODate, boolean][], shopMarkedTo?: ISODate) => ({ name: "Visits Report.csv", text: visitsReport(withJob(visits, shopMarkedTo), "newest") });
+    /** An account that wrote to Mike the day of the fixture, and he wrote back. */
+    const account = (ds: Dataset) => {
+      const s = emptyState(ds, `${LAWN_ASOF}T12:00:00Z`);
+      const id = idOf(ds, mike);
+      s.outreach = [{ customerId: id, firstTouchOn: LAWN_ASOF, lastTouchOn: LAWN_ASOF }];
+      s.replies = [{ id: "r1", customerId: id, channel: "email", receivedAt: `${LAWN_ASOF}T15:00:00`, from: mike.email, text: "Yes, put me back on", intent: "wants_it", confidence: 0.9, extracted: {}, status: "done" }];
+      return { s, mine: () => s.recoveries.filter((r) => r.customerId === id).map((r) => [r.value, r.cameBackOn]) };
+    };
+
+    it("a job seen through its visits stays one booking from one report to the next, worth the visits that were done", () => {
+      const { s, mine } = account(report(clients, LAWN_ASOF));
+      // August 26th: the new job's first visit went by on the 24th, not marked yet, and the next is on the 31st
+      expect(reconcile(s, [visitsFile([["2026-08-24", false], ["2026-08-31", false]])], "2026-08-26T12:00:00Z").newRecoveries).toBe(1);
+      expect(mine()).toEqual([[45, "2026-08-24"]]);
+      // September 8th: the 24th was rained out, and the 31st and the 7th were done
+      expect(reconcile(s, [visitsFile([["2026-08-24", false], ["2026-08-31", true], ["2026-09-07", true]], "2026-09-07")], "2026-09-08T12:00:00Z").newRecoveries).toBe(0);
+      expect(mine()).toEqual([[90, "2026-08-31"]]);
+      expect(totals(s)).toMatchObject({ booked: 1, bookedValue: 90 });
+      expect(ledgerRows(s).map((r) => r.record)).toEqual(["Job #9001"]);
+    });
+
+    it("a job whose visits all went by undone after all is taken off the ledger", () => {
+      const { s, mine } = account(report(clients, LAWN_ASOF));
+      reconcile(s, [visitsFile([["2026-08-24", false], ["2026-08-31", false]])], "2026-08-26T12:00:00Z");
+      expect(mine()).toEqual([[45, "2026-08-24"]]);
+      const disputed = structuredClone(s);
+      // the shop has marked its visits through September 7th, and none of Mike's
+      const undone = visitsFile([["2026-08-24", false], ["2026-08-31", false], ["2026-09-07", false]], "2026-09-07");
+      reconcile(s, [undone], "2026-09-08T12:00:00Z");
+      expect(mine()).toEqual([]);
+      expect(totals(s)).toMatchObject({ booked: 0, bookedValue: 0 });
+      expect(s.events.some((e) => e.title === `Taken off the ledger: ${mike.name} — $45`)).toBe(true);
+      // one the owner marked not ours stays on, still out, so it can't come back as a win if its visits are marked later
+      expect(disputeRecovery(disputed, disputed.recoveries[0]!.id, "Booked by phone", "owner", "2026-08-27T09:00:00")).toBe(true);
+      reconcile(disputed, [undone], "2026-09-08T12:00:00Z");
+      expect(disputed.recoveries.map((r) => [r.value, !!r.disputed])).toEqual([[45, true]]);
+    });
+
+    it("a job in the jobs report and its own visits are one booking, dated when the job was made, in either order", () => {
+      const done: [ISODate, boolean][] = [["2026-08-24", true], ["2026-08-31", true], ["2026-09-07", true]];
+      const read = (ds: Dataset, f: { name: string; text: string }) => ingestFile(ds, f.text, f.name, "2026-09-08T12:00:00Z").dataset;
+      const fresh = () => emptyDataset(business({ trade: "lawn", name: "Greenline Lawn Care", avgJobValue: undefined }), "2026-09-08");
+      const jobs = { name: "Jobs Report.csv", text: JOBS };
+      for (const ds of [read(read(fresh(), visitsFile(done, "2026-09-07")), jobs), read(read(fresh(), jobs), visitsFile(done, "2026-09-07"))]) {
+        expect(noted(ds, mike).map((r) => [r.value, r.cameBackOn])).toEqual([[135, "2026-08-20"]]);
+      }
+      // on the ledger: the job from the jobs report first, its visits in the next report, and still one job
+      const { s, mine } = account(read(fresh(), jobs));
+      ledgerPass(s, "2026-08-26T12:00:00Z");
+      expect(mine()).toEqual([[135, "2026-08-20"]]);
+      expect(reconcile(s, [visitsFile(done, "2026-09-07")], "2026-09-08T12:00:00Z").newRecoveries).toBe(0);
+      expect(mine()).toEqual([[135, "2026-08-20"]]);
+      expect(totals(s)).toMatchObject({ booked: 1, bookedValue: 135 });
+    });
+  });
+
+  it("a comeback in a bookings export goes by its own booking's number on the ledger, never the client's first", () => {
+    // Karen was cleaned every other week from March to June, bookings #4001 to #4009. We wrote to her on September
+    // 1st, and she came back on the 15th (#4310) and the 29th (#4311).
+    const row = (id: number, on: ISODate) => `${id},Karen Brennan,karen@gmail.com,Biweekly cleaning,Every other week,${on},160.00,Completed`;
+    const CSV = ["Booking ID,Customer Name,Email,Service,Frequency,Booking Date,Price,Status", ...Array.from({ length: 9 }, (_, k) => row(4001 + k, addDays("2026-03-03", 14 * k))), row(4310, "2026-09-15"), row(4311, "2026-09-29")].join("\n");
+    const ds = ingestFile(emptyDataset(business({ trade: "cleaning", name: "Sparkle House Cleaning", avgJobValue: undefined }), "2026-10-01"), CSV, "Bookings.csv", "2026-10-01T12:00:00Z").dataset;
+    const id = ds.customers[0]!.id;
+    const s = emptyState(ds, "2026-10-01T12:00:00Z");
+    s.outreach = [{ customerId: id, firstTouchOn: "2026-09-01", lastTouchOn: "2026-09-01" }];
+    s.replies = [{ id: "r1", customerId: id, channel: "email", receivedAt: "2026-09-02T15:00:00", from: "karen@gmail.com", text: "Yes, put me back on", intent: "wants_it", confidence: 0.9, extracted: {}, status: "done" }];
+    ledgerPass(s, "2026-10-01T12:00:00Z");
+    expect(ledgerRows(s).map((r) => [r.record, r.value, r.cameBackOn])).toEqual([["Job #4310", 320, "2026-09-15"]]);
   });
 });
 

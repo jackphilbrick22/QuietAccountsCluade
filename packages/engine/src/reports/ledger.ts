@@ -1,7 +1,7 @@
-import type { ISODate, Money, Recovery } from "../model.ts";
+import type { ISODate, Job, Money, Recovery } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { toCSV } from "../ingest/csv.ts";
-import { COUNTING_RULES } from "../ledger/attribution.ts";
+import { bookingNames, COUNTING_RULES } from "../ledger/attribution.ts";
 import { customerById, quoteById } from "../lookup.ts";
 
 /**
@@ -38,6 +38,10 @@ const MATCH_WORDS: Record<Recovery["match"], string> = {
 
 export function ledgerRows(state: AccountState): LedgerRow[] {
   const ds = state.dataset;
+  // a job's booking by the name it goes by: its own record when the export has one, and its visits
+  const nameOf = bookingNames(ds);
+  const booked = new Map<string, Job[]>();
+  for (const j of ds.jobs) (booked.get(nameOf(j)) ?? booked.set(nameOf(j), []).get(nameOf(j))!).push(j);
   return state.recoveries
     .filter((r) => r.tier !== "holdout") // the comparison group never got a note; it isn't a ledger line
     .sort((a, b) => (a.cameBackOn < b.cameBackOn ? 1 : -1))
@@ -56,9 +60,13 @@ export function ledgerRows(state: AccountState): LedgerRow[] {
         const inv = job ? ds.invoices.find((i) => i.jobId === job.id) : undefined;
         paid = inv?.status === "paid";
       } else if (r.record.kind === "job") {
-        const j = ds.jobs.find((x) => x.id === r.record.id);
+        const all = booked.get(r.record.id) ?? ds.jobs.filter((x) => x.id === r.record.id);
+        // its own record, else its visits' job number; a bookings export numbers each booking instead, so it's the
+        // one the comeback is dated by, never the client's first
+        const j = all.find((x) => !x.visit) ?? all.find((x) => x.jobRef || x.createdOn === r.cameBackOn);
         const inv = j ? ds.invoices.find((i) => i.jobId === j.id) : undefined;
-        record = j ? `Job${j.number ? ` #${j.number}` : ""}${inv?.number ? ` · Invoice #${inv.number}` : ""}` : "Booked (you told us)";
+        const num = j?.jobRef ?? j?.number;
+        record = all.length ? `Job${num ? ` #${num}` : ""}${inv?.number ? ` · Invoice #${inv.number}` : ""}` : "Booked (you told us)";
         paid = inv?.status === "paid";
       } else if (r.record.kind === "invoice") {
         const inv = ds.invoices.find((x) => x.id === r.record.id);

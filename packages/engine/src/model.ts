@@ -157,8 +157,18 @@ export interface Job {
   quoteId?: string;
   /** Quote number as written in the export, used to link back to the quote. */
   quoteRef?: string;
-  /** Recurring contract / maintenance plan. */
+  /** Recurring contract / maintenance plan; false on a visit the export says is a one-off job's. */
   recurring?: boolean;
+  /** How often it comes back, in days, when the export gives a frequency ("Weekly" is 7, "Every other week" 14). */
+  everyDays?: number;
+  /** One visit of a job (a Visits report or bookings row), not the job itself: a weekly regular is many of these. */
+  visit?: boolean;
+  /** The job a visit belongs to, as the export numbers it (Jobber's "Job #"): one job's visits are one booking. */
+  jobRef?: string;
+  /** Who a visit was assigned to (Jobber's "Assigned to"): each crew marks its visits done on its own clock. */
+  crew?: string;
+  /** The last visit a client list gives ("Last Cleaning"): one date standing for every visit before it. */
+  fromList?: boolean;
   property?: Address;
 }
 
@@ -588,6 +598,7 @@ export interface Recovery {
   opportunityId?: string;
   /** The last touch before they came back. */
   touchId?: string;
+  /** What came back: a quote, an invoice or a job, where a job seen through its visits goes by its booking's name. */
   record: { kind: RecordKind; id: string };
   value: Money;
   cameBackOn: ISODate;

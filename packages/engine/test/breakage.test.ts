@@ -297,7 +297,7 @@ describe("detectors", () => {
     });
 
     it("every other trade keeps the old clock: a biweekly mowing client isn't quiet at three weeks", async () => {
-      const { lapseAfter } = await import("../src/breakage/detect.ts");
+      const { lapseAfter } = await import("../src/breakage/visits.ts");
       expect(lapseAfter("cleaning", 14)).toEqual({ days: 21, byTrade: true });
       expect(lapseAfter("cleaning", 7)).toEqual({ days: 21, byTrade: true });
       expect(lapseAfter("cleaning", 30)).toEqual({ days: 45, byTrade: true });

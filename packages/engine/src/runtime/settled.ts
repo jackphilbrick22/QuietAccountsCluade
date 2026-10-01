@@ -1,4 +1,5 @@
 import type { ISODateTime, Job, RecordKind, Touch } from "../model.ts";
+import { visitBook, type VisitBook } from "../breakage/visits.ts";
 import { customerById, jobsOf, oppById, quoteById, quotesOf } from "../lookup.ts";
 import { statusReadsTwoWays } from "../ingest/fields.ts";
 import { makeId } from "../util.ts";
@@ -10,11 +11,15 @@ const OPEN_JOB = new Set<Job["status"]>(["unscheduled", "scheduled", "active", "
 /**
  * Why a queued follow-up isn't needed any more, if it isn't: the quote it chases was approved, became a job or got a
  * no; the request got its quote; the approved work got on the schedule; or, since it was planned, they booked a job,
- * said yes to another quote or got a new one (a sync or an import says so). Answers to new requests have their own
- * rule (staleAnswer). Returns a checker, so a pass over many notes reads the records once.
+ * said yes to another quote or got a new one (a sync or an import says so). A visit is booked work once it's done, or
+ * while it's still to come on a schedule that's still served: one that went by undone, or is left on the calendar of
+ * a schedule that stopped, is neither. Answers to new requests have their own rule (staleAnswer). Returns a checker,
+ * so a pass over many notes reads the records once.
  */
 export function settledCheck(state: AccountState): (t: Touch) => string | undefined {
   const ds = state.dataset;
+  let book: VisitBook | undefined;
+  const visits = () => (book ??= visitBook(ds));
   // notes planned before the day was recorded: the day their sequence's first note was due (later, so never too eager)
   let firstDue: Map<string, string> | undefined;
   const plannedOn = (t: Touch): string | undefined => {
@@ -35,7 +40,7 @@ export function settledCheck(state: AccountState): (t: Touch) => string | undefi
     const isSource = (kind: RecordKind, id: string) => about?.kind === kind && about.id === id;
     // approved work waiting for a date: a job made for it that's still unscheduled is the same wait
     const scheduling = about?.type === "approved_unscheduled";
-    const booked = (j: Job) => j.status !== "cancelled" && !(scheduling && j.status === "unscheduled");
+    const booked = (j: Job) => j.status !== "cancelled" && !(scheduling && j.status === "unscheduled") && (!j.visit || visits().worked(j) || visits().ahead(j));
 
     // the record it chases moved on
     if (about?.kind === "quote") {
@@ -66,8 +71,8 @@ export function settledCheck(state: AccountState): (t: Touch) => string | undefi
     if (jobs.some((j) => booked(j) && !isSource("job", j.id) && (after(j.createdOn) || after(j.scheduledOn) || after(j.completedOn)))) return "they've booked a job since";
     if (quotes.some((q) => !isSource("quote", q.id) && (after(q.approvedOn) || after(q.convertedOn)))) return "they've said yes to a quote since";
     if (quotes.some((q) => !isSource("quote", q.id) && (after(q.sentOn) || after(q.createdOn)))) return "they've had a new quote since";
-    // a job on the go (one with no dates on it is still work in progress)
-    if (jobs.some((j) => OPEN_JOB.has(j.status) && booked(j) && !isSource("job", j.id))) return "they have a job on the go";
+    // a job on the go (one with no dates on it is still work in progress), or a visit still to come
+    if (jobs.some((j) => booked(j) && (j.visit ? visits().ahead(j) : OPEN_JOB.has(j.status)) && !isSource("job", j.id))) return "they have a job on the go";
     return undefined;
   };
 }

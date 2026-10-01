@@ -1,5 +1,6 @@
-import type { Dataset, RecordKind, SourceSystem } from "../model.ts";
+import type { Dataset, RecordKind, SourceSystem, TradeId } from "../model.ts";
 import { addDays, daysBetween } from "../util.ts";
+import { LISTS_WAIT } from "./detect.ts";
 
 /**
  * What we still need from the owner, in the words the operator will use to ask for it.
@@ -33,9 +34,13 @@ export interface Readiness {
 
 type Kind = Exclude<RecordKind, "visit">;
 
-const WHERE: Partial<Record<SourceSystem, Partial<Record<Kind | "all_time", string>>>> = {
+/** Trades whose work is a routine of visits: their list is built from visits and invoices, never from quotes. */
+const VISIT_TRADES = new Set<TradeId>(["lawn", "landscape", "cleaning"]);
+
+const WHERE: Partial<Record<SourceSystem, Partial<Record<RecordKind | "all_time", string>>>> = {
   jobber: {
     quote: "Jobber: Insights → Reports → Quotes → All time → Export (Jobber emails the CSV).",
+    visit: "Jobber: Insights → Reports → Visits → All time → Export.",
     client: "Jobber: Clients → ⋯ → Export clients (1,500 rows per file; send them all).",
     job: "Jobber: Insights → Reports → One-off jobs and Recurring jobs → All time → Export.",
     invoice: "Jobber: Insights → Reports → Invoices → All time → Export.",
@@ -61,15 +66,17 @@ const WHERE: Partial<Record<SourceSystem, Partial<Record<Kind | "all_time", stri
   },
 };
 
-function where(source: SourceSystem | undefined, kind: Kind | "all_time"): string | undefined {
-  return (source && WHERE[source]?.[kind]) || undefined;
+function where(source: SourceSystem | undefined, kind: RecordKind | "all_time"): string | undefined {
+  return (source && (WHERE[source]?.[kind] ?? (kind === "visit" ? WHERE[source]?.job : undefined))) || undefined;
 }
 
 export function readiness(ds: Dataset): Readiness {
+  // a client list's last dates are no jobs file: they're what the list says, one per person
+  const listed = ds.jobs.filter((j) => j.fromList).length;
   const have: Record<Kind, number> = {
     quote: ds.quotes.length,
     client: ds.customers.length,
-    job: ds.jobs.length,
+    job: ds.jobs.length - listed,
     invoice: ds.invoices.length,
     request: ds.requests.length,
   };
@@ -88,37 +95,45 @@ export function readiness(ds: Dataset): Readiness {
 
   const people = ds.customers.filter((c) => !c.isCommercial);
   const emailShare = people.length ? people.filter((c) => c.emails.length > 0).length / people.length : 0;
+  // A lawn or cleaning shop's list is past customers who stopped coming: their visits (or invoices) are the main file,
+  // and quotes find nothing either offer works for them. A cleaning list's last dates find who stopped too; a lawn
+  // list's dates wait for seasons, so a lawn shop can't start from one alone.
+  const visits = VISIT_TRADES.has(ds.business.trade);
+  const main = visits ? have.job + have.invoice + (LISTS_WAIT.has(ds.business.trade) ? 0 : listed) : have.quote;
 
-  if (!have.quote && !have.job && !have.invoice) {
-    gaps.push({
-      id: "no_work_records",
-      level: "blocker",
-      ask: "The quotes export (all time).",
-      unlocks: "It's the main file: every price they gave that never turned into a job.",
-      where: where(source, "quote"),
-    });
-  } else if (!have.quote) {
+  if (visits ? !main : !have.quote && !have.job && !listed && !have.invoice) {
+    gaps.push(
+      visits
+        ? { id: "no_work_records", level: "blocker", ask: "The visits export (all time).", unlocks: "It's the main file: every regular who stopped coming, and when.", where: where(source, "visit") }
+        : { id: "no_work_records", level: "blocker", ask: "The quotes export (all time).", unlocks: "It's the main file: every price they gave that never turned into a job.", where: where(source, "quote") },
+    );
+  } else if (!have.quote && !visits) {
     gaps.push({ id: "no_quotes", level: "unlocks", ask: "The quotes export (all time).", unlocks: "Finds every quote that never got a yes — usually the biggest pile of money.", where: where(source, "quote") });
   }
   if (have.client + have.quote > 0 && emailShare < 0.25) {
     gaps.push({
       id: "no_emails",
-      level: have.quote && !clientFile ? "blocker" : "unlocks",
+      level: main && !clientFile ? "blocker" : "unlocks",
       ask: clientFile ? "A client list that includes email addresses." : "The client list export.",
       unlocks: `Only ${Math.round(emailShare * 100)}% of people have an email on file, and email is how we reach them.`,
       where: where(source, "client"),
     });
-  } else if (!clientFile && have.quote) {
+  } else if (!clientFile && main) {
     gaps.push({ id: "no_clients", level: "unlocks", ask: "The client list export.", unlocks: "Finds past customers who never came back and fills in missing emails and addresses.", where: where(source, "client") });
   }
-  if (!have.job) {
-    gaps.push({
-      id: "no_jobs",
-      level: "unlocks",
-      ask: "The jobs export (one-off and recurring, all time).",
-      unlocks: "Finds people who said yes and were never scheduled, regulars who stopped, and service that's come due — and stops us writing to anyone who already came back.",
-      where: where(source, "job"),
-    });
+  // a lawn or cleaning shop with neither visits nor invoices was asked for the visits above, as the blocker
+  if (!have.job && (main || !visits)) {
+    gaps.push(
+      visits
+        ? { id: "no_jobs", level: "unlocks", ask: "The visits export (all time).", unlocks: "Shows every visit each regular had, so we find who stopped and never write to anyone still on the schedule.", where: where(source, "visit") }
+        : {
+            id: "no_jobs",
+            level: "unlocks",
+            ask: "The jobs export (one-off and recurring, all time).",
+            unlocks: "Finds people who said yes and were never scheduled, regulars who stopped, and service that's come due — and stops us writing to anyone who already came back.",
+            where: where(source, "job"),
+          },
+    );
   }
   if (!have.invoice) {
     gaps.push({
@@ -129,7 +144,7 @@ export function readiness(ds: Dataset): Readiness {
       where: where(source, "invoice"),
     });
   }
-  if (!have.request && (source === "jobber" || source === "housecall_pro")) {
+  if (!have.request && !visits && (source === "jobber" || source === "housecall_pro")) {
     gaps.push({ id: "no_requests", level: "unlocks", ask: "The requests export (all time).", unlocks: "Finds people who asked for a price and never got one.", where: where(source, "request") });
   }
   if (dates.length && monthsOfHistory < 12) {

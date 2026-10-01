@@ -1,4 +1,5 @@
-import type { Dataset, ISODate, Money, Recovery, Reply } from "../model.ts";
+import type { Dataset, ISODate, Job, Money, Recovery, Reply } from "../model.ts";
+import { visitBook } from "../breakage/visits.ts";
 import { addDays, daysBetween, makeId, round2, sum } from "../util.ts";
 
 /** One person we worked (or deliberately held out). */
@@ -79,12 +80,42 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
   for (const q of ds.quotes) (quotesBy.get(q.customerId) ?? quotesBy.set(q.customerId, []).get(q.customerId)!).push(q);
   const invBy = new Map<string, typeof ds.invoices>();
   for (const i of ds.invoices) (invBy.get(i.customerId) ?? invBy.set(i.customerId, []).get(i.customerId)!).push(i);
+  const book = visitBook(ds);
+  const nameOf = bookingNames(ds);
+
+  /**
+   * New work for a customer in a window, earliest first. A visit is work once it's done, never while it's only on the
+   * calendar or left there from a schedule that stopped, and one job's visits are one booking: a weekly regular back
+   * on the schedule is one job that came back, worth what the visits done so far billed. The job's own record (a jobs
+   * report, a sync) is that same booking, dated when the job was made; with only its visits, it's dated by the first.
+   */
+  const bookings = (customerId: string, ok: (d: ISODate | undefined) => boolean): { jobs: Job[]; value: Money; on: ISODate; name: string }[] => {
+    const byName = new Map<string, Job[]>();
+    for (const j of jobsBy.get(customerId) ?? []) {
+      if (j.status === "cancelled" || used.has(j.id) || (j.visit && !book.worked(j)) || !ok(jobOn(j))) continue;
+      (byName.get(nameOf(j)) ?? byName.set(nameOf(j), []).get(nameOf(j))!).push(j);
+    }
+    return [...byName]
+      .map(([name, jobs]) => {
+        const own = jobs.find((j) => !j.visit);
+        const visits = jobs.filter((j) => j.visit).sort((a, b) => (jobOn(a)! < jobOn(b)! ? -1 : 1));
+        const value = visits.reduce((s, v) => s + v.total, 0) || (own?.total ?? 0);
+        return { jobs, value, on: jobOn(own ?? visits[0]!)!, name };
+      })
+      .sort((a, b) => (a.on < b.on ? -1 : 1));
+  };
+  const take = (b: { jobs: Job[] }) => {
+    for (const j of b.jobs) {
+      used.add(j.id);
+      if (j.quoteId) used.add(j.quoteId);
+    }
+  };
 
   const firstComeback = (customerId: string, ok: (d: ISODate | undefined) => boolean): { record: Recovery["record"]; value: Money; on: ISODate } | undefined => {
-    const job = (jobsBy.get(customerId) ?? []).filter((j) => j.status !== "cancelled" && !used.has(j.id) && ok(j.createdOn ?? j.scheduledOn ?? j.completedOn)).sort((a, b) => ((a.createdOn ?? a.scheduledOn ?? "") < (b.createdOn ?? b.scheduledOn ?? "") ? -1 : 1))[0];
+    const job = bookings(customerId, ok)[0];
     if (job) {
-      used.add(job.id);
-      return { record: { kind: "job", id: job.id }, value: job.total, on: (job.createdOn ?? job.scheduledOn ?? job.completedOn)! };
+      take(job);
+      return { record: { kind: "job", id: job.name }, value: job.value, on: job.on };
     }
     const q = (quotesBy.get(customerId) ?? []).find((x) => WON.has(x.status) && !used.has(x.id) && ok(x.approvedOn ?? x.convertedOn));
     if (q) {
@@ -122,14 +153,11 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
       continue;
     }
     // 2) every new job for this customer in the window: one credit per job, not one per person
-    const jobs = (jobsBy.get(r.customerId) ?? [])
-      .filter((j) => j.status !== "cancelled" && !used.has(j.id) && inWindow(j.createdOn ?? j.scheduledOn ?? j.completedOn))
-      .sort((a, b) => ((a.createdOn ?? a.scheduledOn ?? "") < (b.createdOn ?? b.scheduledOn ?? "") ? -1 : 1));
+    const jobs = bookings(r.customerId, inWindow);
     if (jobs.length) {
       for (const job of jobs) {
-        used.add(job.id);
-        if (job.quoteId) used.add(job.quoteId);
-        out.push({ ...rec(r, { kind: "job", id: job.id }, job.total, (job.createdOn ?? job.scheduledOn ?? job.completedOn)!, "customer_id", 0.9), tier });
+        take(job);
+        out.push({ ...rec(r, { kind: "job", id: job.name }, job.value, job.on, "customer_id", 0.9), tier });
       }
       continue;
     }
@@ -148,6 +176,26 @@ export function attribute(ds: Dataset, outreach: OutreachRecord[], opts: Attribu
     }
   }
   return out;
+}
+
+/** When a job was booked: the day it was made, else the day it was for, else the day it was done. */
+function jobOn(j: Job): ISODate | undefined {
+  return j.createdOn ?? j.scheduledOn ?? j.completedOn;
+}
+
+/**
+ * What a job's booking goes by on the ledger. Once the export has any of its visits, it's whose job it is and the
+ * job's number: the same however many of them are done, and whether the job's own record is there too. A job known
+ * only by its own record goes by that record.
+ */
+export function bookingNames(ds: Dataset): (j: Job) => string {
+  const byVisits = (customerId: string, ref: string | undefined) => makeId("jv", customerId, ref?.replace(/^#/, "") ?? "");
+  const seen = new Set(ds.jobs.filter((j) => j.visit).map((j) => byVisits(j.customerId, j.jobRef)));
+  return (j) => {
+    if (j.visit) return byVisits(j.customerId, j.jobRef);
+    const name = j.number ? byVisits(j.customerId, j.number) : "";
+    return seen.has(name) ? name : j.id;
+  };
 }
 
 function rec(r: OutreachRecord, record: Recovery["record"], value: Money, on: ISODate, match: Recovery["match"], confidence: number): Recovery {

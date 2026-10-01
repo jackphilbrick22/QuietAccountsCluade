@@ -1,4 +1,5 @@
 import type { Customer, Dataset, Job, Opportunity, Quote } from "./model.ts";
+import { visitBook } from "./breakage/visits.ts";
 import { streetName } from "./util.ts";
 
 /**
@@ -70,12 +71,18 @@ export interface ScheduledWork {
   customerId: string;
 }
 
-/** Upcoming scheduled/active jobs with where they are — for factual "crew nearby" lines. */
+/**
+ * Jobs on the calendar (scheduled, active, or with no status and a date) with where they are — for factual "crew
+ * nearby" lines, which take only those still to come. What's left on the calendar of a schedule that stopped being
+ * served is no crew coming.
+ */
 export function scheduledWork(ds: Dataset): ScheduledWork[] {
-  return memo(ds.jobs, `sched|${ds.customers.length}`, () => {
+  return memo(ds.jobs, `sched|${ds.customers.length}|${ds.asOf}`, () => {
     const out: ScheduledWork[] = [];
+    const book = visitBook(ds);
     for (const j of ds.jobs as Job[]) {
-      if (!(j.status === "scheduled" || j.status === "active") || !j.scheduledOn) continue;
+      if (!(j.status === "scheduled" || j.status === "active" || j.status === "unknown") || !j.scheduledOn) continue;
+      if (j.visit && book.stopped(j.customerId)) continue;
       const p = j.property ?? customerById(ds, j.customerId)?.address;
       if (!p) continue;
       out.push({ date: j.scheduledOn, city: (p.city ?? "").toLowerCase(), street: streetName(p.street).toLowerCase(), customerId: j.customerId });

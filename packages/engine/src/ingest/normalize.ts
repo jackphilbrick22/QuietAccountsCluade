@@ -19,12 +19,14 @@ import {
   isLikelyValidEmail,
   looksCommercial,
   makeId,
+  monthName,
   parseAddress,
   parseDate,
   parseMoney,
   splitName,
   titleCase,
 } from "../util.ts";
+import { visitBook } from "../breakage/visits.ts";
 import type { Table } from "./csv.ts";
 import type { Detection } from "./detect.ts";
 import { INVOICE_STATUS_MAP, JOB_STATUS_MAP, QUOTE_STATUS_MAP, REQUEST_STATUS_MAP, SOURCE_QUOTE_STATUS, type Field } from "./fields.ts";
@@ -60,6 +62,30 @@ function cellGetter(row: string[], fields: Partial<Record<Field, number>>) {
 
 function truthy(v: string): boolean {
   return /^(y|yes|true|1|x|✓|opted ?in|subscribed)$/i.test(v.trim());
+}
+
+/** Gaps a frequency column names in words, in days. Checked in order: "Bi-weekly" is not weekly. */
+const EVERY: [RegExp, number][] = [
+  [/\bbi-?weekly\b|\bfortnightly\b/i, 14],
+  [/\bsemi-?monthly\b|\btwice a month\b/i, 15],
+  [/\bweekly\b/i, 7],
+  [/\bmonthly\b/i, 30],
+  [/\bquarterly\b/i, 91],
+  [/\bsemi-?annual(ly)?\b|\btwice a year\b/i, 183],
+  [/\bannual(ly)?\b|\byearly\b|\bonce a year\b/i, 365],
+];
+const COUNT: Record<string, number> = { other: 2, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, twelve: 12 };
+const UNIT: Record<string, number> = { day: 1, week: 7, month: 365 / 12, year: 365 };
+
+/** What a job type or frequency column says about coming back: "Recurring", "Every 6 weeks" (every 42 days), "One-time". */
+function frequency(text: string): Pick<Job, "recurring" | "everyDays"> {
+  // "every 6 weeks", "every other week", "every 10 days"
+  const n = /\bevery (\d+|[a-z]+ )?\s*(day|week|month|year)s?\b/i.exec(text);
+  const count = n?.[1] ? Number(n[1]) || COUNT[n[1].trim().toLowerCase()] : 1;
+  const every = n ? (count ? Math.round(count * UNIT[n[2]!.toLowerCase()]!) : undefined) : EVERY.find(([re]) => re.test(text))?.[1];
+  if (every) return { recurring: true, everyDays: every };
+  // "Recurring", "Seasonal": they come back, but how often isn't said
+  return /recurr|weekly|monthly|seasonal|contract|maintenance|plan|\bevery\b/i.test(text) ? { recurring: true } : {};
 }
 
 function readPerson(get: (f: Field) => string): Person {
@@ -200,6 +226,8 @@ export function importTable(
     else delete fields.balance;
   }
   const pastSales = kind === "invoice" && detail && fields.balance === undefined && fields.status === undefined;
+  // Jobber's Recurring Jobs report has no job type column, but only it counts completed visits or has a schedule end
+  const recurringReport = /recurring/i.test(opts.fileName) || table.headers.some((h) => /^(completed visits|schedule end date)$/i.test(h.trim()));
   const mapping = { ...detection.mapping, fields };
   const warnings = [...detection.warnings];
   const rows: Row[] = table.rows.map((r, index) => {
@@ -222,7 +250,8 @@ export function importTable(
     (unnumbered.get(key) ?? unnumbered.set(key, []).get(key)!).push({ id: r.id, what: plain(title), total: r.total });
   };
   for (const q of dataset.quotes) keep("quote", q, q.title, q.createdOn);
-  for (const j of dataset.jobs) keep("job", j, j.title, j.createdOn);
+  // a client list's last date is its own record, never a row's to take over
+  for (const j of dataset.jobs) if (!j.fromList) keep("job", j, j.title, j.createdOn);
   for (const i of dataset.invoices) keep("invoice", i, i.subject, i.issuedOn);
   for (const r of dataset.requests) keep("request", r, r.title, r.createdOn);
   const claimed = new Set<string>();
@@ -230,6 +259,16 @@ export function importTable(
   // a past sale's lines, summed into the sale they belong to
   const saleTotals = new Map<string, number>();
   const unreadStatuses = new Map<string, number>();
+  // the last visit a client list gives, by whose and when: a visit or job on that day is that same visit
+  const listedOn = new Map(dataset.jobs.filter((j) => j.fromList).map((j) => [`${j.customerId}|${j.completedOn}`, j.id]));
+  const unlist = (customerId: string, on: string | undefined) => {
+    const id = listedOn.get(`${customerId}|${on}`);
+    if (id) jobs.delete(id);
+  };
+  // this file's past visits, by whether they were marked done, for the warning on those that weren't
+  const marks = new Map<string, boolean>();
+  // every visit this file has, whatever its date
+  const filed = new Set<string>();
 
   let accepted = 0;
   let rejected = 0;
@@ -271,6 +310,7 @@ export function importTable(
       const on =
         k === "quote" ? (parseDate(get("createdOn")) ?? parseDate(get("sentOn")))
         : k === "job" ? (parseDate(get("createdOn")) ?? parseDate(get("scheduledOn")))
+        : k === "visit" ? (parseDate(get("scheduledOn")) ?? parseDate(get("completedOn")))
         : k === "invoice" ? (parseDate(get("issuedOn")) ?? parseDate(get("createdOn")))
         : parseDate(get("createdOn"));
       const key = contentKey(k, customer.id, on);
@@ -328,8 +368,8 @@ export function importTable(
       if (!unreadStatus) delete q.unreadStatus;
       quotes.set(base.id, q);
       accepted++;
-    } else if (kind === "job" || kind === "visit") {
-      const jt = get("jobType");
+    } else if (kind === "job") {
+      const ended = parseDate(get("completedOn"));
       const job: Job = {
         id: recId("job"),
         sourceId: number || undefined,
@@ -338,18 +378,58 @@ export function importTable(
         title,
         lineItems,
         total,
-        status: mapStatus(rawStatus, JOB_STATUS_MAP) ?? (parseDate(get("completedOn")) ? "completed" : parseDate(get("scheduledOn")) ? "scheduled" : "unknown"),
+        // with no status, the date decides when each scan runs: a recurring job whose "Schedule end date" is still to
+        // come is on the calendar until then, and done after
+        status: mapStatus(rawStatus, JOB_STATUS_MAP) ?? (ended && ended <= dataset.asOf ? "completed" : "unknown"),
         rawStatus,
         createdOn: parseDate(get("createdOn")) ?? parseDate(get("scheduledOn")),
         scheduledOn: parseDate(get("scheduledOn")),
-        completedOn: parseDate(get("completedOn")),
-        recurring: /recurr|weekly|bi-?weekly|monthly|quarterly|annual|seasonal|contract|maintenance|plan/i.test(jt) || undefined,
+        completedOn: ended,
+        // Jobber's Recurring Jobs report says so in its name and its columns, never in a job type
+        ...frequency(get("jobType") || (recurringReport ? "Recurring" : "")),
         property,
       };
       const qn = get("quoteNumber");
       if (qn) job.quoteRef = qn;
       const prev = jobs.get(job.id);
       jobs.set(job.id, { ...prev, ...stripUndefined(job), title: title || prev?.title || "" } as Job);
+      unlist(customer.id, job.completedOn ?? job.scheduledOn);
+      accepted++;
+    } else if (kind === "visit") {
+      // Each visit is its own record, never keyed on the job it belongs to: a weekly regular is thirty visits, and the
+      // row order of the file decides nothing.
+      const on = parseDate(get("scheduledOn")) ?? parseDate(get("completedOn"));
+      const marked = get("done");
+      // Not marked done is no proof of work: a visit still to come, or one that went by undone (or not marked yet,
+      // which the scan tells apart). With no word either way, the date decides when the scan runs.
+      const status = mapStatus(rawStatus, JOB_STATUS_MAP) ?? (marked ? (truthy(marked) ? "completed" : on ? "scheduled" : "unscheduled") : parseDate(get("completedOn")) ? "completed" : "unknown");
+      const jobType = get("jobType");
+      const visit: Job = {
+        id: recId("visit"),
+        sourceId: number || undefined,
+        number: number || undefined,
+        customerId: customer.id,
+        title,
+        lineItems,
+        // what the visit billed, or its share of a one-off job's price when that's the one filled in
+        total: parseMoney(get("perVisit")) || parseMoney(get("total")) || itemsTotal,
+        status,
+        rawStatus,
+        createdOn: on,
+        scheduledOn: on,
+        completedOn: status === "completed" ? (parseDate(get("completedOn")) ?? on) : undefined,
+        // a visit of a job the export calls one-off is part of that one job, however many days it took
+        ...(jobType ? { recurring: false, ...frequency(jobType) } : {}),
+        visit: true,
+        jobRef: get("jobNumber") || undefined,
+        crew: get("crew") || undefined,
+        property,
+      };
+      if (marked && on && on <= dataset.asOf) marks.set(visit.id, truthy(marked));
+      filed.add(visit.id);
+      const prev = jobs.get(visit.id);
+      jobs.set(visit.id, { ...prev, ...stripUndefined(visit), title: title || prev?.title || "" } as Job);
+      unlist(customer.id, on);
       accepted++;
     } else if (kind === "invoice") {
       const id = recId("invoice");
@@ -402,12 +482,14 @@ export function importTable(
       // client list: the person is the record
       const created = parseDate(get("createdOn"));
       if (created && !customer.createdOn) customer.createdOn = created;
-      // Jobber's Client Re-Engagement report only has "Last Closed Job": keep it as a past job
+      // Jobber's Client Re-Engagement report only has "Last Closed Job", a cleaning list its "Last Cleaning": keep it
+      // as a past job, with how often they came when the list says
       const lastJob = parseDate(get("lastJobOn"));
       if (lastJob) {
         const jid = makeId("j", source, "last", customer.id, lastJob);
         if (!jobs.has(jid) && ![...jobs.values()].some((j) => j.customerId === customer.id && (j.completedOn ?? j.scheduledOn) === lastJob)) {
-          jobs.set(jid, { id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: "completed", rawStatus: "Last closed job", completedOn: lastJob, createdOn: lastJob });
+          jobs.set(jid, { id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: "completed", rawStatus: "Last closed job", completedOn: lastJob, createdOn: lastJob, ...frequency(get("jobType")), fromList: true });
+          listedOn.set(`${customer.id}|${lastJob}`, jid);
         }
       }
       accepted++;
@@ -423,6 +505,16 @@ export function importTable(
   if (resolver.sharedPhones.size)
     warnings.push(`${resolver.sharedPhones.size.toLocaleString("en-US")} phone number${resolver.sharedPhones.size === 1 ? " is" : "s are"} shared by people with different names or emails. They're kept as separate customers.`);
 
+  // A visits file is every visit on the days it covers. One an earlier file had on those days, for a client in this
+  // one, that this file doesn't have is off the calendar now: the job was closed when they stopped, or the visit moved.
+  if (filed.size) {
+    const days = [...filed].map((id) => jobs.get(id)!.scheduledOn ?? "").filter(Boolean).sort();
+    const [first = "", last = ""] = [days[0], days.at(-1)];
+    const whose = new Set([...filed].map((id) => jobs.get(id)!.customerId));
+    const covered = (on?: string) => !on || (on >= first && on <= last);
+    for (const j of dataset.jobs) if (j.visit && !filed.has(j.id) && whose.has(j.customerId) && covered(j.scheduledOn)) jobs.delete(j.id);
+  }
+
   const next: Dataset = {
     ...dataset,
     customers: resolver.all(),
@@ -432,6 +524,23 @@ export function importTable(
     requests: [...requests.values()],
   };
   linkRecords(next);
+  // A visit not marked done that its job or its crew has marked past was missed; one nobody has got to yet (an owner
+  // who marks them when he invoices, or never) may not be marked yet, and its date says whether it happened.
+  if (marks.size) {
+    const book = visitBook(next);
+    const left = next.jobs.filter((j) => marks.get(j.id) === false);
+    const undone = left.filter(book.missed).length;
+    const unmarked = left.length - undone;
+    const since = new Set(left.filter((j) => !book.missed(j)).map(book.markedThrough));
+    const tick = since.size === 1 ? [...since][0]! : "";
+    if (undone) warnings.push(`${undone.toLocaleString("en-US")} past visit${undone === 1 ? " isn't" : "s aren't"} marked complete, so ${undone === 1 ? "it doesn't" : "they don't"} count as work done.`);
+    if (unmarked)
+      warnings.push(
+        ![...marks.values()].some(Boolean)
+          ? "No visit is marked complete, so each visit's date says whether it happened."
+          : `${unmarked.toLocaleString("en-US")} past visit${unmarked === 1 ? "" : "s"}${tick ? ` since the last one marked complete (${monthName(tick)} ${Number(tick.slice(8))})` : ""} ${unmarked === 1 ? "isn't" : "aren't"} marked yet, so ${unmarked === 1 ? "its date says" : "their dates say"} whether ${unmarked === 1 ? "it" : "they"} happened.`,
+      );
+  }
 
   const record: ImportRecord = {
     id: makeId("imp", opts.fileName, opts.importedAt),

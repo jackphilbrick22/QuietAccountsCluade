@@ -38,7 +38,8 @@ const OTHER_KIND_WORDS: Record<RecordKind, RegExp> = {
   invoice: /\b(quote|estimate|job|request|proposal)\b/,
   client: /\b(quote|estimate|job|invoice|request)\b/,
   request: /\b(quote|estimate|job|invoice)\b/,
-  visit: /\b(quote|estimate|invoice|request)\b/,
+  // "Job #" on a visit is the job it belongs to, not the visit's own number
+  visit: /\b(quote|estimate|invoice|request|job)\b/,
 };
 const OWN_KIND_WORDS: Record<RecordKind, RegExp> = {
   quote: /\b(quote|estimate|proposal)\b/,
@@ -46,7 +47,7 @@ const OWN_KIND_WORDS: Record<RecordKind, RegExp> = {
   invoice: /\binvoice\b/,
   client: /\b(client|customer)\b/,
   request: /\b(request|inquiry)\b/,
-  visit: /\bvisit\b/,
+  visit: /\b(visit|booking|appointment)\b/,
 };
 
 type Sniff = NonNullable<(typeof FIELDS)[Field]["looks"]>;
@@ -190,10 +191,18 @@ export function detectKind(table: Table, fileName = ""): { kind: RecordKind; con
   const has = (re: RegExp) => headers.some((h) => re.test(h));
   if (has(/approved|converted|changes requested|estimate (outcome|status)|quote status/)) scores.quote += 3;
   if (has(/^(quote|estimate) #$|^(quote|estimate) number$/)) scores.quote += 3;
-  if (has(/^job #$|^job number$|job status/)) scores.job += 3;
+  // Jobber's Visits report is one row per visit, with whether it was done and what it billed. Its "Job #" is the job
+  // each visit belongs to, so it never makes the file a jobs file.
+  const visitRows = has(/^visit (title|completed|based)$/);
+  if (has(/^job #$|^job number$|job status/) && !visitRows) scores.job += 3;
   if (has(/^invoice #$|^invoice number$|balance|amount due|due date/)) scores.invoice += 3;
   if (has(/^request #$|request status|assessment/)) scores.request += 3;
   if (has(/^visit|visit date|arrival/)) scores.visit += 2;
+  if (visitRows) scores.visit += 6;
+  // a bookings export is visits too: one row per booking, never a quote
+  if (has(/^booking (id|#|number|date)$/)) scores.visit += 3;
+  // only a client list says when each person was last here
+  if (has(/^last (visit|appointment|booking|cleaning|service|job|closed job)\b/)) scores.client += 3;
   if (has(/client since|customer since|client created|lead source/) && !has(/total|amount|status/)) scores.client += 3;
   // QuickBooks reports say what each row is in a "Transaction Type" column: Estimate, Invoice, Payment
   const typeCol = headers.findIndex((h) => /^(transaction )?type$/.test(h));
@@ -214,7 +223,7 @@ export function detectKind(table: Table, fileName = ""): { kind: RecordKind; con
   const priced = has(/\b(total|amount|price|value|quoted|bid)\b/) && !has(/\b(invoice|balance|amount due|paid)\b/);
   const pricedQuotes = priced && (has(/\b(status|stage|outcome|sold|won|lost)\b/) || has(/\bsent\b/)) && !has(/^request #$|request status|assessment/);
   if (/request|lead|inquir/.test(fname)) scores[pricedQuotes ? "quote" : "request"] += 4;
-  if (/visit/.test(fname)) scores.visit += 4;
+  if (/visit|booking|appointment/.test(fname)) scores.visit += 4;
 
   // A plain owner spreadsheet (name, email, price, date) is almost always a list of quotes.
   const total = Object.values(scores).reduce((a, b) => a + b, 0);
@@ -258,7 +267,7 @@ export function detect(table: Table, fileName = "", forceKind?: RecordKind): Det
     if (f.total === undefined && f.subtotal === undefined) warnings.push("No dollar amount column found — values will be estimated from your average job.");
     if (f.status === undefined && f.outcome === undefined) warnings.push("No status column found — we'll infer what happened from the dates and your other files.");
   }
-  if (!["createdOn", "sentOn", "issuedOn", "scheduledOn", "completedOn", "clientCreatedOn"].some((x) => f[x as Field] !== undefined))
+  if (!["createdOn", "sentOn", "issuedOn", "scheduledOn", "completedOn", "clientCreatedOn", "lastJobOn"].some((x) => f[x as Field] !== undefined))
     warnings.push("No date column found — we can't tell how old these records are.");
   return {
     kind,

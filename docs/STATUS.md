@@ -36,6 +36,34 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     picks each person's first sold leak (on the 10k tree sample, 8,006 workable people).
   - Engine 1,342, server 311.
 
+- **A2. Read lawn and cleaning exports** (engine only).
+  - Jobber's Visits report reads as visits: every visit its own record under its client, the same result
+    newest-first or oldest-first, with its date, job number, amount ("Visit based", or the one-off job's share) and
+    crew ("Assigned to"). "Visit completed" is Yes/No; a visit not marked done counts as missed only when a later
+    visit of the job, or the crew's own marking, has gone past it. A one-off job's visits are one job.
+  - A Visits or bookings file is the whole calendar for the days it covers: a re-sent report replaces the earlier
+    one's visits for its clients on those days.
+  - Bookings exports (Booking ID, Service, Frequency, Booking Date, Price, Status) read as visits, not won quotes.
+  - Client lists: "Last Visit", "Last Appointment", "Last Booking Date", "Last Cleaning", "Last Service" are the last
+    visit; a frequency column sets the lapse, otherwise the trade's longest quiet spell (45 days for cleaning); lawn
+    and landscape lists wait for B2.
+  - A recurring job's single row (jobs report or sync) that ended months ago is a lapsed regular.
+  - The ledger counts one job's visits as one booking; visits still on the calendar never count.
+  - Readiness asks lawn, landscape and cleaning shops for the visits export first, never quotes.
+  - Fixtures: a 40-client, 1,640-visit Jobber Visits report (newest-first, oldest-first, and amounts blank) gives 40
+    customers with their full history, all 15 lapsed regulars found, 0 of the 25 active flagged; a bookings export
+    with the same results; a cleaning client list with "Last Cleaning", with and without a frequency.
+  - Left: lawn off-season and in-season values (B2); BookingKoala, Launch27, ZenMaid columns (C2); a crew that marks
+    most clients daily but bills a few monthly reads those few's unmarked visits as missed (different "Assigned to"
+    names keep them apart); leftover calendar visits of a never-closed job can still count as a comeback or a
+    "crew nearby" line; Jobber's longer headers ("Service state/province", "Service ZIP/postal code") map the same
+    way but have no test.
+  - Brief notes: "Visit completed" is Yes/No, not a date; the 7-7 tie came from "Job #" scoring for jobs; the
+    brief's bookings columns have no customer columns (the fixture adds them; real names wait for C2).
+  - Engine 1,390. Checks under a 4-CPU load of 8-14 from parallel agents: the only failures were time limits (the
+    10k-quote performance test, two copy tests, four server files), each green when rerun on its own; the scan
+    takes the same time with and without A2 at the same load.
+
 **Live steps for Jack**
 - (A1) Leave FEATURE_NEW_REQUESTS and FEATURE_YEARLY unset (off) in production.
 

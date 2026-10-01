@@ -36,12 +36,15 @@ export type Field =
   | "total"
   | "subtotal"
   | "balance"
+  | "perVisit"
+  | "done"
   | "status"
   | "outcome"
   | "salesperson"
   | "quoteNumber"
   | "jobNumber"
   | "jobType"
+  | "crew"
   // when
   | "createdOn"
   | "sentOn"
@@ -72,7 +75,8 @@ export const FIELDS: Record<Field, FieldSpec> = {
     not: /(company|business|salesperson|sales person|assigned|user|team|employee|technician|tech|crew|created by|property|job name|quote name|estimate name|file|product|service|item)/i,
   },
   firstName: { names: ["first name", "firstname", "first", "given name", "client first name", "customer first name", "contact first name"], not: /(company|user|tech)/i },
-  lastName: { names: ["last name", "lastname", "last", "surname", "family name", "client last name", "customer last name", "contact last name"], not: /(company|user|tech|visit|date|job|service)/i },
+  // "Last Cleaning", "Last Appointment": a last anything but a name is a date
+  lastName: { names: ["last name", "lastname", "last", "surname", "family name", "client last name", "customer last name", "contact last name"], not: /(company|user|tech|visit|date|job|service)|^last (?!name\b)/i },
   company: { names: ["company name", "company", "business name", "organization", "organisation"], not: /(my company|your company)/i },
   email: {
     names: ["client email", "customer email", "email", "email address", "e-mail", "primary email", "contact email", "emails", "billing email"],
@@ -117,11 +121,16 @@ export const FIELDS: Record<Field, FieldSpec> = {
   description: { names: ["description", "details", "notes", "internal notes", "job details", "instructions", "memo", "message"], not: /(line item)/i },
   lineItems: { names: ["line items", "line item", "items", "products & services", "products and services", "products/services", "line item names", "services performed", "option"] },
   total: {
-    names: ["total", "quote total", "estimate total", "job total", "invoice total", "total ($)", "total amount", "amount", "grand total", "value", "price", "total price", "total value", "revenue", "estimate amount", "quote amount", "estimates subtotal", "estimate subtotal"],
+    // Jobber's Visits report: "One-off job ($)" is a one-off job's price split across its visits
+    names: ["total", "quote total", "estimate total", "job total", "invoice total", "total ($)", "total amount", "amount", "grand total", "value", "price", "total price", "total value", "revenue", "estimate amount", "quote amount", "estimates subtotal", "estimate subtotal", "one-off job"],
     not: /(^subtotal$|visits|count|tax|discount|deposit|paid|balance|hours|qty|quantity|cost|margin|profit|tip)/i,
     looks: "money",
   },
   subtotal: { names: ["subtotal", "sub total", "sub-total"], looks: "money" },
+  // What one visit of a recurring job bills (Jobber's "Visit based ($)"); blank or 0 on a one-off job's visits
+  perVisit: { names: ["visit based", "per visit", "price per visit"], looks: "money" },
+  // Jobber's "Visit completed": Yes once the visit is marked done, No while it's still to come or went by undone
+  done: { names: ["visit completed", "visit complete", "marked complete"] },
   balance: { names: ["balance", "balance due", "amount due", "outstanding", "open balance", "remaining balance", "due"], not: /(date)/i, looks: "money" },
   status: {
     names: ["status", "quote status", "job status", "invoice status", "estimate status", "state", "stage", "pipeline stage", "deal stage", "work status", "opportunity status", "approval status"],
@@ -133,22 +142,28 @@ export const FIELDS: Record<Field, FieldSpec> = {
   salesperson: { names: ["salesperson", "sales person", "sales rep", "assigned to", "estimator", "created by", "sold by", "rep", "technician", "assigned employee"] },
   quoteNumber: { names: ["quote #", "quote #s", "quote number", "quote no", "quote", "estimate #", "estimate number", "from quote", "originating quote"], looks: "ref" },
   jobNumber: { names: ["job #", "job #s", "job number", "job no", "job", "work order", "work order #"], looks: "ref" },
-  jobType: { names: ["job type", "type", "recurring", "one-off / recurring", "schedule type", "frequency", "service frequency", "visit frequency"] },
+  jobType: { names: ["job type", "type", "recurring", "one-off / recurring", "schedule type", "frequency", "service frequency", "visit frequency"], not: /(billing|payment)/i },
+  // who a visit was assigned to: the crew whose clock says whether a visit not marked done was missed
+  crew: { names: ["assigned to", "crew", "team"] },
 
-  createdOn: { names: ["created", "created date", "date created", "created on", "created at", "drafted date", "quote date", "estimate date", "date", "requested on", "requested on date", "request date", "opened", "open date"], not: /(client|customer|visit|due|sent|approved|paid)/i, looks: "date" },
+  createdOn: { names: ["created", "created date", "date created", "created on", "created at", "drafted date", "quote date", "estimate date", "date", "requested on", "requested on date", "request date", "opened", "open date"], not: /(client|customer|visit|due|sent|approved|paid|\blast\b)/i, looks: "date" },
   sentOn: { names: ["sent", "sent date", "date sent", "sent on", "last sent", "issued date sent", "emailed on", "sent at"], not: /(email sent to|to|by)/i, looks: "date" },
   approvedOn: { names: ["approved", "approved date", "date approved", "approved on", "accepted", "accepted date", "won date", "signed date", "sold date", "sold on", "customer approved date"], looks: "date" },
   convertedOn: { names: ["converted", "converted date", "date converted", "converted on", "job created", "converted to job"], looks: "date" },
   archivedOn: { names: ["archived", "archived date", "date archived", "archived on", "lost date", "declined date", "closed lost date"], looks: "date" },
   changesRequestedOn: { names: ["changes requested", "changes requested date", "changes requested on"], looks: "date" },
-  scheduledOn: { names: ["scheduled", "schedule date", "scheduled date", "start date", "start", "schedule start", "scheduled start", "visit date", "next visit", "appointment date", "service date", "job date"], not: /(end|created|completed)/i, looks: "date" },
+  // A plain "Date" is a visit's own date (Jobber's Visits report); in a jobs file "created" takes it first
+  scheduledOn: { names: ["scheduled", "schedule date", "scheduled date", "start date", "start", "schedule start", "scheduled start", "visit date", "next visit", "appointment date", "service date", "job date", "booking date", "date"], not: /(end|created|completed)/i, looks: "date" },
   completedOn: { names: ["completed", "completed date", "completed on", "date completed", "closed", "closed date", "closed on", "finished", "end date", "end", "last visit", "completion date"], looks: "date" },
   issuedOn: { names: ["issued", "issued date", "issue date", "invoice date", "date issued", "billed date"], looks: "date" },
   dueOn: { names: ["due", "due date", "date due", "payment due"], not: /(balance|amount)/i, looks: "date" },
   paidOn: { names: ["paid", "paid date", "date paid", "paid on", "payment date", "last payment date", "marked paid"], not: /(amount|total|balance)/i, looks: "date" },
   assessmentOn: { names: ["assessment", "assessment date", "site visit", "site visit date", "appointment", "consultation date"], looks: "date" },
   viewedOn: { names: ["viewed in client hub", "viewed", "viewed date", "last viewed", "opened date", "estimate viewed"], looks: "date" },
-  lastJobOn: { names: ["last closed job", "last job", "last job date", "last service", "last service date", "last visit date", "last completed job"], looks: "date" },
+  lastJobOn: {
+    names: ["last closed job", "last job", "last job date", "last service", "last service date", "last visit", "last visit date", "last completed job", "last appointment", "last appointment date", "last booking", "last booking date", "last cleaning", "last cleaning date"],
+    looks: "date",
+  },
 };
 
 /** Fields that each record kind can use. */
@@ -170,15 +185,15 @@ export const KIND_FIELDS: Record<RecordKind, Field[]> = {
   ],
   client: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip", "tags", "leadSource", "marketingOptOut", "smsOptIn",
-    "clientCreatedOn", "clientStatus", "createdOn", "description", "lastJobOn",
+    "clientCreatedOn", "clientStatus", "createdOn", "description", "lastJobOn", "jobType",
   ],
   request: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip", "leadSource",
     "number", "title", "description", "status", "createdOn", "assessmentOn", "quoteNumber",
   ],
   visit: [
-    "clientId", "name", "firstName", "lastName", "email", "phone", "address", "street", "city", "state", "zip",
-    "title", "status", "jobNumber", "scheduledOn", "completedOn", "total",
+    "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip",
+    "number", "title", "description", "lineItems", "total", "perVisit", "done", "status", "jobNumber", "jobType", "crew", "scheduledOn", "completedOn",
   ],
 };
 
@@ -189,7 +204,7 @@ export const KIND_SIGNALS: Record<RecordKind, RegExp[]> = {
   invoice: [/\binvoice\b/i, /balance/i, /\bpaid\b/i, /due date/i, /payment/i],
   client: [/client (id|since|created)/i, /customer since/i, /lead source/i, /tags/i, /billing (street|city|address)/i, /\bclients?\b/i],
   request: [/\brequest\b/i, /assessment/i, /\binquiry\b/i, /lead form/i],
-  visit: [/\bvisit\b/i, /\bcrew\b/i, /\broute\b/i, /arrival/i],
+  visit: [/\bvisit\b/i, /\bcrew\b/i, /\broute\b/i, /arrival/i, /\bbookings?\b/i],
 };
 
 /** Header fingerprints that identify the software that produced the file. */
