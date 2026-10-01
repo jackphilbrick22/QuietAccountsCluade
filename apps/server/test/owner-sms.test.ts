@@ -101,16 +101,18 @@ describe("owner texts BUSY / OPEN", () => {
     let ov = await api("GET", "/api/businesses/ridge-tree");
     expect((ov.business as { plan: { billing: string; paidOn: string } }).plan).toMatchObject({ billing: "monthly", paidOn: "2026-10-20" });
     const year = await sms("Renew");
-    expect(year).toMatch(/another year from .* Jack will text you the payment link\./);
+    // back to yearly from the running year's end, never a year overlapping it from today
+    expect(year).toMatch(/another year from October 20, .* Jack will text you the payment link\./);
     ov = await api("GET", "/api/businesses/ridge-tree");
-    expect((ov.business as { plan: { billing: string } }).plan.billing).toBe("annual");
+    expect((ov.business as { plan: { billing: string; yearsPaidOn: string[] } }).plan).toMatchObject({ billing: "annual", yearsPaidOn: ["2025-10-20", "2026-10-20"] });
   });
 
   it("cancels in one text and refunds the unused year; UNDO then goes to a person, never the software", async () => {
     const done = await sms("cancel");
     expect(done).toMatch(/Done — cancelled\. No more notes, no more charges\./);
-    // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor)
-    expect(done).toContain("$4,970.00 of your year comes back to your card within 5 business days");
+    // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor), and the
+    // renewed year that hadn't started comes back in full
+    expect(done).toContain("$9,940.00 of what you paid ahead comes back to your card within 5 business days");
     expect(done).toMatch(/Text UNDO by \d{1,2}(:\d\d)?(am|pm) tomorrow/);
     let ov = await api("GET", "/api/businesses/ridge-tree");
     expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");

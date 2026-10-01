@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { AGENTS, fmtMoney, playbook, plural, type AgentId, type BusinessProfile, type Reply, type Touch } from "@qa/engine";
+import { addMonths, AGENTS, annualPrice, fmtMoney, playbook, plural, type AgentId, type BusinessProfile, type Reply, type Touch } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -562,6 +562,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
   const patch = useMemo(() => diff(b, d), [b, d]);
   const dirty = Object.keys(patch).length > 0;
   const set = <K extends keyof BusinessProfile>(k: K, v: BusinessProfile[K]) => setD((x) => ({ ...x, [k]: v }));
+  const yearly = d.plan.billing === "annual";
   const num = (v: string, lo: number, hi: number, fallback: number) => {
     const n = Number(v.replace(/[^0-9.]/g, ""));
     return Number.isFinite(n) && v !== "" ? Math.max(lo, Math.min(hi, n)) : fallback;
@@ -647,10 +648,35 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
             </select>
           </Field>
           <NumField id="ls-trial" label="Free round size (people)" value={d.plan.trialSize} onChange={(v) => set("plan", { ...d.plan, trialSize: num(v, 10, 1000, d.plan.trialSize) })} />
-          <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />
-          <Field id="ls-paid" label="First paid day" hint="Set this when they pay. The guarantee counts months from here.">
-            <input id="ls-paid" type="date" className={smallInputCls} value={d.plan.paidOn ?? ""} onChange={(e) => set("plan", { ...d.plan, paidOn: e.target.value || undefined })} />
+          <Field id="ls-billing" label="Billing" hint="Yearly: paid up front, twelve months for the price of ten.">
+            <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual"))}>
+              <option value="monthly">Monthly</option>
+              <option value="annual">Yearly</option>
+            </select>
           </Field>
+          <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />
+          {yearly && <NumField id="ls-price-y" label="Year price ($)" value={annualPrice(d)} onChange={(v) => set("plan", { ...d.plan, annualPrice: num(v, 0, 1000000, annualPrice(d)) })} />}
+          <Field id="ls-paid" label="First paid day" hint={yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>
+            <input id="ls-paid" type="date" className={smallInputCls} value={d.plan.paidOn ?? ""} onChange={(e) => set("plan", withPaidOn(d.plan, e.target.value || undefined))} />
+          </Field>
+          {yearly && (
+            <Field id="ls-years" label="Paid years" hint="Each year's first day. RENEW by text adds the next one; take it off if it's never paid." wide>
+              <div id="ls-years" role="group" aria-label="Paid years" className="flex flex-wrap gap-1.5">
+                {(d.plan.yearsPaidOn ?? []).length ? (
+                  (d.plan.yearsPaidOn ?? []).map((y) => (
+                    <span key={y} className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-line-2 bg-surface px-2.5 text-[13px] font-semibold text-ink-2">
+                      {y}
+                      <button type="button" aria-label={`Take off the year from ${y}`} className="text-ink-3 hover:text-bad" onClick={() => set("plan", { ...d.plan, yearsPaidOn: (d.plan.yearsPaidOn ?? []).filter((x) => x !== y) })}>
+                        ×
+                      </button>
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-[13px] text-ink-3">None yet: set the first paid day.</span>
+                )}
+              </div>
+            </Field>
+          )}
         </div>
       </Group>
 
@@ -681,10 +707,44 @@ function diff(a: BusinessProfile, b: BusinessProfile): Patch {
     if (typeof v === "string") v = v.trim();
     if (v === "" || v === undefined) continue; // the API can't clear optional fields; leave them
     if (k === "voice") v = { mentionPrice: b.voice.mentionPrice, offerOptions: b.voice.offerOptions, ...(b.voice.freeLook !== undefined ? { freeLook: b.voice.freeLook } : {}) };
-    if (k === "plan") v = { stage: b.plan.stage, trialSize: b.plan.trialSize, monthlyPrice: b.plan.monthlyPrice, ...(b.plan.paidOn ? { paidOn: b.plan.paidOn } : {}) };
+    if (k === "plan") {
+      const p = b.plan;
+      const yearly = p.billing === "annual";
+      // a yearly plan sends its price and paid years too (left out, the server would keep it billed monthly)
+      v = {
+        stage: p.stage,
+        trialSize: p.trialSize,
+        monthlyPrice: p.monthlyPrice,
+        ...(p.paidOn ? { paidOn: p.paidOn } : {}),
+        billing: yearly ? "annual" : "monthly",
+        ...(yearly && p.annualPrice !== undefined ? { annualPrice: p.annualPrice } : {}),
+        ...(yearly && JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
+      };
+    }
     out[k] = v;
   }
   return out as Patch;
+}
+
+type Plan = BusinessProfile["plan"];
+const uniqSorted = (xs: string[]) => [...new Set(xs)].sort();
+
+/** Going yearly: the first paid day starts a paid year; earlier years stay as history. */
+function withBilling(p: Plan, billing: "monthly" | "annual"): Plan {
+  if (billing === "monthly") return { ...p, billing };
+  return { ...p, billing, yearsPaidOn: uniqSorted([...(p.yearsPaidOn ?? []).filter((y) => !p.paidOn || y < p.paidOn), ...(p.paidOn ? [p.paidOn] : [])]) };
+}
+
+/**
+ * A new first paid day on a yearly plan: after the last year ran out it's a new year alongside the old ones; otherwise
+ * it corrects the day the year started.
+ */
+function withPaidOn(p: Plan, paidOn: string | undefined): Plan {
+  if (p.billing !== "annual" || !paidOn) return { ...p, paidOn };
+  const years = p.yearsPaidOn ?? [];
+  const last = [...years].sort().at(-1);
+  const after = !!last && addMonths(last, 12) <= paidOn;
+  return { ...p, paidOn, yearsPaidOn: uniqSorted([...years.filter((y) => after || y !== p.paidOn), paidOn]) };
 }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {

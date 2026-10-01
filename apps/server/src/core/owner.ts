@@ -1,4 +1,4 @@
-import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
@@ -374,6 +374,18 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (/^(resume|unpause)\b|^go( ahead| for it)?$/.test(command) && !goYes) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running. Want back in? Reply here and Jack will set it up.`, handled: "resume_cancelled", needsPerson: true };
+    // The plan itself is paused (a year ran out with no renewal, or Jack paused it): RESUME can't start it again, so
+    // it never says "Back on" while nothing goes out. The pause stays, and a person reads it.
+    if (one.profile.plan.stage === "paused") {
+      const p = one.profile.plan;
+      const lapsed = p.billing === "annual" && !paidYearOn(one.profile, nowLocal(d, d.accounts.peek(one.id)!.state).slice(0, 10));
+      return {
+        businessId: one.id,
+        reply: `${tag(one)}${lapsed ? `Your year ended, so everything's still paused. Text MONTHLY to pick back up at $${Math.round(p.monthlyPrice).toLocaleString("en-US")} a month, or RENEW for another year.` : "Your plan is paused on our side, so nothing's going out yet."} Jack will read this too.`,
+        handled: "resume_plan_paused",
+        needsPerson: true,
+      };
+    }
     await pause(d, one.id, false);
     return { businessId: one.id, reply: `${tag(one)}Back on. Notes resume on your next send day.`, handled: "resume" };
   }
@@ -403,12 +415,15 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       });
       return { businessId: one.id, reply: `${tag(one)}Great — ${choice === "year" ? "the year" : "month to month"} it is. Jack will text you the payment link.`, handled: "accepted_close", needsPerson: true };
     }
-    let reply = "";
+    // Jack collects every payment, so a change (or a year waiting on its link) goes to his queue; a repeat changes nothing.
+    const stageBefore = one.profile.plan.stage;
+    let r: ReturnType<typeof renewPlan> | undefined;
     await d.accounts.withAccount(one.id, (state) => {
-      reply = renewPlan(state, choice, nowLocal(d, state));
+      r = renewPlan(state, choice, nowLocal(d, state));
     });
-    await pause(d, one.id, false);
-    return { businessId: one.id, reply: `${tag(one)}${choice === "year" ? `${reply} Jack will text you the payment link.` : reply}`, handled: `renew_${choice}` };
+    // a year that ran out is back on with MONTHLY; an owner's own PAUSE (or Jack's Paused stage) stays
+    if (stageBefore === "paused" && d.accounts.peek(one.id)!.state.dataset.business.plan.stage === "paying") await pause(d, one.id, false);
+    return { businessId: one.id, reply: `${tag(one)}${r!.reply}`, handled: r!.handled, ...(r!.forOperator ? { needsPerson: true } : {}) };
   }
   // Month to month, cancel by text: one text does it (a yearly plan gets back what it didn't use). UNDO within a day puts it all back.
   if (/^(cancel|undo)\b/.test(bare) && hasCode)
@@ -733,7 +748,9 @@ function outstanding(d: Deps, bid: string, kind: "close" | "renewal"): boolean {
   if (kind === "close" && b.plan.stage !== "trial") return false;
   if (kind === "renewal" && (b.plan.stage !== "paying" || b.plan.billing !== "annual")) return false;
   const today = nowLocal(d, s).slice(0, 10);
-  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "close" ? 21 : 45));
+  // a renewal already answered (a year from its end is on the books) is never asked again; MONTHLY ends it above
+  const answered = (m: (typeof s.ownerMessages)[number]) => kind === "renewal" && !!m.refs?.some((r) => r.kind === "year_end" && (b.plan.yearsPaidOn ?? []).some((y) => y >= r.id));
+  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "close" ? 21 : 45) && !answered(m));
 }
 
 /** The client whose lead was texted to this owner most recently. */

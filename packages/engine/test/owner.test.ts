@@ -267,6 +267,115 @@ describe("review 5: the fee ledger across a switch", () => {
   });
 });
 
+describe("final review: RENEW, MONTHLY and CANCEL around the paid year", () => {
+  // a yearly plan from Oct 1, 2026: the renewal window is September 2027
+  const annual = () => {
+    const st = account();
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", monthlyPrice: 497, annualPrice: 4970, paidOn: "2026-10-01", yearsPaidOn: ["2026-10-01"], freeMonths: [] };
+    return st;
+  };
+  const reviews = (st: AccountState) => st.events.filter((e) => e.kind === "review");
+
+  it("a second RENEW books nothing more: one year, one payment link, and next year's ask still comes", () => {
+    const st = annual();
+    const first = renewPlan(st, "year", "2027-09-03T10:00:00");
+    expect(first).toMatchObject({ changed: true, forOperator: true, handled: "renew_year" });
+    expect(first.reply).toBe("Done — another year from October 1, same price. The guarantee still runs every month. Jack will text you the payment link.");
+    // the operator is told to collect it
+    expect(reviews(st).map((e) => e.detail)).toEqual([expect.stringMatching(/^Starts 2027-10-01\. Send the payment link for \$4,970/)]);
+    const again = renewPlan(st, "year", "2027-09-08T10:00:00");
+    expect(again).toMatchObject({ reply: "You're already renewed from October 1. Nothing else to do.", changed: false, forOperator: false, handled: "renew_already" });
+    expect(st.dataset.business.plan.yearsPaidOn).toEqual(["2026-10-01", "2027-10-01"]);
+    expect(reviews(st)).toHaveLength(1);
+    expect(feesPaid(st.dataset.business, "2027-11-01").total).toBe(9940);
+    // the year after is still asked about, and still pauses without a yes
+    expect(renewalIfDue(st, "2028-09-05T09:00:00")).toMatchObject({ kind: "renewal" });
+    renewalIfDue(st, "2028-10-01T09:00:00");
+    expect(st.dataset.business.plan.stage).toBe("paused");
+  });
+
+  it("RENEW, then MONTHLY: the year that hadn't started comes off, and month to month starts at the running year's end", () => {
+    const st = annual();
+    renewPlan(st, "year", "2027-09-03T10:00:00");
+    const r = renewPlan(st, "monthly", "2027-09-06T10:00:00");
+    expect(r).toMatchObject({ reply: "Done — month to month from October 1, $497 a month, cancel by text any time.", changed: true, handled: "renew_monthly" });
+    expect(st.dataset.business.plan).toMatchObject({ billing: "monthly", paidOn: "2027-10-01", yearsPaidOn: ["2026-10-01"], priorFees: 4970 });
+    expect(reviews(st).at(-1)!.detail).toMatch(/The year from 2027-10-01 they'd renewed came off/);
+    expect(feesPaid(st.dataset.business, "2027-10-15").total).toBe(4970 + 497);
+  });
+
+  it("MONTHLY, then RENEW: back to yearly from the running year's end, never an overlapping year from today", () => {
+    const st = annual();
+    renewPlan(st, "monthly", "2027-09-06T10:00:00");
+    const r = renewPlan(st, "year", "2027-09-08T10:00:00");
+    expect(r.reply).toContain("another year from October 1,");
+    expect(st.dataset.business.plan).toMatchObject({ billing: "annual", paidOn: "2027-10-01", yearsPaidOn: ["2026-10-01", "2027-10-01"], priorFees: 4970 });
+    // the old year's last month is still judged, and a quiet one comes off what that year cost
+    expect(guaranteeCheck(st, "2027-09-29")!.chargeOn).toBe("2027-10-01");
+    expect(billingCheck(st, "2027-09-29T09:00:00")?.kind).toBe("free_month");
+    // the same as a plain renewal with that quiet month: two years less a twelfth
+    expect(feesPaid(st.dataset.business, "2027-10-15").total).toBe(9525.83);
+  });
+
+  it("MONTHLY twice never moves the date: not inside a paid year, not on a plain monthly plan", () => {
+    const st = annual();
+    renewPlan(st, "monthly", "2027-09-06T10:00:00");
+    expect(renewPlan(st, "monthly", "2027-09-10T10:00:00")).toMatchObject({ reply: "You're already set to go month to month from October 1. Nothing else to do.", changed: false, handled: "monthly_already" });
+    expect(st.dataset.business.plan).toMatchObject({ paidOn: "2027-10-01", priorFees: 4970 });
+    expect(feesPaid(st.dataset.business, "2027-09-15").total).toBe(4970);
+    const m = account();
+    m.dataset.business.plan = { ...m.dataset.business.plan, stage: "paying", monthlyPrice: 497, paidOn: "2026-06-01", freeMonths: [] };
+    expect(renewPlan(m, "monthly", "2026-12-15T10:00:00")).toMatchObject({ reply: "You're already month to month at $497 a month. Nothing else to do.", changed: false });
+    expect(m.dataset.business.plan.paidOn).toBe("2026-06-01");
+    expect(feesPaid(m.dataset.business, "2026-12-20").total).toBe(7 * 497);
+  });
+
+  it("a year that would start today waits for its payment: nothing changes on the text, and the operator is told", () => {
+    const m = account();
+    m.dataset.business.plan = { ...m.dataset.business.plan, stage: "paying", monthlyPrice: 497, paidOn: "2026-06-01", freeMonths: [] };
+    const r = renewPlan(m, "year", "2026-09-15T10:00:00");
+    expect(r).toMatchObject({ changed: false, forOperator: true, handled: "renew_year_pay_first" });
+    expect(r.reply).toBe("Great — the year it is. Jack will text you the payment link, and your year starts the day it's paid.");
+    expect(m.dataset.business.plan).toMatchObject({ paidOn: "2026-06-01", stage: "paying" });
+    expect(m.dataset.business.plan.billing).not.toBe("annual");
+    expect(reviews(m).at(-1)!.detail).toMatch(/^Send the payment link for \$4,970\. Once it's paid, set Yearly and the first paid day in Settings\.$/);
+    // a year that ran out: still paused until it's paid
+    const st = annual();
+    renewalIfDue(st, "2027-09-05T09:00:00");
+    renewalIfDue(st, "2027-10-01T09:00:00");
+    expect(st.dataset.business.plan.stage).toBe("paused");
+    expect(renewPlan(st, "year", "2027-10-03T10:00:00").reply).toContain("Everything stays paused until then.");
+    expect(st.dataset.business.plan).toMatchObject({ stage: "paused", yearsPaidOn: ["2026-10-01"] });
+  });
+
+  it("CANCEL after RENEW refunds the year that hadn't started, in full, and a restore puts it back", () => {
+    const st = annual();
+    // the running year's jobs covered it, so only the renewed year comes back
+    st.recoveries = [{ id: "rec1", customerId: "c1", record: { kind: "job", id: "j9" }, value: 6000, cameBackOn: "2027-03-10", match: "reply", confidence: 1, tier: "traced" } as unknown as Recovery];
+    renewPlan(st, "year", "2027-09-03T10:00:00");
+    const r = cancelPlan(st, "2027-09-20T10:00:00");
+    expect(r.refund).toBe(4970);
+    expect(r.line).toBe("The year you renewed from October 1 hadn't started yet, so all $4,970.00 of it comes back to your card within 5 business days.");
+    expect(st.ownerMessages.find((m) => m.kind === "refund")).toMatchObject({ text: expect.stringContaining("the year you renewed from October 1 hadn't started yet, so all $4,970.00 of it goes back to your card"), refs: [{ kind: "year_refund", id: "2027-10-01" }] });
+    expect(st.dataset.business.plan.yearsPaidOn).toEqual(["2026-10-01"]);
+    expect(feesPaid(st.dataset.business, "2027-11-01").total).toBe(4970);
+    // money may be on its way: UNDO is a person's, and their restore puts the year back
+    expect(undoCancel(st, "2027-09-20T11:00:00")).toEqual({ refused: "refund" });
+    undoCancel(st, "2027-09-20T11:00:00", { override: true });
+    expect(st.dataset.business.plan).toMatchObject({ stage: "paying", yearsPaidOn: ["2026-10-01", "2027-10-01"] });
+  });
+
+  it("with nothing traced, the running year's refund and the renewed year come back together", () => {
+    const st = annual();
+    renewPlan(st, "year", "2027-09-03T10:00:00");
+    const r = cancelPlan(st, "2027-09-20T10:00:00");
+    expect(r.refund).toBe(9940);
+    expect(r.line).toBe("$9,940.00 of what you paid ahead comes back to your card within 5 business days.");
+    const text = st.ownerMessages.find((m) => m.kind === "refund")!.text;
+    expect(text).toMatch(/so \$4,970\.00 of it comes back\. And the year you renewed from October 1 hadn't started yet, so all \$4,970\.00 of it comes back too: \$9,940\.00 in all goes back to your card within 5 business days\.$/);
+  });
+});
+
 describe("the owner takes a booking back", () => {
   it("NO after BOOKED takes its dollars off the ledger; booked again puts them back at the new figure", () => {
     const st = account();

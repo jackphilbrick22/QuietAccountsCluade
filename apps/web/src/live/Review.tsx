@@ -33,7 +33,12 @@ const itemKey = (it: ReviewItem) =>
 
 /** What we did with an owner's text, in the operator's words. */
 const HANDLED: Record<string, string> = {
-  accepted_close: "said yes to keep going: send the payment link, then set them to Paying in Settings",
+  accepted_close: "said yes to keep going: send the payment link, then set them to Paying in Settings (and Yearly, with the first paid day, if they took the year)",
+  renew_year: "renewed for another year: send the payment link before it starts (take the year off in Settings if it's never paid)",
+  renew_year_pay_first: "wants the year: send the payment link, then set Yearly and the first paid day in Settings once it's paid",
+  renew_monthly: "switched to month to month: charge the monthly price from the day in their activity",
+  monthly_already: "texted MONTHLY while their plan is paused",
+  resume_plan_paused: "texted RESUME, but their plan itself is paused (a year that ran out, or set to Paused in Settings)",
   unrecognized: "wrote something we couldn't act on",
   texts_off: "turned our texts off (STOP)",
   resume_cancelled: "wants back in after cancelling",
@@ -251,7 +256,7 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
-            {it.handled === "accepted_close" && <Btn onClick={() => open("settings")}>Open settings</Btn>}
+            {["accepted_close", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
             <Btn variant="ghost" onClick={() => open("texts")}>
               All their texts
             </Btn>

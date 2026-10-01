@@ -7,7 +7,7 @@ import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
-import { ackFor, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
@@ -814,8 +814,9 @@ export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessag
     const fm = b.plan.freeMonths;
     if (!fm.includes(g.chargeOn)) {
       fm.push(g.chargeOn);
-      // A month of a paid year judged after MONTHLY: that year's charges were frozen into priorFees at the switch.
-      if (b.plan.billing !== "annual" && b.plan.paidOn && g.chargeOn <= b.plan.paidOn && paidYearOn(b, g.periodStart)) b.plan.priorFees = round2((b.plan.priorFees ?? 0) - annualRefund(b));
+      // A month of a paid year from before this arrangement began (MONTHLY, or RENEW after it, starts it at that year's
+      // end): that year's charges were frozen into priorFees at the switch.
+      if (b.plan.paidOn && g.chargeOn <= b.plan.paidOn && paidYearOn(b, g.periodStart)) b.plan.priorFees = round2((b.plan.priorFees ?? 0) - annualRefund(b));
     }
     event(state, now, "guard", "action", "Guarantee: this month is free", "Nobody asked for a price or a date this period, so you won't be charged.");
   }
@@ -871,33 +872,77 @@ function settleYears(state: AccountState, now: ISODateTime): OwnerMessage | unde
   return undefined;
 }
 
-/** The owner's answer to the renewal (or a switch any time): another year, or month to month from the year's end. */
-export function renewPlan(state: AccountState, choice: "year" | "monthly", now: ISODateTime): string {
+/** What a RENEW / YEARLY / MONTHLY text did. */
+export interface PlanChoice {
+  /** The answer for the owner. */
+  reply: string;
+  /** The plan changed (a repeat, or a year that waits for its payment, changes nothing). */
+  changed: boolean;
+  /** The operator has something to collect or set up: it's in the activity as a review event, and a person reads the text. */
+  forOperator: boolean;
+  /** For the log. */
+  handled: "renew_year" | "renew_year_pay_first" | "renew_already" | "renew_monthly" | "monthly_already";
+}
+
+/**
+ * The owner's answer to the renewal (or a switch any time): another year, or month to month from the year's end.
+ * Everything turns on the paid year running today (MONTHLY takes effect at its end), never on the last year listed,
+ * so a repeated or changed answer never stacks a year, overlaps one, or moves a date that's already set. The
+ * operator collects every payment: a year starting at the running one's end is the owner's yes, with a month for
+ * the payment link; a year that would start today (a monthly plan going yearly, or after a year ran out) starts
+ * only once it's paid, so nothing is recorded on a text alone.
+ */
+export function renewPlan(state: AccountState, choice: "year" | "monthly", now: ISODateTime): PlanChoice {
   const b = state.dataset.business;
   const today = now.slice(0, 10);
   const plan = b.plan;
-  const started = plan.paidOn ? [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : [plan.paidOn])].sort().pop()! : today;
-  const yearEnds = plan.billing === "annual" ? addMonths(started, 12) : today;
-  const from = yearEnds > today ? yearEnds : today;
+  const day = (d: string) => `${monthName(d)} ${Number(d.slice(8))}`;
+  const years = [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : plan.billing === "annual" && plan.paidOn ? [plan.paidOn] : [])].sort();
+  const running = paidYearOn(b, today);
+  const yearEnds = running ? addMonths(running, 12) : undefined;
   if (choice === "year") {
+    // already said: a year on the books from today on (RENEW twice, or YEARLY again after the operator set it up)
+    const booked = years.filter((y) => y >= today).pop();
+    if (booked) return { reply: `You're already ${booked > today ? "renewed" : "on the year"} from ${day(booked)}. Nothing else to do.`, changed: false, forOperator: false, handled: "renew_already" };
+    if (!yearEnds) {
+      event(state, now, "reporter", "review", `${b.ownerFirstName} wants the year`, `Send the payment link for ${fmtMoney(annualPrice(b))}. Once it's paid, set Yearly and the first paid day in Settings${plan.stage === "paused" ? " (and the stage back to Paying)" : ""}.`);
+      return { reply: `Great — the year it is. Jack will text you the payment link, and your year starts the day it's paid.${plan.stage === "paused" ? " Everything stays paused until then." : ""}`, changed: false, forOperator: true, handled: "renew_year_pay_first" };
+    }
+    // After MONTHLY it's back to yearly from the same day: what the running year cost stays frozen in priorFees.
     if (plan.billing !== "annual") {
-      plan.priorFees = grossFees(b, today).total;
+      plan.priorFees = grossFees(b, addDays(yearEnds, -1)).total;
       plan.billing = "annual";
-      plan.paidOn = from;
-      plan.yearsPaidOn = [...(plan.yearsPaidOn ?? []), from];
-    } else plan.yearsPaidOn = [...(plan.yearsPaidOn?.length ? plan.yearsPaidOn : [started]), from];
-  } else {
-    if (plan.billing === "annual") plan.priorFees = grossFees(b, from).total;
-    plan.billing = "monthly";
-    plan.paidOn = from;
-    // yearsPaidOn stays as history so the last year is still settled at its end
+      plan.paidOn = yearEnds;
+    }
+    // (the stage stays as it is: a year is running, so only Jack's own Paused could be holding it)
+    plan.yearsPaidOn = [...years, yearEnds];
+    event(state, now, "reporter", "review", `${b.ownerFirstName} chose another year`, `Starts ${yearEnds}. Send the payment link for ${fmtMoney(annualPrice(b))} before then; if it's never paid, take the year off in Settings.`);
+    return { reply: `Done — another year from ${day(yearEnds)}, same price. The guarantee still runs every month. Jack will text you the payment link.`, changed: true, forOperator: true, handled: "renew_year" };
   }
-  plan.stage = "paying";
-  const when = `${monthName(from)} ${Number(from.slice(8))}`;
-  event(state, now, "reporter", "action", choice === "year" ? "Owner chose another year" : "Owner chose month to month", `Starts ${from}.`);
-  return choice === "year"
-    ? `Done — another year from ${when}, same price. The guarantee still runs every month.`
-    : `Done — month to month from ${when}, ${fmtMoney(plan.monthlyPrice)} a month, cancel by text any time.`;
+  // RENEW, then MONTHLY: the year that hasn't started comes off, and month to month starts when the running one ends
+  const notStarted = years.filter((y) => y > today);
+  if (plan.billing !== "annual" && !notStarted.length) {
+    // already month to month (or set to go at the running year's end): nothing moves, so no charge date shifts
+    const paused = plan.stage === "paused";
+    if (paused) event(state, now, "reporter", "review", `${b.ownerFirstName} texted MONTHLY while their plan is paused`, "They're already month to month. Set the stage back to Paying in Settings if they're picking back up.");
+    return {
+      reply: yearEnds ? `You're already set to go month to month from ${day(yearEnds)}. Nothing else to do.` : `You're already month to month at ${fmtMoney(plan.monthlyPrice)} a month.${paused ? " Your plan is paused on our side, so Jack will read this and get back to you." : " Nothing else to do."}`,
+      changed: false,
+      forOperator: paused,
+      handled: "monthly_already",
+    };
+  }
+  const from = yearEnds ?? today;
+  if (notStarted.length) plan.yearsPaidOn = years.filter((y) => y <= today);
+  // what the years cost is frozen into priorFees (the running year's later quiet months still come off it)
+  if (plan.billing === "annual") plan.priorFees = grossFees(b, from).total;
+  plan.billing = "monthly";
+  plan.paidOn = from;
+  // yearsPaidOn stays as history so the last year is still settled at its end
+  // a year that ran out picks back up now; with a year running, a Paused stage is Jack's and stays
+  if (!yearEnds) plan.stage = "paying";
+  event(state, now, "reporter", "review", `${b.ownerFirstName} chose month to month`, `Starts ${from}: ${fmtMoney(plan.monthlyPrice)} a month from then.${notStarted.length ? ` The year from ${notStarted.join(", ")} they'd renewed came off; if it was already paid, refund it.` : ""}`);
+  return { reply: `Done — month to month from ${day(from)}, ${fmtMoney(plan.monthlyPrice)} a month, cancel by text any time.`, changed: true, forOperator: true, handled: "renew_monthly" };
 }
 
 /**
@@ -920,18 +965,30 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
     }
   let refund = 0;
   let line = "";
+  const b = state.dataset.business;
   const early = stageBefore !== "trial" ? earlyLeaveRefund(state, today) : undefined;
-  if (early && early.refund > 0) {
-    refund = early.refund;
-    plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early.yearStart), { yearStart: early.yearStart, amount: refund, early: true }];
-    line = `${fmtMoney(refund, { cents: true })} of your year comes back to your card within 5 business days.`;
-    const b = state.dataset.business;
+  const earlyRefund = early && early.refund > 0 ? early.refund : 0;
+  if (earlyRefund) plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early!.yearStart), { yearStart: early!.yearStart, amount: earlyRefund, early: true }];
+  // A year renewed but not started yet was never used: all of it comes back, and it comes off the paid years (so it's
+  // never counted as charged, settled or refunded again; that's why it needs no yearRefunds entry).
+  const ahead = stageBefore !== "trial" ? [...(plan.yearsPaidOn ?? [])].filter((y) => y > today).sort() : [];
+  const aheadAmount = round2(ahead.length * annualPrice(b));
+  if (ahead.length) plan.yearsPaidOn = (plan.yearsPaidOn ?? []).filter((y) => y <= today);
+  refund = round2(earlyRefund + aheadAmount);
+  if (refund) {
+    const cents = (m: number) => fmtMoney(m, { cents: true });
+    const days = ahead.map((y) => `${monthName(y)} ${Number(y.slice(8))}${ahead.length > 1 ? `, ${y.slice(0, 4)}` : ""}`).join(" and ");
+    const notStarted = `the ${ahead.length === 1 ? "year" : "years"} you renewed from ${days} hadn't started yet, so all ${cents(aheadAmount)} of ${ahead.length === 1 ? "it" : "them"}`;
+    line = earlyRefund && ahead.length ? `${cents(refund)} of what you paid ahead comes back to your card within 5 business days.` : ahead.length ? `${notStarted[0]!.toUpperCase()}${notStarted.slice(1)} comes back to your card within 5 business days.` : `${cents(refund)} of your year comes back to your card within 5 business days.`;
+    const math = early && earlyRefund ? `here's the math on your year: you paid ${cents(early.paid)} and used ${plural(early.monthsUsed, "month")}${early.quiet ? ` (${early.quiet} quiet, so free)` : ""}. Month to month that's ${fmtMoney(early.asMonthly)}, and the jobs on your ledger in that time came to ${fmtMoney(early.traced)}. You keep the lower of those, so ${cents(earlyRefund)}` : "";
     ownerMsg(
       state,
       now,
       "refund",
-      `${b.ownerFirstName}, here's the math on your year: you paid ${fmtMoney(early.paid, { cents: true })} and used ${plural(early.monthsUsed, "month")}${early.quiet ? ` (${early.quiet} quiet, so free)` : ""}. Month to month that's ${fmtMoney(early.asMonthly)}, and the jobs on your ledger in that time came to ${fmtMoney(early.traced)}. You keep the lower of those, so ${fmtMoney(refund, { cents: true })} goes back to your card within 5 business days.`,
-      [{ kind: "year_refund", id: early.yearStart }],
+      `${b.ownerFirstName}, ${
+        !ahead.length ? `${math} goes back to your card within 5 business days.` : !math ? `${notStarted} goes back to your card within 5 business days.` : `${math} of it comes back. And ${notStarted} comes back too: ${cents(refund)} in all goes back to your card within 5 business days.`
+      }`,
+      [...(earlyRefund ? [{ kind: "year_refund" as const, id: early!.yearStart }] : []), ...ahead.map((y) => ({ kind: "year_refund" as const, id: y }))],
     );
   }
   plan.stage = "cancelled";
@@ -941,11 +998,13 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
     touches,
     ...(state.awaitingOwnerOk ? { awaitingOwnerOk: state.awaitingOwnerOk } : {}),
     ...(opts.paused ? { paused: true } : {}),
-    ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}),
+    // the cancel's refund text names this year (the running one, else the first not started)
+    ...(refund ? { refund: { yearStart: earlyRefund ? early!.yearStart : ahead[0]!, amount: refund } } : {}),
+    ...(ahead.length ? { years: ahead } : {}),
   };
   // a cancelled account isn't waiting for anyone's OK
   state.awaitingOwnerOk = undefined;
-  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
+  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""}${ahead.length ? ` That includes ${fmtMoney(aheadAmount, { cents: true })} for the renewed year from ${ahead.join(", ")} that hadn't started: refund that part only if it was paid.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
   state.updatedAt = now;
   return { stopped: touches.length, refund, line };
 }
@@ -968,8 +1027,9 @@ export function undoCancel(state: AccountState, now: ISODateTime, opts: { platfo
   if (!c || plan.stage !== "cancelled") return undefined;
   if (!opts.override && Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return { refused: "late" };
   if (c.refund && !opts.override) return { refused: "refund" };
-  // an operator restoring the plan withdraws the refund that was never issued
+  // an operator restoring the plan withdraws the refund that was never issued, and puts back a renewed year it took off
   if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
+  if (c.years?.length) plan.yearsPaidOn = [...new Set([...(plan.yearsPaidOn ?? []), ...c.years])].sort();
   plan.stage = c.stageBefore;
   const before = new Map(c.touches.map((x) => [x.id, x.status]));
   // On a sending platform the cancel took each person's copy back; a sequence can only be pushed again from its

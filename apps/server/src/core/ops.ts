@@ -347,7 +347,8 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
   let failed = 0;
   let held = 0;
   const loaded = d.accounts.peek(bid);
-  if (!loaded || loaded.paused) return { sent, failed, held };
+  // a paused plan (a year that ran out, or Jack's Paused stage) never sends, whatever the pause flag says (as holdReason)
+  if (!loaded || loaded.paused || loaded.state.dataset.business.plan.stage === "paused") return { sent, failed, held };
   const at0 = nowLocal(d, loaded.state);
   const { due, held: h } = dueTouches(loaded.state, at0);
   held = h.length;

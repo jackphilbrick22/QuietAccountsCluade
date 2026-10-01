@@ -37,6 +37,8 @@ export interface AccountState {
     /** The owner had paused sending before cancelling; UNDO leaves it paused. */
     paused?: boolean;
     refund?: { yearStart: string; amount: number };
+    /** Renewed years that hadn't started: refunded in full and taken off the paid years; a restore puts them back. */
+    years?: string[];
   };
   updatedAt: ISODateTime;
 }

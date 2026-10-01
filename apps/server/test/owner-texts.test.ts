@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { leadCode, type OwnerMessage } from "@qa/engine";
-import { deliverOwnerMessages } from "../src/core/ops.ts";
+import { feesPaid, generateSample, leadCode, type OwnerMessage } from "@qa/engine";
+import { deliverOwnerMessages, sendDue } from "../src/core/ops.ts";
 import { readAmount, readLeadText } from "../src/core/owner.ts";
 import { tick } from "../src/core/worker.ts";
 import { ProviderError, type OwnerNotifier } from "../src/contracts.ts";
@@ -811,6 +811,100 @@ describe("final review: what an owner's text is about", () => {
       expect(await h.sms(text), text).toMatch(/^So far: 0 notes out/);
       expect(latest(h, "ridge"), text).toMatchObject({ handled: "status", needs_person: 0 });
     }
+  });
+});
+
+describe("final review: the plan by text and in Settings", () => {
+  const plan = (h: Harness, bid: string) => state(h, bid).dataset.business.plan;
+  const lastText = (h: Harness, bid: string) => h.d.accounts.repo.ownerTexts(bid)[0]!;
+  const yearly = async (h: Harness, bid: string, paidOn: string) => {
+    // what the console's Settings sends for a yearly plan
+    expect((await h.api("PATCH", `/api/businesses/${bid}`, { plan: { stage: "paying", billing: "annual", paidOn, yearsPaidOn: [paidOn] } })).status).toBe(200);
+  };
+
+  it("Settings records a yearly plan, and a monthly owner's months stay in their fees when they go yearly", async () => {
+    const h = make();
+    await h.business("ridge");
+    await yearly(h, "ridge", "2026-09-29");
+    expect(plan(h, "ridge")).toMatchObject({ stage: "paying", billing: "annual", paidOn: "2026-09-29", yearsPaidOn: ["2026-09-29"] });
+    // a quiet month on a yearly plan refunds a twelfth instead of "you won't be charged"
+    expect(feesPaid(state(h, "ridge").dataset.business, "2026-10-15").total).toBe(4970);
+    await h.business("bbb-tree", { name: "BBB Tree" });
+    await h.api("PATCH", "/api/businesses/bbb-tree", { plan: { stage: "paying", paidOn: "2026-06-01" } });
+    // the first paid day alone (a bare API call) still makes it a paid year
+    await h.api("PATCH", "/api/businesses/bbb-tree", { plan: { billing: "annual", paidOn: "2026-09-15" } });
+    expect(plan(h, "bbb-tree")).toMatchObject({ billing: "annual", paidOn: "2026-09-15", yearsPaidOn: ["2026-09-15"], priorFees: 4 * 497 });
+    expect(feesPaid(state(h, "bbb-tree").dataset.business, "2026-09-29").total).toBe(4 * 497 + 4970);
+  });
+
+  it("RENEW from a paying owner goes to Jack for the payment link, once; the renewal isn't asked again", async () => {
+    const h = make();
+    await h.business("ridge");
+    await yearly(h, "ridge", "2025-10-20");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-renewal", at: "2026-09-20T09:00:00", kind: "renewal", text: "Your year with us ends Oct 20.", refs: [{ kind: "year_end", id: "2026-10-20" }] });
+    });
+    expect(await h.sms("RENEW")).toBe("Done — another year from October 20, same price. The guarantee still runs every month. Jack will text you the payment link.");
+    expect(lastText(h, "ridge")).toMatchObject({ handled: "renew_year", needs_person: 1 });
+    const review = (await h.api("GET", "/api/review")).json.items as { kind: string; handled?: string }[];
+    expect(review.some((i) => i.kind === "owner_text" && i.handled === "renew_year")).toBe(true);
+    expect(state(h, "ridge").events.some((e) => e.kind === "review" && /chose another year/.test(e.title))).toBe(true);
+    // a "sounds good" later isn't asked "RENEW or MONTHLY?" again
+    expect(await h.sms("Sounds good")).not.toMatch(/which one: RENEW/);
+    expect(await h.sms("Renew")).toBe("You're already renewed from October 20. Nothing else to do.");
+    expect(lastText(h, "ridge")).toMatchObject({ handled: "renew_already", needs_person: 0 });
+    expect(plan(h, "ridge").yearsPaidOn).toEqual(["2025-10-20", "2026-10-20"]);
+  });
+
+  it("YEARLY from a monthly owner changes nothing until it's paid; MONTHLY again never moves the charge date", async () => {
+    const h = make();
+    await h.business("ridge");
+    await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", paidOn: "2026-06-01" } });
+    expect(await h.sms("Yearly")).toBe("Great — the year it is. Jack will text you the payment link, and your year starts the day it's paid.");
+    expect(lastText(h, "ridge")).toMatchObject({ handled: "renew_year_pay_first", needs_person: 1 });
+    expect(plan(h, "ridge")).toMatchObject({ paidOn: "2026-06-01", stage: "paying" });
+    expect(plan(h, "ridge").billing).not.toBe("annual");
+    expect(await h.sms("monthly")).toBe("You're already month to month at $497 a month. Nothing else to do.");
+    expect(plan(h, "ridge").paidOn).toBe("2026-06-01");
+  });
+
+  it("RESUME after a year ran out says so and goes to a person; nothing sends while the plan is paused", { timeout: 60_000 }, async () => {
+    // 9:30am New York: the daily checks run, inside the send window
+    const h = make({ now: "2026-09-29T13:30:00Z" });
+    await h.business("ridge");
+    const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
+    await h.api("POST", "/api/businesses/ridge/imports", { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
+    await h.api("POST", "/api/businesses/ridge/plan", { approve: true });
+    await yearly(h, "ridge", "2025-09-29");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-renewal", at: "2026-09-01T09:00:00", kind: "renewal", text: "Your year with us ends Sep 29.", refs: [{ kind: "year_end", id: "2026-09-29" }] });
+    });
+    // the 9am checks: the year ran out with no yes
+    await tick(h.d);
+    expect(plan(h, "ridge").stage).toBe("paused");
+    expect(h.d.accounts.peek("ridge")!.paused).toBe(true);
+    await h.d.accounts.withAccount("ridge", (s) => {
+      // one note due now (the free round's OK was given long ago)
+      s.awaitingOwnerOk = undefined;
+      const t = s.touches.find((x) => x.status === "approved" && x.step === 1)!;
+      t.dueAt = "2026-09-29T09:00";
+    });
+    const sentBefore = state(h, "ridge").touches.filter((t) => t.status === "sent").length;
+    expect(await h.sms("RESUME")).toBe("Your year ended, so everything's still paused. Text MONTHLY to pick back up at $497 a month, or RENEW for another year. Jack will read this too.");
+    expect(lastText(h, "ridge")).toMatchObject({ handled: "resume_plan_paused", needs_person: 1 });
+    expect(h.d.accounts.peek("ridge")!.paused).toBe(true);
+    // even with the pause flag cleared by hand, the direct sender honors the plan's own pause
+    await h.api("POST", "/api/businesses/ridge/pause", { paused: false });
+    expect((await sendDue(h.d, "ridge")).sent).toBe(0);
+    expect(state(h, "ridge").touches.filter((t) => t.status === "sent").length).toBe(sentBefore);
+    // RENEW after the year ran out waits for the payment; MONTHLY picks back up now
+    expect(await h.sms("renew")).toContain("Everything stays paused until then.");
+    expect(plan(h, "ridge").stage).toBe("paused");
+    await h.api("POST", "/api/businesses/ridge/pause", { paused: true });
+    expect(await h.sms("monthly")).toBe("Done — month to month from September 29, $497 a month, cancel by text any time.");
+    expect(plan(h, "ridge")).toMatchObject({ stage: "paying", billing: "monthly", paidOn: "2026-09-29" });
+    expect(h.d.accounts.peek("ridge")!.paused).toBe(false);
+    expect((await sendDue(h.d, "ridge")).sent).toBeGreaterThan(0);
   });
 });
 

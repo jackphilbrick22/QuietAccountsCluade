@@ -613,10 +613,10 @@ describe("Ledger and Reporter", () => {
     });
     it("RENEW adds a year from the year's end; MONTHLY goes month to month and keeps the fee history", () => {
       const s = yearly(fresh());
-      expect(renewPlan(s, "year", "2027-09-10T09:00:00")).toContain("another year from October 1");
+      expect(renewPlan(s, "year", "2027-09-10T09:00:00").reply).toContain("another year from October 1");
       expect(s.dataset.business.plan.yearsPaidOn).toEqual(["2026-10-01", "2027-10-01"]);
       const m = yearly(fresh());
-      expect(renewPlan(m, "monthly", "2027-09-10T09:00:00")).toContain("month to month from October 1");
+      expect(renewPlan(m, "monthly", "2027-09-10T09:00:00").reply).toContain("month to month from October 1");
       expect(m.dataset.business.plan).toMatchObject({ billing: "monthly", paidOn: "2027-10-01", stage: "paying" });
       expect(feesPaid(m.dataset.business, "2027-10-15").total).toBe(4970 + 497);
     });

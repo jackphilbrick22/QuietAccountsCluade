@@ -31,6 +31,9 @@ import {
   undoCancel,
   htmlToText,
   quietRates,
+  addDays,
+  addMonths,
+  grossFees,
 } from "@qa/engine";
 import { z } from "zod";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
@@ -308,7 +311,19 @@ export function createApp(d: HttpDeps): Hono<Env> {
       if (rest.ownerName) b.ownerFirstName = rest.ownerName.split(/\s+/)[0] ?? b.ownerFirstName;
       if (voice) b.voice = { ...b.voice, ...voice };
       if (persistence) b.persistence = { ...b.persistence, ...persistence };
-      if (planPatch) b.plan = { ...b.plan, ...planPatch };
+      if (planPatch) {
+        const before = b.plan;
+        const next = { ...before, ...planPatch };
+        // A new arrangement from a later day (a monthly plan the owner paid a year for, a new year after one ran out,
+        // a year going monthly): what they paid before it stays in their fees. An earlier or same day is a correction.
+        const lastYear = [...(before.yearsPaidOn ?? []), ...(before.paidOn ? [before.paidOn] : [])].sort().pop();
+        const switched = (before.billing ?? "monthly") !== (next.billing ?? "monthly");
+        const newYear = before.billing === "annual" && next.billing === "annual" && !!lastYear && !!next.paidOn && next.paidOn >= addMonths(lastYear, 12);
+        if (before.paidOn && next.paidOn && next.paidOn > before.paidOn && (switched || newYear)) next.priorFees = grossFees(b, addDays(next.paidOn, -1)).total;
+        // a yearly plan's first paid day is one of its paid years, so its refunds, renewal ask and year floor all run
+        if (next.billing === "annual" && next.paidOn && !(next.yearsPaidOn ?? []).includes(next.paidOn)) next.yearsPaidOn = [...(next.yearsPaidOn ?? []), next.paidOn].sort();
+        b.plan = next;
+      }
     });
     // A stage of Paused or Cancelled really stops sending (and the platform's campaigns); back to trial/paying resumes.
     const stage = patch.plan?.stage;
