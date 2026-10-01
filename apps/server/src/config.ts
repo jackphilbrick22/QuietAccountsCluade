@@ -1,3 +1,4 @@
+import type { Features } from "@qa/engine";
 import { z } from "zod";
 
 /**
@@ -73,6 +74,12 @@ const schema = z.object({
   MAIL_CHECK: z.enum(["on", "off"]).default("on"),
   /** Owner-waiting threshold before the first nudge. */
   SLA_FIRST_NUDGE_HOURS: z.coerce.number().default(4),
+  /**
+   * What neither offer sells stays off unless switched on. NEW_REQUESTS: answering new requests (the always-on track,
+   * the requests+ address, the instant campaign). YEARLY: the yearly plan (its offer, RENEW, refunds, UNDO after CANCEL).
+   */
+  FEATURE_NEW_REQUESTS: z.enum(["off", "on"]).default("off"),
+  FEATURE_YEARLY: z.enum(["off", "on"]).default("off"),
 });
 
 export type Config = z.infer<typeof schema>;
@@ -99,4 +106,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
 export function isProductionLike(c: Config): boolean {
   return !c.OPERATOR_TOKEN.startsWith("dev-") && !c.APP_SECRET.startsWith("dev-") && !c.WEBHOOK_SECRET.startsWith("dev-");
+}
+
+/** The FEATURE_* settings, as the engine takes them. */
+export function features(c: Config): Features {
+  return { newRequests: c.FEATURE_NEW_REQUESTS === "on", yearly: c.FEATURE_YEARLY === "on" };
 }

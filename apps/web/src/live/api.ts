@@ -7,6 +7,7 @@ import type {
   AgentEvent,
   BusinessProfile,
   DrawerSummary,
+  Features,
   GuaranteeCheck,
   LiftReport,
   QuietRates,
@@ -106,6 +107,8 @@ export interface Overview {
   waitingOnOwner?: { id: string; name: string; intent: ReplyIntent; receivedAt: string; text: string }[];
   recoveredValue?: number;
   events?: AgentEvent[];
+  /** What the server sells beyond the two offers (FEATURE_NEW_REQUESTS, FEATURE_YEARLY). */
+  features?: Features;
 }
 
 export interface OppPage {
@@ -134,8 +137,8 @@ export interface Links {
   connectJobber: string;
   importToken: string;
   importAddress?: string;
-  requestsToken: string;
-  /** Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email). */
+  /** Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email): only where answering them is sold. */
+  requestsToken?: string;
   requestsAddress?: string;
 }
 
@@ -158,10 +161,6 @@ export interface FileRow {
   accepted: number;
   rejected: number;
   warnings: string[];
-}
-
-export interface Integrations {
-  jobber: { available: boolean; connected: boolean; status: string; lastSyncAt: string | null; lastError: string | null };
 }
 
 export interface ImportResult {

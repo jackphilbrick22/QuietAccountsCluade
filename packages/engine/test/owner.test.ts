@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { scan } from "../src/breakage/detect.ts";
-import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, guaranteeCheck, handoffText, yearFloor } from "../src/reports/owner.ts";
-import { billingCheck, cancelPlan, markContacted, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
+import { planOutreach } from "../src/cadence/plan.ts";
+import { ackFor, closeMessage, earlyLeaveRefund, feesPaid, guaranteeCheck, handoffText, totals, weeklyReport, yearFloor } from "../src/reports/owner.ts";
+import { billingCheck, cancelPlan, markContacted, markSent, planBatch, renewPlan, renewalIfDue, undoCancel } from "../src/runtime/agents.ts";
 import { counted } from "../src/ledger/attribution.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
+import { generateSample } from "../src/sample/generate.ts";
 import type { BreakageType, Recovery, Reply, ReplyIntent, Touch } from "../src/model.ts";
-import { ASOF, ago, customer, dataset, job, oneOpp, quote, request } from "./fixtures.ts";
+import { ASOF, ago, customer, dataset, job, NEW_REQUESTS, oneOpp, quote, request } from "./fixtures.ts";
 
 /**
  * The texts the owner acts on. They show the real record (date and amount) so the owner calls back with
@@ -97,6 +99,48 @@ describe("the close after the free round", () => {
     expect(text).toContain("put 7 jobs back on your calendar, $7,000: Person 1, Person 2, Person 3, Person 4 +3 more.");
     expect(closeMessage(round(12, 2, 3))).toContain(": Person 1, Person 2 and Person 3.");
   });
+  it("promises to follow every new quote only where new-request answering is sold", () => {
+    const text = closeMessage(round(5, 3, 1));
+    expect(text).toContain("more quiet quotes and past customers behind them.");
+    expect(text).toContain("$497 a month keeps it going on the rest of the list. Cancel by text, any time.");
+    expect(text).not.toMatch(/new quote/);
+    expect(closeMessage(round(5, 3, 1), NEW_REQUESTS)).toContain("keeps it going on the rest of the list and every new quote you write.");
+  });
+});
+
+describe("who's still to work, in the close and the Friday text", () => {
+  const START = "2026-10-05";
+  /** A lawn shop's free round: the 150 planned and their first notes sent. */
+  function lawnRound(): { st: AccountState; left: number } {
+    const st = emptyState(generateSample({ trade: "lawn", asOf: ASOF }).dataset, `${ASOF}T12:00:00Z`);
+    planBatch(st, `${ASOF}T12:00:00`, { startOn: START, limitPeople: 150 });
+    for (const t of st.touches) if (t.step === 1) markSent(st, t.id, `${t.dueAt}:00`);
+    const contacted = new Set(st.touches.filter((t) => t.status === "sent").map((t) => t.customerId));
+    // everyone a plan could still write to (anyone held for a look is still to work once cleared)
+    const left = planOutreach(st.dataset, st.scan!, { startOn: START, skipCustomers: contacted, applyHoldout: false, includeCaution: true }).people.length;
+    return { st, left };
+  }
+
+  it("counts only the people a plan could still write to: a lawn shop's old quotes aren't", () => {
+    const { st, left } = lawnRound();
+    expect(totals(st).contacted).toBe(150);
+    expect(totals(st).remaining).toBe(left);
+    // the scan's own first pick per person would count the old quotes and passed-on options the lawn offer never works
+    const everyone = st.scan!.primary.filter((o) => o.channels.includes("email") && !st.touches.some((t) => t.customerId === o.customerId)).length;
+    expect(everyone).toBeGreaterThan(left + 100);
+  }, 60_000);
+
+  it("the close and the Friday text give that count, as past customers, with no new quotes promised", () => {
+    const { st, left } = lawnRound();
+    const n = left.toLocaleString("en-US");
+    for (const f of [{}, NEW_REQUESTS]) {
+      const close = closeMessage(st, f);
+      expect(close).toContain(`There are ${n} more past customers behind them.`);
+      expect(close).toContain("$497 a month keeps it going on the rest of the list. Cancel by text, any time.");
+      expect(close).not.toMatch(/quotes?\b/);
+    }
+    expect(weeklyReport(st, START)).toContain(`${n} people still to work.`);
+  }, 60_000);
 });
 
 describe("the guarantee text", () => {
@@ -197,7 +241,7 @@ describe("cancel and undo put back exactly what they changed", () => {
       { id: "t2", opportunityId: "o2", customerId: "c2", channel: "email", step: 1, angle: "check_in", dueAt: "2026-10-01T09:00", status: "approved", body: "", flags: [], providerId: "lead-2" },
     ] as Touch[];
     st.awaitingOwnerOk = "2026-09-29T10:00:00";
-    cancelPlan(st, "2026-09-29T11:00:00", { paused: true });
+    cancelPlan(st, "2026-09-29T11:00:00", { paused: true, yearly: true });
     expect(st.awaitingOwnerOk).toBeUndefined();
     const r = undoCancel(st, "2026-09-29T15:00:00") as { restored: number; paused: boolean };
     expect(r).toEqual({ restored: 2, stopped: 0, paused: true });
@@ -209,11 +253,33 @@ describe("cancel and undo put back exactly what they changed", () => {
   it("never undoes a cancel that set up a yearly refund, and not after a day", () => {
     const st = account();
     st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2026-06-01", yearsPaidOn: ["2026-06-01"], freeMonths: [] };
-    cancelPlan(st, "2026-09-15T10:00:00");
+    cancelPlan(st, "2026-09-15T10:00:00", { yearly: true });
     expect(undoCancel(st, "2026-09-15T11:00:00")).toEqual({ refused: "refund" });
     const m = account();
-    cancelPlan(m, "2026-09-15T10:00:00");
+    cancelPlan(m, "2026-09-15T10:00:00", { yearly: true });
     expect(undoCancel(m, "2026-09-16T10:30:00")).toEqual({ refused: "late" });
+  });
+});
+
+describe("cancel without the yearly plan sold: one text, and final", () => {
+  it("stops everything and charges nothing more, with no UNDO kept, offered or honoured, and no year's refund promised", () => {
+    const st = account();
+    // even a plan that somehow reads as yearly: without the yearly plan, cancelling never settles or refunds a year
+    st.dataset.business.plan = { ...st.dataset.business.plan, stage: "paying", billing: "annual", paidOn: "2026-06-01", yearsPaidOn: ["2026-06-01", "2027-06-01"], freeMonths: [] };
+    st.touches = [{ id: "t1", opportunityId: "o1", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: "2026-10-01T09:00", status: "approved", body: "", flags: [] }] as Touch[];
+    st.awaitingOwnerOk = "2026-09-14T10:00:00";
+    const r = cancelPlan(st, "2026-09-15T10:00:00");
+    expect(r).toEqual({ stopped: 1, refund: 0, line: "" });
+    expect(st.dataset.business.plan.stage).toBe("cancelled");
+    expect(st.touches[0]!.status).toBe("cancelled");
+    expect(st.awaitingOwnerOk).toBeUndefined();
+    expect(st.cancelled).toBeUndefined();
+    expect(st.dataset.business.plan.yearRefunds).toBeUndefined();
+    expect(st.dataset.business.plan.yearsPaidOn).toEqual(["2026-06-01", "2027-06-01"]);
+    expect(st.ownerMessages).toEqual([]);
+    expect(JSON.stringify(st.events)).not.toMatch(/UNDO|refund|business days/);
+    expect(undoCancel(st, "2026-09-15T11:00:00")).toBeUndefined();
+    expect(st.dataset.business.plan.stage).toBe("cancelled");
   });
 });
 
@@ -233,7 +299,7 @@ describe("review 4: the paid year and a platform undo", () => {
     const st = account();
     const n = (id: string, opp: string, step: number, status: Touch["status"], customerId: string): Touch => ({ id, opportunityId: opp, customerId, channel: "email", step, angle: "check_in", dueAt: "2026-10-01T09:00", status, body: "", flags: [], providerId: `instantly:c:${id}` }) as Touch;
     st.touches = [n("a1", "oa", 1, "sent", "c1"), n("a2", "oa", 2, "approved", "c1"), n("b1", "ob", 1, "approved", "c2")];
-    cancelPlan(st, "2026-09-29T10:00:00");
+    cancelPlan(st, "2026-09-29T10:00:00", { yearly: true });
     const r = undoCancel(st, "2026-09-29T11:00:00", { platform: true }) as { restored: number; stopped: number };
     expect(r).toMatchObject({ restored: 1, stopped: 1 });
     expect(st.touches.map((t) => t.status)).toEqual(["sent", "cancelled", "approved"]);
@@ -353,7 +419,7 @@ describe("final review: RENEW, MONTHLY and CANCEL around the paid year", () => {
     // the running year's jobs covered it, so nothing of it comes back
     st.recoveries = [{ id: "rec1", customerId: "c1", record: { kind: "job", id: "j9" }, value: 6000, cameBackOn: "2027-03-10", match: "reply", confidence: 1, tier: "traced" } as unknown as Recovery];
     renewPlan(st, "year", "2027-09-03T10:00:00");
-    const r = cancelPlan(st, "2027-09-20T10:00:00");
+    const r = cancelPlan(st, "2027-09-20T10:00:00", { yearly: true });
     // nothing says the renewed year's payment link was ever paid
     expect(r.refund).toBe(0);
     expect(r.line).toBe("If you'd already paid for the year you renewed from October 1, Jack will refund all of it.");
@@ -373,7 +439,7 @@ describe("final review: RENEW, MONTHLY and CANCEL around the paid year", () => {
   it("with nothing traced, only the running year's refund is promised; the renewed year is Jack's call", () => {
     const st = annual();
     renewPlan(st, "year", "2027-09-03T10:00:00");
-    const r = cancelPlan(st, "2027-09-20T10:00:00");
+    const r = cancelPlan(st, "2027-09-20T10:00:00", { yearly: true });
     expect(r.refund).toBe(4970);
     expect(r.line).toBe("$4,970.00 of your year comes back to your card within 5 business days. If you'd already paid for the year you renewed from October 1, Jack will refund all of it.");
     const refunds = st.ownerMessages.filter((m) => m.kind === "refund");

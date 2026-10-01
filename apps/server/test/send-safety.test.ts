@@ -219,7 +219,8 @@ describe("what a sync or a blocked mailbox changes", () => {
     await d.accounts.withAccount("seven", (s) => {
       const c = { ...person("kay.lee@gmail.com"), phones: ["+16035550142"] };
       s.dataset = { ...s.dataset, customers: [c], requests: [{ id: "r1", customerId: c.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-30", createdAt: "2026-09-30T13:55:00Z" }] };
-      expect(answerNewRequests(s, "2026-09-30T10:00:00")).toBe(1);
+      // a server that sells new-request answering
+      expect(answerNewRequests(s, "2026-09-30T10:00:00", { features: { newRequests: true } })).toBe(1);
     });
     const answer = () => st("seven").touches.find((t) => t.track === "new_request")!;
     expect(answer().body).toMatch(/call today/);

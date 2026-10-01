@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { answerNewRequests, weeklyReport, type BusinessProfile, type Customer, type Touch } from "@qa/engine";
-import { loadConfig } from "../src/config.ts";
+import { features, loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
 import { Accounts } from "../src/core/accounts.ts";
@@ -69,7 +69,7 @@ const touch = (pred: (t: Touch) => boolean) => state().touches.find(pred)!;
 const webhook = (body: unknown) => app.request(`/webhooks/instantly/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 
 beforeAll(async () => {
-  const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: "test-operator-token-321", APP_SECRET: "test-app-secret-0123456789", WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false" });
+  const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: "test-operator-token-321", APP_SECRET: "test-app-secret-0123456789", WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false", FEATURE_NEW_REQUESTS: "on" });
   const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: [MAILBOX] });
   d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email, notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: { instantly: (b) => parseInstantlyWebhook(b, now) } };
   app = createApp(d);
@@ -84,7 +84,7 @@ beforeAll(async () => {
     for (const step of [1, 2])
       s.touches.push({ id: `t_kim_${step}`, opportunityId: "opp_kim", customerId: "c2", channel: "email", step, angle: "check_in", dueAt: step === 1 ? "2026-09-30T09:15" : "2026-10-04T09:15", status: "approved", subject: step === 1 ? "the maples" : "", body: `Note ${step} to Kim about the maples.`, flags: [] });
     // Pat's request came in at 10:30pm
-    answerNewRequests(s, "2026-09-29T22:40:00");
+    answerNewRequests(s, "2026-09-29T22:40:00", { features: features(cfg) });
   });
 });
 afterAll(() => {

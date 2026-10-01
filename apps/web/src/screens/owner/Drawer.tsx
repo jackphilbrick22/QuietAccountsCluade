@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import { Check, X } from "lucide-react";
 import { BREAKAGE_LABEL, fmtMoney, plural, type BreakageType, type SuppressionReason } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { derive } from "../../lib/derive";
@@ -82,8 +81,6 @@ export function Drawer() {
       <Kpis>
         <Kpi label="Total found" value={fmtMoney(s.totalValue, { compact: true })} sub={plural(s.opportunities, "opportunity", "opportunities")} />
         <Kpi label="Reachable" value={fmtMoney(s.reachableValue, { compact: true })} sub="people we can legally reach" />
-        <Kpi label="Careful estimate" value={fmtMoney(s.expected.conservative, { compact: true })} tone="ok" sub="likely to come back, low end" />
-        <Kpi label="Likely estimate" value={fmtMoney(s.expected.likely, { compact: true })} tone="ok" sub="what we expect back" />
         <Kpi label="People" value={s.reachablePeople.toLocaleString("en-US")} sub="reachable, one sequence each" />
       </Kpis>
 
@@ -96,7 +93,6 @@ export function Drawer() {
                 <Th right>Found</Th>
                 <Th right>Reachable</Th>
                 <Th right>Value</Th>
-                <Th right>Expected</Th>
               </tr>
             </thead>
             <tbody>
@@ -112,7 +108,6 @@ export function Drawer() {
                 <Td right>{s.opportunities.toLocaleString("en-US")}</Td>
                 <Td right>{s.byType.reduce((n, t) => n + t.reachable, 0).toLocaleString("en-US")}</Td>
                 <Td right>{fmtMoney(s.totalValue)}</Td>
-                <Td right>{fmtMoney(s.expected.likely)}</Td>
               </Tr>
               {s.byType.map((t) => (
                 <Tr
@@ -133,7 +128,6 @@ export function Drawer() {
                   <Td right>{t.count.toLocaleString("en-US")}</Td>
                   <Td right>{t.reachable.toLocaleString("en-US")}</Td>
                   <Td right>{fmtMoney(t.value)}</Td>
-                  <Td right>{fmtMoney(t.expected)}</Td>
                 </Tr>
               ))}
             </tbody>
@@ -141,24 +135,6 @@ export function Drawer() {
         </Section>
 
         <div className="flex min-w-0 flex-col gap-4">
-          <Box className="flex flex-col gap-2 p-4">
-            <span className="flex items-center justify-between gap-2">
-              <span className="text-[14px] font-bold">Is this a fit?</span>
-              <Pill tone={s.fit.verdict === "strong" || s.fit.verdict === "good" ? "ok" : s.fit.verdict === "thin" ? "warn" : "bad"}>{s.fit.guaranteeEligible ? "Guarantee eligible" : "Not guarantee eligible"}</Pill>
-            </span>
-            <p className="text-[13px] text-ink-2">{s.fit.headline}</p>
-            <ul className="flex flex-col gap-1.5">
-              {s.fit.checks.map((c) => (
-                <li key={c.id} className="flex gap-2 text-[12.5px]">
-                  {c.ok ? <Check size={15} className="mt-0.5 shrink-0 text-ok" aria-label="Yes" /> : <X size={15} className="mt-0.5 shrink-0 text-bad" aria-label="No" />}
-                  <span className="min-w-0">
-                    <b className="font-semibold">{c.label}.</b> <span className="text-ink-3">{c.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </Box>
-
           <details className="group rounded-lg border border-line bg-surface">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-[14px] font-bold">
               <span>People we're leaving alone on purpose</span>

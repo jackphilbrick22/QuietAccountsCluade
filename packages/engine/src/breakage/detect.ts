@@ -3,6 +3,7 @@ import type {
   Channel,
   Customer,
   Dataset,
+  Features,
   ISODate,
   Invoice,
   Job,
@@ -30,7 +31,7 @@ import {
   spokenWhen,
   yearOf,
 } from "../util.ts";
-import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, CALL_OVER_AMOUNT, RECOVERY_PRIOR, TYPE_RANK, WINDOW } from "./assumptions.ts";
+import { alwaysOnFor, ALWAYS_ON_MIN_DAYS, ADJUST, AGE_DECAY, CALL_OVER_AMOUNT, RECOVERY_PRIOR, TYPE_RANK, WINDOW, worksLeak } from "./assumptions.ts";
 import { quoteById } from "../lookup.ts";
 
 /** What we already know about outreach, from our own records. */
@@ -123,7 +124,7 @@ export function averageJob(ds: Dataset): number {
   return playbook(ds.business.trade).ticket.typical;
 }
 
-export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
+export function scan(ds: Dataset, contact: ContactState = {}, features: Features = {}): ScanResult {
   const trades: TradeId[] = [ds.business.trade, ...ds.business.otherTrades];
   const ctx: Ctx = {
     ds,
@@ -139,7 +140,7 @@ export function scan(ds: Dataset, contact: ContactState = {}): ScanResult {
     contact,
     avgJob: averageJob(ds),
     caution: { medianByService: new Map(), typicalJob: 0, callOver: 0 },
-    alwaysOn: alwaysOnFor(ds.business),
+    alwaysOn: alwaysOnFor(ds.business, features),
   };
   ctx.caution = {
     medianByService: medianByService(ds.quotes, (q) => classifyService(q.title, q.lineItems, trades).service.id),
@@ -698,7 +699,8 @@ function score(ctx: Ctx, o: Opportunity): void {
   o.score = Math.round(clamp(ev * 45 + warmth * 25 + fresh * 15 + season * 15, 0, 100));
 }
 
-function pickPrimary(all: Opportunity[]): Opportunity[] {
+/** Each reachable person's first opportunity to work: the earliest type in TYPE_RANK, then the best score. */
+export function pickPrimary(all: Opportunity[]): Opportunity[] {
   const best = new Map<string, Opportunity>();
   for (const o of all) {
     if (o.suppressed || o.type === "unpaid_invoice") continue;
@@ -706,4 +708,13 @@ function pickPrimary(all: Opportunity[]): Opportunity[] {
     if (!prev || TYPE_RANK[o.type] < TYPE_RANK[prev.type] || (TYPE_RANK[o.type] === TYPE_RANK[prev.type] && o.score > prev.score)) best.set(o.customerId, o);
   }
   return [...best.values()].sort((a, b) => b.score - a.score);
+}
+
+/**
+ * Each person on the first leak their trade's offer works (worksLeak), for every plan and both offers: someone whose
+ * first leak is one it doesn't (a passed-on option, an unpaid invoice) is on the next one that it does. What any plan
+ * picks from, and so what an owner is told is still to work.
+ */
+export function pickWorked(trade: TradeId, all: Opportunity[]): Opportunity[] {
+  return pickPrimary(all.filter((o) => worksLeak(trade, o)));
 }

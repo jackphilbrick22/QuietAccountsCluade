@@ -1,7 +1,8 @@
-import type { BusinessProfile, ISODate, Money, Opportunity, Recovery, Reply } from "../model.ts";
+import type { BusinessProfile, Features, ISODate, Money, Opportunity, Recovery, Reply } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
-import { CALL_OVER_AMOUNT, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { pickWorked } from "../breakage/detect.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
 import { counted } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
@@ -224,7 +225,7 @@ export interface WeekNumbers {
   bookedValue: Money;
   waiting: string[];
   avgHoursToCall?: number;
-  /** Every Month After: new requests answered this week, and how fast (median minutes from reaching us to the answer going out). */
+  /** New requests answered this week, and how fast (median minutes from reaching us to the answer going out). */
   requestsAnswered: number;
   answerMinutes?: number;
   /** New quotes followed up this week (the fresh-quote track). */
@@ -350,7 +351,8 @@ export function lossReasons(state: AccountState): { reason: string; count: numbe
 
 export function totals(state: AccountState): { booked: number; bookedValue: Money; afterNote: number; afterNoteValue: Money; contacted: number; replied: number; wants: number; remaining: number } {
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
-  const workable = new Set((state.scan?.primary ?? []).filter((o) => o.channels.includes("email")).map((o) => o.customerId));
+  // still to work: who a plan could write to, the same pick as every plan (only the leaks the trade's offer works)
+  const workable = new Set(pickWorked(state.dataset.business.trade, state.scan?.opportunities ?? []).filter((o) => o.channels.includes("email")).map((o) => o.customerId));
   for (const id of contacted) workable.delete(id);
   for (const o of state.outreach) if (o.holdout) workable.delete(o.customerId);
   return {
@@ -367,10 +369,13 @@ export function totals(state: AccountState): { booked: number; bookedValue: Mone
 
 /**
  * The close, sent a week after the free round's last note.
- * Leads with what came back (names), counts second, then the offer and the guarantee.
+ * Leads with what came back (names), counts second, then the offer and the guarantee. The year is offered only
+ * where the server sells it, and new quotes are followed only where it sells new-request answering and the trade's
+ * offer works quotes (the monthly trades work past customers only).
  */
-export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string } = {}): string {
+export function closeMessage(state: AccountState, opts: { payLink?: string; signature?: string; sayYesBy?: string } & Features = {}): string {
   const b = state.dataset.business;
+  const quotes = !soldMonthly(b.trade);
   const t = totals(state);
   const names = counted(state.recoveries)
     .map((r) => state.dataset.customers.find((c) => c.id === r.customerId)?.name)
@@ -388,10 +393,10 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
   const lines = [
     lead,
     `From ${notes} ${notes === 1 ? "note" : "notes"} to ${t.contacted} ${t.contacted === 1 ? "person" : "people"}, ${t.replied} wrote back and ${t.wants} asked for a price or a date.`,
-    t.remaining ? `There are ${t.remaining.toLocaleString("en-US")} more quiet quotes and past customers behind them.` : "",
-    `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list and every new quote you write. Cancel by text, any time.`,
+    t.remaining ? `There are ${t.remaining.toLocaleString("en-US")} more ${quotes ? "quiet quotes and past customers" : "past customers"} behind them.` : "",
+    `${fmtMoney(b.plan.monthlyPrice)} a month keeps it going on the rest of the list${opts.newRequests && quotes ? " and every new quote you write" : ""}. Cancel by text, any time.`,
     `And the guarantee: any month nobody asks for a price or a date, you don't pay.`,
-    offerYear(state, t.bookedValue)
+    opts.yearly && offerYear(state, t.bookedValue)
       ? `Or pay for the year: ${fmtMoney(annualPrice(b))}, twelve months for the price of ten. If the jobs we trace to our notes don't add up to what you paid, we refund the difference. A quiet month still comes back to you (${fmtMoney(annualRefund(b), { cents: true })}), your price is locked, and nothing renews without your yes.`
       : "",
     opts.sayYesBy ? `Say yes by ${opts.sayYesBy} and the next batch goes out next week.` : "",
@@ -402,15 +407,11 @@ export function closeMessage(state: AccountState, opts: { payLink?: string; sign
 }
 
 /**
- * The yearly plan is offered only when it's an easy yes on the owner's own numbers: the free round alone
- * brought back more than a year costs, or the careful year-one estimate is at least five times it.
+ * The yearly plan is offered only when it's an easy yes on the owner's own numbers: the free round alone brought
+ * back more than a year costs. The year promises to pay for itself, so it's offered only where that's already true.
  */
 export function offerYear(state: AccountState, bookedValue: Money): boolean {
-  const b = state.dataset.business;
-  const year = annualPrice(b);
-  // The year promises to pay for itself, so it's only offered where that's already near certain.
-  if (state.summary && state.summary.fit.tier === "audit_only" && bookedValue < year) return false;
-  return bookedValue >= year || (state.summary?.yearOne.conservative ?? 0) >= year * 5;
+  return bookedValue >= annualPrice(state.dataset.business);
 }
 
 /**

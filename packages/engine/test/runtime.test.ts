@@ -25,7 +25,7 @@ import {
 } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { dropSettled } from "../src/runtime/settled.ts";
-import { feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
+import { closeMessage, feesPaid, leadCode, lossReasons, offerYear } from "../src/reports/owner.ts";
 import { quietRates } from "../src/breakage/quiet.ts";
 import { summarize } from "../src/breakage/forecast.ts";
 import { scan } from "../src/breakage/detect.ts";
@@ -34,7 +34,7 @@ import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { Plan } from "../src/cadence/plan.ts";
 import type { Touch } from "../src/model.ts";
 import { addDays, mondayOf, weekday } from "../src/util.ts";
-import { ago, ASOF, customer, dataset, job, quote, request } from "./fixtures.ts";
+import { ago, ASOF, customer, dataset, job, NEW_REQUESTS, quote, request } from "./fixtures.ts";
 
 const NOW = `${ASOF}T12:00:00Z`;
 const START = "2026-10-06"; // Tuesday; the sample sends Tue-Thu, 7-10am
@@ -641,13 +641,19 @@ describe("Ledger and Reporter", () => {
       expect(floorMsg.text).toContain("$7,200 in jobs traced to our notes, against $4,970 you paid");
       expect(s.dataset.business.plan.yearRefunds ?? []).toEqual([]);
     });
-    it("the close offers the year only when the owner's own numbers make it an easy yes", () => {
+    it("the close offers the year only when the free round already brought back what a year costs, never on a forecast", () => {
       const s = fresh();
-      s.summary = { ...s.summary!, yearOne: { conservative: 12000, likely: 20000, strong: 30000 } };
       expect(offerYear(s, 3000)).toBe(false);
+      expect(offerYear(s, 4969)).toBe(false);
       expect(offerYear(s, 5200)).toBe(true);
-      s.summary = { ...s.summary!, yearOne: { conservative: 30000, likely: 50000, strong: 70000 } };
-      expect(offerYear(s, 0)).toBe(true);
+    });
+    it("the close offers the year only where the server sells it", () => {
+      const s = fresh();
+      for (const t of s.touches) markSent(s, t.id, `${t.dueAt}:00`, `msg-${t.id}`);
+      const c = s.dataset.customers[0]!;
+      s.recoveries.push({ id: "big", customerId: c.id, record: { kind: "job", id: "j-big" }, value: 7200, cameBackOn: ASOF, match: "customer_id", confidence: 0.9, tier: "traced" });
+      expect(closeMessage(s)).not.toMatch(/year|twelve months/i);
+      expect(closeMessage(s, { yearly: true })).toMatch(/Or pay for the year: \$4,970, twelve months for the price of ten/);
     });
   });
 
@@ -886,15 +892,15 @@ describe("always-on: someone whose request we answered is still followed up", ()
   /** Mike's request came in Tuesday and our answer went at once. */
   const answered = (over: { quotes?: ReturnType<typeof quote>[]; sent?: boolean } = {}) => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: over.quotes ?? [], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
-    expect(answerNewRequests(st, `${ASOF}T10:00:00`)).toBe(1);
+    expect(answerNewRequests(st, `${ASOF}T10:00:00`, { features: NEW_REQUESTS })).toBe(1);
     const a = st.touches.find((t) => t.track === "new_request")!;
     if (over.sent !== false) markSent(st, a.id, `${ASOF}T10:02:00`, "msg-answer");
     return st;
   };
   const planOn = (st: AccountState, day: string) => {
     st.dataset.asOf = day;
-    find(st, `${day}T03:00:00`);
-    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true });
+    find(st, `${day}T03:00:00`, NEW_REQUESTS);
+    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true, features: NEW_REQUESTS });
   };
 
   it("the quote Dave sent after our answer gets its fresh-quote follow-up", () => {
@@ -941,8 +947,8 @@ describe("always-on: someone whose request we answered is still followed up", ()
 describe("always-on: a newer quote that stops a follow-up gets followed up itself", () => {
   const planOn = (st: AccountState, day: string) => {
     st.dataset.asOf = day;
-    find(st, `${day}T03:00:00`);
-    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true });
+    find(st, `${day}T03:00:00`, NEW_REQUESTS);
+    return planBatch(st, `${day}T03:00:00`, { startOn: day, approve: true, features: NEW_REQUESTS });
   };
   const sendFirst = (st: AccountState) => {
     const n1 = touchesOf(st, "c1").find((t) => t.step === 1 && !t.instant && t.status === "approved")!;
@@ -952,7 +958,7 @@ describe("always-on: a newer quote that stops a follow-up gets followed up itsel
 
   it("the request's follow-up, stopped by the quote it asked for: that quote is chased instead, once", () => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
-    answerNewRequests(st, `${ASOF}T10:00:00`);
+    answerNewRequests(st, `${ASOF}T10:00:00`, { features: NEW_REQUESTS });
     markSent(st, st.touches[0]!.id, `${ASOF}T10:02:00`, "msg-answer");
     // the nightly two days on starts the request's follow-up, and its note 1 goes that morning
     expect(planOn(st, "2026-10-01").people).toEqual(["c1"]);
@@ -974,7 +980,7 @@ describe("always-on: a newer quote that stops a follow-up gets followed up itsel
 
   it("a quote dated before the request's follow-up was planned (the sheet came in later) is still the one chased", () => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
-    answerNewRequests(st, `${ASOF}T10:00:00`);
+    answerNewRequests(st, `${ASOF}T10:00:00`, { features: NEW_REQUESTS });
     markSent(st, st.touches[0]!.id, `${ASOF}T10:02:00`, "msg-answer");
     expect(planOn(st, "2026-10-01").people).toEqual(["c1"]);
     sendFirst(st);
@@ -1022,7 +1028,7 @@ describe("always-on: a newer quote that stops a follow-up gets followed up itsel
 describe("an answer to a new request held up by the mailbox", () => {
   const queued = () => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1", { phones: ["+16035550142"] })], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
-    answerNewRequests(st, `${ASOF}T10:00:00`); // Tuesday 10am: "Dave will give you a call today"
+    answerNewRequests(st, `${ASOF}T10:00:00`, { features: NEW_REQUESTS }); // Tuesday 10am: "Dave will give you a call today"
     const t = st.touches.find((x) => x.track === "new_request")!;
     expect(t.body).toMatch(/call today/);
     return { st, t };
@@ -1055,7 +1061,7 @@ describe("an answer to a new request held up by the mailbox", () => {
 
   it("an answer waiting for 7am is never dropped early", () => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { createdOn: ASOF, createdAt: `${ASOF}T21:30:00Z` })] }), NOW);
-    answerNewRequests(st, `${ASOF}T22:40:00`);
+    answerNewRequests(st, `${ASOF}T22:40:00`, { features: NEW_REQUESTS });
     expect(dropStaleAnswers(st, `${ASOF}T23:00:00`)).toEqual([]);
     expect(dueTouches(st, "2026-09-30T07:00").due).toHaveLength(1);
   });

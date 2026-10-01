@@ -109,10 +109,11 @@ describe("end to end", () => {
     const files = r.json.files as { kind: string; accepted: number; source: string }[];
     expect(files.map((f) => f.kind)).toEqual(["quote", "client", "job", "invoice", "request"]);
     expect(files[0]!.source).toBe("jobber");
-    const ov = r.json.overview as { summary: { totalValue: number; reachablePeople: number; fit: { verdict: string } } };
+    const ov = r.json.overview as { summary: Record<string, unknown> & { totalValue: number; reachablePeople: number } };
     expect(ov.summary.totalValue).toBeGreaterThan(1_000_000);
     expect(ov.summary.reachablePeople).toBeGreaterThan(1000);
-    expect(["strong", "good"]).toContain(ov.summary.fit.verdict);
+    // their own numbers only: no forecast and no fit tier reach the console
+    for (const k of ["fit", "expected", "yearOne", "liftPct"]) expect(ov.summary).not.toHaveProperty(k);
     const opps = await api("GET", `/api/businesses/${bid}/opportunities?status=reachable&per=10`);
     expect((opps.json.items as unknown[]).length).toBe(10);
   });
@@ -161,6 +162,7 @@ describe("end to end", () => {
 
   it("reads a homeowner's yes and texts the owner right away", async () => {
     const target = d.email.sent[0]!;
+    const sentBefore = d.email.sent.length;
     const res = await app.request(`/webhooks/inbound-email/${WH}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -172,12 +174,9 @@ describe("end to end", () => {
     expect(text).toMatch(/Wants it done/);
     expect(text).toMatch(/\(603\) 555-0142/);
     expect(text).toMatch(/#[A-Z0-9]{3}/);
-    // they got an instant answer in their thread (Saturday, so the promise is Monday, not "today")
-    const ack = d.email.sent.at(-1)!;
-    expect(ack.to).toBe(target.to);
-    expect(ack.subject).toMatch(/^Re: /);
-    expect(ack.text).toMatch(/Dave, who'll give you a call at \(603\) 555-0142 on Monday/);
-    expect(text).toContain("We already wrote back that you'll call them on Monday.");
+    // a person reads every reply: no instant answer goes out on the owner's behalf, and the text promises none
+    expect(d.email.sent.length).toBe(sentBefore);
+    expect(text).not.toMatch(/wrote back that/);
     // the same webhook again is ignored (idempotent)
     const dup = await app.request(`/webhooks/inbound-email/${WH}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ MessageID: "m-yes-1", From: target.to, Subject: "x", TextBody: "Yes" }) });
     expect(((await dup.json()) as { duplicate?: boolean }).duplicate).toBe(true);

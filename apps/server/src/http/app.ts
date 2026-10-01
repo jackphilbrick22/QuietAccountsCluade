@@ -23,6 +23,7 @@ import {
   normalizePhone,
   type AccountState,
   type BusinessProfile,
+  type Features,
   type FileIn,
   type Reply,
   type TradeId,
@@ -31,6 +32,7 @@ import {
   undoCancel,
   htmlToText,
   quietRates,
+  OFFERED_TRADES,
   addDays,
   addMonths,
   annualRefund,
@@ -38,6 +40,7 @@ import {
   round2,
 } from "@qa/engine";
 import { z } from "zod";
+import { features } from "../config.ts";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
 import type { InboundEvent } from "../contracts.ts";
 import { encrypt } from "../core/crypto.ts";
@@ -171,16 +174,19 @@ function defaultProfile(input: z.infer<typeof CreateBusiness>, id: string, today
     maxQuoteAgeMonths: 36,
     weeklyNewContacts: 75,
     openCrewWeeks: [],
+    // a person reads every reply: no instant answer on the owner's behalf
+    autoAck: false,
     voice: { mentionPrice: false, offerOptions: true, wordSwaps: [] },
-    persistence: { seasonalCheckIn: true, maxNotesPerYear: 5, holdoutPct: 0.1 },
+    // everyone on the list gets the notes: no comparison group held back
+    persistence: { seasonalCheckIn: true, maxNotesPerYear: 5, holdoutPct: 0 },
     channels: { email: "live", call_task: "ready", postcard: "coming_soon", sms: "coming_soon", voicemail: "coming_soon", retarget: "coming_soon" },
     plan: { stage: "trial", trialSize: 150, monthlyPrice: 497, freeMonths: [] },
     createdOn: today,
   };
 }
 
-/** Compact business overview for dashboards (never the whole dataset). */
-export function overview(state: AccountState, paused: boolean) {
+/** Compact business overview for dashboards (never the whole dataset). `features`: what this server sells beyond the two offers. */
+export function overview(state: AccountState, paused: boolean, features: Features) {
   const b = state.dataset.business;
   const t = totals(state);
   const hot = state.replies.filter((r) => (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt);
@@ -209,6 +215,7 @@ export function overview(state: AccountState, paused: boolean) {
     waitingOnOwner: hot.map((r) => ({ id: r.id, name: state.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from, intent: r.intent, receivedAt: r.receivedAt, text: r.text.slice(0, 280) })),
     recoveredValue: t.bookedValue,
     events: state.events.slice(-40).reverse(),
+    features,
   };
 }
 
@@ -271,7 +278,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     c.json(
       repo.listBusinesses().map((b) => {
         const l = d.accounts.peek(b.id);
-        return l ? overview(l.state, l.paused) : { business: b.profile, paused: b.paused };
+        return l ? overview(l.state, l.paused, features(d.cfg)) : { business: b.profile, paused: b.paused };
       }),
     ),
   );
@@ -292,11 +299,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.get("/businesses/:id", (c) => {
     const l = d.accounts.peek(c.req.param("id"));
     if (!l) throw new NotFound("No such business");
-    return c.json(overview(l.state, l.paused));
+    return c.json(overview(l.state, l.paused, features(d.cfg)));
   });
 
   op.patch("/businesses/:id", async (c) => {
     const patch = ProfilePatch.parse(await c.req.json());
+    // the yearly plan is only set up where it's sold
+    const p = patch.plan;
+    if (!features(d.cfg).yearly && p && (p.billing === "annual" || p.annualPrice !== undefined || p.yearsPaidOn?.length)) return c.json({ error: "The yearly plan isn't sold here (FEATURE_YEARLY is off). Bill them monthly." }, 400);
     if (patch.ownerPhone !== undefined) {
       const cell = ownerCell(patch.ownerPhone);
       if (cell === null) return badCell(c);
@@ -386,7 +396,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.post("/businesses/:id/imports", async (c) => {
     const { files } = Files.parse(await c.req.json());
     const res = await importFiles(d, c.req.param("id"), files as FileIn[]);
-    return c.json({ files: res, overview: overview(d.accounts.peek(c.req.param("id"))!.state, false) });
+    return c.json({ files: res, overview: overview(d.accounts.peek(c.req.param("id"))!.state, false, features(d.cfg)) });
   });
 
   op.post("/businesses/:id/scan", async (c) => {
@@ -636,7 +646,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   op.get("/businesses/:id/close-preview", (c) => {
     const l = d.accounts.peek(c.req.param("id"));
     if (!l) throw new NotFound("No such business");
-    return c.json({ text: closeMessage(l.state) });
+    return c.json({ text: closeMessage(l.state, features(d.cfg)) });
   });
 
   op.post("/businesses/:id/sync", async (c) => c.json((await syncFsm(d, c.req.param("id"), "jobber")) ?? { error: "Not connected" }));
@@ -647,9 +657,9 @@ export function createApp(d: HttpDeps): Hono<Env> {
     connectJobber: connectJobberLink(d, id),
     importToken: linkToken(d, "import", id),
     importAddress: at("import", id),
-    requestsToken: linkToken(d, "requests", id),
-    /** Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email). */
-    requestsAddress: at("requests", id),
+    // Where the owner forwards new requests (website form, Angi, Thumbtack, a homeowner's email): only where answering
+    // them is sold.
+    ...(features(d.cfg).newRequests ? { requestsToken: linkToken(d, "requests", id), requestsAddress: at("requests", id) } : {}),
   });
   op.get("/businesses/:id/links", (c) => {
     if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
@@ -810,7 +820,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   own.get("/:token/overview", (c) => {
     const l = d.accounts.peek(c.get("bid")!);
     if (!l) throw new NotFound("No such business");
-    return c.json(overview(l.state, l.paused));
+    return c.json(overview(l.state, l.paused, features(d.cfg)));
   });
   own.get("/:token/replies", (c) => {
     const l = d.accounts.peek(c.get("bid")!);
@@ -877,7 +887,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
 
   /* ------------------------ sign-up from the site ------------------------ */
   // The site's Start button: the owner's own file (read in their browser first), company, first name, cell and
-  // consent. We make the account, read the file and put it in the operator's queue with the Money Map ready.
+  // consent. We make the account, read the file and put it in the operator's queue with their list ready.
   // Nothing goes to anyone from here: the operator adds the mailing address, looks at the first note and plans,
   // and only then does the owner get a text (the first note, word for word, waiting for their OK).
   const origins = d.cfg.SIGNUP_ORIGINS.split(",").map((x) => x.trim()).filter(Boolean);
@@ -953,7 +963,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
       return c.json({ error: "We're taking a lot of sign-ups right now. Text Jack instead." }, 429);
     }
     signupsTaken.push(now);
-    const trade = (TRADES as readonly string[]).includes(f.trade ?? "") ? (f.trade as TradeId) : "general";
+    // only a trade the offers sell; anything else is read from their file
+    const trade = OFFERED_TRADES.includes(f.trade as TradeId) ? (f.trade as TradeId) : "general";
     const software: SourceSystem = /jobber/i.test(f.software ?? "") ? "jobber" : /housecall/i.test(f.software ?? "") ? "housecall_pro" : "unknown";
     const businesses = repo.listBusinesses();
     const ten = (p: string | undefined) => (p ?? "").replace(/\D/g, "").slice(-10);
@@ -986,7 +997,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       }
     } else if (f.files?.length)
       read = `They sent ${sent}. Nothing was added: a form on the site never changes an account that's already set up or running. If it's really them, ask for the file by text or send them their import address.`;
-    else read = again ? "No file this time; nothing changed." : "No file yet. Ask for their export by text (or send the Connect Jobber link).";
+    else read = again ? "No file this time; nothing changed." : "No file yet. Ask for their export by text.";
     const shared = others.length
       ? ` Careful: ${cell} is already the owner cell for ${others.map((b) => b.profile.name).join(" and ")}, so it isn't set on this account. Texts from that cell still go to ${others.length === 1 ? "that client" : "those clients"} only, and nothing here is texted. If it really is the same owner, set the cell in this client's Settings; if not, delete this sign-up.`
       : "";
@@ -1054,8 +1065,10 @@ export function createApp(d: HttpDeps): Hono<Env> {
   /**
    * Inbound email (Postmark/Mailgun-style JSON or {from, subject, text}).
    * Three jobs: replies to our notes; owners forwarding their Jobber/HCP export emails to their import
-   * address ("import+<token>@...") — the files are read automatically; and owners forwarding new requests
-   * to their requests address ("requests+<token>@...") — answered from the office like a Jobber request.
+   * address ("import+<token>@...") — the files are read automatically; and, with FEATURE_NEW_REQUESTS, owners
+   * forwarding new requests to their requests address ("requests+<token>@...") — answered from the office like a
+   * Jobber request. Without it, an email to a requests address is plain mail: read like any other, and one we can't
+   * place goes to the review queue.
    */
   app.post("/webhooks/inbound-email/:secret", async (c) => {
     if (!secretOk(c)) return c.json({ error: "forbidden" }, 403);
@@ -1080,7 +1093,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // Our requests+/import+ address may not be in To: a Gmail filter's forward or a BCC keeps the original To.
     const link = linkAddress(deliveredTo(body, headers));
     // New requests the owner forwards: the whole message (a forward is "quoted" text to a reply parser)
-    const requestsToken = link?.kind === "requests" ? link.token : undefined;
+    const requestsToken = link?.kind === "requests" && features(d.cfg).newRequests ? link.token : undefined;
     if (requestsToken) {
       const bid = readLinkToken(d, "requests", requestsToken);
       const html = String(body.HtmlBody ?? body["body-html"] ?? body.html ?? "");

@@ -6,7 +6,7 @@ import { HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../caden
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Customer, Dataset, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
 import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, playbook } from "../trades/index.ts";
@@ -92,11 +92,11 @@ export function readFiles(state: AccountState, files: FileIn[], now: ISODateTime
 /* Finder                                                              */
 /* ------------------------------------------------------------------ */
 
-export function find(state: AccountState, now: ISODateTime): AccountState {
+export function find(state: AccountState, now: ISODateTime, features: Features = {}): AccountState {
   const lastContacted: Record<string, string> = {};
   for (const o of state.outreach) if (!o.holdout) lastContacted[o.customerId] = o.lastTouchOn;
   const newSince = Object.fromEntries(supersededOn(state));
-  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays: 150, newSince });
+  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays: 150, newSince }, features);
   state.summary = summarize(state.dataset, state.scan);
   const s = state.summary;
   event(state, now, "finder", "win", `Found ${fmtMoney(s.totalValue)} left on the table`, `${plural(s.opportunities, "opportunity", "opportunities")}; ${fmtMoney(s.reachableValue)} of it is with ${plural(s.reachablePeople, "person", "people")} we can reach.`);
@@ -114,8 +114,8 @@ export function find(state: AccountState, now: ISODateTime): AccountState {
 /* Writer + Sender: plan a batch                                       */
 /* ------------------------------------------------------------------ */
 
-export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean; kickoff?: boolean }): Plan {
-  if (!state.scan) find(state, now);
+export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean; kickoff?: boolean; features?: Features }): Plan {
+  if (!state.scan) find(state, now, opts.features);
   // Our answer to someone's own new request isn't a sequence: once it went, the always-on follow-ups (the request's own,
   // or the quote sent after it) are theirs like anyone's, and for a month only those (nothing older dug up the next day).
   // An answer still on its way holds them until it goes.
@@ -150,7 +150,7 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
   // Everything already on the calendar counts against the pace, so a top-up never doubles it.
   const existingStarts = state.touches.filter((t) => t.step === 1 && ["planned", "approved", "sent", "delivered"].includes(t.status)).map((t) => t.dueAt.slice(0, 10));
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts, askedOn });
+  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts, askedOn, features: opts.features });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   // Someone planned again after their notes were cancelled or skipped: the same opportunity and step give the same
   // id, and two notes with one id collide in the database (one is kept) and in every lookup by id.
@@ -720,7 +720,7 @@ export function reconcile(state: AccountState, files: FileIn[], now: ISODateTime
 }
 
 /** Match new jobs/invoices/approvals in the current data to the people we contacted. Then re-scan. */
-export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveries: number; lift: LiftReport } {
+export function ledgerPass(state: AccountState, now: ISODateTime, features: Features = {}): { newRecoveries: number; lift: LiftReport } {
   state.dataset.asOf = now.slice(0, 10);
   // a reply to our answer on their own new request isn't a reply to a follow-up (same rule as the guarantee)
   const newRequestTouch = new Set(state.touches.filter((t) => t.track === "new_request").map((t) => t.id));
@@ -788,7 +788,7 @@ export function ledgerPass(state: AccountState, now: ISODateTime): { newRecoveri
   }
   const l = lift(state.outreach, state.recoveries);
   event(state, now, "ledger", "info", `Recovered so far: ${fmtMoney(l.treated.value)}`, l.note);
-  find(state, now);
+  find(state, now, features);
   return { newRecoveries: added, lift: l };
 }
 
@@ -799,7 +799,7 @@ export function reportWeek(state: AccountState, now: ISODateTime): OwnerMessage 
 }
 
 /** The close after the free round, once replies have had a week to come in. */
-export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLink?: string; signature?: string } = {}): OwnerMessage | undefined {
+export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLink?: string; signature?: string } & Features = {}): OwnerMessage | undefined {
   const b = state.dataset.business;
   if (b.plan.stage !== "trial" || state.ownerMessages.some((m) => m.kind === "close")) return undefined;
   const sent = state.touches.filter((t) => t.status === "sent");
@@ -965,17 +965,17 @@ export function renewPlan(state: AccountState, choice: "year" | "monthly", now: 
 }
 
 /**
- * The owner texted CANCEL. One text does it: every queued note stops, nothing more is charged, and a yearly
- * plan gets back what it didn't use (never more than monthly would have cost; the year floor on the months
- * used). What it stopped is kept for a day so UNDO can put it all back.
+ * The owner texted CANCEL. One text does it: every queued note stops and nothing more is charged. With the yearly
+ * plan sold, a yearly plan gets back what it didn't use (never more than monthly would have cost; the year floor on
+ * the months used), and what it stopped is kept for a day so UNDO can put it all back. Without it, cancelling is final.
  */
-export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused?: boolean } = {}): { stopped: number; refund: number; line: string } {
+export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused?: boolean; yearly?: boolean } = {}): { stopped: number; refund: number; line: string } {
   const plan = state.dataset.business.plan;
   if (plan.stage === "cancelled") return { stopped: 0, refund: 0, line: "" };
   const stageBefore = plan.stage;
   const today = now.slice(0, 10);
   // any paid year that already ended is settled first, the same as at its end
-  for (let i = 0; i < 5 && settleYears(state, now); i++);
+  if (opts.yearly) for (let i = 0; i < 5 && settleYears(state, now); i++);
   const touches: { id: string; status: "planned" | "approved" }[] = [];
   for (const t of state.touches)
     if (t.status === "approved" || t.status === "planned") {
@@ -985,14 +985,14 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
   let line = "";
   const b = state.dataset.business;
   const cents = (m: number) => fmtMoney(m, { cents: true });
-  const early = stageBefore !== "trial" ? earlyLeaveRefund(state, today) : undefined;
+  const early = opts.yearly && stageBefore !== "trial" ? earlyLeaveRefund(state, today) : undefined;
   // only the running year's unused part is promised: it was paid, and it's what the cancel's refund text is about
   const refund = early && early.refund > 0 ? early.refund : 0;
   if (refund) plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early!.yearStart), { yearStart: early!.yearStart, amount: refund, early: true }];
   // A year renewed but not started yet was never used, and a RENEW text alone doesn't say it was ever paid. It comes off
   // the paid years (so it's never counted as charged, settled or refunded by us); whether it's refunded is Jack's call,
   // so the owner is told what happens if they'd paid, never promised the money.
-  const ahead = stageBefore !== "trial" ? [...(plan.yearsPaidOn ?? [])].filter((y) => y > today).sort() : [];
+  const ahead = opts.yearly && stageBefore !== "trial" ? [...(plan.yearsPaidOn ?? [])].filter((y) => y > today).sort() : [];
   const aheadAmount = round2(ahead.length * annualPrice(b));
   if (ahead.length) plan.yearsPaidOn = (plan.yearsPaidOn ?? []).filter((y) => y <= today);
   if (refund) {
@@ -1005,20 +1005,21 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
     line = `${line ? `${line} ` : ""}If you'd already paid for the ${ahead.length === 1 ? "year" : "years"} you renewed from ${days}, Jack will refund all of it.`;
   }
   plan.stage = "cancelled";
-  state.cancelled = {
-    at: now,
-    stageBefore,
-    touches,
-    ...(state.awaitingOwnerOk ? { awaitingOwnerOk: state.awaitingOwnerOk } : {}),
-    ...(opts.paused ? { paused: true } : {}),
-    // the running year's refund, the only one promised (a renewed year that hadn't started is Jack's call, so it alone
-    // never stops UNDO by text)
-    ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}),
-    ...(ahead.length ? { years: ahead } : {}),
-  };
+  if (opts.yearly)
+    state.cancelled = {
+      at: now,
+      stageBefore,
+      touches,
+      ...(state.awaitingOwnerOk ? { awaitingOwnerOk: state.awaitingOwnerOk } : {}),
+      ...(opts.paused ? { paused: true } : {}),
+      // the running year's refund, the only one promised (a renewed year that hadn't started is Jack's call, so it alone
+      // never stops UNDO by text)
+      ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}),
+      ...(ahead.length ? { years: ahead } : {}),
+    };
   // a cancelled account isn't waiting for anyone's OK
   state.awaitingOwnerOk = undefined;
-  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${cents(refund)}.` : ""}${ahead.length ? ` The renewed year from ${ahead.join(", ")} hadn't started and came off the paid years. They were told you'd refund it if they'd paid: if it was paid, refund ${cents(aheadAmount)}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
+  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${cents(refund)}.` : ""}${ahead.length ? ` The renewed year from ${ahead.join(", ")} hadn't started and came off the paid years. They were told you'd refund it if they'd paid: if it was paid, refund ${cents(aheadAmount)}.` : ""}${opts.yearly ? ` UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.` : ""}`);
   state.updatedAt = now;
   return { stopped: touches.length, refund, line };
 }
@@ -1247,16 +1248,16 @@ export function answeredLately(state: AccountState, customerId: string, to: stri
 }
 
 /**
- * Always-on: every request that came in during the last day gets an answer within minutes (7am–8pm; one that
+ * Always-on, where the server sells new-request answering: every request that came in during the last day gets an answer within minutes (7am–8pm; one that
  * lands at night is answered at 7am) — "Thanks for reaching out, Dave will call you today" — and the owner gets the
  * lead by text. If no visit or quote follows, the unquoted-request follow-up takes over after two days.
  * While sending is held (paused, cancelled, the Guard's brake) nothing is queued to go later: the owner gets the
  * lead and is told to call, never that we wrote back.
  */
-export function answerNewRequests(state: AccountState, now: ISODateTime, opts: { paused?: boolean } = {}): number {
+export function answerNewRequests(state: AccountState, now: ISODateTime, opts: { paused?: boolean; features?: Features } = {}): number {
   const ds = state.dataset;
   const b = ds.business;
-  if (!alwaysOnFor(b)) return 0;
+  if (!alwaysOnFor(b, opts.features)) return 0;
   const held = opts.paused || b.plan.stage === "paused" || b.plan.stage === "cancelled" || sendHealth(state).paused;
   const nowMs = Date.parse(`${now.slice(0, 19)}Z`);
   let n = 0;

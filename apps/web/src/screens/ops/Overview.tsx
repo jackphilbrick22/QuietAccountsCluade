@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { Plus } from "lucide-react";
-import { fmtMoney, TRADE_OPTIONS, type TradeId } from "@qa/engine";
+import { fmtMoney, playbook, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../../store/app";
 import { relTime } from "../../lib/derive";
 import { clientRows, mrr } from "../../lib/ops";
@@ -87,7 +87,7 @@ export function OpsOverview() {
         <tbody>
           {shown.map((r) => {
             const b = r.a.dataset.business;
-            const trade = TRADE_OPTIONS.find((t) => t.id === b.trade)?.label ?? b.trade;
+            const trade = playbook(b.trade).label;
             const bounceTone = r.health.bounceRate > 0.04 ? "bad" : r.health.bounceRate > 0.02 ? "warn" : "ok";
             return (
               <Tr key={r.id} onClick={() => select(r.id, "owner")} label={`Open ${b.name}`}>

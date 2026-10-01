@@ -9,6 +9,17 @@
  *   later exports ->  Recovery[] (who came back, and what it paid)
  */
 
+/**
+ * What a server sells beyond the two offers, from its FEATURE_* settings. The caller passes it in; anything left out
+ * is off.
+ */
+export interface Features {
+  /** Answering new requests, and the always-on track that comes with it. */
+  newRequests?: boolean;
+  /** The yearly plan: its offer at the close, RENEW, the renewal ask, settling a year, its refunds, and UNDO after CANCEL. */
+  yearly?: boolean;
+}
+
 /** Calendar date, YYYY-MM-DD. */
 export type ISODate = string;
 /** Full timestamp, ISO 8601. */
@@ -282,11 +293,15 @@ export interface BusinessProfile {
   callOverAmount?: Money;
   /** What a lead costs them, in their own words (ads, Angi, their time to quote). Used only to show waste. */
   leadCost?: Money;
-  /** Answer hot replies right away on the owner's behalf (default on). */
+  /**
+   * Answer hot replies right away on the owner's behalf. Unset reads as on; every account is made (and was migrated)
+   * with it off, so a person reads every reply.
+   */
   autoAck?: boolean;
   /**
    * Always-on: every new request answered in minutes, every new quote followed from day 2 until a yes or a no,
-   * every "yes" chased onto the schedule. This is what the monthly subscription is. Default: on once paying.
+   * every "yes" chased onto the schedule. Only where the server sells new-request answering (Features); there it's
+   * on once paying unless set.
    */
   alwaysOn?: boolean;
   /** How the notes read. */
@@ -327,7 +342,7 @@ export interface BusinessProfile {
 
 export interface PlanState {
   stage: "trial" | "paying" | "paused" | "cancelled";
-  /** Free trial size (people contacted) before any charge. */
+  /** Free round size (people contacted) before any charge. */
   trialSize: number;
   trialStartedOn?: ISODate;
   paidOn?: ISODate;

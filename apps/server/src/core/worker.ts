@@ -1,13 +1,15 @@
 import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { localIso } from "./clock.ts";
+import { features } from "../config.ts";
 import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
 
 /**
  * The heartbeat. Every minute, for every business, in its own local time:
  *  - Sender: send what's due (or hand the week's people to the sequencer)
  *  - Dispatcher: nudge the owner about hot leads nobody has called
- *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text
+ *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text; with the yearly plan
+ *    sold (FEATURE_YEARLY), the renewal ask and settling a year
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
  *  - Writer: nightly top-up for paying accounts so the list keeps being worked at the weekly pace
  *  - Reader/Ledger: hourly sync from connected software, then match who came back
@@ -161,10 +163,11 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
       await d.accounts.withAccount(bid, (state) => {
         chase(state, local, d.cfg.SLA_FIRST_NUDGE_HOURS);
         if (daily) {
-          closeIfDue(state, local);
+          const f = features(d.cfg);
+          closeIfDue(state, local, f);
           billingCheck(state, local);
           // A yearly plan never renews by itself: ask a month out, pause at the end if nobody said yes.
-          if (renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;
+          if (f.yearly && renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;
         }
         // Friday from 4pm local: the week in plain English (once per ISO week)
         if (day === 5 && hour >= 16) {
@@ -188,7 +191,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
     await step("nightly", async () => {
       const last = biz.scannedAt ? Date.parse(biz.scannedAt) : 0;
       if (now.getTime() - last > 20 * 3600000) {
-        await d.accounts.withAccount(bid, (state) => find(state, local));
+        await d.accounts.withAccount(bid, (state) => find(state, local, features(d.cfg)));
         d.accounts.repo.markScanned(bid, now.toISOString());
       }
       if (biz.profile.plan.stage === "paying" && !biz.paused) {

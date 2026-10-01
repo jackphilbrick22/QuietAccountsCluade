@@ -2,6 +2,43 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-01 — the two-offer brief (docs/BRIEF.md)
+
+Jack's brief replaces the one big $497 offer with two: monthly for lawn and cleaning (first 150 free, then $497 a
+month if the owner says yes; any month nobody asks to come back is free) and a one pass for tree, painting and fence
+($250 per booked job, never more than $1,000). Built on top of this branch's later fixes, not reset to 2726e98.
+Phase A, then B, then C, one commit per item, `pnpm check` green before each.
+
+- Before the brief work: a third narrow check on the second verification pass found one regression, fixed
+  (4f90adb). An owner's "Yes - deposit received" or "Yes - verbal" reads as a yes again, and a queued follow-up stops
+  when its quote's status is one a person has to read (the hold only stopped new plans).
+
+- **A1. Switch off what neither offer sells.**
+  - New-request answering and the yearly plan sit behind FEATURE_NEW_REQUESTS and FEATURE_YEARLY, both off. Off
+    means no always-on track (no answers to new requests, no day-2 fresh-quote follow-up), no requests+ address in
+    any API or console response, no instant campaign; an email to a requests address is plain mail in the review
+    queue. RENEW, YEARLY and ANNUAL change nothing and go to Jack; the trial's MONTHLY yes still works; no renewal
+    ask, no year settle, no year offer at the close. CANCEL is final: no UNDO in its reply, UNDO not honoured (the
+    operator's Restore plan has nothing to restore). No "within 5 business days" or "Jack will put everything back
+    himself today" reaches an owner.
+  - New accounts: autoAck off (a person reads every reply) and holdout 0; migration 4 moved existing accounts once.
+  - Forecasts and fit tiers are gone from everything owners and visitors see, and gate nothing.
+  - Trade detection (the site audit too), the console's menus and sign-up use only lawn, landscape, cleaning, tree,
+    fence and painting; "Standard Cleaning" reads as cleaning. The other 14 playbooks stay in code.
+  - Each plan works only the leaks the trade's offer sells, in one engine rule; a person whose first leak isn't sold
+    is planned on their next one that is. "People still to work" counts the same people a plan can pick.
+  - The console has no Jobber login or sync; Money Map is List, Reply Desk is Replies, Ready Text is Hand-off text.
+  - The current site lost its two "7am to 8pm" lines and its part headings are plain words (A7 replaces it).
+  - Left: the welcome text still opens with the shop's quiet quotes on lawn and cleaning (A6's wording pass); the
+    demo's sample businesses keep a 10% holdout and auto-answers; a few operator hints mention "Yearly".
+  - Brief notes: "the always-on track" also drove the day-2 fresh-quote follow-up and shorter detection windows, so
+    all of it is behind FEATURE_NEW_REQUESTS; the planner's types filter only saw each person's top leak, so it now
+    picks each person's first sold leak (on the 10k tree sample, 8,006 workable people).
+  - Engine 1,342, server 311.
+
+**Live steps for Jack**
+- (A1) Leave FEATURE_NEW_REQUESTS and FEATURE_YEARLY unset (off) in production.
+
 ## 2026-09-30 — iteration 3
 
 **Published (private links)**

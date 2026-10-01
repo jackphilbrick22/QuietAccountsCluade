@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { ArrowLeft, Check, CheckCheck, Pause, Play, RefreshCw, Send, X } from "lucide-react";
+import { ArrowLeft, CheckCheck, Pause, Play, RefreshCw, Send } from "lucide-react";
 import { AGENTS, BREAKAGE_LABEL, fmtMoney, fmtPhone, plural, type BreakageType } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, Table, Td, Th, Tr } from "../components/table";
 import { SUPPRESS_LABEL } from "../lib/labels";
-import { api, type Integrations, type Links, type OppPage, type Overview, type PlanResult, type TouchPage } from "./api";
+import { api, type Links, type OppPage, type Overview, type PlanResult, type TouchPage } from "./api";
 import { copy, useAction, useApi, useLive, type ClientTab } from "./store";
 import { ErrorNote, IntentPill, OutcomeForm, ReadinessPanel, ago, when } from "./parts";
 import { stageOf, tradeLabel } from "./Clients";
@@ -13,9 +13,9 @@ import { ActivityTab, FilesTab, NotesTab, OwnerTextsTab, RepliesTab, SettingsTab
 
 const TABS: { id: ClientTab; label: string }[] = [
   { id: "overview", label: "Overview" },
-  { id: "opportunities", label: "Money Map" },
+  { id: "opportunities", label: "List" },
   { id: "notes", label: "Notes" },
-  { id: "replies", label: "Reply Desk" },
+  { id: "replies", label: "Replies" },
   { id: "texts", label: "Texts to owner" },
   { id: "activity", label: "Activity" },
   { id: "files", label: "Files" },
@@ -31,7 +31,6 @@ export function LiveClient({ id }: { id: string }) {
   const enc = encodeURIComponent(id);
   const q = useApi<Overview>(`/businesses/${enc}`, { poll: 60_000 });
   const planned = useApi<TouchPage>(`/businesses/${enc}/touches?status=planned&limit=1`);
-  const integ = useApi<Integrations>(`/businesses/${enc}/integrations`);
   const { busy, run } = useAction();
   const o = q.data;
 
@@ -48,7 +47,6 @@ export function LiveClient({ id }: { id: string }) {
   const started = (o.counts?.queued ?? 0) + (o.counts?.sent ?? 0) > 0;
   const trial = b.plan.stage === "trial";
   const waitingApproval = planned.data?.total ?? 0;
-  const jobber = integ.data?.jobber;
   const path = `/businesses/${enc}`;
 
   const doPlan = () =>
@@ -93,12 +91,7 @@ export function LiveClient({ id }: { id: string }) {
                 {o.paused ? <Play size={15} /> : <Pause size={15} />} {o.paused ? "Resume" : "Pause"}
               </Btn>
             )}
-            {jobber?.available && (
-              <Btn disabled={!!busy || !jobber.connected} title={jobber.connected ? undefined : "The owner hasn't connected Jobber yet"} onClick={() => void run("sync", () => api<{ records?: number; newRecoveries?: number; error?: string }>("POST", `${path}/sync`), (r) => (r.error ? `Jobber: ${r.error}` : `Synced ${r.records ?? 0} records, ${r.newRecoveries ?? 0} came back`))}>
-                Sync Jobber
-              </Btn>
-            )}
-            <LinksMenu id={id} name={b.name} />
+            <LinksMenu id={id} name={b.name} requests={!!o.features?.newRequests} />
           </>
         }
       />
@@ -142,7 +135,7 @@ function BackLink() {
   );
 }
 
-function LinksMenu({ id, name }: { id: string; name: string }) {
+function LinksMenu({ id, name, requests }: { id: string; name: string; requests: boolean }) {
   const go = useApp((s) => s.go);
   const { run } = useAction();
   const getLinks = () => api<Links>("GET", `/businesses/${encodeURIComponent(id)}/links`);
@@ -151,12 +144,13 @@ function LinksMenu({ id, name }: { id: string; name: string }) {
       label={`Links and more for ${name}`}
       items={[
         { label: "Copy owner link", onClick: () => void getLinks().then((l) => copy(l.owner, "Owner link copied")) },
-        { label: "Copy Jobber connect link", onClick: () => void getLinks().then((l) => copy(l.connectJobber, "Jobber connect link copied — send it to the owner")) },
         { label: "Copy file-forwarding token", onClick: () => void getLinks().then((l) => copy(l.importToken, "Import token copied")) },
         {
           label: "Replace all links",
           danger: true,
-          confirm: `New owner, Jobber-connect and file-forwarding links for ${name}, and a new requests address. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new owner link, and the new requests address (Files tab) for their request forwarding: until they change it, each request forwarded to the old one lands in Needs a person instead of being answered.`,
+          confirm: requests
+            ? `New owner and file-forwarding links for ${name}, and a new requests address. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new owner link, and the new requests address (Files tab) for their request forwarding: until they change it, each request forwarded to the old one lands in Needs a person instead of being answered.`
+            : `New owner and file-forwarding links for ${name}. Every link sent before stops working (use it when a link got out, or someone left). Send the owner the new owner link.`,
           onClick: () => void run("rotate", () => api<Links>("POST", `/businesses/${encodeURIComponent(id)}/links/rotate`), "New links made — the old ones no longer work"),
         },
         {
@@ -192,7 +186,6 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
       <Kpis>
         <Kpi label="Found" value={s ? fmtMoney(s.totalValue, { compact: true }) : "—"} sub={s ? plural(s.opportunities, "opportunity", "opportunities") : "no scan yet"} />
         <Kpi label="Reachable" value={s ? fmtMoney(s.reachableValue, { compact: true }) : "—"} sub={s ? `${s.reachablePeople.toLocaleString("en-US")} people` : undefined} />
-        <Kpi label="Likely back" value={s ? fmtMoney(s.expected.likely, { compact: true }) : "—"} tone="ok" sub={s ? `careful: ${fmtMoney(s.expected.conservative, { compact: true })}` : undefined} />
         <Kpi label="Notes sent" value={(o.counts?.sent ?? 0).toLocaleString("en-US")} sub={`${(o.counts?.queued ?? 0).toLocaleString("en-US")} queued`} />
         <Kpi label="Replies" value={(o.totals?.replied ?? 0).toLocaleString("en-US")} sub={`${o.totals?.wants ?? 0} want a price or date`} />
         <Kpi label="Booked" value={fmtMoney(o.recoveredValue ?? 0)} tone="ok" sub={plural(o.totals?.booked ?? 0, "job")} />
@@ -259,15 +252,19 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
             <dt className="text-ink-3">Owner call-back time</dt>
             <dd className="num text-right font-semibold">{o.week?.avgHoursToCall !== undefined ? `${o.week.avgHoursToCall}h` : "—"}</dd>
           </dl>
-          <span className="mt-2 text-[12px] font-bold uppercase tracking-wide text-ink-3">Every Month After</span>
-          <dl className="grid grid-cols-2 gap-y-1 text-[13px]">
-            <dt className="text-ink-3">New requests answered</dt>
-            <dd className="num text-right font-semibold">{o.week?.requestsAnswered ?? 0}</dd>
-            <dt className="text-ink-3">Typical answer time</dt>
-            <dd className="num text-right font-semibold">{o.week?.answerMinutes !== undefined ? `${o.week.answerMinutes} min` : "—"}</dd>
-            <dt className="text-ink-3">New quotes followed up</dt>
-            <dd className="num text-right font-semibold">{o.week?.freshFollowed ?? 0}</dd>
-          </dl>
+          {o.features?.newRequests && (
+            <>
+              <span className="mt-2 text-[12px] font-bold uppercase tracking-wide text-ink-3">New requests</span>
+              <dl className="grid grid-cols-2 gap-y-1 text-[13px]">
+                <dt className="text-ink-3">New requests answered</dt>
+                <dd className="num text-right font-semibold">{o.week?.requestsAnswered ?? 0}</dd>
+                <dt className="text-ink-3">Typical answer time</dt>
+                <dd className="num text-right font-semibold">{o.week?.answerMinutes !== undefined ? `${o.week.answerMinutes} min` : "—"}</dd>
+                <dt className="text-ink-3">New quotes followed up</dt>
+                <dd className="num text-right font-semibold">{o.week?.freshFollowed ?? 0}</dd>
+              </dl>
+            </>
+          )}
         </Box>
         <Box className="flex flex-col gap-2 p-4">
           <span className="text-[14px] font-bold">Sending health</span>
@@ -326,23 +323,6 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         </Box>
       </div>
 
-      {s && (
-        <Section title="Is this a fit?" sub={s.fit.headline}>
-          <Box>
-            <ul className="divide-y divide-line">
-              {s.fit.checks.map((c) => (
-                <li key={c.id} className="flex gap-2 px-3.5 py-2 text-[13px]">
-                  {c.ok ? <Check size={15} className="mt-0.5 shrink-0 text-ok" aria-label="Yes" /> : <X size={15} className="mt-0.5 shrink-0 text-bad" aria-label="No" />}
-                  <span>
-                    <b className="font-semibold">{c.label}.</b> <span className="text-ink-2">{c.detail}</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </Box>
-        </Section>
-      )}
-
       <Section title="Latest activity">
         <Box>
           <ol className="divide-y divide-line">
@@ -387,7 +367,6 @@ function OpportunitiesTab({ id, o }: { id: string; o: Overview }) {
             <Th right>Found</Th>
             <Th right>Reachable</Th>
             <Th right>Value</Th>
-            <Th right>Expected</Th>
           </tr>
         </thead>
         <tbody>
@@ -408,7 +387,6 @@ function OpportunitiesTab({ id, o }: { id: string; o: Overview }) {
               <Td right>{t.count.toLocaleString("en-US")}</Td>
               <Td right>{t.reachable.toLocaleString("en-US")}</Td>
               <Td right>{fmtMoney(t.value)}</Td>
-              <Td right>{fmtMoney(t.expected)}</Td>
             </Tr>
           ))}
         </tbody>
@@ -437,7 +415,7 @@ function OpportunitiesTab({ id, o }: { id: string; o: Overview }) {
           )}
         </div>
         <ErrorNote error={q.error} onRetry={q.reload} />
-        <Table minWidth={900} tall label="Money Map">
+        <Table minWidth={900} tall label="List">
           <thead>
             <tr>
               <Th>Name</Th>

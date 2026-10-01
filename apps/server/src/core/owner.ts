@@ -7,7 +7,8 @@ import { deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, ra
  * The owner never opens the dashboard: they answer our texts.
  *
  *   About a lead:      BOOKED 2400 #K7Q · DONE · NO · QUOTED · NO ANSWER   (the #code is on every hand-off text)
- *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · RENEW · MONTHLY · CANCEL (UNDO within a day)
+ *   About the service: PAUSE · RESUME · BUSY until Nov 15 · OPEN · STATUS · MONTHLY · CANCEL
+ *                      (RENEW, YEARLY and UNDO within a day only with the yearly plan sold, FEATURE_YEARLY)
  *   About a person:    SKIP Karen Whitfield — off every list (already won it, said no on the phone, a friend)
  *   About our texts:   STOP turns them off (the follow-ups keep running; hand-offs go by email) · START turns them on
  *
@@ -72,9 +73,11 @@ const BUSY = /^(we re |we are |were |i m |im |i am )?(busy|booked (out|solid|up|
 /**
  * RENEW / MONTHLY / YEARLY, said as the command (matched against the words only): "Renew", "Monthly please", "Yearly
  * plan", "Renew for another year". "Monthly cleaning booked 180" or "Annual service booked 250" is about a lead (the
- * lead, or a person, reads it), never a plan change.
+ * lead, or a person, reads it), never a plan change. Without the yearly plan sold, only the monthly words are plan words.
  */
 const PLAN = /^(renew|yearly|annual|monthly|month to month)( (plan|it|please|pls|thanks|thank you|thx|ty|jack|for (another|a|one more) year))*$/;
+const PLAN_WORD = /^(renew|yearly|annual|monthly|month to month)\b/;
+const MONTHLY_WORD = /^(monthly|month to month)\b/;
 /**
  * RESUME said as a go-ahead (matched against the words only): "Go", "Go ahead", "Go for it, thanks", "Go ahead and
  * resume", "Go ahead and start it back up". With the close or the renewal out it's a yes to that instead. "Go with Hey
@@ -312,6 +315,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     handled: "ask_which",
   });
   const directEmail = d.email.kind === "direct";
+  const yearly = d.cfg.FEATURE_YEARLY === "on";
+  const planWord = (w: string) => (yearly ? PLAN_WORD : MONTHLY_WORD).test(w);
 
   /* ---- our texts (the phone as a whole) ---- */
   if (OPT_OUT.test(bare)) {
@@ -418,15 +423,16 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   // A plan word with a reason after it ("Monthly - the year is too expensive", "Renew, already talked to Jack") is the
   // plan choice and could be a lead's outcome too: a person reads it, and no lead is touched. Only a booking ("Monthly
   // cleaning booked 180") goes on to the lead, where Claude or a person reads it.
-  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(command) && !PLAN.test(command) && readLeadText(text)?.outcome !== "booked") {
+  if (planWord(command) && !PLAN.test(command) && readLeadText(text)?.outcome !== "booked") {
     const b = fallback();
-    return { businessId: b.id, reply: `${tag(b)}Jack will read this and get back to you. To change your plan, text just RENEW or MONTHLY. About a lead? Text it with the #code.`, handled: "plan_unclear", needsPerson: true };
+    return { businessId: b.id, reply: `${tag(b)}Jack will read this and get back to you.${yearly ? " To change your plan, text just RENEW or MONTHLY." : ""} About a lead? Text it with the #code.`, handled: "plan_unclear", needsPerson: true };
   }
-  // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
-  if (PLAN.test(command)) {
+  // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over. Without the
+  // yearly plan sold, RENEW, YEARLY and ANNUAL change nothing (a person reads them below), and MONTHLY is the trial's yes.
+  if (PLAN.test(command) && planWord(command)) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") {
-      const c = d.accounts.peek(one.id)!.state.cancelled;
+      const c = yearly && d.accounts.peek(one.id)!.state.cancelled;
       return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running.${c ? " Didn't mean to cancel? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "renew_cancelled", needsPerson: !c };
     }
     const choice = /^(monthly|month to month)/.test(bare) ? "monthly" : "year";
@@ -449,7 +455,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (stageBefore === "paused" && d.accounts.peek(one.id)!.state.dataset.business.plan.stage === "paying") await pause(d, one.id, false);
     return { businessId: one.id, reply: `${tag(one)}${r!.reply}`, handled: r!.handled, ...(r!.forOperator ? { needsPerson: true } : {}) };
   }
-  // Month to month, cancel by text: one text does it (a yearly plan gets back what it didn't use). UNDO within a day puts it all back.
+  // Month to month, cancel by text: one text does it, and it's final. With the yearly plan sold, a yearly plan gets back
+  // what it didn't use, and UNDO within a day puts it all back.
   if (/^(cancel|undo)\b/.test(bare) && hasCode)
     return { businessId: fallback().id, reply: `${one ? tag(one) : ""}About that lead: text NO and the #code if it's off, or BOOKED + amount + the #code. To cancel the whole service, text CANCEL on its own. Jack will read this too.`, handled: "cancel_code", needsPerson: true };
   if (/^cancel\b/.test(bare) && !CANCEL_ALL.test(bare))
@@ -457,14 +464,14 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   if (CANCEL_ALL.test(bare)) {
     if (!one) return askWhich();
     const s = d.accounts.peek(one.id)!.state;
-    if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled.${s.cancelled ? " Didn't mean it? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "cancel_again" };
+    if (s.dataset.business.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're already cancelled.${yearly && s.cancelled ? " Didn't mean it? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "cancel_again" };
     let r = { stopped: 0, refund: 0, line: "" };
     let until = "";
     let partWay = 0;
     let renewed = false;
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
-      r = cancelPlan(state, at, { paused: one.paused });
+      r = cancelPlan(state, at, { paused: one.paused, yearly });
       // a renewed year that hadn't started may or may not have been paid: Jack checks, and refunds it if it was
       renewed = !!state.cancelled?.years?.length;
       until = `${fmtClock(at)} tomorrow`;
@@ -477,12 +484,20 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     // a yearly refund text goes straight to the operator's queue: they issue it, then send it
     if (r.refund) await deliverOwnerMessages(d, one.id);
     const tt = totals(d.accounts.peek(one.id)!.state);
+    // UNDO only where the yearly plan is sold; otherwise cancelling is final
+    const undo = yearly ? ` Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} ${partWay ? `to pick back up; the ${partWay === 1 ? "1 person" : `${partWay} people`} already part-way through their notes won't get the rest.` : "and it all picks back up."}` : "";
     return {
       businessId: one.id,
-      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours. Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} ${partWay ? `to pick back up; the ${partWay === 1 ? "1 person" : `${partWay} people`} already part-way through their notes won't get the rest.` : "and it all picks back up."}`,
+      reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours.${undo}`,
       handled: "cancel",
       ...(renewed ? { needsPerson: true } : {}),
     };
+  }
+  if (/^undo\b/.test(bare) && !yearly) {
+    // no UNDO without the yearly plan: cancelling is final, and someone who wants back in hears from Jack
+    const gone = (one ? [one] : all).find((b) => b.profile.plan.stage === "cancelled");
+    if (gone) return { businessId: gone.id, reply: `${tag(gone)}You're cancelled, so nothing's running. Want back in? Reply here and Jack will set it up.`, handled: "undo_off", needsPerson: true };
+    return { businessId: fallback().id, reply: "There's nothing to undo. Text HELP for what you can text us.", handled: "undo_nothing" };
   }
   if (/^undo\b/.test(bare)) {
     const pool = (one ? [one] : all).filter((b) => d.accounts.peek(b.id)?.state.cancelled);

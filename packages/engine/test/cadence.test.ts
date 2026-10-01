@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { scan, type ScanResult } from "../src/breakage/detect.ts";
+import { pickPrimary, scan, type ScanResult } from "../src/breakage/detect.ts";
+import { worksLeak } from "../src/breakage/assumptions.ts";
 import { HOLD_WHEN_BOOKED, inHoldout, MAX_TYPE_SHARE, planOutreach, sendTime, type Plan } from "../src/cadence/plan.ts";
 import { SEQUENCES } from "../src/copy/templates.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
@@ -8,6 +9,9 @@ import { addDays, daysBetween, mondayOf, weekday } from "../src/util.ts";
 import { ASOF, customer, dataset, quote } from "./fixtures.ts";
 
 const START = "2026-10-05"; // a Monday
+
+/** Each person on the first leak their trade's offer works: what a plan starts them on. */
+const worked = (ds: Dataset, r: ScanResult) => pickPrimary(r.opportunities.filter((o) => worksLeak(ds.business.trade, o)));
 
 /** The sample dataset with a few business settings changed (same records, same scan). */
 function withBusiness(ds: Dataset, over: Partial<BusinessProfile>): Dataset {
@@ -37,7 +41,7 @@ let oppOf: Map<string, Opportunity>;
 beforeAll(() => {
   tree = generateSample({ trade: "tree", asOf: ASOF });
   treeScan = scan(tree.dataset);
-  oppOf = new Map(treeScan.primary.map((o) => [o.customerId, o]));
+  oppOf = new Map(worked(tree.dataset, treeScan).map((o) => [o.customerId, o]));
 });
 
 describe("who gets a note", () => {
@@ -50,7 +54,7 @@ describe("who gets a note", () => {
     const people = new Set(plan.people);
     expect(plan.touches.every((t) => people.has(t.customerId))).toBe(true);
   });
-  it("writes each person the steps of their own sequence, about their primary opportunity", () => {
+  it("writes each person the steps of their own sequence, about the first leak their trade's offer works", () => {
     const plan = planOutreach(tree.dataset, treeScan, { startOn: START, limitPeople: 60 });
     for (const [id, ts] of byPerson(plan)) {
       const o = oppOf.get(id)!;
@@ -68,7 +72,8 @@ describe("who gets a note", () => {
     expect(next.people.some((id) => skip.has(id))).toBe(false);
     const only: BreakageType[] = ["archived_quote"];
     const archived = planOutreach(tree.dataset, treeScan, { startOn: START, limitPeople: 20, types: only });
-    expect(archived.people.every((id) => oppOf.get(id)!.type === "archived_quote")).toBe(true);
+    expect(archived.people).toHaveLength(20);
+    expect(archived.touches.every((t) => treeScan.opportunities.find((o) => o.id === t.opportunityId)!.type === "archived_quote")).toBe(true);
     const all = planOutreach(tree.dataset, treeScan, { startOn: START });
     expect(all.people.every((id) => oppOf.get(id)!.channels.includes("email"))).toBe(true);
   });
@@ -166,7 +171,7 @@ describe("holdout", () => {
   });
   it("holds back about the owner's share of the reachable list", () => {
     const pct = tree.dataset.business.persistence.holdoutPct;
-    const emailable = treeScan.primary.filter((o) => o.channels.includes("email"));
+    const emailable = worked(tree.dataset, treeScan).filter((o) => o.channels.includes("email"));
     const plan = planOutreach(tree.dataset, treeScan, { startOn: START });
     expect(plan.holdout.length / emailable.length).toBeGreaterThan(pct - 0.04);
     expect(plan.holdout.length / emailable.length).toBeLessThan(pct + 0.04);
@@ -204,7 +209,7 @@ describe("who goes first", () => {
   it.each(["tree", "septic", "pressure_washing", "holiday_lighting", "deck"] as const)("no breakage type takes more than %s's share of a limited round", (trade) => {
     const s = trade === "tree" ? tree : generateSample({ trade, asOf: ASOF });
     const r = trade === "tree" ? treeScan : scan(s.dataset);
-    const types = new Map(r.primary.map((o) => [o.customerId, o.type]));
+    const types = new Map(worked(s.dataset, r).map((o) => [o.customerId, o.type]));
     for (const limit of [150, 50]) {
       const plan = planOutreach(s.dataset, r, { startOn: START, limitPeople: limit });
       expect(plan.people).toHaveLength(limit);
@@ -230,6 +235,54 @@ describe("who goes first", () => {
     const total = (ids: string[], f: (o: Opportunity) => number) => ids.reduce((a, id) => a + f(oppOf.get(id)!), 0);
     expect(total(dollars.people, (o) => o.expectedValue)).toBeGreaterThan(total(reply.people, (o) => o.expectedValue));
     expect(total(reply.people, (o) => o.recoverProbability)).toBeGreaterThan(total(dollars.people, (o) => o.recoverProbability));
+  });
+});
+
+describe("the leaks each trade's offer works (both offers, every plan)", () => {
+  const PAST: BreakageType[] = ["lapsed_regular", "one_and_done", "service_due"];
+  const QUOTES: BreakageType[] = ["unanswered_quote", "archived_quote", "changes_requested", "approved_unscheduled", "unquoted_request", "declined_quote"];
+  const planned = (trade: Parameters<typeof generateSample>[0]["trade"]) => {
+    const s = generateSample({ trade, asOf: ASOF });
+    const r = scan(s.dataset);
+    const plan = planOutreach(s.dataset, r, { startOn: START, limitPeople: 150 });
+    const opp = new Map(r.opportunities.map((o) => [o.id, o]));
+    return { s, r, plan, opps: plan.touches.map((t) => opp.get(t.opportunityId)!) };
+  };
+
+  it.each(["lawn", "landscape", "cleaning"] as const)("%s: past customers only, plus a one-time clean put on a regular schedule", (trade) => {
+    const { plan, opps } = planned(trade);
+    expect(plan.people.length).toBeGreaterThan(0);
+    for (const o of opps) expect(PAST.includes(o.type) || (o.type === "missed_upsell" && o.serviceId === "clean.recurring"), `${o.type} ${o.serviceId}`).toBe(true);
+  }, 60_000);
+
+  it.each(["tree", "painting", "fence"] as const)("%s: old quotes and past customers, never an invoice, a passed-on option or an upsell", (trade) => {
+    const { plan, opps } = planned(trade);
+    expect(plan.people.length).toBeGreaterThan(0);
+    for (const o of opps) expect([...QUOTES, ...PAST], o.type).toContain(o.type);
+  }, 60_000);
+
+  it("a person whose first leak the offer doesn't work is planned on the next one it does", () => {
+    for (const trade of ["lawn", "tree"] as const) {
+      const { s, r, plan } = planned(trade);
+      const notWorked = r.primary.filter((o) => !worksLeak(trade, o) && o.channels.includes("email"));
+      const fallback = worked(s.dataset, r).filter((o) => notWorked.some((x) => x.customerId === o.customerId));
+      expect(fallback.length, trade).toBeGreaterThan(0);
+      const all = planOutreach(s.dataset, r, { startOn: START, applyHoldout: false });
+      for (const o of fallback.filter((x) => !x.caution?.length)) expect(all.touches.find((t) => t.customerId === o.customerId && t.step === 1)?.opportunityId).toBe(o.id);
+      expect(plan.people.length).toBe(150);
+    }
+  }, 60_000);
+
+  it("the cleaning follow-on is the only upsell, and only for the trades sold monthly", () => {
+    const upsell = (serviceId: string) => ({ type: "missed_upsell" as const, serviceId });
+    expect(worksLeak("cleaning", upsell("clean.recurring"))).toBe(true);
+    expect(worksLeak("cleaning", upsell("clean.deep"))).toBe(false);
+    expect(worksLeak("lawn", upsell("lawn.aerate"))).toBe(false);
+    expect(worksLeak("tree", upsell("clean.recurring"))).toBe(false);
+    for (const trade of ["lawn", "cleaning", "tree", "septic", "general"] as const)
+      for (const type of ["unpaid_invoice", "declined_option"] as const) expect(worksLeak(trade, { type, serviceId: "x" })).toBe(false);
+    expect(worksLeak("lawn", { type: "unanswered_quote", serviceId: "x" })).toBe(false);
+    expect(worksLeak("fence", { type: "unanswered_quote", serviceId: "x" })).toBe(true);
   });
 });
 

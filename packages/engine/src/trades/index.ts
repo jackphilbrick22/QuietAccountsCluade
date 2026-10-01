@@ -1,8 +1,8 @@
 import type { LineItem, SeasonFit, TradeId } from "../model.ts";
-import { PLAYBOOKS } from "./playbooks.ts";
+import { OFFERED_TRADES, PLAYBOOKS } from "./playbooks.ts";
 import { climateOf, type Climate, type ServiceDef, type TradePlaybook } from "./types.ts";
 
-export { PLAYBOOKS, TRADE_OPTIONS } from "./playbooks.ts";
+export { OFFERED_TRADES, PLAYBOOKS, TRADE_OPTIONS } from "./playbooks.ts";
 export { climateOf, WARM_STATES, type Climate, type ServiceDef, type TradePlaybook } from "./types.ts";
 
 export function playbook(trade: TradeId | undefined): TradePlaybook {
@@ -163,7 +163,8 @@ const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
   hvac: /\b(hvac|furnace|a\/?c|air condition\w*|heat pump|mini-?split|duct\w*|thermostat|tune-?up|igniter)\b/i,
   pest: /\b(pest|termites?|rodents?|mosquito\w*|ticks?|wasps?|hornets?|bed ?bugs?|ants?)\b/i,
   junk_removal: /\b(junk|haul\w*|clean-?out|debris|dumpster|demolition|removal - |pickup)\b/i,
-  cleaning: /\b(maid|move-?out|deep clean|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
+  // "Standard Cleaning" is what booking software (BookingKoala, Launch27) calls a regular house clean
+  cleaning: /\b(maid|move-?out|deep clean|standard clean\w*|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
   // plain "lights" is landscape and path lighting too; these name holiday or permanent roofline work
   holiday_lighting: /\b(christmas|xmas|holiday (light\w*|decor\w*|display)|c9s?|c7s?|mini[- ]lights|wreaths?|garlands?|roofline|permanent (led |house |home |roofline |track |eave |christmas |holiday )?light\w*|trimlight|gemstone lights?|jellyfish lights?|light(s|ing)? (take-?down|removal|storage)|take-?down (&|and|\+|\/) storage)\b/i,
   // "deck stain" and "deck wash" are shared with painting and washing on purpose, so neither shop reads as a second
@@ -182,12 +183,13 @@ const SETTLED_BY: Partial<Record<TradeId, RegExp>> = {
 /**
  * Which trade(s) this business is, read from its own quote and job titles — so setup never asks.
  * Each title votes: for the trades whose own words it uses, else for the trades whose services it fits;
- * a title that fits one trade counts fully, one that fits three counts a third to each.
+ * a title that fits one trade counts fully, one that fits three counts a third to each. Only the trades the offers
+ * sell are candidates: "Standard Cleaning" is a cleaning job, never a deck company's.
  */
 export function detectTrade(titles: string[]): { trade: TradeId; others: TradeId[]; confidence: number; counts: Partial<Record<TradeId, number>> } {
   const counts: Partial<Record<TradeId, number>> = {};
   const only: Partial<Record<TradeId, number>> = {};
-  const all = (Object.keys(PLAYBOOKS) as TradeId[]).filter((t) => t !== "general");
+  const all = OFFERED_TRADES;
   let classified = 0;
   for (const title of titles.slice(0, 3000)) {
     if (!title) continue;

@@ -3,7 +3,7 @@ import { readRequestEmail } from "../src/inbox/request.ts";
 import { answerNewRequests, takeRequest } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { makeId } from "../src/util.ts";
-import { ASOF, ago, business, customer, dataset } from "./fixtures.ts";
+import { ago, ASOF, business, customer, dataset, NEW_REQUESTS } from "./fixtures.ts";
 
 const WEB_FORM = `---------- Forwarded message ---------
 From: Wix Forms <no-reply@wix.com>
@@ -90,7 +90,7 @@ describe("a forwarded request goes on the always-on track", () => {
     expect(t.duplicate).toBe(false);
     const c = st.dataset.customers.find((x) => x.id === t.customerId)!;
     expect(c).toMatchObject({ name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"], leadSource: "your website" });
-    expect(answerNewRequests(st, `${ASOF}T10:06:00`)).toBe(1);
+    expect(answerNewRequests(st, `${ASOF}T10:06:00`, { features: NEW_REQUESTS })).toBe(1);
     const note = st.touches.find((x) => x.track === "new_request")!;
     expect(note.customerId).toBe(c.id);
     expect(note.body).toMatch(/Thanks for reaching out/);
@@ -99,7 +99,7 @@ describe("a forwarded request goes on the always-on track", () => {
     expect(text).toContain("Came in through your website; you forwarded it");
     // forwarded twice (the owner's filter and by hand): one request, one answer
     expect(takeRequest(st, lead, `${ASOF}T10:20:00`, `${ASOF}T10:20:00`).duplicate).toBe(true);
-    expect(answerNewRequests(st, `${ASOF}T10:21:00`)).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T10:21:00`, { features: NEW_REQUESTS })).toBe(0);
   });
   it("someone already in the records is matched by email, not added again", () => {
     const st = emptyState(dataset({ business: paying(), customers: [customer("c9", { name: "Karen Whitfield", emails: ["karen.whitfield@gmail.com"] })] }), `${ASOF}T10:00:00`);
@@ -133,7 +133,7 @@ describe("the ledger counts comebacks, not new requests", () => {
     const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } });
     const st = emptyState(dataset({ business: paying, customers: [] }), `${ASOF}T10:00:00`);
     takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
-    answerNewRequests(st, `${ASOF}T10:06:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`, { features: NEW_REQUESTS });
     const note = st.touches.find((t) => t.track === "new_request")!;
     markSent(st, note.id, `${ASOF}T10:06:00`, "msg-1");
     expect(st.outreach).toHaveLength(0);
@@ -144,7 +144,7 @@ describe("the ledger counts comebacks, not new requests", () => {
   });
 });
 
-describe("Every Month After is measured, not claimed", () => {
+describe("new-request answers are measured, not claimed", () => {
   it("the week's numbers count new requests answered and how many minutes it took", async () => {
     const { markSent } = await import("../src/runtime/agents.ts");
     const { weekNumbers } = await import("../src/reports/owner.ts");
@@ -152,7 +152,7 @@ describe("Every Month After is measured, not claimed", () => {
     const paying = business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) } });
     const st = emptyState(dataset({ business: paying, customers: [] }), `${ASOF}T10:00:00`);
     takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
-    answerNewRequests(st, `${ASOF}T10:06:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`, { features: NEW_REQUESTS });
     markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ASOF}T10:09:00`, "msg-1");
     const w = weekNumbers(st, mondayOf(ASOF));
     expect(w).toMatchObject({ requestsAnswered: 1, answerMinutes: 3, freshFollowed: 0 });
@@ -204,7 +204,7 @@ describe("a forwarded request: the person is the innermost message, never the bu
     const t = takeRequest(st, { name: "Tom Baker", email: "tbaker@gmail.com", phone: "+16032248811", job: "A birch came down across the driveway", source: "a forwarded email", read: "loose" }, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
     expect(t.customerId).not.toBe("c-rachel");
     expect(st.dataset.customers.find((c) => c.id === "c-rachel")!.emails).toEqual(["rachel.moore@outlook.com"]);
-    answerNewRequests(st, `${ASOF}T10:06:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`, { features: NEW_REQUESTS });
     const note = st.touches.find((x) => x.track === "new_request")!;
     expect(st.dataset.customers.find((c) => c.id === note.customerId)!.emails).toEqual(["tbaker@gmail.com"]);
     expect(note.body).toMatch(/Hi Tom/);
@@ -264,11 +264,11 @@ describe("one person, one answer", () => {
     const st = emptyState(dataset({ business: payingBiz(), customers: [] }), `${ago(1)}T18:00:00`);
     const lead = readRequestEmail({ subject: "Fwd: New form submission", text: WEB_FORM }).lead!;
     takeRequest(st, lead, `${ago(1)}T18:05:00`, `${ago(1)}T18:05:00`);
-    expect(answerNewRequests(st, `${ago(1)}T18:05:00`)).toBe(1);
+    expect(answerNewRequests(st, `${ago(1)}T18:05:00`, { features: NEW_REQUESTS })).toBe(1);
     markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ago(1)}T18:06:00`, "msg-1");
     const again = takeRequest(st, lead, `${ASOF}T08:30:00`, `${ASOF}T08:30:00`);
     expect(again.duplicate).toBe(false);
-    expect(answerNewRequests(st, `${ASOF}T08:30:00`)).toBe(1);
+    expect(answerNewRequests(st, `${ASOF}T08:30:00`, { features: NEW_REQUESTS })).toBe(1);
     expect(st.touches.filter((t) => t.track === "new_request")).toHaveLength(1);
     expect(dueTouches(st, `${ASOF}T08:31`).due).toHaveLength(0);
     expect(st.ownerMessages.at(-1)!.text).toContain("They already got our answer to an earlier request, so no second note went");
@@ -278,11 +278,11 @@ describe("one person, one answer", () => {
     const { markSent } = await import("../src/runtime/agents.ts");
     const karen = customer("jc1", { name: "Karen Whitfield", firstName: "Karen", emails: ["karen.whitfield@gmail.com"] });
     const st = emptyState(dataset({ business: payingBiz(), customers: [karen], requests: [{ id: "jr1", customerId: "jc1", title: "the oak", status: "new", rawStatus: "New", createdOn: ASOF, createdAt: `${ASOF}T09:00:00` }] }), `${ASOF}T09:00:00`);
-    expect(answerNewRequests(st, `${ASOF}T09:05:00`)).toBe(1);
+    expect(answerNewRequests(st, `${ASOF}T09:05:00`, { features: NEW_REQUESTS })).toBe(1);
     markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ASOF}T09:06:00`, "msg-1");
     const t = takeRequest(st, readRequestEmail({ subject: "Fwd: New form submission", text: WEB_FORM }).lead!, `${ASOF}T10:00:00`, `${ASOF}T10:00:00`);
     expect(t.customerId).toBe("jc1");
-    answerNewRequests(st, `${ASOF}T10:00:00`);
+    answerNewRequests(st, `${ASOF}T10:00:00`, { features: NEW_REQUESTS });
     expect(st.touches.filter((x) => x.track === "new_request")).toHaveLength(1);
   });
 
@@ -290,9 +290,9 @@ describe("one person, one answer", () => {
     const st = emptyState(dataset({ business: payingBiz(), customers: [] }), `${ASOF}T22:00:00`);
     const lead = readRequestEmail({ subject: "Fwd: New form submission", text: WEB_FORM }).lead!;
     takeRequest(st, lead, `${ASOF}T22:05:00`, `${ASOF}T22:05:00`);
-    answerNewRequests(st, `${ASOF}T22:05:00`);
+    answerNewRequests(st, `${ASOF}T22:05:00`, { features: NEW_REQUESTS });
     takeRequest(st, { ...lead, job: "Also a maple by the fence" }, `${ASOF}T22:30:00`, `${ASOF}T22:30:00`);
-    answerNewRequests(st, `${ASOF}T22:30:00`);
+    answerNewRequests(st, `${ASOF}T22:30:00`, { features: NEW_REQUESTS });
     expect(st.touches.filter((x) => x.track === "new_request")).toHaveLength(1);
     expect(st.ownerMessages.at(-1)!.text).toContain("Our answer to their earlier request is already on its way");
   });
@@ -303,7 +303,7 @@ describe("a reply to our answer to a new request", () => {
     const { markSent } = await import("../src/runtime/agents.ts");
     const st = emptyState(dataset({ business: payingBiz(), customers: [] }), `${ASOF}T10:00:00`);
     takeRequest(st, readRequestEmail({ subject: "Fwd: New form submission", text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
-    answerNewRequests(st, `${ASOF}T10:05:00`);
+    answerNewRequests(st, `${ASOF}T10:05:00`, { features: NEW_REQUESTS });
     const note = st.touches.find((t) => t.track === "new_request")!;
     markSent(st, note.id, `${ASOF}T10:06:00`, "msg-1");
     return { st, note };
@@ -350,7 +350,7 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     st.touches.push({ id: "fq1", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ASOF}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
     markSent(st, "fq1", `${ASOF}T08:00:00`, "msg-fence");
     takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ASOF}T10:05:00`, `${ASOF}T10:05:00`);
-    answerNewRequests(st, `${ASOF}T10:06:00`);
+    answerNewRequests(st, `${ASOF}T10:06:00`, { features: NEW_REQUESTS });
     markSent(st, st.touches.find((t) => t.track === "new_request")!.id, `${ASOF}T10:07:00`, "msg-req");
     const r = receiveReply(st, { from: "Karen Whitfield <karen.whitfield@gmail.com>", text: "Yes, let's go ahead with the fence quote. When can you start?", receivedAt: `${ASOF}T11:00:00` });
     expect(r.followUpOf).toBeUndefined();
@@ -370,7 +370,7 @@ describe("a yes to a follow-up is never taken for a thanks to a request answer",
     st.touches.push({ id: "fq1", opportunityId: "o-fence", customerId: "c1", channel: "email", step: 1, angle: "check_in", dueAt: `${ago(50)}T08:00`, status: "approved", body: "About the fence", flags: [] } as never);
     markSent(st, "fq1", `${ago(50)}T08:00:00`, "msg-fence");
     takeRequest(st, readRequestEmail({ text: WEB_FORM }).lead!, `${ago(20)}T10:05:00`, `${ago(20)}T10:05:00`);
-    answerNewRequests(st, `${ago(20)}T10:06:00`);
+    answerNewRequests(st, `${ago(20)}T10:06:00`, { features: NEW_REQUESTS });
     const answer = st.touches.find((t) => t.track === "new_request")!;
     markSent(st, answer.id, `${ago(20)}T10:07:00`, "msg-req");
     const r = receiveReply(st, { from: "karen.whitfield@gmail.com", text: "Still haven't heard from anyone. How much would it cost to take the oak down?", inReplyTo: "msg-req", receivedAt: `${ASOF}T11:00:00` });

@@ -19,6 +19,9 @@ afterEach(() => {
   open = [];
 });
 
+/** A server that sells the yearly plan (FEATURE_YEARLY=on): RENEW, the renewal, refunds and UNDO after CANCEL. */
+const yearlyOn = () => make({ env: { FEATURE_YEARLY: "on" } });
+
 const state = (h: Harness, bid: string) => h.d.accounts.peek(bid)!.state;
 const reply = (h: Harness, bid: string, rid: string) => state(h, bid).replies.find((r) => r.id === rid)!;
 const pushOwner = (h: Harness, bid: string, m: Partial<OwnerMessage> & { id: string }) =>
@@ -361,7 +364,7 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
   });
 
   it("a trial owner texting MONTHLY or YEARLY goes to Jack for the payment link; nothing turns paying on a text", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("aaa-tree", { name: "AAA Tree" });
     await h.d.accounts.withAccount("aaa-tree", (s) => {
       s.awaitingOwnerOk = "2026-09-29T09:00:00";
@@ -375,7 +378,7 @@ describe("one owner, two businesses on one cell (n4, n48)", () => {
   });
 
   it("books by the #code in the text, pauses and cancels only the one named, and asks instead of guessing", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("aaa-tree", { name: "AAA Tree" });
     const second = await h.business("bbb-tree", { name: "BBB Tree" });
     expect(String((second.warnings as string[])[0])).toMatch(/AAA Tree uses the same cell.*PAUSE BBB/);
@@ -590,7 +593,7 @@ describe("reminders survive a restart (n17, n53)", () => {
   });
 
   it("a renewal ask is never asked twice after a deploy, however many texts came since", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await h.d.accounts.withAccount("ridge", (s) => {
       s.ownerMessages.push({ id: "om-renewal", at: "2026-09-20T09:00:00", kind: "renewal", text: "Your year with us ends Oct 20.", refs: [{ kind: "year_end", id: "2026-10-20" }] });
@@ -602,7 +605,7 @@ describe("reminders survive a restart (n17, n53)", () => {
   });
 
   it("the wait for the OK, the quiet rate before we started and a CANCEL all survive a deploy", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     const before = { rate: 0.42, quiet: 21, quotes: 50, value: 61200, on: "2026-09-29" } as never;
     await h.d.accounts.withAccount("ridge", (s) => {
@@ -730,7 +733,7 @@ describe("final review: what an owner's text is about", () => {
   });
 
   it("'Go for it' / 'Go ahead' answers the close or the renewal, never RESUME; RESUME still resumes (final 9)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await pushOwner(h, "ridge", { id: "om-close", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday 2 and the next batch goes out next week." });
     for (const text of ["Go for it", "Go ahead", "Go ahead and keep it going", "Go!"]) {
@@ -741,7 +744,7 @@ describe("final review: what an owner's text is about", () => {
     expect(state(h, "ridge").dataset.business.plan.stage).toBe("trial");
 
     // the renewal: the yes is kept, and asked which, never "Back on"
-    const r = make();
+    const r = yearlyOn();
     await r.business("ridge");
     await r.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "annual", paidOn: "2025-10-20", yearsPaidOn: ["2025-10-20"] } });
     await r.d.accounts.withAccount("ridge", (s) => {
@@ -823,7 +826,7 @@ describe("final review: the plan by text and in Settings", () => {
   };
 
   it("Settings records a yearly plan, and a monthly owner's months stay in their fees when they go yearly", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await yearly(h, "ridge", "2026-09-29");
     expect(plan(h, "ridge")).toMatchObject({ stage: "paying", billing: "annual", paidOn: "2026-09-29", yearsPaidOn: ["2026-09-29"] });
@@ -838,7 +841,7 @@ describe("final review: the plan by text and in Settings", () => {
   });
 
   it("RENEW from a paying owner goes to Jack for the payment link, once; the renewal isn't asked again", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await yearly(h, "ridge", "2025-10-20");
     await h.d.accounts.withAccount("ridge", (s) => {
@@ -857,7 +860,7 @@ describe("final review: the plan by text and in Settings", () => {
   });
 
   it("YEARLY from a monthly owner changes nothing until it's paid; MONTHLY again never moves the charge date", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", paidOn: "2026-06-01" } });
     expect(await h.sms("Yearly")).toBe("Great — the year it is. Jack will text you the payment link, and your year starts the day it's paid.");
@@ -870,7 +873,7 @@ describe("final review: the plan by text and in Settings", () => {
 
   it("RESUME after a year ran out says so and goes to a person; nothing sends while the plan is paused", { timeout: 60_000 }, async () => {
     // 9:30am New York: the daily checks run, inside the send window
-    const h = make({ now: "2026-09-29T13:30:00Z" });
+    const h = make({ now: "2026-09-29T13:30:00Z", env: { FEATURE_YEARLY: "on" } });
     await h.business("ridge");
     const sample = generateSample({ trade: "tree", asOf: "2026-09-29" });
     await h.api("POST", "/api/businesses/ridge/imports", { files: sample.files.map((f) => ({ name: f.name, text: f.text, kind: f.kind })) });
@@ -919,7 +922,7 @@ describe("verification review: owner texts that read two ways", () => {
     });
 
   it("a lead text without a #code that starts with Monthly / Annual / Yearly is about the lead, never a plan change (sweep 3)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "monthly", paidOn: "2026-06-01" } });
     await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
@@ -940,7 +943,7 @@ describe("verification review: owner texts that read two ways", () => {
     expect(latest(h, "ridge")).toMatchObject({ handled: "monthly_already" });
 
     // a yearly owner (year from Mar 1): no renewal recorded early, no switch to month to month
-    const y = make();
+    const y = yearlyOn();
     await y.business("ridge");
     await y.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", billing: "annual", paidOn: "2026-03-01", yearsPaidOn: ["2026-03-01"] } });
     await addLead(y, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
@@ -956,7 +959,7 @@ describe("verification review: owner texts that read two ways", () => {
   });
 
   it("a plan word with a reason after it goes to a person and never touches the lead waiting (second check 2)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     await renewalOut(h, "ridge", "2025-10-20", "2026-10-20");
     await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
@@ -1012,7 +1015,7 @@ describe("verification review: owner texts that read two ways", () => {
   });
 
   it("a go-ahead after PAUSE resumes when nothing else is open; a yes with more after it reaches a person (sweep 7)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await h.business("ridge");
     for (const text of ["Go ahead and resume", "Go ahead and start it back up", "Go ahead, thanks", "Go for it, thanks"]) {
       expect(await h.sms("PAUSE")).toMatch(/^Paused\./);
@@ -1032,7 +1035,7 @@ describe("verification review: owner texts that read two ways", () => {
     }
 
     // paused with the renewal out: "Go" is the renewal's yes, and a person reads it too
-    const r = make();
+    const r = yearlyOn();
     await r.business("ridge");
     await renewalOut(r, "ridge", "2025-10-20", "2026-10-20");
     expect(await r.sms("PAUSE")).toMatch(/^Paused\./);
@@ -1059,7 +1062,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
   const settings = (h: Harness, p: Record<string, unknown>) => h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", ...p } });
 
   it("RENEW, then Monthly in Settings: the renewed year comes off, so a year never paid is never refunded or settled (sweep 1)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await yearly(h, { paidForItself: true });
     expect(await h.sms("RENEW")).toContain("another year from October 20");
     // the owner would rather go month to month: Billing Monthly and First paid day Oct 20, saved together
@@ -1077,7 +1080,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
 
   it("MONTHLY then RENEW by text, never paid: taking the year off in Settings sticks, and the first year counts once (sweep 1)", async () => {
     for (const fix of ["take the year off", "set the day back"] as const) {
-      const h = make();
+      const h = yearlyOn();
       await yearly(h);
       expect(await h.sms("monthly")).toContain("month to month from October 20");
       expect(await h.sms("renew")).toContain("another year from October 20");
@@ -1093,7 +1096,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
   });
 
   it("the renewed year is paid and Jack sets First paid day to it: the year before stays paid, judged and refundable (sweep 2)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await yearly(h);
     await h.sms("RENEW");
     // what the console sends: the day moves to a year already listed, and the years don't change
@@ -1106,7 +1109,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
     expect(guaranteeCheck(state(h, "ridge"), "2026-09-29")!.chargeOn).toBe("2026-10-20");
     expect(earlyLeaveRefund(state(h, "ridge"), "2026-09-29")).toMatchObject({ yearStart: "2025-10-20", refund: 4970 });
     // a day inside the year it started still only corrects it
-    const c = make();
+    const c = yearlyOn();
     await yearly(c);
     expect((await settings(c, { billing: "annual", paidOn: "2025-10-25", yearsPaidOn: ["2025-10-25"] })).status).toBe(200);
     expect(plan(c)).toMatchObject({ paidOn: "2025-10-25", yearsPaidOn: ["2025-10-25"] });
@@ -1116,7 +1119,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
 
   it("a quiet last month dated the day the first paid day moves to still comes off the year it ended (second check 1)", async () => {
     for (const billing of ["annual", "monthly"] as const) {
-      const h = make();
+      const h = yearlyOn();
       await yearly(h);
       await h.sms("RENEW");
       // the year's last month was quiet: its refund is dated the day the renewed year starts
@@ -1131,7 +1134,7 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
   });
 
   it("CANCEL after a RENEW that was only texted promises nothing for the renewed year, goes to Jack, and UNDO by text works (sweep 4, 5)", async () => {
-    const h = make();
+    const h = yearlyOn();
     await yearly(h, { paidForItself: true });
     await h.sms("RENEW");
     h.setNow("2026-10-01T14:00:00Z");

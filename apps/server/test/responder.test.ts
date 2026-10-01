@@ -70,8 +70,8 @@ describe("the responder", () => {
     expect(r.intent).toBe("question");
     expect(r.draft?.text).toMatch(/stump/);
     expect(r.thread?.messageId).toBe("<q1@mail.test>");
-    // the instant answer already went, and is on the thread
-    expect(r.answers?.[0]?.by).toBe("auto");
+    // no instant answer went on the owner's behalf: a person reads every reply (a new account has autoAck off)
+    expect(r.answers).toBeUndefined();
 
     const sent = await api("POST", `/api/businesses/ridge/replies/${r.id}/answer`, { useDraft: true });
     expect(sent.status).toBe(200);
@@ -82,7 +82,7 @@ describe("the responder", () => {
     expect(last.text).toMatch(/grind stumps/);
     const after = d.accounts.peek("ridge")!.state.replies.find((x) => x.id === r.id)!;
     expect(after.draft).toBeUndefined();
-    expect(after.answers?.at(-1)?.by).toBe("operator");
+    expect(after.answers?.map((a) => a.by)).toEqual(["operator"]);
   });
 
   it("refuses to send an unsourced stat or anything to someone who asked us to stop", async () => {

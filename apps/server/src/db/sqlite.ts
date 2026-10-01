@@ -229,10 +229,15 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX inbound_review_open ON inbound_review(status, at);
   `,
-  `
+  /* 3 */ `
   -- Account state that isn't records: the wait for the owner's OK, the quiet rate before we started, and what a CANCEL
   -- stopped (so UNDO and Restore plan still work after a restart). JSON.
   ALTER TABLE businesses ADD COLUMN extra TEXT;
+  `,
+  /* 4 */ `
+  -- The two offers: a person reads every reply (no instant answer on the owner's behalf), and nobody on the list is held
+  -- back as a comparison group. Once, for the accounts made before; new ones start this way.
+  UPDATE businesses SET profile = json_set(profile, '$.autoAck', json('false'), '$.persistence.holdoutPct', 0);
   `,
 ];
 

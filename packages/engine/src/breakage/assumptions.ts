@@ -1,12 +1,11 @@
-import type { BreakageType, BusinessProfile } from "../model.ts";
+import type { BreakageType, BusinessProfile, Features, Opportunity, TradeId } from "../model.ts";
 
 /**
  * Recovery priors: the share of reachable opportunities of each type that turn into
  * booked, paid work within ~90 days of a full sequence. Deliberately conservative.
  *
- * These are PRIORS, shown to owners as "how we estimate", and replaced by each
- * business's own measured rates as soon as it has results (see calibrate()).
- * Never present these as promises or as industry statistics.
+ * They only rank who to write to first. Never show them to an owner or a site visitor, and never
+ * present them as promises, forecasts or industry statistics.
  */
 export const RECOVERY_PRIOR: Record<BreakageType, number> = {
   approved_unscheduled: 0.3, // they already said yes; counted only once the owner confirms it wasn't done
@@ -22,31 +21,6 @@ export const RECOVERY_PRIOR: Record<BreakageType, number> = {
   missed_upsell: 0.02,
   declined_quote: 0.01,
 };
-
-/**
- * The honest range around each prior (low, high), from the research brief. A careful forecast uses the
- * low end type by type — not a flat haircut — so a shop that's mostly dead quotes gets a much lower floor.
- */
-export const RECOVERY_RANGE: Record<BreakageType, [number, number]> = {
-  approved_unscheduled: [0.15, 0.45],
-  unpaid_invoice: [0.01, 0.1],
-  changes_requested: [0.05, 0.2],
-  unquoted_request: [0.03, 0.1],
-  service_due: [0.04, 0.12],
-  lapsed_regular: [0.05, 0.12],
-  unanswered_quote: [0.015, 0.04],
-  archived_quote: [0.01, 0.035],
-  declined_option: [0.02, 0.06],
-  one_and_done: [0.01, 0.035],
-  missed_upsell: [0.01, 0.04],
-  declined_quote: [0.005, 0.015],
-};
-
-/** Low and high as a share of the prior, per type. */
-export function rangeFactor(type: BreakageType, end: "low" | "high"): number {
-  const [lo, hi] = RECOVERY_RANGE[type];
-  return (end === "low" ? lo : hi) / RECOVERY_PRIOR[type];
-}
 
 /**
  * Quotes older than this never repeat the old price: owners re-bid old work (materials,
@@ -128,9 +102,34 @@ export const ALWAYS_ON_MIN_DAYS: Partial<Record<BreakageType, number>> = {
 };
 export const FRESH_QUOTE_DAYS = 30;
 
-/** Always-on is the paid product; the free round is the backlog sweep. An operator can switch it either way. */
-export function alwaysOnFor(b: BusinessProfile): boolean {
-  return b.alwaysOn ?? b.plan.stage === "paying";
+/**
+ * Always-on comes with new-request answering, which only a server with that feature sells: there it's the paid
+ * product and the free round is the backlog sweep, and an operator can switch it either way.
+ */
+export function alwaysOnFor(b: BusinessProfile, f: Features = {}): boolean {
+  return !!f.newRequests && (b.alwaysOn ?? b.plan.stage === "paying");
+}
+
+/** Past customers: what the monthly trades work, and the one-pass trades too. */
+const PAST_CUSTOMERS: BreakageType[] = ["lapsed_regular", "one_and_done", "service_due"];
+/** Old quotes and requests: the one-pass trades only. */
+const OLD_QUOTES: BreakageType[] = ["unanswered_quote", "archived_quote", "changes_requested", "approved_unscheduled", "unquoted_request", "declined_quote"];
+const MONTHLY_TRADES = new Set<TradeId>(["lawn", "landscape", "cleaning"]);
+/** The one follow-on either offer sells: a one-time or deep clean put on a regular schedule. */
+const TO_REGULAR = "clean.recurring";
+
+/** The trades sold monthly, which work past customers only; every other trade is worked as a one pass. */
+export function soldMonthly(trade: TradeId): boolean {
+  return MONTHLY_TRADES.has(trade);
+}
+
+/**
+ * The leaks each trade's offer works, the same for the monthly offer and the one pass. Unpaid invoices, passed-on
+ * options and every other missed upsell are never worked.
+ */
+export function worksLeak(trade: TradeId, o: Pick<Opportunity, "type" | "serviceId">): boolean {
+  if (o.type === "missed_upsell") return soldMonthly(trade) && o.serviceId === TO_REGULAR;
+  return PAST_CUSTOMERS.includes(o.type) || (!soldMonthly(trade) && OLD_QUOTES.includes(o.type));
 }
 
 
@@ -209,21 +208,6 @@ export const BREAKAGE_LABEL: Record<BreakageType, { title: string; short: string
     icon: "receipt",
   },
 };
-
-/** Types that are sales opportunities (vs. collections). Unpaid invoices are opt-in. */
-export const SALES_TYPES: BreakageType[] = [
-  "approved_unscheduled",
-  "changes_requested",
-  "unquoted_request",
-  "unanswered_quote",
-  "archived_quote",
-  "service_due",
-  "lapsed_regular",
-  "declined_option",
-  "one_and_done",
-  "missed_upsell",
-  "declined_quote",
-];
 
 /** Work-it-first order when a customer has several opportunities. */
 export const TYPE_RANK: Record<BreakageType, number> = {

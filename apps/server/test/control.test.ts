@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { answerNewRequests, closeIfDue, find, ledgerPass, markSent, planBatch, sendHealth, type BusinessProfile, type Customer, type Quote, type Reply, type Touch } from "@qa/engine";
-import { loadConfig } from "../src/config.ts";
+import { features, loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
 import { Accounts } from "../src/core/accounts.ts";
@@ -128,7 +128,8 @@ const op = async (method: string, path: string, body?: unknown) => {
 const review = async () => (await op("GET", "/api/review")).json.items as { kind: string; businessId: string; title?: string; detail?: string }[];
 
 beforeAll(() => {
-  const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: TOKEN, APP_SECRET: SECRET, WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false" });
+  // written with new-request answering and the yearly plan sold: their tests run with both on
+  const cfg = loadConfig({ DATABASE_PATH: dbPath, OPERATOR_TOKEN: TOKEN, APP_SECRET: SECRET, WEBHOOK_SECRET: WH, PUBLIC_URL: "https://qa.test", WORKER_ENABLED: "false", FEATURE_NEW_REQUESTS: "on", FEATURE_YEARLY: "on" });
   const email = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, sendingAccounts: ["sarah@mail.test"], sleep: async () => {}, maxRetries: 0 });
   d = { cfg, accounts: new Accounts(new Repo(new Db(dbPath))), email, notifier: new LogNotifier(true), llm: null, fsm: {}, log: () => {}, clock: () => now, parsers: { instantly: (b) => parseInstantlyWebhook(b, now) } };
   app = createApp(d);
@@ -452,7 +453,7 @@ describe("someone who wrote back to our answer to their request", () => {
     await d.accounts.withAccount("walnut", (s) => {
       const q: Quote = { id: "q1", customerId: jo.id, title: "Crown thinning, 3 maples", lineItems: [], total: 1500, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-07-01", jobIds: [] };
       s.dataset = { ...s.dataset, customers: [pat, jo], quotes: [q], requests: [{ id: "r1", customerId: pat.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-29", createdAt: "2026-09-29T13:30:00Z" }] };
-      answerNewRequests(s, "2026-09-29T10:00:00");
+      answerNewRequests(s, "2026-09-29T10:00:00", { features: features(d.cfg) });
     });
     await syncSequencer(d, "walnut", d.email);
     const answer = st("walnut").touches.find((t) => t.instant)!;
@@ -500,7 +501,7 @@ describe("the quote that stops a request's follow-up", () => {
     const sam = person("sam.lee@gmail.com");
     await d.accounts.withAccount("chestnut", (s) => {
       s.dataset = { ...s.dataset, customers: [sam], requests: [{ id: "r1", customerId: sam.id, title: "Oak over the garage", status: "new", rawStatus: "New", createdOn: "2026-09-29", createdAt: "2026-09-29T13:30:00Z" }] };
-      answerNewRequests(s, "2026-09-29T10:00:00");
+      answerNewRequests(s, "2026-09-29T10:00:00", { features: features(d.cfg) });
     });
     await syncSequencer(d, "chestnut", d.email);
     const answer = st("chestnut").touches.find((t) => t.instant)!;
@@ -519,7 +520,7 @@ describe("the quote that stops a request's follow-up", () => {
     now = new Date("2026-10-07T16:00:00Z");
     await d.accounts.withAccount("chestnut", (s) => {
       s.dataset = { ...s.dataset, quotes: [{ id: "q1", customerId: sam.id, title: "Oak over the garage", lineItems: [], total: 1800, status: "awaiting_response", rawStatus: "Awaiting response", sentOn: "2026-10-07", jobIds: [] }] };
-      ledgerPass(s, "2026-10-07T12:00:00");
+      ledgerPass(s, "2026-10-07T12:00:00", features(d.cfg));
     });
     // (the answer's lead stays in the instant campaign: it went)
     const followUps = () => [...leads.values()].filter((l) => l.campaign !== answer.providerId!.split(":")[1] && campaignsOf("chestnut").includes(l.campaign)).map((l) => l.email);

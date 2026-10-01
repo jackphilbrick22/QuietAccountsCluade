@@ -1,4 +1,4 @@
-import type { BusinessProfile, Customer, Dataset, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
+import type { BusinessProfile, Customer, Dataset, Features, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
 import { classifyService, climateOf, findService, jobPhrase, monthsUntilSeason, playbook, seasonFit, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
@@ -25,6 +25,8 @@ export interface RenderContext {
    * (Gmail splits a thread whose subject changes). Worked out from note 1 when not given.
    */
   threadSubject?: string;
+  /** As the plan was made with: new-request answering brings the fresh-quote sequence. */
+  features?: Features;
 }
 
 /** Factual crew-nearby line from the real schedule or the owner's open-crew weeks. Never invented. */
@@ -237,7 +239,7 @@ function applySwaps(s: string, swaps: [string, string][]): string {
  */
 export function renderNote(o: Opportunity, c: Customer, rc: RenderContext, step: number): RenderedNote | undefined {
   const b = rc.ds.business;
-  const seq = sequenceFor(o, alwaysOnFor(b));
+  const seq = sequenceFor(o, alwaysOnFor(b, rc.features));
   const plan = seq.steps.find((s) => s.step === step);
   if (!plan) return undefined;
   const t = tokens(o, c, b, rc);

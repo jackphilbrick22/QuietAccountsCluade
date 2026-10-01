@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyService, detectTrade, jobPhrase, seasonFit, playbook, PLAYBOOKS } from "../src/trades/index.ts";
+import { classifyService, detectTrade, jobPhrase, OFFERED_TRADES, seasonFit, playbook, PLAYBOOKS, TRADE_OPTIONS } from "../src/trades/index.ts";
 import { CATALOG } from "../src/sample/catalog.ts";
 import { lint } from "../src/copy/lint.ts";
 import { footer, renderNote } from "../src/copy/render.ts";
@@ -289,67 +289,41 @@ describe("the first answer asks what the owner needs", () => {
 });
 
 describe("reading the trade from their own titles", () => {
-  it("every trade reads as itself from its sample titles, with no second trade", () => {
-    for (const trade of ALL_TRADES) {
+  it("every trade the offers sell reads as itself from its sample titles, with no second trade", () => {
+    for (const trade of OFFERED_TRADES) {
       const d = detectTrade((CATALOG[trade] ?? []).flatMap((i) => Array<string>(i.weight).fill(i.title)));
       expect([trade, d.trade, d.others]).toEqual([trade, trade, []]);
     }
   });
 
-  it("a lighting shop reads as holiday lighting, even though its titles name the roofline and the trees", () => {
-    const d = detectTrade(
-      shop(
-        ["Christmas lights - roofline", 8],
-        ["Holiday lighting - roofline + 2 trees", 6],
-        ["Christmas light installation", 5],
-        ["C9 roofline + wreath", 3],
-        ["Permanent lighting - front roofline", 3],
-        ["Christmas light takedown & storage", 3],
-        ["Wrap 3 trees - mini lights", 3],
-      ),
-    );
-    expect(d.trade).toBe("holiday_lighting");
-    expect(d.others).toEqual([]);
-    expect(d.counts.roofing ?? 0).toBe(0);
-    expect(d.counts.tree ?? 0).toBe(0);
+  it("only the trades the offers sell are ever read; the other playbooks stay out of detection", () => {
+    expect([...OFFERED_TRADES].sort()).toEqual(["cleaning", "fence", "landscape", "lawn", "painting", "tree"]);
+    // the console's trade menus and sign-up offer the same six
+    expect(TRADE_OPTIONS).toEqual(OFFERED_TRADES.map((t) => ({ id: t, label: playbook(t).label })));
+    for (const trade of ALL_TRADES.filter((t) => !OFFERED_TRADES.includes(t))) {
+      const d = detectTrade((CATALOG[trade] ?? []).flatMap((i) => Array<string>(i.weight).fill(i.title)));
+      expect([...OFFERED_TRADES, "general"], trade).toContain(d.trade);
+      expect(d.others.filter((t) => !OFFERED_TRADES.includes(t)), trade).toEqual([]);
+      expect(d.counts[trade], trade).toBeUndefined();
+    }
   });
 
-  it("Christmas lights are never read as general, landscape or roofing work", () => {
-    const d = detectTrade(shop(["Christmas lights", 3], ["Christmas lights install", 2], ["Xmas lights - roofline", 2]));
-    expect(d.trade).toBe("holiday_lighting");
-    expect(d.confidence).toBe(1);
-  });
-
-  it("a deck builder reads as decks, with no second trade from staining, washing or pressure-treated lumber", () => {
-    const d = detectTrade(
-      shop(
-        ["New pressure treated deck 14x16", 6],
-        ["Composite deck 16x20 - Trex", 5],
-        ["Deck replacement - cedar", 4],
-        ["Deck stain & seal", 6],
-        ["Deck clean & seal", 3],
-        ["Pergola 12x14", 3],
-        ["Deck repair - rotted boards", 4],
-        ["Pressure treated deck stairs", 3],
-      ),
-    );
-    expect(d.trade).toBe("deck");
-    expect(d.others).toEqual([]);
-    expect(d.counts.pressure_washing ?? 0).toBeLessThan(2);
+  it("'Standard Cleaning' is a cleaning job, never a deck company's", () => {
+    expect(detectTrade(shop(["Standard Cleaning", 12]))).toMatchObject({ trade: "cleaning", others: [] });
+    expect(detectTrade(shop(["Standard Cleaning", 8], ["Deep Clean", 4], ["Move Out Clean", 3]))).toMatchObject({ trade: "cleaning", others: [] });
   });
 
   it("a painting shop that stains decks still reads as painting", () => {
     expect(detectTrade(shop(["Deck stain", 10], ["Exterior house painting", 6], ["Interior - 3 rooms", 5], ["Kitchen cabinet painting", 3]))).toMatchObject({ trade: "painting", others: [] });
   });
 
-  it("washing decks, working over decks or lighting a patio keeps a shop's own trade", () => {
-    expect(detectTrade(shop(["House wash - soft wash", 8], ["Deck wash", 6], ["Deck cleaning", 4], ["Driveway & walks", 5]))).toMatchObject({ trade: "pressure_washing", others: [] });
+  it("working over decks or lighting a patio keeps a shop's own trade", () => {
     expect(detectTrade(shop(["Remove oak over deck", 6], ["Prune maple by the deck", 4], ["Stump grinding x3", 5]))).toMatchObject({ trade: "tree", others: [] });
     expect(detectTrade(shop(["Landscape lighting - 12 fixtures", 6], ["Paver patio 14x16", 5], ["Front bed redesign + mulch", 5]))).toMatchObject({ trade: "landscape", others: [] });
   });
 
-  it("a landscaper who hangs lights every fall has lighting as a second line of work", () => {
-    expect(detectTrade(shop(["Spring cleanup + mulch", 12], ["Paver patio 14x16", 6], ["Christmas lights - roofline", 8]))).toMatchObject({ trade: "landscape", others: ["holiday_lighting"] });
+  it("a landscaper who hangs lights every fall is a landscaper, with no lighting trade beside it", () => {
+    expect(detectTrade(shop(["Spring cleanup + mulch", 12], ["Paver patio 14x16", 6], ["Christmas lights - roofline", 8]))).toMatchObject({ trade: "landscape", others: [] });
   });
 });
 

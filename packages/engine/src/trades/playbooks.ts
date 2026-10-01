@@ -1371,6 +1371,10 @@ export const PLAYBOOKS: Record<TradeId, TradePlaybook> = {
   general,
 };
 
-export const TRADE_OPTIONS: { id: TradeId; label: string }[] = (Object.values(PLAYBOOKS) as TradePlaybook[])
-  .filter((p) => p.id !== "general")
-  .map((p) => ({ id: p.id, label: p.label }));
+/**
+ * The trades the two offers sell to. Trade detection, the console's menus and sign-up use only these; the other
+ * playbooks stay for accounts that already have them.
+ */
+export const OFFERED_TRADES: TradeId[] = ["lawn", "landscape", "cleaning", "tree", "fence", "painting"];
+
+export const TRADE_OPTIONS: { id: TradeId; label: string }[] = OFFERED_TRADES.map((t) => ({ id: t, label: PLAYBOOKS[t].label }));

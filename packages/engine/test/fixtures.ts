@@ -2,11 +2,14 @@
  * Small, explicit builders for hand-made datasets. Every field a test does not care about
  * gets a boring default, so each test only states the facts it is about.
  */
-import type { BusinessProfile, Customer, Dataset, Invoice, ISODate, Job, Opportunity, Quote, ServiceRequest, BreakageType } from "../src/model.ts";
+import type { BusinessProfile, Customer, Dataset, Features, Invoice, ISODate, Job, Opportunity, Quote, ServiceRequest, BreakageType } from "../src/model.ts";
 import type { ScanResult } from "../src/breakage/detect.ts";
 import { addDays } from "../src/util.ts";
 
 export const ASOF: ISODate = "2026-09-29"; // a Tuesday
+
+/** A server that sells new-request answering (FEATURE_NEW_REQUESTS=on): its tests run with it turned on. */
+export const NEW_REQUESTS: Features = { newRequests: true };
 
 /** The date `n` days before `from` (ASOF by default). */
 export function ago(n: number, from: ISODate = ASOF): ISODate {

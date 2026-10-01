@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { answerNewRequests, clearBrake, closeIfDue, dropStaleAnswers, dueTouches, find, HELD_FOR_GOOD, markSent, planBatch, receiveReply, sendHealth } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import type { Reply, Touch } from "../src/model.ts";
-import { ASOF, ago, business, customer, dataset, quote, request } from "./fixtures.ts";
+import { ago, ASOF, business, customer, dataset, NEW_REQUESTS, quote, request } from "./fixtures.ts";
 
 /**
  * The Guard's stops: nothing queued goes to someone who can't be written to any more, a stale "Dave will call
@@ -64,19 +64,19 @@ describe("answers to new requests are never sent late", () => {
 
   it("while sending is paused nothing is queued, and the owner is told to call rather than that we wrote back", () => {
     const st = setup();
-    expect(answerNewRequests(st, `${ASOF}T10:40:00`, { paused: true })).toBe(1);
+    expect(answerNewRequests(st, `${ASOF}T10:40:00`, { paused: true, features: NEW_REQUESTS })).toBe(1);
     expect(st.touches).toEqual([]);
     const owner = st.ownerMessages.at(-1)!.text;
     expect(owner).toMatch(/NEW REQUEST/);
     expect(owner).not.toMatch(/wrote back|we'll write back/);
     expect(owner).toMatch(/call them/i);
     // and the next sync doesn't text the same request again
-    expect(answerNewRequests(st, `${ASOF}T11:40:00`, { paused: true })).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T11:40:00`, { paused: true, features: NEW_REQUESTS })).toBe(0);
   });
 
   it("one that sat through a pause is dropped, not sent days later, and the owner hears it didn't go", () => {
     const st = setup();
-    answerNewRequests(st, `${ASOF}T10:40:00`);
+    answerNewRequests(st, `${ASOF}T10:40:00`, { features: NEW_REQUESTS });
     const t = st.touches[0]!;
     const later = "2026-10-01T10:00";
     const h = dueTouches(st, later).held.find((x) => x.touch.id === t.id)!;
@@ -89,7 +89,7 @@ describe("answers to new requests are never sent late", () => {
 
   it("one whose request was quoted in the meantime is dropped too", () => {
     const st = setup();
-    answerNewRequests(st, `${ASOF}T10:40:00`);
+    answerNewRequests(st, `${ASOF}T10:40:00`, { features: NEW_REQUESTS });
     st.dataset.requests[0]!.quoteId = "q9";
     expect(dueTouches(st, `${ASOF}T10:45`).held[0]!.why).toMatch(HELD_FOR_GOOD);
   });

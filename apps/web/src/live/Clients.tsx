@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { fmtMoney, TRADE_OPTIONS, type TradeId } from "@qa/engine";
+import { fmtMoney, playbook, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, pct, SearchBox, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -17,8 +17,9 @@ export function stageOf(o: Overview): { label: string; tone: "ok" | "info" | "wa
   return { label: "Free round", tone: "info" };
 }
 
+/** Any trade an account has, including the playbooks the menus no longer offer. */
 export function tradeLabel(t: string): string {
-  return TRADE_OPTIONS.find((x) => x.id === t)?.label ?? t.replace(/_/g, " ");
+  return playbook(t as TradeId).label;
 }
 
 export function LiveClients() {

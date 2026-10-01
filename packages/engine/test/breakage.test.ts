@@ -4,7 +4,7 @@ import { closeRate, silentAudit, summarize } from "../src/breakage/forecast.ts";
 import { shopProfile } from "../src/breakage/profile.ts";
 import { readiness } from "../src/breakage/readiness.ts";
 import { renderNote } from "../src/copy/render.ts";
-import { ADJUST, rangeFactor, TYPE_RANK } from "../src/breakage/assumptions.ts";
+import { ADJUST, TYPE_RANK } from "../src/breakage/assumptions.ts";
 import { emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { generateSample, type Sample } from "../src/sample/generate.ts";
 import type { BreakageType, Customer, Dataset, Job } from "../src/model.ts";
@@ -698,21 +698,21 @@ describe("caution holds", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* summarize / fitCheck / closeRate / profile / readiness               */
+/* summarize / closeRate / profile / readiness                         */
 /* ------------------------------------------------------------------ */
 
-describe("summarize and fitCheck", () => {
+describe("summarize", () => {
   let sample: Sample;
   beforeAll(() => {
     sample = generateSample({ trade: "tree", asOf: ASOF });
   });
 
-  it("a full sample is a strong fit and qualifies for the guarantee", () => {
+  it("holds the owner's own numbers only: no forecast, no fit tier, nothing that gates the guarantee", () => {
     const s = summarize(sample.dataset, scan(sample.dataset));
-    expect(s.fit.verdict).toBe("strong");
-    expect(s.fit.guaranteeEligible).toBe(true);
-    expect(s.fit.score).toBeGreaterThanOrEqual(85);
-    for (const id of ["volume", "email", "ticket", "history", "payback"]) expect(s.fit.checks.find((c) => c.id === id)?.ok).toBe(true);
+    for (const k of ["fit", "expected", "yearOne", "liftPct", "backlogShare", "paybackMultiple", "pastCustomerShare", "monthly", "annualRevenue"]) expect(s).not.toHaveProperty(k);
+    for (const t of s.byType) expect(t).not.toHaveProperty("expected");
+    expect(s.cashToCollect).not.toHaveProperty("expected");
+    expect(JSON.stringify(s)).not.toMatch(/guarantee|eligible|careful|likely/i);
   });
 
   it("adds up what it found", () => {
@@ -724,55 +724,36 @@ describe("summarize and fitCheck", () => {
     expect(s.reachableValue).toBeCloseTo(reach, 0);
     expect(s.opportunities).toBe(r.opportunities.length);
     expect(s.reachableValue).toBeLessThan(s.totalValue);
-    // each type's own low and high end, not a flat haircut
-    const newWork = s.byType.filter((t) => t.type !== "unpaid_invoice");
-    expect(s.expected.conservative).toBeCloseTo(newWork.reduce((a, t) => a + t.expected * rangeFactor(t.type, "low"), 0), 0);
-    expect(s.expected.strong).toBeCloseTo(newWork.reduce((a, t) => a + t.expected * rangeFactor(t.type, "high"), 0), 0);
-    expect(s.expected.conservative).toBeLessThan(s.expected.likely);
-    expect(s.backlogShare).toBeGreaterThan(0);
-    expect(s.backlogShare).toBeLessThanOrEqual(1);
     for (let i = 1; i < s.byType.length; i++) expect(s.byType[i]!.reachableValue).toBeLessThanOrEqual(s.byType[i - 1]!.reachableValue);
-    expect(s.revenueSource).toBe("invoices");
-    expect(s.annualRevenue).toBeGreaterThan(0);
   });
 
-  it("keeps unpaid invoices out of the lift and reports them as cash to collect", () => {
+  it("reports unpaid invoices as cash to collect, and only there", () => {
     const r = scan(sample.dataset);
     const withInv = summarize(sample.dataset, r);
     const inv = withInv.byType.find((t) => t.type === "unpaid_invoice")!;
     expect(inv.reachable).toBeGreaterThan(0);
     expect(withInv.cashToCollect.value).toBeCloseTo(inv.reachableValue, 0);
-    expect(withInv.cashToCollect.expected).toBeCloseTo(inv.expected, 0);
-    // the same data with collections off gives the same year-one new-work number
     const without = summarize(sample.dataset, scan(sample.dataset, { includeInvoices: false }));
-    expect(without.cashToCollect).toEqual({ value: 0, expected: 0 });
-    expect(withInv.yearOne.likely).toBeCloseTo(without.yearOne.likely, 0);
-    expect(withInv.liftPct!.likely).toBeCloseTo(without.liftPct!.likely, 1);
+    expect(without.cashToCollect).toEqual({ value: 0 });
   });
 
-  it("a dataset whose only breakage is an unpaid invoice has no lift and no NaNs", () => {
+  it("a dataset whose only breakage is an unpaid invoice has nobody to reach and no NaNs", () => {
     const ds = dataset({ customers: [customer("c1")], invoices: [invoice("i1", "c1")] });
     const s = summarize(ds, scan(ds));
     expect(s.cashToCollect.value).toBe(850);
-    expect(s.yearOne).toEqual({ conservative: 0, likely: 0, strong: 0 });
+    expect(s.reachablePeople).toBe(0);
     // (JSON turns NaN into null, so check the raw numbers)
-    expect(s.pastCustomerShare).toBeUndefined();
-    expect(Number.isFinite(s.paybackMultiple)).toBe(true);
+    expect(JSON.stringify(s)).not.toMatch(/null/);
   });
 
-  it("a tiny dataset is not a fit yet, and says so", () => {
+  it("a tiny dataset still shows what it found, and gives no close rate it can't back", () => {
     const ds = dataset({
       customers: [customer("a"), customer("b"), customer("c")],
       quotes: [quote("qa", "a", { sentOn: ago(60) }), quote("qb", "b", { sentOn: ago(90), status: "archived" }), quote("qc", "c", { sentOn: ago(120) })],
     });
     const s = summarize(ds, scan(ds));
     expect(s.reachablePeople).toBe(3);
-    expect(s.fit.guaranteeEligible).toBe(false);
-    expect(s.fit.verdict).toBe("not_yet");
-    expect(s.fit.checks.find((c) => c.id === "volume")?.ok).toBe(false);
-    expect(s.fit.checks.find((c) => c.id === "payback")?.ok).toBe(false);
     expect(s.closeRate).toBeUndefined(); // too few quotes to say
-    expect(s.fit.headline).toMatch(/Not enough/);
   });
 });
 
@@ -955,27 +936,6 @@ const COVERED: BreakageType[] = [
 ];
 it("covers all twelve breakage types", () => {
   expect(new Set(COVERED).size).toBe(Object.keys(TYPE_RANK).length);
-});
-
-describe("what we may say about lift", () => {
-  it("shows a percentage only to a Tier A shop, as a year-one range with the backlog share; never a blanket 15–20%", async () => {
-    const { generateSample } = await import("../src/sample/generate.ts");
-    const { scan } = await import("../src/breakage/detect.ts");
-    const { summarize } = await import("../src/breakage/forecast.ts");
-    for (const trade of ["tree", "septic", "fence", "painting", "cleaning"] as const) {
-      const s = generateSample({ trade, asOf: "2026-09-29" });
-      const sum = summarize(s.dataset, scan(s.dataset));
-      const f = sum.fit;
-      expect(f.liftLine).not.toContain("15–20%");
-      expect(f.canSay15).toBe(f.tier === "A");
-      if (f.tier === "A") {
-        expect(sum.liftPct!.likely).toBeGreaterThanOrEqual(15);
-        expect(sum.liftPct!.conservative).toBeGreaterThanOrEqual(8);
-        expect(f.liftLine).toMatch(/\d+–\d+% more revenue, \d+% of it the one-time backlog/);
-      } else expect(f.liftLine).not.toMatch(/%\s*more revenue/);
-      if (f.tier === "audit_only") expect(f.guaranteeEligible).toBe(false);
-    }
-  }, 60_000);
 });
 
 describe("marketing copy checker", () => {

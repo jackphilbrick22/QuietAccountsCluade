@@ -6,10 +6,10 @@ import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
 import { FileDrop, KIND_LABEL, SOURCE_LABEL, toFileIns, type StagedFile } from "../components/files";
 import { hourLabel, WEEKDAYS } from "../lib/labels";
-import { api, type AgentEvent, type FileRow, type ImportResult, type Integrations, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
+import { api, type AgentEvent, type FileRow, type ImportResult, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
 import { copy, useAction, useApi } from "./store";
 import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
-import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, ago, usePeople, when } from "./parts";
+import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, usePeople, when } from "./parts";
 import { Field } from "./Clients";
 
 const PER = 50;
@@ -421,13 +421,12 @@ export function ActivityTab({ id }: { id: string }) {
 export function FilesTab({ id, o }: { id: string; o: Overview }) {
   const enc = encodeURIComponent(id);
   const files = useApi<FileRow[]>(`/businesses/${enc}/files`);
-  const integ = useApi<Integrations>(`/businesses/${enc}/integrations`);
   const links = useApi<Links>(`/businesses/${enc}/links`);
   const [staged, setStaged] = useState<StagedFile[]>([]);
   const [result, setResult] = useState<ImportResult["files"] | null>(null);
   const { busy, run } = useAction();
   const ready = toFileIns(staged);
-  const j = integ.data?.jobber;
+  const requests = links.data?.requestsToken;
   return (
     <div className="flex flex-col gap-5">
       <Section title="Add their exports" sub="Drop every CSV the owner sent. We merge them into one customer list and scan again.">
@@ -503,28 +502,20 @@ export function FilesTab({ id, o }: { id: string; o: Overview }) {
         <Box className="flex flex-col gap-3 px-4 py-3 text-[13px]">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span>
-              <b>Jobber connection:</b>{" "}
-              {!j ? "…" : !j.available ? "not set up on this server (JOBBER_CLIENT_ID/SECRET)" : j.connected ? `connected${j.lastSyncAt ? `, last synced ${ago(j.lastSyncAt)}` : ""}` : "not connected yet"}
-              {j?.lastError && <span className="text-bad"> · {j.lastError}</span>}
-            </span>
-            {links.data && (
-              <Btn onClick={() => void copy(links.data!.connectJobber, "Jobber connect link copied — send it to the owner")}>Copy Jobber connect link</Btn>
-            )}
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-            <span>
               <b>Forwarding exports by email:</b> the owner can forward Jobber's export emails to{" "}
               <span className="font-mono">{links.data?.importAddress ?? "import+<token>@ your inbound address"}</span>.
             </span>
             {links.data && <Btn onClick={() => void copy(links.data!.importAddress ?? links.data!.importToken, links.data!.importAddress ? "Import address copied" : "Import token copied")}>{links.data.importAddress ? "Copy address" : "Copy token"}</Btn>}
           </div>
-          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-            <span>
-              <b>New requests by email:</b> the owner forwards request emails (website form, Angi, Thumbtack, Google, a homeowner writing in) to{" "}
-              <span className="font-mono">{links.data?.requestsAddress ?? "requests+<token>@ your inbound address"}</span>, or sets one Gmail filter to do it. Each is answered from the office and texted to them.
-            </span>
-            {links.data && <Btn onClick={() => void copy(links.data!.requestsAddress ?? links.data!.requestsToken, links.data!.requestsAddress ? "Requests address copied — send it to the owner" : "Requests token copied")}>{links.data.requestsAddress ? "Copy address" : "Copy token"}</Btn>}
-          </div>
+          {requests && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+              <span>
+                <b>New requests by email:</b> the owner forwards request emails (website form, Angi, Thumbtack, Google, a homeowner writing in) to{" "}
+                <span className="font-mono">{links.data?.requestsAddress ?? "requests+<token>@ your inbound address"}</span>, or sets one Gmail filter to do it. Each is answered from the office and texted to them.
+              </span>
+              <Btn onClick={() => void copy(links.data?.requestsAddress ?? requests, links.data?.requestsAddress ? "Requests address copied — send it to the owner" : "Requests token copied")}>{links.data?.requestsAddress ? "Copy address" : "Copy token"}</Btn>
+            </div>
+          )}
         </Box>
       </Section>
     </div>
@@ -537,7 +528,7 @@ type Patch = Partial<Omit<BusinessProfile, "voice" | "persistence" | "plan">> & 
 
 export function SettingsTab({ id, o }: { id: string; o: Overview }) {
   // keyed by the saved profile, so a save (or someone else's change) resets the draft
-  return <SettingsForm key={JSON.stringify(o.business)} id={id} b={o.business} />;
+  return <SettingsForm key={JSON.stringify(o.business)} id={id} b={o.business} sellsYear={!!o.features?.yearly} />;
 }
 
 const TEXT_FIELDS: [keyof BusinessProfile, string, string?][] = [
@@ -555,7 +546,8 @@ const TEXT_FIELDS: [keyof BusinessProfile, string, string?][] = [
   ["state", "State (2 letters)"],
 ];
 
-function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
+/** `sellsYear`: the server sells the yearly plan (FEATURE_YEARLY); otherwise billing is monthly and isn't offered. */
+function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; sellsYear: boolean }) {
   const go = useApp((s) => s.go);
   const [d, setD] = useState<BusinessProfile>(b);
   const { busy, run } = useAction();
@@ -650,12 +642,14 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
             </select>
           </Field>
           <NumField id="ls-trial" label="Free round size (people)" value={d.plan.trialSize} onChange={(v) => set("plan", { ...d.plan, trialSize: num(v, 10, 1000, d.plan.trialSize) })} />
-          <Field id="ls-billing" label="Billing" hint="Yearly: paid up front, twelve months for the price of ten.">
-            <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual", b.plan))}>
-              <option value="monthly">Monthly</option>
-              <option value="annual">Yearly</option>
-            </select>
-          </Field>
+          {sellsYear && (
+            <Field id="ls-billing" label="Billing" hint="Yearly: paid up front, twelve months for the price of ten.">
+              <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual", b.plan))}>
+                <option value="monthly">Monthly</option>
+                <option value="annual">Yearly</option>
+              </select>
+            </Field>
+          )}
           <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />
           {yearly && <NumField id="ls-price-y" label="Year price ($)" value={annualPrice(d)} onChange={(v) => set("plan", { ...d.plan, annualPrice: num(v, 0, 1000000, annualPrice(d)) })} />}
           <Field id="ls-paid" label="First paid day" hint={needsDay ? "Set the day the new billing starts from (the old day if it was always this way), then save." : yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>

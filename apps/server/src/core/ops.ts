@@ -55,7 +55,7 @@ import {
   type Reply,
   type Touch,
 } from "@qa/engine";
-import type { Config } from "../config.ts";
+import { features, type Config } from "../config.ts";
 import type { Loaded } from "../db/repo.ts";
 import type { DirectProvider, FsmConnector, InboundEvent, OAuthTokens, OutboundProvider, OwnerNotifier, SendResult, SequencedLead, SequencerProvider } from "../contracts.ts";
 import { ProviderError } from "../contracts.ts";
@@ -235,7 +235,7 @@ export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promis
     }
     state.dataset.asOf = at.slice(0, 10);
     adoptTrade(state, at);
-    ledgerPass(state, at);
+    ledgerPass(state, at, features(d.cfg));
   });
   d.accounts.repo.markScanned(bid, d.clock().toISOString());
   return out;
@@ -245,7 +245,7 @@ export async function rescan(d: Deps, bid: string): Promise<void> {
   await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     state.dataset.asOf = at.slice(0, 10);
-    find(state, at);
+    find(state, at, features(d.cfg));
   });
   d.accounts.repo.markScanned(bid, d.clock().toISOString());
 }
@@ -274,7 +274,7 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
     // while the owner hasn't said OK to the first note, nothing new is approved either (a top-up waits with it)
     waiting = !!state.awaitingOwnerOk;
     approved = opts.approve ?? (!firstRound && !waiting);
-    const p = planBatch(state, at, { startOn, limitPeople: limit, approve: approved, kickoff: false });
+    const p = planBatch(state, at, { startOn, limitPeople: limit, approve: approved, kickoff: false, features: features(d.cfg) });
     planned = state.touches.filter((t) => p.touches.some((x) => x.id === t.id));
     return { people: p.people.length, notes: p.touches.length, firstDay: p.firstDay, lastDay: p.lastDay, personalized: 0 };
   });
@@ -1393,11 +1393,11 @@ export async function syncFsm(d: Deps, bid: string, kind: "jobber"): Promise<{ r
     const at = nowLocal(d, state);
     state.dataset = mergePulled(state.dataset, pulled, kind);
     state.dataset.asOf = at.slice(0, 10);
-    // always-on: a request that just came in gets its answer now, not tomorrow (never for a client who
-    // cancelled; while paused or braked the owner is told to call instead)
-    answered = state.dataset.business.plan.stage === "cancelled" ? 0 : answerNewRequests(state, at, { paused: ctx.paused });
+    // always-on (where new-request answering is sold): a request that just came in gets its answer now, not tomorrow
+    // (never for a client who cancelled; while paused or braked the owner is told to call instead)
+    answered = state.dataset.business.plan.stage === "cancelled" ? 0 : answerNewRequests(state, at, { paused: ctx.paused, features: features(d.cfg) });
     if (records) state.events.push({ id: `ev_sync_${at}`, at, agent: "reader", kind: "action", title: `Synced ${records.toLocaleString("en-US")} records from ${kind === "jobber" ? "Jobber" : kind}`, detail: pulled.warnings.join(" ") || undefined });
-    newRecoveries = ledgerPass(state, at).newRecoveries;
+    newRecoveries = ledgerPass(state, at, features(d.cfg)).newRecoveries;
     // The connect page promised a text once we'd read their Jobber; the operator sees it's ready to plan.
     if (firstSync) {
       const b = state.dataset.business;
@@ -1429,7 +1429,8 @@ function ownContact(b: BusinessProfile, forwarder: string): { ignore: string[]; 
 /**
  * The owner forwarded a new request (a website form, an Angi or Thumbtack alert, a homeowner's email) to their
  * requests address. It goes on the same always-on track as a Jobber request: answered from the office, and
- * the owner texted who it is. What we can't read goes to a person, never a guess.
+ * the owner texted who it is. What we can't read goes to a person, never a guess. (Only with FEATURE_NEW_REQUESTS:
+ * without it there's no requests address, and the email is read as plain mail.)
  */
 export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: string; text: string; from: string; receivedAt: string }): Promise<{ taken: boolean; answered: number; duplicate?: boolean; why?: string }> {
   const l = d.accounts.peek(bid);
@@ -1457,8 +1458,8 @@ export async function takeForwardedRequest(d: Deps, bid: string, m: { subject: s
     // the time it reached us, not the original email's date: the owner just handed it over, and it still wants an answer
     const t = takeRequest(state, lead, at, at);
     duplicate = t.duplicate;
-    on = alwaysOnFor(state.dataset.business) && state.dataset.business.plan.stage !== "cancelled";
-    if (!duplicate && on) answered = answerNewRequests(state, at, { paused: l.paused });
+    on = alwaysOnFor(state.dataset.business, features(d.cfg)) && state.dataset.business.plan.stage !== "cancelled";
+    if (!duplicate && on) answered = answerNewRequests(state, at, { paused: l.paused, features: features(d.cfg) });
   });
   if (!duplicate && !on)
     await raiseAlert(d, bid, { kind: "request_forwarded", title: `Forwarded request from ${lead.name ?? lead.email ?? lead.phone}`, detail: `Through ${lead.source}: “${(lead.job ?? "").slice(0, 140)}”. Answering new requests starts with the paid plan, so nobody wrote back — pass it to the owner.` });

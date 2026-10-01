@@ -5,17 +5,17 @@ import { FRESH_SEQUENCE, SEQUENCES } from "../src/copy/templates.ts";
 import { answerNewRequests, answerTime, dueTouches, markSent } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { weeklyReport } from "../src/reports/owner.ts";
-import { ASOF, ago, business, customer, dataset, quote, request } from "./fixtures.ts";
+import { ASOF, ago, business, customer, dataset, NEW_REQUESTS, quote, request } from "./fixtures.ts";
 
 const paying = (over = {}) => business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) }, ...over });
 
 describe("always-on: every new quote is followed until a yes or a no", () => {
   it("a paying account picks up a quote sent 3 days ago and runs the fresh sequence", () => {
     const ds = dataset({ business: paying(), customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: ago(3) })] });
-    const r = scan(ds);
+    const r = scan(ds, {}, NEW_REQUESTS);
     const o = r.primary.find((x) => x.customerId === "c1")!;
     expect(o.type).toBe("unanswered_quote");
-    const p = planOutreach(ds, r, { startOn: ASOF });
+    const p = planOutreach(ds, r, { startOn: ASOF, features: NEW_REQUESTS });
     const ts = p.touches.filter((t) => t.customerId === "c1");
     expect(ts.map((t) => t.step)).toEqual(FRESH_SEQUENCE.steps.map((s) => s.step));
     expect(ts.every((t) => t.track === "fresh_quote")).toBe(true);
@@ -24,12 +24,23 @@ describe("always-on: every new quote is followed until a yes or a no", () => {
   });
   it("the free round stays a backlog sweep: a 3-day-old quote is left to the salesperson", () => {
     const ds = dataset({ business: business(), customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: ago(3) })] });
-    expect(scan(ds).primary.find((x) => x.customerId === "c1")).toBeUndefined();
+    expect(scan(ds, {}, NEW_REQUESTS).primary.find((x) => x.customerId === "c1")).toBeUndefined();
+  });
+  it("without new-request answering on the server, a paying account is a backlog sweep too: no fresh-quote sequence", () => {
+    const ds = dataset({ business: paying(), customers: [customer("c1"), customer("c2")], quotes: [quote("q1", "c1", { sentOn: ago(3) }), quote("q2", "c2", { sentOn: ago(25) })] });
+    const r = scan(ds);
+    expect(r.primary.find((x) => x.customerId === "c1")).toBeUndefined();
+    const ts = planOutreach(ds, r, { startOn: ASOF }).touches;
+    expect(ts.map((t) => t.customerId)).toEqual(["c2", "c2", "c2"]);
+    expect(ts.some((t) => t.track === "fresh_quote")).toBe(false);
+    // the profile asking for it doesn't switch it on either
+    const asked = dataset({ ...ds, business: paying({ alwaysOn: true }) });
+    expect(planOutreach(asked, scan(asked), { startOn: ASOF }).touches.some((t) => t.track === "fresh_quote")).toBe(false);
   });
   it("older quotes run the normal dead-quote sequence even when always-on", () => {
     const ds = dataset({ business: paying(), customers: [customer("c1")], quotes: [quote("q1", "c1", { sentOn: ago(90) })] });
-    const r = scan(ds);
-    const ts = planOutreach(ds, r, { startOn: ASOF }).touches;
+    const r = scan(ds, {}, NEW_REQUESTS);
+    const ts = planOutreach(ds, r, { startOn: ASOF, features: NEW_REQUESTS }).touches;
     expect(ts.map((t) => t.step)).toEqual(SEQUENCES.unanswered_quote.steps.map((s) => s.step));
     expect(ts.some((t) => t.track === "fresh_quote")).toBe(false);
   });
@@ -51,7 +62,7 @@ describe("always-on: every new request answered within minutes", () => {
   it("writes back at once in the daytime, outside send hours, and texts the owner the lead", () => {
     const st = setup();
     const now = `${ASOF}T17:40:00`; // 5:40pm local, after the send window
-    expect(answerNewRequests(st, now)).toBe(1);
+    expect(answerNewRequests(st, now, { features: NEW_REQUESTS })).toBe(1);
     const t = st.touches.find((x) => x.track === "new_request")!;
     expect(t.instant).toBe(true);
     expect(t.dueAt).toBe(`${ASOF}T17:40`);
@@ -66,12 +77,12 @@ describe("always-on: every new request answered within minutes", () => {
     expect(owner).toMatch(/\(603\) 555-0142/);
     expect(owner).toMatch(/We already wrote back that you'll call them tomorrow/);
     // once only
-    expect(answerNewRequests(st, `${ASOF}T17:50:00`)).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T17:50:00`, { features: NEW_REQUESTS })).toBe(0);
   });
   it("a request that lands at night is answered at 7:00, worded for the morning", () => {
     const st = setup();
     const now = `${ASOF}T22:40:00`; // Tuesday 10:40pm local
-    expect(answerNewRequests(st, now)).toBe(1);
+    expect(answerNewRequests(st, now, { features: NEW_REQUESTS })).toBe(1);
     const t = st.touches.find((x) => x.track === "new_request")!;
     expect(t.dueAt).toBe("2026-09-30T07:00");
     expect(t.askedAt).toBe(`${ASOF}T22:40`);
@@ -86,7 +97,7 @@ describe("always-on: every new request answered within minutes", () => {
   });
   it("before 7am the answer goes at 7:00 the same day", () => {
     const st = setup();
-    expect(answerNewRequests(st, "2026-09-30T05:15:00")).toBe(1);
+    expect(answerNewRequests(st, "2026-09-30T05:15:00", { features: NEW_REQUESTS })).toBe(1);
     const t = st.touches.find((x) => x.track === "new_request")!;
     expect(t.dueAt).toBe("2026-09-30T07:00");
     expect(st.ownerMessages.at(-1)!.text).toMatch(/At 7am we'll write back that you'll call them today/);
@@ -98,16 +109,23 @@ describe("always-on: every new request answered within minutes", () => {
     expect(answerTime(`${ASOF}T00:10:00`)).toBe(`${ASOF}T07:00:00`);
     expect(answerTime("2026-12-31T23:30")).toBe("2027-01-01T07:00:00");
   });
+  it("without new-request answering on the server, nobody is answered and the owner gets no NEW REQUEST text", () => {
+    const st = setup();
+    expect(answerNewRequests(st, `${ASOF}T17:40:00`)).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T17:40:00`, { features: {} })).toBe(0);
+    expect(st.touches).toEqual([]);
+    expect(st.ownerMessages).toEqual([]);
+  });
   it("skips requests that already have a quote, and does nothing on the free round", () => {
     const st = setup();
     st.dataset.quotes.push(quote("q9", "c1", { sentOn: ASOF }));
-    expect(answerNewRequests(st, `${ASOF}T22:40:00`)).toBe(0);
+    expect(answerNewRequests(st, `${ASOF}T22:40:00`, { features: NEW_REQUESTS })).toBe(0);
     const trial = setup({ plan: { stage: "trial", trialSize: 150, monthlyPrice: 497, freeMonths: [] } });
-    expect(answerNewRequests(trial, `${ASOF}T22:40:00`)).toBe(0);
+    expect(answerNewRequests(trial, `${ASOF}T22:40:00`, { features: NEW_REQUESTS })).toBe(0);
   });
   it("shows the owner what always-on did this week", () => {
     const st = setup();
-    answerNewRequests(st, `${ASOF}T17:40:00`);
+    answerNewRequests(st, `${ASOF}T17:40:00`, { features: NEW_REQUESTS });
     const t = st.touches.find((x) => x.track === "new_request")!;
     markSent(st, t.id, `${ASOF}T17:43:00`);
     expect(weeklyReport(st, ASOF)).toMatch(/Always on: answered 1 new request within minutes/);
@@ -116,7 +134,7 @@ describe("always-on: every new request answered within minutes", () => {
     const st = setup();
     st.dataset.requests.push(request("r2", "c2", { title: "Stump", createdOn: ASOF, createdAt: `${ASOF}T21:30:00Z`, status: "new" }));
     st.dataset.customers.push(customer("c2"));
-    answerNewRequests(st, `${ASOF}T22:40:00`); // both land at night
+    answerNewRequests(st, `${ASOF}T22:40:00`, { features: NEW_REQUESTS }); // both land at night
     const [a, b] = st.touches.filter((x) => x.track === "new_request");
     // the sending platform reported one at 7:02 the next morning, the other hasn't gone yet
     markSent(st, a!.id, "2026-09-30T07:02:00");
@@ -132,14 +150,25 @@ describe("always-on: every new request answered within minutes", () => {
 });
 
 describe("one-tap setup: the trade is read from their own titles", () => {
-  it("names every sample trade correctly, without inventing a second trade", { timeout: 60_000 }, async () => {
+  it("names every sample trade the offers sell correctly, without inventing a second trade", { timeout: 60_000 }, async () => {
     const { generateSample } = await import("../src/sample/generate.ts");
     const { detectTrade } = await import("../src/trades/index.ts");
-    for (const trade of ["tree", "fence", "painting", "cleaning", "septic", "lawn", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool", "holiday_lighting", "deck"] as const) {
+    for (const trade of ["tree", "fence", "painting", "cleaning", "lawn", "landscape"] as const) {
       const s = generateSample({ trade, asOf: ASOF });
       const d = detectTrade([...s.dataset.quotes.map((q) => q.title), ...s.dataset.jobs.map((j) => j.title)]);
       expect(d.trade).toBe(trade);
       expect(d.others).toEqual([]);
+    }
+  });
+  it("never reads a shop as a trade the offers don't sell; its playbook stays for accounts that have it", { timeout: 60_000 }, async () => {
+    const { generateSample } = await import("../src/sample/generate.ts");
+    const { detectTrade, OFFERED_TRADES, playbook } = await import("../src/trades/index.ts");
+    for (const trade of ["septic", "pressure_washing", "roofing", "chimney", "window_cleaning", "gutter", "pool", "holiday_lighting", "deck"] as const) {
+      const s = generateSample({ trade, asOf: ASOF });
+      const d = detectTrade([...s.dataset.quotes.map((q) => q.title), ...s.dataset.jobs.map((j) => j.title)]);
+      expect([...OFFERED_TRADES, "general"], trade).toContain(d.trade);
+      expect(d.others.every((t) => OFFERED_TRADES.includes(t))).toBe(true);
+      expect(playbook(trade).id).toBe(trade);
     }
   });
   it("fills in an unset trade on import and says so; never overrides one the operator set", async () => {

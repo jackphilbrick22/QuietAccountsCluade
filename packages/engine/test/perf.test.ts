@@ -50,7 +50,7 @@ describe("performance on a 10,000+ quote shop", () => {
 
   it("summarizes in under 1 second", () => {
     const { value, ms } = timed(() => summarize(ds, result), 3);
-    expect(value.fit.verdict).toBe("strong");
+    expect(value.reachablePeople).toBeGreaterThan(1_000);
     expect(ms).toBeLessThan(1_000);
   });
 

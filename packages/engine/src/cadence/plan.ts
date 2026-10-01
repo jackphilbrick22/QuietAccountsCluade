@@ -1,5 +1,5 @@
-import type { BreakageType, Dataset, ISODate, Opportunity, Touch } from "../model.ts";
-import type { ScanResult } from "../breakage/detect.ts";
+import type { BreakageType, Dataset, Features, ISODate, Opportunity, Touch } from "../model.ts";
+import { pickWorked, type ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
@@ -13,6 +13,7 @@ export interface PlanOptions {
   limitPeople?: number;
   /** Customers already in a sequence or already contacted — skip them. */
   skipCustomers?: Set<string>;
+  /** Narrows the leaks the trade's offer works (worksLeak) further. */
   types?: BreakageType[];
   /** Leave the holdout group out (it never gets contacted). Default true. */
   applyHoldout?: boolean;
@@ -37,6 +38,8 @@ export interface PlanOptions {
    * Likewise people whose follow-ups a newer quote stopped, from the day those were planned.
    */
   askedOn?: Map<string, ISODate>;
+  /** What this server sells beyond the two offers: new-request answering brings the fresh-quote sequence. */
+  features?: Features;
 }
 
 export interface Plan {
@@ -95,9 +98,9 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
   const skipped: Plan["skipped"] = [];
   const applyHoldout = opts.applyHoldout ?? true;
   const candidates: Opportunity[] = [];
-  for (const o of result.primary) {
+  const works = pickWorked(b.trade, opts.types ? result.opportunities.filter((o) => opts.types!.includes(o.type)) : result.opportunities);
+  for (const o of works) {
     if (!o.channels.includes("email")) continue;
-    if (opts.types && !opts.types.includes(o.type)) continue;
     if (opts.skipCustomers?.has(o.customerId)) continue;
     // taken off the list since the scan (SKIP): never planned again, whatever the scan still holds
     if (o.suppressed || byId.get(o.customerId)?.doNotContact) continue;
@@ -170,7 +173,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     if (!inSeason(day)) continue;
     if (held) heldDay = day;
     else nowDay = day;
-    const seq = sequenceFor(o, alwaysOnFor(b));
+    const seq = sequenceFor(o, alwaysOnFor(b, opts.features));
     const notes: Touch[] = [];
     let lastSend = day;
     let ok = true;
@@ -179,7 +182,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
       const sendOn = st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
       if (!inSeason(sendOn)) break;
       // follow-ups reply in note 1's thread, so they carry its exact subject
-      const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id), threadSubject }, st.step);
+      const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id), threadSubject, features: opts.features }, st.step);
       if (st.step === 1 && n) threadSubject = n.subject;
       if (!n) {
         if (st.step === 1) ok = false;
