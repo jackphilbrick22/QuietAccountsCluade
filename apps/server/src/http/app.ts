@@ -41,6 +41,16 @@ import {
   isTimeZone,
   TIMEZONES,
   zoneForCell,
+  endPass,
+  isOnePass,
+  monthlyPlan,
+  ONE_PASS,
+  onePassPlan,
+  passEndMoved,
+  passProgress,
+  refillRate,
+  stageFits,
+  type PlanState,
 } from "@qa/engine";
 import { z } from "zod";
 import { features, signupOrigins } from "../config.ts";
@@ -65,6 +75,7 @@ import {
   finishCancelWithdrawals,
   linkToken,
   ownerLink,
+  paceAlert,
   plan,
   raiseAlert,
   readLinkToken,
@@ -150,13 +161,22 @@ const ProfilePatch = CreateBusiness.partial().extend({
   persistence: z.object({ seasonalCheckIn: z.boolean(), maxNotesPerYear: z.number().int().min(1).max(12), holdoutPct: z.number().min(0).max(0.3) }).partial().optional(),
   plan: z
     .object({
-      stage: z.enum(["trial", "paying", "paused", "cancelled"]),
+      kind: z.enum(["monthly", "one_pass"]),
+      // which of these a plan may take depends on its kind (PLAN_STAGES)
+      stage: z.enum(["trial", "paying", "running", "done", "paused", "cancelled"]),
       trialSize: z.number().int().min(10).max(1000),
       monthlyPrice: z.number().min(0),
       paidOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
       billing: z.enum(["monthly", "annual"]),
       annualPrice: z.number().min(0),
       yearsPaidOn: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)),
+      // the one pass's terms
+      pricePerBooking: z.number().min(0).max(100000),
+      capBookings: z.number().int().min(1).max(100),
+      windowDays: z.number().int().min(1).max(365),
+      freeFirst: z.number().int().min(0).max(10000),
+      // null empties it (patchPlan)
+      targetEndOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
     })
     .partial()
     .optional(),
@@ -203,15 +223,27 @@ function defaultProfile(input: z.infer<typeof CreateBusiness>, id: string, today
     // everyone on the list gets the notes: no comparison group held back
     persistence: { seasonalCheckIn: true, maxNotesPerYear: 5, holdoutPct: 0 },
     channels: { email: "live", call_task: "ready", postcard: "coming_soon", sms: "coming_soon", voicemail: "coming_soon", retarget: "coming_soon" },
-    plan: { stage: "trial", trialSize: 150, monthlyPrice: 497, freeMonths: [] },
+    plan: monthlyPlan(),
     createdOn: today,
   };
+}
+
+/** A plan with a Settings change on it. "Done by" emptied is 30 days from the pass's first send day (none until it's planned). */
+function patchPlan(plan: PlanState, patch: z.infer<typeof ProfilePatch>["plan"]): PlanState {
+  const { targetEndOn, ...rest } = patch ?? {};
+  return { ...plan, ...rest, ...(targetEndOn === null ? { targetEndOn: plan.startedOn && addDays(plan.startedOn, ONE_PASS.days) } : targetEndOn ? { targetEndOn } : {}) };
+}
+
+/** A plan that hasn't started yet: a free round, or a one pass, with nothing planned (the caller checks the notes). */
+function notStarted(b: BusinessProfile): boolean {
+  return b.plan.stage === "trial" || (isOnePass(b.plan) && b.plan.stage === "running");
 }
 
 /** Compact business overview for dashboards (never the whole dataset). `features`: what this server sells beyond the two offers. */
 export function overview(state: AccountState, paused: boolean, features: Features) {
   const b = state.dataset.business;
   const t = totals(state);
+  const pass = isOnePass(b.plan);
   const hot = state.replies.filter((r) => (r.intent === "wants_it" || r.intent === "wants_price" || r.intent === "question") && r.status === "handed_off" && !r.ownerContactedAt);
   return {
     business: b,
@@ -225,7 +257,12 @@ export function overview(state: AccountState, paused: boolean, features: Feature
     quiet: quietRates(state),
     awaitingOwnerOk: state.awaitingOwnerOk,
     health: sendHealth(state),
-    guarantee: b.plan.paidOn ? guaranteeCheck(state, state.dataset.asOf) : undefined,
+    // the monthly promise is a monthly plan's (a one pass made from a paying one keeps its first paid day)
+    guarantee: b.plan.paidOn && !pass ? guaranteeCheck(state, state.dataset.asOf) : undefined,
+    // a one pass: its list, how far through, against its end date
+    pass: pass ? passProgress(state) : undefined,
+    // "Who gets monthly": how fast the list refills, once a free 150 or a one pass is over
+    refill: state.scan && (pass ? b.plan.stage === "done" : !!state.trialCompletedOn) ? refillRate(state.scan, state.dataset.asOf) : undefined,
     counts: {
       customers: state.dataset.customers.length,
       quotes: state.dataset.quotes.length,
@@ -341,11 +378,16 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // one inbox sends for one client: new inboxes, or a client taking its inboxes back (no longer cancelled), are
     // refused when another client holds one of them
     const now = d.accounts.peek(id)?.state.dataset.business;
-    const next = now && { ...now, fromEmails: patch.fromEmails ?? now.fromEmails, plan: { ...now.plan, ...patch.plan } };
+    const next = now && { ...now, fromEmails: patch.fromEmails ?? now.fromEmails, plan: patchPlan(now.plan, patch.plan) };
+    // a stage belongs to a kind of plan: a one pass runs, is done, paused or cancelled; a monthly plan never is "done"
+    if (next && !stageFits(next.plan))
+      return c.json({ error: `${isOnePass(next.plan) ? "A one pass runs, is done, is paused or is cancelled" : "A monthly plan is in its free round, paying, paused or cancelled"}: “${next.plan.stage}” isn't one of its stages.` }, 400);
     const taken = next && holdsInboxes(next) && (patch.fromEmails || !holdsInboxes(now)) ? inboxTaken(d, id, next.fromEmails ?? []) : undefined;
     if (taken) return inboxClash(c, taken);
     let stageBefore: string | undefined;
     let tradeBefore: string | undefined;
+    let endMoved = false;
+    let repace = false;
     await d.accounts.withAccount(id, (state) => {
       const b = state.dataset.business;
       stageBefore = b.plan.stage;
@@ -363,7 +405,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       if (persistence) b.persistence = { ...b.persistence, ...persistence };
       if (planPatch) {
         const before = b.plan;
-        const next = { ...before, ...planPatch };
+        const next = patchPlan(before, planPatch);
         const listed = planPatch.yearsPaidOn;
         // Taking off the year the first paid day points to (MONTHLY then RENEW by text, never paid): the plan goes back
         // to the paid year before it.
@@ -395,16 +437,33 @@ export function createApp(d: HttpDeps): Hono<Env> {
         if (switched && next.billing !== "annual" && next.paidOn) next.yearsPaidOn = (next.yearsPaidOn ?? []).filter((y) => y < next.paidOn!);
         // a yearly plan's first paid day is one of its paid years, so its refunds, renewal ask and year floor all run
         if (next.billing === "annual" && next.paidOn && !(next.yearsPaidOn ?? []).includes(next.paidOn)) next.yearsPaidOn = [...(next.yearsPaidOn ?? []), next.paidOn].sort();
-        b.plan = next;
+        // a plan made a one pass gets the pass's terms where it has none
+        b.plan = isOnePass(next) ? onePassPlan(next) : next;
+        // a new end date: whether the notes it has meet it; before the owner's OK, one they don't is paced to at once
+        // (never once the pass is over)
+        if (isOnePass(b.plan) && b.plan.pace && b.plan.targetEndOn !== before.targetEndOn) {
+          endMoved = passEndMoved(state);
+          repace = !endMoved && b.plan.pace.endOn !== b.plan.targetEndOn && b.plan.stage !== "done" && b.plan.stage !== "cancelled";
+        }
+        // marked done: nothing more goes, and the end text waits for Jack
+        if (b.plan.stage === "done" && stageBefore !== "done") endPass(state, localIso(d.clock(), b.timezone));
       }
     });
-    // A stage of Paused or Cancelled really stops sending (and the platform's campaigns); back to trial/paying resumes.
+    // A stage of Paused, Cancelled or Done really stops sending (and the platform's campaigns); back to trial, paying or
+    // running resumes.
     const stage = patch.plan?.stage;
     if (stage && stage !== stageBefore) {
       if (stage === "paused") await holdSending(d, id, "pause");
       else if (stage === "cancelled") await holdSending(d, id, "cancel");
-      else if (stageBefore === "paused" || stageBefore === "cancelled") await holdSending(d, id, "resume");
+      else if (stage === "done") await holdSending(d, id, "done");
+      else if (stageBefore === "paused" || stageBefore === "cancelled" || stageBefore === "done") await holdSending(d, id, "resume");
     }
+    // (a pass that can't be planned now, done or without its inboxes, is paced by its next plan)
+    if (repace)
+      await plan(d, id).catch((e: unknown) => {
+        if (!(e instanceof NotReady)) throw e;
+      });
+    else if (endMoved) await paceAlert(d, id);
     // another trade reads the same records with its own services and leaks: the list follows it now, not tonight
     if (patch.trade && patch.trade !== tradeBefore && d.accounts.peek(id)?.state.scan) await rescan(d, id);
     repo.audit(id, "operator", "business.update", patch);
@@ -485,11 +544,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true, ...r });
   });
 
-  // Resume clears the pause flag, but a plan that's paused (a year that ran out) or cancelled still sends nothing: say so
-  // instead of "Sending resumed".
-  const planHold = (bid: string, paused: boolean): { held?: "plan_paused" | "plan_cancelled" } => {
+  // Resume clears the pause flag, but a plan that's paused (a year that ran out), cancelled or a finished pass still sends
+  // nothing: say so instead of "Sending resumed".
+  const planHold = (bid: string, paused: boolean): { held?: "plan_paused" | "plan_cancelled" | "plan_done" } => {
     const stage = d.accounts.peek(bid)?.state.dataset.business.plan.stage;
-    return !paused && (stage === "paused" || stage === "cancelled") ? { held: stage === "paused" ? "plan_paused" : "plan_cancelled" } : {};
+    return !paused && (stage === "paused" || stage === "cancelled" || stage === "done") ? { held: `plan_${stage}` } : {};
   };
   op.post("/businesses/:id/pause", async (c) => {
     const { paused } = z.object({ paused: z.boolean() }).parse(await c.req.json());
@@ -804,7 +863,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
       const j = repo.getIntegration(b.id, "jobber");
       const synced = j?.status === "connected" && !!j.last_sync_at;
       const lastFile = s.dataset.imports.at(-1)?.importedAt;
-      if ((synced || lastFile) && !s.touches.length && s.dataset.business.plan.stage === "trial")
+      if ((synced || lastFile) && !s.touches.length && notStarted(s.dataset.business))
         items.push({ kind: "ready", ...biz, at: (synced ? j!.last_sync_at : lastFile)!, from: synced ? "jobber" : "file", quotes: s.dataset.quotes.length, customers: s.dataset.customers.length, headline: readiness(s.dataset).headline, needsAddress: (s.dataset.business.mailingAddress?.trim() ?? "").length < 8 });
       const flagged = s.touches.filter((t) => t.flags.length && (t.status === "planned" || t.status === "approved")).slice(0, 100);
       for (const t of flagged)
@@ -1013,7 +1072,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
   const untouchedSignup = (bid: string): boolean => {
     const l = d.accounts.peek(bid);
     const b = l?.state.dataset.business;
-    return !!b && b.signup?.from === "site" && b.plan.stage === "trial" && !l!.state.touches.length && !repo.getIntegration(bid, "jobber");
+    return !!b && b.signup?.from === "site" && notStarted(b) && !l!.state.touches.length && !repo.getIntegration(bid, "jobber");
   };
   app.post("/start", async (c) => {
     if (d.cfg.SIGNUPS !== "on") return c.json({ error: "Sign-ups are closed right now. Text Jack instead." }, 503);
@@ -1064,6 +1123,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
       const profile = defaultProfile({ name: f.company, trade, ownerName: f.first, ownerPhone: others.length ? undefined : cell, signerName: signer, signerRole: signer.toLowerCase() === f.first.toLowerCase() ? "owner" : "office", mailingAddress: "", timezone: zone }, id, today);
       profile.software = software;
       profile.signup = others.length ? { from: "site", sharedCell: cell } : { from: "site" };
+      // signed up from a one-pass page: a one pass, running from the day Jack first plans it
+      if (f.offer === "one_pass") profile.plan = onePassPlan();
       await d.accounts.create(profile, today);
       rotateLinks(d, id, { created: true });
     }

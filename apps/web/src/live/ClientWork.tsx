@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { addMonths, AGENTS, annualPrice, fmtMoney, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
+import { addMonths, AGENTS, annualPrice, fmtMoney, isOnePass, monthlyPlan, onePassPlan, PLAN_STAGES, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -556,6 +556,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
   const dirty = Object.keys(patch).length > 0;
   const set = <K extends keyof BusinessProfile>(k: K, v: BusinessProfile[K]) => setD((x) => ({ ...x, [k]: v }));
   const yearly = d.plan.billing === "annual";
+  const pass = isOnePass(d.plan);
   // a billing switch waits for the day it starts, so the two are saved together
   const needsDay = (d.plan.billing ?? "monthly") !== (b.plan.billing ?? "monthly") && !!b.plan.paidOn && !d.plan.paidOn;
   const noDays = !d.sendDays.length;
@@ -634,7 +635,8 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               ))}
             </select>
           </Field>
-          <NumField id="ls-weekly" label="New people per week" value={d.weeklyNewContacts} onChange={(v) => set("weeklyNewContacts", num(v, 5, 1000, d.weeklyNewContacts))} />
+          {/* a one pass is paced to its end date on its inboxes; this is the monthly plan's pace, kept for it */}
+          {!pass && <NumField id="ls-weekly" label="New people per week" value={d.weeklyNewContacts} onChange={(v) => set("weeklyNewContacts", num(v, 5, 1000, d.weeklyNewContacts))} />}
           <NumField id="ls-minq" label="Smallest quote worth a note ($)" value={d.minQuoteValue} onChange={(v) => set("minQuoteValue", num(v, 0, 1e6, d.minQuoteValue))} />
           <NumField id="ls-minage" label="Wait at least (days) after a quote" value={d.minQuoteAgeDays} onChange={(v) => set("minQuoteAgeDays", num(v, 0, 365, d.minQuoteAgeDays))} />
           <NumField id="ls-maxage" label="Ignore quotes older than (months)" value={d.maxQuoteAgeMonths} onChange={(v) => set("maxQuoteAgeMonths", num(v, 1, 120, d.maxQuoteAgeMonths))} />
@@ -654,16 +656,34 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
 
       <Group title="Plan">
         <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-          <Field id="ls-stage" label="Stage">
-            <select id="ls-stage" className={cx(selectCls, "w-full")} value={d.plan.stage} onChange={(e) => set("plan", { ...d.plan, stage: e.target.value as BusinessProfile["plan"]["stage"] })}>
-              <option value="trial">Free round</option>
-              <option value="paying">Paying</option>
-              <option value="paused">Paused</option>
-              <option value="cancelled">Cancelled</option>
+          <Field id="ls-kind" label="Offer" hint={pass ? "The whole list once, paced to its end date. Paid per booking." : `The first ${d.plan.trialSize} free, then ${fmtMoney(d.plan.monthlyPrice)} a month if they say yes.`}>
+            <select id="ls-kind" className={cx(selectCls, "w-full")} value={pass ? "one_pass" : "monthly"} onChange={(e) => set("plan", withKind(d.plan, e.target.value as "monthly" | "one_pass"))}>
+              <option value="monthly">Monthly</option>
+              <option value="one_pass">One pass</option>
             </select>
           </Field>
-          <NumField id="ls-trial" label="Free round size (people)" value={d.plan.trialSize} onChange={(v) => set("plan", { ...d.plan, trialSize: num(v, 10, 1000, d.plan.trialSize) })} />
-          {sellsYear && (
+          <Field id="ls-stage" label="Stage" hint={pass ? "Done stops everything and writes the last text for your OK." : undefined}>
+            <select id="ls-stage" className={cx(selectCls, "w-full")} value={d.plan.stage} onChange={(e) => set("plan", { ...d.plan, stage: e.target.value as BusinessProfile["plan"]["stage"] })}>
+              {PLAN_STAGES[pass ? "one_pass" : "monthly"].map((st) => (
+                <option key={st} value={st}>
+                  {STAGE_LABEL[st]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {pass && (
+            <>
+              <Field id="ls-end" label="Done by" hint="Notes are paced to finish by this day. Empty: 30 days from the first send day.">
+                <input id="ls-end" type="date" className={smallInputCls} value={d.plan.targetEndOn ?? ""} onChange={(e) => set("plan", { ...d.plan, targetEndOn: e.target.value || undefined })} />
+              </Field>
+              <NumField id="ls-ppb" label="Price per booking ($)" value={d.plan.pricePerBooking ?? 0} onChange={(v) => set("plan", { ...d.plan, pricePerBooking: num(v, 0, 100000, d.plan.pricePerBooking ?? 0) })} />
+              <NumField id="ls-cap" label="Most bookings charged" value={d.plan.capBookings ?? 0} onChange={(v) => set("plan", { ...d.plan, capBookings: num(v, 1, 100, d.plan.capBookings ?? 1) })} />
+              <NumField id="ls-window" label="Booked within (days of the reply)" value={d.plan.windowDays ?? 0} onChange={(v) => set("plan", { ...d.plan, windowDays: num(v, 1, 365, d.plan.windowDays ?? 1) })} />
+              <NumField id="ls-free" label="First people not charged for (150 if promised)" value={d.plan.freeFirst ?? 0} onChange={(v) => set("plan", { ...d.plan, freeFirst: num(v, 0, 10000, d.plan.freeFirst ?? 0) })} />
+            </>
+          )}
+          {!pass && <NumField id="ls-trial" label="Free round size (people)" value={d.plan.trialSize} onChange={(v) => set("plan", { ...d.plan, trialSize: num(v, 10, 1000, d.plan.trialSize) })} />}
+          {!pass && sellsYear && (
             <Field id="ls-billing" label="Billing" hint="Yearly: paid up front, twelve months for the price of ten.">
               <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual", b.plan))}>
                 <option value="monthly">Monthly</option>
@@ -671,12 +691,14 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               </select>
             </Field>
           )}
-          <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />
-          {yearly && <NumField id="ls-price-y" label="Year price ($)" value={annualPrice(d)} onChange={(v) => set("plan", { ...d.plan, annualPrice: num(v, 0, 1000000, annualPrice(d)) })} />}
-          <Field id="ls-paid" label="First paid day" hint={needsDay ? "Set the day the new billing starts from (the old day if it was always this way), then save." : yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>
-            <input id="ls-paid" type="date" className={smallInputCls} value={d.plan.paidOn ?? ""} onChange={(e) => set("plan", withPaidOn(d.plan, e.target.value || undefined))} />
-          </Field>
-          {yearly && (
+          {!pass && <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />}
+          {!pass && yearly && <NumField id="ls-price-y" label="Year price ($)" value={annualPrice(d)} onChange={(v) => set("plan", { ...d.plan, annualPrice: num(v, 0, 1000000, annualPrice(d)) })} />}
+          {!pass && (
+            <Field id="ls-paid" label="First paid day" hint={needsDay ? "Set the day the new billing starts from (the old day if it was always this way), then save." : yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>
+              <input id="ls-paid" type="date" className={smallInputCls} value={d.plan.paidOn ?? ""} onChange={(e) => set("plan", withPaidOn(d.plan, e.target.value || undefined))} />
+            </Field>
+          )}
+          {!pass && yearly && (
             <Field id="ls-years" label="Paid years" hint="Each year's first day. RENEW by text adds the next one; take it off if it's never paid." wide>
               <div id="ls-years" role="group" aria-label="Paid years" className="flex flex-wrap gap-1.5">
                 {(d.plan.yearsPaidOn ?? []).length ? (
@@ -717,6 +739,15 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
 
 type Plan = BusinessProfile["plan"];
 const uniqSorted = (xs: string[]) => [...new Set(xs)].sort();
+
+const STAGE_LABEL: Record<Plan["stage"], string> = { trial: "Free round", paying: "Paying", running: "Running", done: "Done", paused: "Paused", cancelled: "Cancelled" };
+
+/** The other offer: its first stage (a stage belongs to one kind), and a one pass's terms or a monthly plan's price. */
+function withKind(p: Plan, kind: "monthly" | "one_pass"): Plan {
+  if (kind === "one_pass") return onePassPlan({ ...p, kind, stage: "running" });
+  const m = monthlyPlan();
+  return { ...p, kind, stage: "trial", trialSize: p.trialSize || m.trialSize, monthlyPrice: p.monthlyPrice || m.monthlyPrice };
+}
 
 /**
  * A new billing starts on a day Jack sets: once there's a first paid day, it's cleared until he does, so the switch and

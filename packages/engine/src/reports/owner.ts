@@ -1,9 +1,11 @@
-import type { BusinessProfile, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply } from "../model.ts";
+import type { BusinessProfile, Features, ISODate, Money, Opportunity, PlanState, Recovery, Reply, Touch } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { pickWorked } from "../breakage/detect.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
+import { refillRate } from "../breakage/refill.ts";
+import { isOnePass, ONE_PASS } from "../plans.ts";
 import { counted } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
 import { quoteById } from "../lookup.ts";
@@ -159,8 +161,9 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
 }
 
 /**
- * The first text an owner gets, when the free round is scheduled. It's their whole manual: what we found
- * (their own numbers), when notes start, that they don't have to do anything, and the only replies they need.
+ * The first text an owner gets, when the free round (or the one pass) is scheduled. It's their whole manual: what we
+ * found (their own numbers), when notes start, that they don't have to do anything, and the only replies they need.
+ * A one pass says when its last notes go and what a booking costs, and never mentions the monthly price.
  */
 export function kickoffText(state: AccountState, firstDay: ISODate, people: number, opts: { awaitOk?: boolean } = { awaitOk: true }): string {
   const b = state.dataset.business;
@@ -178,6 +181,11 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
   const day = `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${firstDay}T12:00:00Z`).getUTCDay()]}, ${monthName(firstDay)} ${Number(firstDay.slice(8))}`;
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
   const onDay = firsts.filter((t) => t.dueAt.slice(0, 10) === firstDay).length;
+  const pass = isOnePass(b.plan);
+  const lastDay = state.touches.filter((t) => t.status === "planned" || t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort().pop() ?? firstDay;
+  const rest = pass
+    ? `then the rest of your ${people}, newest first, each one about their own job. It's one pass through your list: the last notes go out ${monthName(lastDay)} ${Number(lastDay.slice(8))}.`
+    : `then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer.`;
   // The note they'll see first, word for word (the footer is the same on every note, so it's left off).
   const sample = [...firsts].sort((x, y) => (x.dueAt < y.dueAt ? -1 : x.dueAt > y.dueAt ? 1 : 0))[0];
   const cut = sample ? sample.body.lastIndexOf(`\n\n${b.name}`) : -1;
@@ -187,8 +195,8 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
     ``,
     ...(body ? [b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase() ? `Here's the first note, going out in your name:` : `Here's the first note, going out from ${b.signerName}:`, ``, body, ``] : []),
     opts.awaitOk === false
-      ? `Starting ${day}, the first ${onDay || people} go out, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. You don't have to do anything.`
-      : `Reply OK and the first ${onDay || people} go out ${day}, then the rest of your ${people} over the next few weeks — each one about their own job, to the people most likely to answer. Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
+      ? `Starting ${day}, the first ${onDay || people} go out, ${rest} You don't have to do anything.`
+      : `Reply OK and the first ${onDay || people} go out ${day}, ${rest} Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
     ``,
     `When someone ${wantedWords(b.plan).present}, I'll text you their name, number and what they said. Just reply:`,
     `BOOKED 2400 (the amount) when you book one`,
@@ -197,9 +205,60 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
     `PAUSE to stop everything`,
     ``,
     ...callListLines(state),
-    // "free" with its price beside it; the one pass's own wording comes with the one pass
-    b.plan.kind === "one_pass" ? `The first ${b.plan.trialSize} are free.` : `The first ${b.plan.trialSize} are free, then ${fmtMoney(b.plan.monthlyPrice)} a month if you say yes.`,
+    // "free" with its price beside it
+    pass
+      ? `${b.plan.freeFirst ? `Jobs from your first ${b.plan.freeFirst} people are free, as promised. For everyone after them: ` : ""}${passPromise(b.plan)}`
+      : `The first ${b.plan.trialSize} are free, then ${fmtMoney(b.plan.monthlyPrice)} a month if you say yes.`,
   ].join("\n");
+}
+
+/** The one-pass promise (BRIEF §1), in the pass's own numbers. */
+export function passPromise(plan: Pick<PlanState, "pricePerBooking" | "capBookings">): string {
+  const price = plan.pricePerBooking ?? ONE_PASS.pricePerBooking;
+  return `You pay ${fmtMoney(price)} for each job that books, never more than ${fmtMoney(price * (plan.capBookings ?? ONE_PASS.capBookings))}. Nothing books, you owe nothing.`;
+}
+
+/**
+ * A one pass's own notes: those due from its first send day on. A free round before it (the rest of a lawn or cleaning
+ * list after its free 150) isn't the pass's, and nobody written to then is on the pass's list.
+ */
+export function passTouches(state: AccountState): Touch[] {
+  const from = state.dataset.business.plan.startedOn;
+  return from ? state.touches.filter((t) => t.dueAt.slice(0, 10) >= from) : [];
+}
+
+/** Where a one pass stands: the people on its list and how many written to, and its notes sent out of all of them. */
+export function passProgress(state: AccountState): { people: number; started: number; sent: number; notes: number } {
+  const out = (t: { status: string }) => t.status === "sent" || t.status === "delivered" || t.status === "bounced";
+  const listed = passTouches(state).filter((t) => out(t) || t.status === "planned" || t.status === "approved" || t.status === "sending");
+  const firsts = listed.filter((t) => t.step === 1);
+  return {
+    people: new Set(firsts.map((t) => t.customerId)).size,
+    started: new Set(firsts.filter(out).map((t) => t.customerId)).size,
+    sent: listed.filter(out).length,
+    notes: listed.length,
+  };
+}
+
+/**
+ * The one pass's last text, when its list is done: the tally, then whether the list refills fast enough to keep going
+ * monthly (refillRate), else a look next season. It never mentions the monthly price. What was paid comes with billing.
+ */
+export function passEndText(state: AccountState, asOf: ISODate): string {
+  const b = state.dataset.business;
+  // the pass's own people: what came before it (a free round) isn't in its tally
+  const asked = new Set(passTouches(state).filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
+  const people = (rs: Reply[]) => new Set(rs.filter((r) => r.customerId && asked.has(r.customerId)).map((r) => r.customerId)).size;
+  const wrote = people(state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent)));
+  const wanted = people(state.replies.filter((r) => WANTS.has(r.intent)));
+  const booked = counted(state.recoveries).filter((r) => asked.has(r.customerId)).length;
+  const refill = state.scan && refillRate(state.scan, asOf);
+  return [
+    `${b.ownerFirstName}, your list is done. Asked ${asked.size}, ${wrote} wrote back, ${wanted} ${wantedWords(b.plan).past}, ${booked} booked.`,
+    refill?.monthly
+      ? `About ${refill.perMonth} more of your past customers stop coming or come due each month. That's enough to keep this going monthly: reply here and Jack will text you how it works.`
+      : `I'll check back next season.`,
+  ].join("\n\n");
 }
 
 /** The people we won't email — big quotes and phone-only — handed over once, biggest first. */
@@ -340,6 +399,8 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     "",
     `Since you started: ${total.booked} booked, ${fmtMoney(total.bookedValue)}. ${total.remaining.toLocaleString("en-US")} people still to work.`,
     (() => {
+      // a one pass charges per booking (B4), never the monthly fees of a plan it was made from
+      if (isOnePass(b.plan)) return "";
       const fees = feesPaid(b, monday);
       if (!fees.total) return "";
       return `You've paid us ${fmtMoney(fees.total)}${fees.freeMonths ? ` (${fees.freeMonths} free ${fees.freeMonths === 1 ? "month" : "months"})` : ""}. Traced back: ${fmtMoney(total.bookedValue)}${total.bookedValue > 0 ? ` — ${round2(total.bookedValue / fees.total)}x` : ""}.`;

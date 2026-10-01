@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft, CheckCheck, Pause, Play, RefreshCw, Send } from "lucide-react";
-import { AGENTS, brakesLine, BREAKAGE_LABEL, fmtMoney, fmtPhone, plural, SEND_BRAKES, wantedWords, type BreakageType } from "@qa/engine";
+import { AGENTS, brakesLine, BREAKAGE_LABEL, daysBetween, fmtMoney, fmtPhone, isOnePass, MONTHLY_REFILL, ONE_PASS, passLate, passPromise, plural, SEND_BRAKES, wantedWords, type BreakageType } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, pct, RowMenu, Section, Select, Table, Td, Th, Tr } from "../components/table";
@@ -11,6 +11,7 @@ import { ErrorNote, IntentPill, OutcomeForm, ReadinessPanel, ago, when } from ".
 import { stageOf, tradeLabel } from "./Clients";
 import { ActivityTab, FilesTab, NotesTab, OwnerTextsTab, RepliesTab, SettingsTab } from "./ClientWork";
 import { PasteReply } from "./TextsToSend";
+import { lateLine, planRequest } from "./planning";
 
 const TABS: { id: ClientTab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -47,13 +48,14 @@ export function LiveClient({ id }: { id: string }) {
   const st = stageOf(o);
   const started = (o.counts?.queued ?? 0) + (o.counts?.sent ?? 0) > 0;
   const trial = b.plan.stage === "trial";
+  const pass = isOnePass(b.plan);
   const waitingApproval = planned.data?.total ?? 0;
   const path = `/businesses/${enc}`;
 
   const doPlan = () =>
-    run("plan", () => api<PlanResult>("POST", `${path}/plan`, trial ? {} : { limit: b.weeklyNewContacts * 4 }), (r) =>
+    run("plan", () => api<PlanResult>("POST", `${path}/plan`, planRequest(b)), (r) =>
       r.people
-        ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}${r.awaitingOk ? (r.textSent ? ". The owner gets the first note by text; it starts when they reply OK." : ". Still waiting for the owner's OK; no new text went out.") : ""}`
+        ? `Planned ${plural(r.people, "person", "people")}, ${plural(r.notes, "note")}${r.firstDay ? `, starting ${when(r.firstDay)}` : ""}${r.awaitingOk ? (r.textSent ? ". The owner gets the first note by text; it starts when they reply OK." : ". Still waiting for the owner's OK; no new text went out.") : ""}${r.late ? ` It can't finish on time: the soonest is ${when(r.late.canMeet)} (see Needs a person).` : ""}`
         : trial
           ? "Nothing to plan: the free round is already full."
           : "Nobody new to plan right now.",
@@ -67,6 +69,7 @@ export function LiveClient({ id }: { id: string }) {
         sub={
           <span className="flex flex-wrap items-center gap-2">
             <Pill tone={st.tone}>{st.label}</Pill>
+            <Pill tone="neutral">{pass ? "One pass" : "Monthly"}</Pill>
             {o.awaitingOwnerOk && <Pill tone="warn">Waiting for the owner's OK</Pill>}
             <span>
               {tradeLabel(b.trade)}
@@ -80,7 +83,7 @@ export function LiveClient({ id }: { id: string }) {
               <RefreshCw size={15} className={cx(busy === "scan" && "animate-spin")} /> Re-scan
             </Btn>
             <Btn variant={started ? "secondary" : "primary"} disabled={!!busy || !o.summary || !o.readiness?.ready} title={!o.readiness?.ready ? `First: ${o.readiness?.gaps.find((g) => g.level === "blocker")?.ask ?? "the missing files"}` : undefined} onClick={() => void doPlan()}>
-              <Send size={15} /> {trial ? (started ? "Top up free round" : "Start free round") : "Plan next 4 weeks"}
+              <Send size={15} /> {pass ? (started ? "Plan anyone new" : "Start the pass") : trial ? (started ? "Top up free round" : "Start free round") : "Plan next 4 weeks"}
             </Btn>
             {waitingApproval > 0 && (
               <Btn variant="primary" disabled={!!busy} onClick={() => void run("approve", () => api<{ approved: number }>("POST", `${path}/approve`), (r) => (r.approved ? `Approved ${plural(r.approved, "note")}` : "Nothing was waiting"))}>
@@ -88,7 +91,7 @@ export function LiveClient({ id }: { id: string }) {
               </Btn>
             )}
             {started && (
-              <Btn disabled={!!busy} onClick={() => void run("pause", () => api<{ held?: "plan_paused" | "plan_cancelled" }>("POST", `${path}/pause`, { paused: !o.paused }), (r) => (r.held === "plan_paused" ? "Pause lifted, but the plan itself is paused: set it in Settings before anything sends" : r.held === "plan_cancelled" ? "Pause lifted, but the plan is cancelled: nothing sends" : o.paused ? "Sending resumed" : "Sending paused"))}>
+              <Btn disabled={!!busy} onClick={() => void run("pause", () => api<{ held?: "plan_paused" | "plan_cancelled" | "plan_done" }>("POST", `${path}/pause`, { paused: !o.paused }), (r) => (r.held === "plan_paused" ? "Pause lifted, but the plan itself is paused: set it in Settings before anything sends" : r.held === "plan_cancelled" ? "Pause lifted, but the plan is cancelled: nothing sends" : r.held === "plan_done" ? "Pause lifted, but the pass is done: nothing sends" : o.paused ? "Sending resumed" : "Sending paused"))}>
                 {o.paused ? <Play size={15} /> : <Pause size={15} />} {o.paused ? "Resume" : "Pause"}
               </Btn>
             )}
@@ -98,6 +101,8 @@ export function LiveClient({ id }: { id: string }) {
       />
 
       <ReadinessPanel r={o.readiness} ownerFirst={b.ownerFirstName} />
+      {/* a one pass its inboxes can't finish by its end date: what they can meet, and what would meet it */}
+      <ErrorNote error={b.plan.stage === "running" ? lateLine(b, { approved: !o.awaitingOwnerOk }) : undefined} />
       {/* Instantly refused its inboxes: the reason, until it's fixed (Settings, or in Instantly) */}
       <ErrorNote error={b.senders?.refused && `Nothing goes out for this client: ${b.senders.refused}.`} />
 
@@ -198,6 +203,9 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
           sub={o.quiet?.since && o.quiet.since.quotes >= 5 ? `was ${quietPct(o.quiet.before.rate)} before us` : o.quiet?.backlog ? `${o.quiet.backlog.answered} of ${o.quiet.backlog.followed} old quotes answered` : "quotes with no yes or no"}
         />
       </Kpis>
+
+      {isOnePass(o.business.plan) && <PassBox o={o} />}
+      {o.refill && <RefillNote o={o} />}
 
       <PasteReply key={id} id={id} />
 
@@ -323,7 +331,7 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
               Next charge {when(g.chargeOn)}: <Pill tone={g.free ? "warn" : "ok"}>{g.free ? "free so far (nobody asked)" : `counts (${g.asked.length} asked)`}</Pill>
             </p>
           ) : (
-            <p className="text-[12.5px] text-ink-3">{o.business.plan.stage === "trial" ? `Free round of ${o.business.plan.trialSize}. Then ${fmtMoney(o.business.plan.monthlyPrice)}/month.` : "Not paying yet."}</p>
+            <p className="text-[12.5px] text-ink-3">{isOnePass(o.business.plan) ? passPromise(o.business.plan) : o.business.plan.stage === "trial" ? `Free round of ${o.business.plan.trialSize}. Then ${fmtMoney(o.business.plan.monthlyPrice)}/month.` : "Not paying yet."}</p>
           )}
         </Box>
       </div>
@@ -346,6 +354,49 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
         </Box>
       </Section>
     </div>
+  );
+}
+
+/** A one pass: the plan kind, its list, how far through it is against its end date, and its bookings and charges. */
+function PassBox({ o }: { o: Overview }) {
+  const p = o.business.plan;
+  const x = o.pass ?? { people: 0, started: 0, sent: 0, notes: 0 };
+  const today = o.asOf ?? "";
+  const days = p.startedOn && p.targetEndOn ? daysBetween(p.startedOn, p.targetEndOn) : ONE_PASS.days;
+  const day = p.startedOn && today >= p.startedOn ? Math.min(days, daysBetween(p.startedOn, today) + 1) : 0;
+  return (
+    <Section title="One pass" sub={`The whole list once, newest first. ${p.freeFirst ? `Bookings from the first ${p.freeFirst} people are free. ` : ""}${passPromise(p)}`}>
+      <Kpis>
+        {/* before it's planned, the people a plan would take */}
+        <Kpi label="List" value={(x.people || (o.totals?.remaining ?? 0)).toLocaleString("en-US")} sub={x.people ? `${x.started.toLocaleString("en-US")} written to` : "not planned yet"} />
+        <Kpi label="Notes sent" value={`${x.sent.toLocaleString("en-US")} of ${x.notes.toLocaleString("en-US")}`} sub={x.notes ? `${Math.round((x.sent / x.notes) * 100)}% of the pass` : "nothing planned yet"} />
+        <Kpi
+          label="Ends"
+          value={p.stage === "done" ? `Done ${when(p.doneOn)}` : when(p.targetEndOn)}
+          sub={p.stage === "done" ? undefined : p.startedOn ? (day ? `day ${day} of ${days}` : `starts ${when(p.startedOn)}`) : "starts when it's planned"}
+          tone={p.stage === "running" && passLate(p) ? "warn" : undefined}
+        />
+        {/* counted and charged once billing is built (B4) */}
+        <Kpi label="Billable bookings" value={`— of ${p.capBookings ?? ONE_PASS.capBookings}`} sub="counted with billing" />
+        <Kpi label="Charges" value="—" sub={`${fmtMoney(p.pricePerBooking ?? ONE_PASS.pricePerBooking)} a booking`} />
+      </Kpis>
+    </Section>
+  );
+}
+
+/** "Who gets monthly", once a free 150 or a one pass is over: how fast the owner's list refills. */
+function RefillNote({ o }: { o: Overview }) {
+  const r = o.refill!;
+  const pass = isOnePass(o.business.plan);
+  return (
+    <Box className="flex flex-col gap-1 px-4 py-3 text-[13.5px]">
+      <span>
+        <b>Their list refills by about {plural(r.perMonth, "customer")} a month</b> (newly lapsed or due, averaged over the last 12 months).
+      </span>
+      <span className="text-[12.5px] text-ink-3">
+        {r.monthly ? `That's ${MONTHLY_REFILL} or more: offer to keep it going monthly.` : pass ? `Under ${MONTHLY_REFILL}: check back next season.` : `Under ${MONTHLY_REFILL}: offer the one pass instead.`}
+      </span>
+    </Box>
   );
 }
 

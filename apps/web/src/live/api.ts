@@ -103,6 +103,10 @@ export interface Overview {
   awaitingOwnerOk?: string;
   health?: SendHealth;
   guarantee?: GuaranteeCheck;
+  /** A one pass: the people on its list and how many written to, its notes sent out of all of them. */
+  pass?: { people: number; started: number; sent: number; notes: number };
+  /** Once a free 150 or a one pass is over: newly lapsed or due customers a month (last 12), and whether that's monthly's 30. */
+  refill?: { perMonth: number; monthly: boolean };
   counts?: { customers: number; quotes: number; jobs: number; invoices: number; requests: number; queued: number; sent: number };
   waitingOnOwner?: { id: string; name: string; intent: ReplyIntent; receivedAt: string; text: string }[];
   recoveredValue?: number;
@@ -178,6 +182,8 @@ export interface PlanResult {
   awaitingOk?: boolean;
   /** A welcome text with the first note went to the owner with this plan. */
   textSent?: boolean;
+  /** A one pass that can't finish by its end date on its inboxes: the date they can meet, and the inboxes that would meet it. */
+  late?: { canMeet: string; moreInboxes?: number };
 }
 
 export interface Health {

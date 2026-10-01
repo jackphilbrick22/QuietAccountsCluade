@@ -20,6 +20,7 @@ import {
   extractEmails,
   fmtPhone,
   HELD_FOR_GOOD,
+  INBOX_DAILY,
   REQUIRED_FLAG,
   sendableEmail,
   sendHealth,
@@ -33,11 +34,13 @@ import {
   dueTouches,
   find,
   importTable,
+  isOnePass,
   kickoff,
   ledgerPass,
   leadCode,
   makeId,
   markContacted,
+  monthName,
   markSent,
   maxDate,
   mergePulled,
@@ -45,7 +48,9 @@ import {
   oppById,
   outOfSeason,
   ownerApproves,
+  paceable,
   parseTable,
+  passLate,
   planBatch,
   plural,
   quoteById,
@@ -192,7 +197,10 @@ export function connectJobberLink(d: Deps, bid: string): string {
   return `${d.cfg.PUBLIC_URL.replace(/\/$/, "")}/oauth/jobber/start?state=${encodeURIComponent(linkToken(d, "oauth|jobber", bid))}`;
 }
 
-/** Who a client's mail comes from: their own name and first inbox when set, else "<signer> at <business>" from the server's sender. */
+/**
+ * Who a client's mail comes from: their own name and first inbox when set (a one pass's go from each of its inboxes in
+ * turn: passInbox), else "<signer> at <business>" from the server's sender.
+ */
 export function sender(b: BusinessProfile): { fromName: string; fromEmail?: string; replyTo?: string } {
   return { fromName: b.fromName?.trim() || `${b.signerName} at ${b.name}`, fromEmail: b.fromEmails?.[0], replyTo: b.replyTo };
 }
@@ -262,8 +270,13 @@ export async function rescan(d: Deps, bid: string): Promise<void> {
 /* Writer + Sender: plan                                               */
 /* ------------------------------------------------------------------ */
 
-export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit?: number; approve?: boolean } = {}): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number; awaitingOk?: boolean; textSent?: boolean }> {
+export async function plan(
+  d: Deps,
+  bid: string,
+  opts: { startOn?: string; limit?: number; approve?: boolean } = {},
+): Promise<{ people: number; notes: number; firstDay?: string; lastDay?: string; personalized: number; awaitingOk?: boolean; textSent?: boolean; late?: { canMeet: string; moreInboxes?: number } }> {
   let planned: Touch[] = [];
+  let paced = false;
   let firstRound = false;
   let approved = true;
   let waiting = false;
@@ -273,21 +286,30 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
   if (known && (known.state.dataset.business.mailingAddress?.trim() ?? "").length < 8) throw new NotReady("Add the business's mailing address first. It goes at the bottom of every note, and the law requires it.");
   const inbox = known && noInbox(d, known.state.dataset.business);
   if (inbox) throw new NotReady(inbox);
+  if (known?.state.dataset.business.plan.stage === "done") throw new NotReady("This one pass is done: nothing more is planned or sent for it.");
   const result = await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
     const b = state.dataset.business;
     const startOn = opts.startOn ?? nextSendDay(state, at.slice(0, 10));
-    const limit = opts.limit ?? (b.plan.stage === "trial" ? Math.max(0, b.plan.trialSize - startedPeople(state)) : undefined);
+    // the free round stops at its 150; a one pass takes the whole list
+    const pass = isOnePass(b.plan);
+    const limit = opts.limit ?? (!pass && b.plan.stage === "trial" ? Math.max(0, b.plan.trialSize - startedPeople(state)) : undefined);
     if (limit === 0) return { people: 0, notes: 0, personalized: 0 };
-    // The free round's first batch waits for the owner's OK to the first note (by text); later batches don't.
-    firstRound = b.plan.stage === "trial" && !state.touches.some((t) => t.status !== "cancelled");
+    // The free round's (or the one pass's) first batch waits for the owner's OK to the first note (by text); later
+    // batches don't. A one pass's first is the one that starts it, whatever went before (the rest of a list after its
+    // free round).
+    firstRound = pass ? !b.plan.startedOn : b.plan.stage === "trial" && !state.touches.some((t) => t.status !== "cancelled");
     // while the owner hasn't said OK to the first note, nothing new is approved either (a top-up waits with it)
     waiting = !!state.awaitingOwnerOk;
     approved = opts.approve ?? (!firstRound && !waiting);
     const p = planBatch(state, at, { startOn, limitPeople: limit, approve: approved, kickoff: false, features: features(d.cfg) });
     planned = state.touches.filter((t) => p.touches.some((x) => x.id === t.id));
-    return { people: p.people.length, notes: p.touches.length, firstDay: p.firstDay, lastDay: p.lastDay, personalized: 0 };
+    paced = !!p.pace?.lastFirst && p.people.length > 0;
+    // late: the whole pass, not only who this plan added
+    const late = paced && passLate(b.plan);
+    return { people: p.people.length, notes: p.touches.length, firstDay: p.firstDay, lastDay: p.lastDay, personalized: 0, ...(late ? { late } : {}) };
   });
+  if (paced) await paceAlert(d, bid);
   // AI personalization of first notes (optional), outside the lock, then written back.
   if (d.llm && d.cfg.AI_WRITER === "on" && planned.length) {
     const snapshot = d.accounts.peek(bid)!.state;
@@ -330,6 +352,34 @@ export async function plan(d: Deps, bid: string, opts: { startOn?: string; limit
   return { ...result, awaitingOk: pending && result.people > 0, textSent };
 }
 
+/**
+ * A one pass that can't finish by its end date on its inboxes: Jack hears the date they can meet, and how many more
+ * inboxes would meet the first (Needs a person; the client page says it too). Once its notes are approved (the owner's
+ * OK), only the end date is left to set. One open at most, as things are now: closed once a plan, the OK, BUSY or OPEN,
+ * or a new end date meets it, and when the pass is done or cancelled.
+ */
+export async function paceAlert(d: Deps, bid: string): Promise<void> {
+  closePaceAlerts(d, bid);
+  const state = d.accounts.peek(bid)!.state;
+  const b = state.dataset.business;
+  const late = passLate(b.plan);
+  // a pass that's over has no end date left to meet
+  if (!late || !b.plan.targetEndOn || b.plan.stage === "done" || b.plan.stage === "cancelled") return;
+  const day = (x: string) => `${monthName(x).slice(0, 3)} ${Number(x.slice(8))}`;
+  const n = b.plan.pace!.inboxes;
+  await raiseAlert(d, bid, {
+    kind: "pace",
+    title: `${b.name}: the pass can't finish by ${day(b.plan.targetEndOn)} on ${n} ${n === 1 ? "inbox" : "inboxes"}`,
+    detail: !paceable(state)
+      ? `Its notes are approved as they are, and the last of them finish by ${day(late.canMeet)}. Set the end date to ${day(late.canMeet)}.`
+      : `It's planned to finish by ${day(late.canMeet)}, the soonest ${n === 1 ? "that inbox" : "they"} can do it at ${INBOX_DAILY} a day each. ${late.moreInboxes ? `${late.moreInboxes} more ${late.moreInboxes === 1 ? "inbox" : "inboxes"} would finish it by ${day(b.plan.targetEndOn)}: add them in Settings and plan again before the owner's OK.` : `No number of inboxes would finish it by ${day(b.plan.targetEndOn)}.`} Or set the end date to ${day(late.canMeet)}.`,
+  });
+}
+
+function closePaceAlerts(d: Deps, bid: string): void {
+  for (const a of d.accounts.repo.openAlerts(bid)) if (a.kind === "pace") d.accounts.repo.finishAlert(bid, a.seq, d.clock().toISOString());
+}
+
 function startedPeople(state: AccountState): number {
   return new Set(state.touches.filter((t) => t.step === 1 && t.status !== "cancelled").map((t) => t.customerId)).size;
 }
@@ -346,10 +396,15 @@ export function nextSendDay(state: AccountState, from: string): string {
 /**
  * Approve the planned round: the owner said OK to the first note (`byText`, or to Jack in the console), or Jack looked
  * it over. When the OK came too late for some of it to go in its season, theirs is written again for the next selling
- * window (approveRound), and Jack looks it over.
+ * window (approveRound), and Jack looks it over. On a one pass a late OK paces it again from today (the backlog never
+ * goes at once, and its start and end move with it), its end date is checked, and its alert brought up to date.
  */
 export async function approve(d: Deps, bid: string, byText = false): Promise<RoundApproval> {
-  const r = await d.accounts.withAccount(bid, (state) => (byText ? ownerApproves : approveRound)(state, nowLocal(d, state)));
+  let pass = false;
+  const r = await d.accounts.withAccount(bid, (state) => {
+    pass = isOnePass(state.dataset.business.plan);
+    return (byText ? ownerApproves : approveRound)(state, nowLocal(d, state));
+  });
   if (r.late)
     await raiseAlert(d, bid, {
       kind: "off_season_ok",
@@ -358,6 +413,7 @@ export async function approve(d: Deps, bid: string, byText = false): Promise<Rou
         ? `Their notes were cancelled, and the round written again for the next selling window, the first on ${r.late.firstDay}. Look it over before then.`
         : "Their notes were cancelled, and nobody's due in the next selling window yet. Plan their round when it opens.",
     });
+  if (pass) await paceAlert(d, bid);
   return r;
 }
 
@@ -372,8 +428,9 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
   let failed = 0;
   let held = 0;
   const loaded = d.accounts.peek(bid);
-  // a paused plan (a year that ran out, or Jack's Paused stage) never sends, whatever the pause flag says (as holdReason)
-  if (!loaded || loaded.paused || loaded.state.dataset.business.plan.stage === "paused") return { sent, failed, held };
+  // a paused plan (a year that ran out, or Jack's Paused stage) or a finished pass never sends, whatever the pause flag
+  // says (as holdReason)
+  if (!loaded || loaded.paused || loaded.state.dataset.business.plan.stage === "paused" || loaded.state.dataset.business.plan.stage === "done") return { sent, failed, held };
   const at0 = nowLocal(d, loaded.state);
   const { due, held: h } = dueTouches(loaded.state, at0);
   held = h.length;
@@ -406,6 +463,7 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
     }
     // Claimed before the mail server sees it: an overlapping send skips it, and a crash or a timeout after the
     // server took it leaves it "sending" for a person to check — never mailed a second time.
+    let from = sender(b).fromEmail;
     const claimed = await d.accounts.withAccount(bid, (s) => {
       const live = s.touches.find((x) => x.id === t.id);
       if (!live || live.status !== "approved") return false;
@@ -415,10 +473,17 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
         live.lastError = "Not sent: they already had our answer to a request in the last few days";
         return false;
       }
+      // a one pass's notes go from each of its inboxes in turn; with every one full today, the rest wait for tomorrow
+      if (isOnePass(s.dataset.business.plan) && s.dataset.business.fromEmails?.length) {
+        from = passInbox(s, prev?.fromEmail, nowLocal(d, s).slice(0, 10));
+        if (!from) return "full";
+        live.fromEmail = from;
+      }
       live.status = "sending";
       live.claimedAt = nowLocal(d, s);
       return true;
     });
+    if (claimed === "full") break;
     if (!claimed) continue;
     let res: SendResult;
     try {
@@ -429,6 +494,7 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
         to: item.to,
         toName: item.customerName,
         ...sender(b),
+        fromEmail: from,
         subject: t.subject ?? "",
         text: t.body,
         inReplyTo: prev?.providerId,
@@ -456,6 +522,22 @@ export async function sendDue(d: Deps, bid: string, opts: { maxPerTick?: number 
     sent++;
   }
   return { sent, failed, held };
+}
+
+/**
+ * The inbox a one pass's note goes from when the server sends it itself: the one its note 1 went from (`first`) while
+ * that has room today, so a thread keeps one sender, else the one with the most room. No inbox sends more than 30 a day,
+ * follow-ups included: with every one full, none.
+ */
+function passInbox(s: AccountState, first: string | undefined, today: string): string | undefined {
+  const sent = new Map<string, number>();
+  for (const x of s.touches)
+    if (x.fromEmail && ["sending", "sent", "delivered", "bounced"].includes(x.status) && (x.sentAt ?? x.claimedAt ?? "").slice(0, 10) === today) sent.set(x.fromEmail, (sent.get(x.fromEmail) ?? 0) + 1);
+  const room = (x: string) => INBOX_DAILY - (sent.get(x) ?? 0);
+  const inboxes = s.dataset.business.fromEmails ?? [];
+  if (first && inboxes.includes(first) && room(first) > 0) return first;
+  const most = [...inboxes].sort((x, y) => room(y) - room(x))[0];
+  return most && room(most) > 0 ? most : undefined;
 }
 
 /** Enhanced status code (RFC 3463) in a server's reply, e.g. "5.1.1". */
@@ -582,7 +664,9 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const b = state.dataset.business;
   const at = nowLocal(d, state);
   const today = at.slice(0, 10);
-  const horizon = new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
+  // A week ahead, so the platform has them in time. A one pass's people go on their first note's day, so neither of its
+  // campaigns (one for each number of notes) can start anyone ahead of the pace: together they start the day's people.
+  const horizon = isOnePass(b.plan) ? today : new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
   const onSendDay = (day: string) => (b.sendDays.includes(weekday(day)) ? day : nextSendDay(state, day));
   const byLead = new Map<string, Touch[]>();
   for (const t of state.touches) {
@@ -722,6 +806,7 @@ function refuseLead(s: AccountState, platform: string, lead: SequencedLead, why:
 export function holdReason(l: Loaded): string | undefined {
   const b = l.state.dataset.business;
   if (b.plan.stage === "cancelled") return "cancelled";
+  if (b.plan.stage === "done") return "the end of the pass";
   if (l.paused || b.plan.stage === "paused") return "paused";
   const h = sendHealth(l.state);
   if (h.paused) return `the Guard's brake: ${h.reason}`;
@@ -869,11 +954,12 @@ async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise
 
 /**
  * Stop — or restart — everything a business sends. Pause and resume flip its campaigns on the sending platform
- * too (a resume never restarts a cancelled or braked business); cancel also cancels what's queued, takes back
+ * too (a resume never restarts a cancelled, finished or braked business); cancel also cancels what's queued, takes back
  * every note the platform still holds, and takes the owner's texts off "Texts to send" (a refund we owe them aside).
- * Every stop (owner text or link, Settings, delete, the operator) comes here.
+ * A one pass that's done stops the same way, but its texts still go (the end text, hand-offs of late replies), and it
+ * isn't paused: it's done. Every stop (owner text or link, Settings, delete, the operator, the pass's end) comes here.
  */
-export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume" | "cancel"): Promise<void> {
+export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume" | "cancel" | "done"): Promise<void> {
   if (!d.accounts.repo.exists(bid)) return;
   if (mode === "resume") {
     d.accounts.setPaused(bid, false);
@@ -881,20 +967,23 @@ export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume"
     if (l && !holdReason(l) && l.state.dataset.business.platformPaused) await releasePlatform(d, bid);
     return;
   }
-  d.accounts.setPaused(bid, true);
-  if (mode === "cancel") {
+  const ends = mode === "cancel" || mode === "done";
+  if (mode !== "done") d.accounts.setPaused(bid, true);
+  if (ends) {
     await d.accounts.withAccount(bid, (s) => {
       for (const t of s.touches) if (t.status === "approved" || t.status === "planned") t.status = "cancelled";
       // its inboxes are free for another client, who has them renamed: checked again if it ever takes them back
       s.dataset.business.senders = undefined;
     });
     closeInboxAlerts(d, bid);
+    // nor is there an end date left to meet
+    closePaceAlerts(d, bid);
     // what waits to be texted by hand goes no further either, as the dispatcher would have it (deliverOwnerMessages)
-    d.accounts.repo.skipManual(bid, CANCELLED_OWNER);
+    if (mode === "cancel") d.accounts.repo.skipManual(bid, CANCELLED_OWNER);
   }
   const l = d.accounts.peek(bid)!;
-  if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : "a pause");
-  if (mode === "cancel") await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0, reason: "cancel" });
+  if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : mode === "done" ? "the end of the pass" : "a pause");
+  if (ends) await withdrawLeads(d, bid, pushedUnsent(d, d.accounts.peek(bid)!.state), { inline: 0, ...(mode === "cancel" ? { reason: "cancel" as const } : {}) });
 }
 
 /**
@@ -1287,7 +1376,9 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 /* Dispatcher: owner texts in and out                                  */
 /* ------------------------------------------------------------------ */
 
-const BILLING_KINDS = new Set(["close", "precharge", "free_month", "refund"]);
+const BILLING_KINDS = new Set(["close", "precharge", "free_month", "refund", "pass_end"]);
+/** Billing texts a person always sends: a refund to issue first, and a one pass's last text (BRIEF B3: Jack approves it). */
+const ALWAYS_REVIEWED = new Set(["refund", "pass_end"]);
 
 /** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them. */
 const CANCELLED_OWNER = "Cancelled: nothing more goes to the owner.";
@@ -1316,8 +1407,9 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
       done("skipped", { error: CANCELLED_OWNER });
       continue;
     }
-    // a refund text waits for a person even with auto-send on: someone has to issue the refund first
-    if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || m.kind === "refund") && !opts.allowBilling) {
+    // a refund text waits for a person even with auto-send on (someone has to issue the refund first), and so does a
+    // one pass's last text
+    if (BILLING_KINDS.has(m.kind) && (d.cfg.AUTO_SEND_BILLING_TEXTS !== "true" || ALWAYS_REVIEWED.has(m.kind)) && !opts.allowBilling) {
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, "review");
       continue;
     }

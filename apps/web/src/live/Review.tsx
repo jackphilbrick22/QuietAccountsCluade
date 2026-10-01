@@ -45,6 +45,9 @@ const HANDLED: Record<string, string> = {
   unrecognized: "wrote something we couldn't act on",
   texts_off: "turned our texts off (STOP)",
   resume_cancelled: "wants back in after cancelling",
+  resume_done: "texted RESUME after their one pass was done",
+  pass_monthly: "wants to keep going after the one pass: set up the plan in Settings and text them how it works",
+  pass_end_no: "answered the end of their one pass with a no (or it's about a lead: it was left alone)",
 };
 
 export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
@@ -262,7 +265,7 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
-            {["accepted_close", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
+            {["accepted_close", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused", "pass_monthly"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
             <Btn variant="ghost" onClick={() => open("texts")}>
               All their texts
             </Btn>
@@ -296,6 +299,8 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn variant={RESTORE.includes(it.alertKind ?? "") ? "ghost" : "primary"} disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/alerts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
+            {/* a one pass that can't finish on time: its inboxes and end date are in Settings */}
+            {it.alertKind === "pace" && <Btn onClick={() => open("settings")}>Open settings</Btn>}
             <Btn variant="ghost" onClick={() => open("activity")}>
               Open activity
             </Btn>

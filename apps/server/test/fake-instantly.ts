@@ -16,14 +16,20 @@ export function json(status: number, body: unknown, headers: Record<string, stri
   return new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
-/** One sending inbox as the fake holds it: the name it sends under, and campaigns it's in that the fake didn't see made. */
+/**
+ * One sending inbox as the fake holds it: the name it sends under, the most it sends a day (none set at first), and
+ * campaigns it's in that the fake didn't see made.
+ */
 export interface FakeInbox {
   first_name: string;
   last_name: string;
+  daily_limit?: number;
   /** Campaigns made elsewhere (Jack's cold email), on top of the ones made or changed through the fake with it listed. */
   campaigns: { campaign_id: string; campaign_name: string }[];
   /** The name never changes, whatever is PATCHed (a read-back that doesn't match). */
   keepsName?: boolean;
+  /** Nor does the daily limit. */
+  keepsLimit?: boolean;
   /** Not connected in the workspace: 404. */
   missing?: boolean;
 }
@@ -54,11 +60,12 @@ export function fakeInstantly(routes: Record<string, Handler | Handler[]>) {
       const { email, x } = account(c);
       if (x.missing) return notFound;
       if (!x.keepsName) Object.assign(x, { first_name: c.body.first_name ?? x.first_name, last_name: c.body.last_name ?? x.last_name });
-      return { body: { email, first_name: x.first_name, last_name: x.last_name } };
+      if (!x.keepsLimit && c.body.daily_limit !== undefined) x.daily_limit = c.body.daily_limit;
+      return { body: { email, first_name: x.first_name, last_name: x.last_name, daily_limit: x.daily_limit ?? null } };
     },
     "GET /accounts/:email": (c) => {
       const { email, x } = account(c);
-      return x.missing ? notFound : { body: { email, first_name: x.first_name, last_name: x.last_name } };
+      return x.missing ? notFound : { body: { email, first_name: x.first_name, last_name: x.last_name, daily_limit: x.daily_limit ?? null } };
     },
     "GET /account-campaign-mappings/:email": (c) => {
       const { email, x } = account(c);

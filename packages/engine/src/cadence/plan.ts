@@ -3,6 +3,7 @@ import { pickWorked, type ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
+import { paceOnePass, type Pace } from "./pace.ts";
 import { climateOf, comesBackEachSeason, findService, growingSeason, SEASONAL_TRADES, seasonFit, sellingSeason, sellingWindow, stateOf } from "../trades/index.ts";
 import { addDays, hash, makeId, mondayOf, monthOf, weekday } from "../util.ts";
 
@@ -15,15 +16,16 @@ export interface PlanOptions {
   skipCustomers?: Set<string>;
   /** Narrows the leaks the trade's offer works (worksLeak) further. */
   types?: BreakageType[];
-  /** Leave the holdout group out (it never gets contacted). Default true. */
+  /** Leave the holdout group out (it never gets contacted). Default true, except on a one pass. */
   applyHoldout?: boolean;
   /** Override the weekly new-people cap. */
   weeklyNew?: number;
   /**
    * Who goes first. "reply" = most likely to write back (the free round: its job is to prove
-   * people answer). "dollars" = most expected revenue (paying accounts). Default follows the plan stage.
+   * people answer). "dollars" = most expected revenue (paying accounts). "newest" = the newest quote or
+   * customer first (a one pass). Default follows the plan.
    */
-  rank?: "reply" | "dollars";
+  rank?: "reply" | "dollars" | "newest";
   /** Include opportunities held for a look (priced to lose, realtor/HOA bids). Default false. */
   includeCaution?: boolean;
   /** Comparison-group people whose wait is over: plan them like anyone else. */
@@ -40,6 +42,11 @@ export interface PlanOptions {
   askedOn?: Map<string, ISODate>;
   /** What this server sells beyond the two offers: new-request answering brings the fresh-quote sequence. */
   features?: Features;
+  /**
+   * A one pass: first notes paced to finish by `endOn` on its `inboxes` (paceOnePass) instead of the weekly pace, with
+   * `busy` the notes already on the calendar by day.
+   */
+  pass?: { endOn: ISODate; inboxes: number; busy?: Map<ISODate, number> };
 }
 
 export interface Plan {
@@ -53,10 +60,22 @@ export interface Plan {
   weeks: { week: ISODate; newPeople: number; notes: number }[];
   /** People skipped because no note could be written cleanly. */
   skipped: { customerId: string; why: string }[];
+  /** A one pass's pacing: the end date it meets, and when that isn't the one asked for, what would meet it. */
+  pace?: Pace;
 }
 
 /** New work that waits while the owner is booked out. Said-yes-but-unscheduled and invoices never wait. */
 export const HOLD_WHEN_BOOKED = new Set<BreakageType>(["unanswered_quote", "archived_quote", "changes_requested", "unquoted_request", "declined_quote", "declined_option", "one_and_done", "lapsed_regular", "missed_upsell", "service_due"]);
+
+/**
+ * Booked out: new work waits until about three weeks before the schedule opens up, so the leads land when the owner
+ * can actually take them (owners let quotes die when they're busy, then regret it). The first day it may start, when
+ * that's more than three weeks after `startOn`.
+ */
+export function bookedOutStart(ds: Dataset, startOn: ISODate): ISODate | undefined {
+  const until = ds.business.bookedOutUntil;
+  return until && until > addDays(startOn, 21) ? nextAllowed(ds, addDays(until, -21)) : undefined;
+}
 
 /** No single kind of leak takes more than this share of a limited round. */
 export const MAX_TYPE_SHARE = 0.4;
@@ -67,7 +86,8 @@ export function inHoldout(customerId: string, pct: number): boolean {
   return (parseInt(hash(`holdout|${customerId}`), 36) % 1000) / 1000 < pct;
 }
 
-function allowedDay(ds: Dataset, d: ISODate): boolean {
+/** Whether notes may go out on a day: one of the send days, outside the blackout weeks. */
+export function allowedDay(ds: Dataset, d: ISODate): boolean {
   const b = ds.business;
   if (!b.sendDays.includes(weekday(d))) return false;
   if (b.blackoutWeeks.includes(mondayOf(d))) return false;
@@ -112,7 +132,7 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
   const byId = new Map(ds.customers.map((c) => [c.id, c]));
   const holdout: string[] = [];
   const skipped: Plan["skipped"] = [];
-  const applyHoldout = opts.applyHoldout ?? true;
+  const applyHoldout = opts.applyHoldout ?? b.plan.kind !== "one_pass";
   const candidates: Opportunity[] = [];
   const works = pickWorked(b.trade, opts.types ? result.opportunities.filter((o) => opts.types!.includes(o.type)) : result.opportunities);
   for (const o of works) {
@@ -132,8 +152,11 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     }
     candidates.push(o);
   }
-  const rank = opts.rank ?? (b.plan.stage === "trial" ? "reply" : "dollars");
-  if (rank === "reply") {
+  const rank = opts.rank ?? (b.plan.kind === "one_pass" ? "newest" : b.plan.stage === "trial" ? "reply" : "dollars");
+  if (rank === "newest") {
+    // the whole list once, the freshest first: no share kept for any kind of leak
+    candidates.sort((x, y) => x.ageDays - y.ageDays || y.expectedValue - x.expectedValue || x.id.localeCompare(y.id));
+  } else if (rank === "reply") {
     candidates.sort((x, y) => y.recoverProbability - x.recoverProbability || y.expectedValue - x.expectedValue || x.id.localeCompare(y.id));
     // A limited round (the free 150) should prove several leaks, dead quotes included — not 140 service reminders.
     if (opts.limitPeople) {
@@ -155,6 +178,13 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
   const limit = opts.limitPeople ?? candidates.length;
   const weeklyNew = opts.weeklyNew ?? b.weeklyNewContacts;
   const perDay = Math.max(1, Math.ceil(weeklyNew / Math.max(1, b.sendDays.length)));
+  let nowDay = nextAllowed(ds, opts.startOn);
+  const heldFrom = bookedOutStart(ds, opts.startOn);
+  let heldDay = heldFrom ?? nowDay;
+  // a one pass waits whole while the owner is booked out: one push of the list, paced from the day it can start
+  const pace = opts.pass
+    ? paceOnePass({ notes: candidates.slice(0, limit).map((o) => sequenceFor(o, alwaysOnFor(b, opts.features)).steps.length), startOn: heldDay, endOn: opts.pass.endOn, inboxes: opts.pass.inboxes, busy: opts.pass.busy, sendsOn: (d) => allowedDay(ds, d) })
+    : undefined;
 
   const touches: Touch[] = [];
   const people: string[] = [];
@@ -164,28 +194,31 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     dayCount.set(d, (dayCount.get(d) ?? 0) + 1);
     weekCount.set(mondayOf(d), (weekCount.get(mondayOf(d)) ?? 0) + 1);
   }
-  let nowDay = nextAllowed(ds, opts.startOn);
-  // Booked out: new work waits until about three weeks before the schedule opens up, so the leads land
-  // when the owner can actually take them (owners let quotes die when they're busy, then regret it).
-  const heldFrom = b.bookedOutUntil && b.bookedOutUntil > addDays(opts.startOn, 21) ? addDays(b.bookedOutUntil, -21) : undefined;
-  let heldDay = heldFrom ? nextAllowed(ds, heldFrom) : nowDay;
+  // room to start someone on a day: in the day and the week
+  const room = (d: ISODate) => (dayCount.get(d) ?? 0) < perDay && (weekCount.get(mondayOf(d)) ?? 0) < weeklyNew;
 
-  for (const o of candidates) {
+  for (const [i, o] of candidates.entries()) {
     if (people.length >= limit) break;
     const c = byId.get(o.customerId);
     if (!c) continue;
-    const held = !!heldFrom && HOLD_WHEN_BOOKED.has(o.type);
-    let day = held ? heldDay : nowDay;
-    // find a start day with room in the day and the week
-    for (let guard = 0; guard < 400; guard++) {
-      const wk = mondayOf(day);
-      if ((dayCount.get(day) ?? 0) < perDay && (weekCount.get(wk) ?? 0) < weeklyNew) break;
-      day = nextAllowed(ds, addDays(day, 1));
+    const held = !!heldFrom && (!!pace || HOLD_WHEN_BOOKED.has(o.type));
+    // a one pass: each person's notes go on the days its pace gave them (someone left off only leaves their days empty)
+    const paced = pace?.people[i];
+    let day = paced?.[0] ?? (held ? heldDay : nowDay);
+    let free = pace ? !!paced : room(day);
+    if (!pace) for (let guard = 0; guard < 400 && !free; guard++) free = room((day = nextAllowed(ds, addDays(day, 1))));
+    if (!free) {
+      skipped.push({ customerId: c.id, why: "No day with room to start them" });
+      continue;
     }
     // Seasonal notes go out in their season (goesOutOn): a start that would land past it waits for the next scan in
-    // season, and a follow-up past it is left off. A seasonal shop's notes carry the selling season they're written for.
+    // season (a one pass has no next one, so it's listed as skipped), and a follow-up past it is left off. A seasonal
+    // shop's notes carry the selling season they're written for.
     const inSeason = (d: ISODate) => goesOutOn(b, o, d);
-    if (!inSeason(day)) continue;
+    if (!inSeason(day)) {
+      if (pace) skipped.push({ customerId: c.id, why: `Out of season${o.type === "service_due" && findService(o.serviceId) ? `: ${findService(o.serviceId)!.service.label}` : ""}` });
+      continue;
+    }
     if (held) heldDay = day;
     else nowDay = day;
     const seq = sequenceFor(o, alwaysOnFor(b, opts.features));
@@ -194,8 +227,8 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     let ok = true;
     let threadSubject: string | undefined;
     for (const st of seq.steps) {
-      const sendOn = st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
-      if (!inSeason(sendOn)) break;
+      const sendOn = paced ? paced[st.step - 1] : st.step === 1 ? day : nextAllowed(ds, addDays(day, st.day) > lastSend ? addDays(day, st.day) : addDays(lastSend, 1));
+      if (!sendOn || !inSeason(sendOn)) break;
       // follow-ups reply in note 1's thread, so they carry its exact subject
       const n = renderNote(o, c, { ds, sendOn, contactedBefore: !!opts.contacted?.has(c.id), threadSubject, features: opts.features }, st.step);
       if (st.step === 1 && n) threadSubject = n.subject;
@@ -251,5 +284,6 @@ export function planOutreach(ds: Dataset, result: ScanResult, opts: PlanOptions)
     lastDay: touches[touches.length - 1]?.dueAt.slice(0, 10),
     weeks: [...weeks.values()].sort((a, b2) => (a.week < b2.week ? -1 : 1)),
     skipped,
+    ...(pace ? { pace } : {}),
   };
 }

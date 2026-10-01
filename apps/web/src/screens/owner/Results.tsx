@@ -19,6 +19,7 @@ const MSG_KIND: Record<OwnerMessage["kind"], string> = {
   info: "Heads up",
   refund: "Yearly refund",
   reply: "Reply to your text",
+  pass_end: "End of the pass",
 };
 
 type MsgFilter = "all" | "handoff" | "weekly" | "billing" | "other";

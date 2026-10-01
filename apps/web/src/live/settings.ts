@@ -1,7 +1,12 @@
-import type { BusinessProfile } from "@qa/engine";
+import { isOnePass, type BusinessProfile } from "@qa/engine";
 
-/** What a Settings save sends (PATCH /api/businesses/:id): only what changed. A From name of null clears it. */
-export type Patch = Partial<Omit<BusinessProfile, "voice" | "persistence" | "plan" | "fromName">> & { fromName?: string | null; voice?: Partial<BusinessProfile["voice"]>; persistence?: Partial<BusinessProfile["persistence"]>; plan?: Partial<BusinessProfile["plan"]> };
+/** What a Settings save sends (PATCH /api/businesses/:id): only what changed. A From name or a pass's "Done by" of null clears it. */
+export type Patch = Partial<Omit<BusinessProfile, "voice" | "persistence" | "plan" | "fromName">> & {
+  fromName?: string | null;
+  voice?: Partial<BusinessProfile["voice"]>;
+  persistence?: Partial<BusinessProfile["persistence"]>;
+  plan?: Partial<Omit<BusinessProfile["plan"], "targetEndOn">> & { targetEndOn?: string | null };
+};
 
 /** What the Settings form edits. */
 const FIELDS: (keyof BusinessProfile)[] = ["name", "ownerName", "ownerPhone", "ownerEmail", "signerName", "signerRole", "trade", "timezone", "fromName", "fromEmails", "replyTo", "businessPhone", "mailingAddress", "city", "state", "sendDays", "sendWindow", "weeklyNewContacts", "minQuoteValue", "minQuoteAgeDays", "maxQuoteAgeMonths", "voice", "persistence", "plan"];
@@ -30,17 +35,22 @@ export function diff(a: BusinessProfile, b: BusinessProfile): Patch {
     if (k === "plan") {
       const p = b.plan;
       const yearly = p.billing === "annual";
+      // its kind when that changed; a one pass sends its own terms ("Done by" emptied: back to 30 days from its start)
+      const kind = p.kind !== a.plan.kind ? { kind: p.kind ?? "monthly" } : {};
       // a yearly plan sends its price too (left out, the server would keep it billed monthly); the paid years go whenever
       // they changed, whatever the billing (a year taken off before going monthly stays off)
-      v = {
-        stage: p.stage,
-        trialSize: p.trialSize,
-        monthlyPrice: p.monthlyPrice,
-        ...(p.paidOn ? { paidOn: p.paidOn } : {}),
-        billing: yearly ? "annual" : "monthly",
-        ...(yearly && p.annualPrice !== undefined ? { annualPrice: p.annualPrice } : {}),
-        ...(JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
-      };
+      v = isOnePass(p)
+        ? { ...kind, stage: p.stage, pricePerBooking: p.pricePerBooking, capBookings: p.capBookings, windowDays: p.windowDays, freeFirst: p.freeFirst, ...(p.targetEndOn ? { targetEndOn: p.targetEndOn } : a.plan.targetEndOn ? { targetEndOn: null } : {}) }
+        : {
+            ...kind,
+            stage: p.stage,
+            trialSize: p.trialSize,
+            monthlyPrice: p.monthlyPrice,
+            ...(p.paidOn ? { paidOn: p.paidOn } : {}),
+            billing: yearly ? "annual" : "monthly",
+            ...(yearly && p.annualPrice !== undefined ? { annualPrice: p.annualPrice } : {}),
+            ...(JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
+          };
     }
     out[k] = v;
   }

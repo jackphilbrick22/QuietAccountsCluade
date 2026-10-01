@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Plus, RefreshCw } from "lucide-react";
-import { fmtMoney, playbook, SEND_BRAKES, TIMEZONES, TRADE_OPTIONS, type TradeId } from "@qa/engine";
+import { fmtMoney, isOnePass, playbook, SEND_BRAKES, TIMEZONES, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, pct, SearchBox, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -10,11 +10,12 @@ import { ErrorNote, ago } from "./parts";
 
 export function stageOf(o: Overview): { label: string; tone: "ok" | "info" | "warn" | "neutral" | "bad" } {
   const p = o.business.plan;
+  if (p.stage === "done") return { label: "Pass done", tone: "neutral" };
   if (o.paused || p.stage === "paused") return { label: "Paused", tone: "warn" };
   if (p.stage === "cancelled") return { label: "Cancelled", tone: "bad" };
   if (p.stage === "paying") return { label: "Paying", tone: "ok" };
   if (!o.counts || o.counts.queued + o.counts.sent === 0) return { label: o.summary ? "Not started" : "Waiting on files", tone: "neutral" };
-  return { label: "Free round", tone: "info" };
+  return isOnePass(p) ? { label: "One pass running", tone: "info" } : { label: "Free round", tone: "info" };
 }
 
 /** Any trade an account has, including the playbooks the menus no longer offer. */

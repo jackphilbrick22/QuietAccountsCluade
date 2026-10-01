@@ -366,7 +366,8 @@ export interface BusinessProfile {
 export interface PlanState {
   /** Which offer: monthly, or one pass paid per booking. No kind is monthly (every plan made before the one pass). */
   kind?: "monthly" | "one_pass";
-  stage: "trial" | "paying" | "paused" | "cancelled";
+  /** Monthly: trial, paying, paused, cancelled. One pass: running, done, paused, cancelled (PLAN_STAGES). */
+  stage: "trial" | "paying" | "running" | "done" | "paused" | "cancelled";
   /** Free round size (people contacted) before any charge. */
   trialSize: number;
   trialStartedOn?: ISODate;
@@ -388,6 +389,26 @@ export interface PlanState {
   yearRefunds?: { yearStart: ISODate; amount: Money; /** Left mid-year: the unused months, refunded when they cancelled. */ early?: boolean }[];
   /** Paid years already settled against the year floor (whatever the outcome), so a year is never settled twice. */
   settledYears?: ISODate[];
+  /** One pass: what each billable booking costs, and at most how many are billed. */
+  pricePerBooking?: Money;
+  capBookings?: number;
+  /** One pass: a booking counts when it's made within this many days of the reply. */
+  windowDays?: number;
+  /** One pass: bookings from its first this many people aren't billable (a free 150 promised before the pass). */
+  freeFirst?: number;
+  /** One pass: its first send day, set when it's first planned (a sign-up's pass hasn't started until then). */
+  startedOn?: ISODate;
+  /** One pass: the day the whole list should be done (default: 30 days from the start). */
+  targetEndOn?: ISODate;
+  /** One pass: the day it was done. */
+  doneOn?: ISODate;
+  /**
+   * One pass: how its notes are paced (paceOnePass), on this many inboxes for this end date: the day its last first
+   * note goes out, the most first notes on any day still to come (a sending platform's daily new-lead cap), and, when the
+   * end date can't be met, the one these inboxes can meet and how many more inboxes would meet it (none: no number
+   * would). One record for the whole pass, whatever batch was planned last.
+   */
+  pace?: { inboxes: number; endOn: ISODate; lastFirst: ISODate; dailyNew?: number; late?: { canMeet: ISODate; moreInboxes?: number } };
 }
 
 export interface ImportRecord {
@@ -519,6 +540,8 @@ export interface Touch {
   body: string;
   sentAt?: ISODateTime;
   providerId?: string;
+  /** The inbox it went from, when the server sent it itself (a one pass's notes go from each of its inboxes in turn). */
+  fromEmail?: string;
   /** Lint results from the quality gate. */
   flags: string[];
   /** Send attempts that failed (transient provider errors). */

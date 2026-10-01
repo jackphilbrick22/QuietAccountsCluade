@@ -3,6 +3,7 @@
  * Pure TypeScript, no I/O: runs in the browser (demo) and on the server (production).
  */
 export * from "./model.ts";
+export * from "./plans.ts";
 export * from "./util.ts";
 export * from "./ingest/index.ts";
 export * from "./trades/index.ts";

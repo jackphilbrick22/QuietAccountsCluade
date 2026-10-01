@@ -82,10 +82,10 @@ export interface SequencerProvider {
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
   /** Bring a campaign made earlier up to the business's send days, window, timezone and inboxes. */
   updateCampaign(business: BusinessProfile, campaignId: string, opts: { instant?: boolean }): Promise<void>;
-  /** Set the name a sending inbox sends under. */
-  setInboxName(inbox: string, name: { first: string; last: string }): Promise<void>;
-  /** The name a sending inbox sends under, as the platform holds it. */
-  inboxName(inbox: string): Promise<{ first: string; last: string }>;
+  /** Set the name a sending inbox sends under and, with `dailyLimit`, the most it sends a day (one write). */
+  setInbox(inbox: string, to: { first: string; last: string; dailyLimit?: number }): Promise<void>;
+  /** The name a sending inbox sends under and the most it sends a day, as the platform holds them. */
+  readInbox(inbox: string): Promise<{ first: string; last: string; dailyLimit?: number }>;
   /** Every campaign a sending inbox sends in. */
   inboxCampaigns(inbox: string): Promise<{ id: string; name: string }[]>;
   /** Answer a reply in its own thread, from the mailbox it came in on. Refuses when the thread isn't addressed to `to`. */

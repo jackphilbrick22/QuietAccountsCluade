@@ -1,7 +1,7 @@
 import type { ScanResult } from "../breakage/detect.ts";
 import type { DrawerSummary } from "../breakage/forecast.ts";
 import type { OutreachRecord } from "../ledger/attribution.ts";
-import type { AgentEvent, Dataset, ISODateTime, Recovery, Reply, Touch } from "../model.ts";
+import type { AgentEvent, Dataset, ISODateTime, PlanState, Recovery, Reply, Touch } from "../model.ts";
 
 /** Everything the system knows about one business. Serializable as JSON. */
 export interface AccountState {
@@ -29,7 +29,7 @@ export interface AccountState {
   /** The owner texted CANCEL: what it stopped, so UNDO (within a day) can put it all back. */
   cancelled?: {
     at: ISODateTime;
-    stageBefore: "trial" | "paying" | "paused";
+    stageBefore: Exclude<PlanState["stage"], "cancelled">;
     /** Each stopped note and the status it had, so UNDO puts back exactly that (a planned note stays planned). */
     touches: { id: string; status: "planned" | "approved" }[];
     /** Still waiting for the owner's OK to the first note when they cancelled. */
@@ -46,8 +46,11 @@ export interface AccountState {
 export interface OwnerMessage {
   id: string;
   at: ISODateTime;
-  /** "reply": our answer to a text the owner sent the operator's phone, to text back by hand (SMS_PROVIDER=manual). */
-  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply";
+  /**
+   * "reply": our answer to a text the owner sent the operator's phone, to text back by hand (SMS_PROVIDER=manual).
+   * "pass_end": a one pass's last text (the tally and the refill check), which waits for the operator.
+   */
+  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply" | "pass_end";
   text: string;
   refs?: { kind: string; id: string }[];
 }

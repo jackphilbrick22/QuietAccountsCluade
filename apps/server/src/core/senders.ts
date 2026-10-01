@@ -1,4 +1,4 @@
-import type { BusinessProfile } from "@qa/engine";
+import { INBOX_DAILY, isOnePass, type BusinessProfile } from "@qa/engine";
 import type { SequencerProvider } from "../contracts.ts";
 import { ProviderError } from "../contracts.ts";
 import { localIso } from "./clock.ts";
@@ -15,12 +15,12 @@ import { holdPlatform, type Deps } from "./ops.ts";
 const RECHECK_MS = 15 * 60_000;
 
 /**
- * Whether a client still holds its inboxes, so no other client may have them: until it's cancelled. One that lets
- * them go forgets its check (holdSending's cancel): another client may have them renamed, so if it ever takes them
- * back they're named for it again.
+ * Whether a client still holds its inboxes, so no other client may have them: until it's cancelled or its one pass is
+ * done. One that lets them go forgets its check (holdSending's cancel, or the pass's end): another client may have them
+ * renamed, so if it ever takes them back they're named for it again.
  */
 export function holdsInboxes(b: BusinessProfile): boolean {
-  return b.plan.stage !== "cancelled";
+  return b.plan.stage !== "cancelled" && !(isOnePass(b.plan) && b.plan.stage === "done");
 }
 
 /** The first of `inboxes` another client still holds, and that client's name. */
@@ -86,18 +86,19 @@ export function coldEvent(d: Deps, where: { campaignId?: string; inbox?: string 
 
 /**
  * Before a client's notes go out (handed to Instantly, or its campaigns turned back on): it has inboxes of its own
- * that no other client holds, in no campaign this server didn't make, each named for it and read back; and the
- * campaigns made for it earlier carry its current send days, window, timezone and inboxes. Checked before the first
- * activation, then again whenever the inboxes, the signer or the name change; another client holding one of them is
- * looked at every time. A refusal is kept on the client (the console and the review queue say why) and holds its
- * notes like a pause; Instantly out of reach waits a minute. A paused or cancelled client has nothing to check: its
- * hold already says why nothing goes.
+ * that no other client holds, in no campaign this server didn't make, each named for it and read back (on a one pass,
+ * with the 30 a day its pace counts on, follow-ups included); and the campaigns made for it earlier carry its current
+ * send days, window, timezone, pace and inboxes. Checked before the first activation, then again whenever the inboxes,
+ * the signer or the name change; another client holding one of them is looked at every time. A refusal is kept on the
+ * client (the console and the review queue say why) and holds its notes like a pause; Instantly out of reach waits a
+ * minute. A paused or cancelled client has nothing to check: its hold already says why nothing goes, and so does a
+ * finished pass.
  */
 export async function readyToSend(d: Deps, bid: string, seq: SequencerProvider): Promise<boolean> {
   const l = d.accounts.peek(bid);
   if (!l) return false;
   const b = l.state.dataset.business;
-  if (b.plan.stage === "cancelled" || b.plan.stage === "paused" || l.paused) return true;
+  if (b.plan.stage === "cancelled" || b.plan.stage === "paused" || b.plan.stage === "done" || l.paused) return true;
   return (await checkInboxes(d, bid, seq)) && (await updateCampaigns(d, bid, seq));
 }
 
@@ -105,8 +106,8 @@ async function checkInboxes(d: Deps, bid: string, seq: SequencerProvider): Promi
   const s = d.accounts.peek(bid)!.state;
   const b = s.dataset.business;
   const inboxes = b.fromEmails ?? [];
-  const name = senderName(b);
-  const key = JSON.stringify([inboxes, name.first, name.last]);
+  const to: { first: string; last: string; dailyLimit?: number } = { ...senderName(b), ...(isOnePass(b.plan) ? { dailyLimit: INBOX_DAILY } : {}) };
+  const key = JSON.stringify([inboxes, to.first, to.last, to.dailyLimit]);
   const was = b.senders;
   const at = localIso(d.clock(), b.timezone);
   // another client holding one of them is looked at every time (it's local): a restore brings that about with nothing
@@ -117,7 +118,7 @@ async function checkInboxes(d: Deps, bid: string, seq: SequencerProvider): Promi
   if (!was && !d.accounts.repo.campaignsOf(seq.name, bid).length && !s.touches.some((t) => t.status === "approved")) return true;
   let refused = !inboxes.length ? "it has no sending inbox of its own; add one in Settings" : taken ? `${taken.inbox} already sends for ${taken.by}, and one inbox sends for one client` : undefined;
   try {
-    refused ??= await nameInboxes(d, seq, bid, inboxes, name);
+    refused ??= await nameInboxes(d, seq, bid, inboxes, to);
   } catch (e) {
     d.log(`[senders] ${bid}: couldn't check its inboxes in ${seq.name}: ${(e as Error).message}`);
     return false;
@@ -126,7 +127,7 @@ async function checkInboxes(d: Deps, bid: string, seq: SequencerProvider): Promi
   await d.accounts.withAccount(bid, (st) => {
     st.dataset.business.senders = { key, at, ...(refused ? { refused } : {}) };
     if (refused && refused !== before) st.events.push({ id: `ev_senders_${at}`, at, agent: "guard", kind: "warning", title: "Nothing goes out for this client until its inboxes are fixed", detail: `${refused}.` });
-    if (!refused) st.events.push({ id: `ev_senders_${at}`, at, agent: "sender", kind: "action", title: `Its inboxes send as “${clean(`${name.first} ${name.last}`)}” in Instantly`, detail: `${inboxes.join(", ")}: name set and read back, in no campaign this server didn't make.` });
+    if (!refused) st.events.push({ id: `ev_senders_${at}`, at, agent: "sender", kind: "action", title: `Its inboxes send as “${clean(`${to.first} ${to.last}`)}” in Instantly`, detail: `${inboxes.join(", ")}: name${to.dailyLimit ? ` and ${to.dailyLimit} a day each` : ""} set and read back, in no campaign this server didn't make.` });
   });
   // one open alert at most, with the reason as it is now; one marked handled while it still holds is back on the next check
   const open = d.accounts.repo.openAlerts(bid).some((a) => a.kind === "senders");
@@ -142,11 +143,11 @@ export function closeInboxAlerts(d: Deps, bid: string): void {
 
 /**
  * Each inbox: in no campaign this server didn't make and none another client still sends in (looked at first, so a
- * cold campaign's sender, or another client's, is never renamed), then named for the client and read back. Why one
- * can't send for it, if one can't. Instantly out of reach throws.
+ * cold campaign's sender, or another client's, is never renamed), then named for the client (with a daily limit, set
+ * to it) and read back. Why one can't send for it, if one can't. Instantly out of reach throws.
  */
-async function nameInboxes(d: Deps, seq: SequencerProvider, bid: string, inboxes: string[], name: { first: string; last: string }): Promise<string | undefined> {
-  const want = clean(`${name.first} ${name.last}`);
+async function nameInboxes(d: Deps, seq: SequencerProvider, bid: string, inboxes: string[], to: { first: string; last: string; dailyLimit?: number }): Promise<string | undefined> {
+  const want = clean(`${to.first} ${to.last}`);
   // the client a campaign was made for, when it's another one that still holds its inboxes and sends (a held one's
   // campaigns get its new inboxes before they restart)
   const otherClient = (id: string) => {
@@ -165,9 +166,10 @@ async function nameInboxes(d: Deps, seq: SequencerProvider, bid: string, inboxes
         const by = otherClient(c.id);
         if (by) return `${inbox} is still in “${c.name || c.id}”, ${by.name}'s campaign; it sends for this client once that campaign stops sending from it`;
       }
-      await seq.setInboxName(inbox, name);
-      const got = await seq.inboxName(inbox);
-      if (clean(got.first) !== name.first || clean(got.last) !== name.last) return `${inbox} reads “${clean(`${got.first} ${got.last}`)}” in Instantly, not “${want}”`;
+      await seq.setInbox(inbox, to);
+      const got = await seq.readInbox(inbox);
+      if (clean(got.first) !== to.first || clean(got.last) !== to.last) return `${inbox} reads “${clean(`${got.first} ${got.last}`)}” in Instantly, not “${want}”`;
+      if (to.dailyLimit !== undefined && got.dailyLimit !== to.dailyLimit) return `${inbox}'s daily limit reads ${got.dailyLimit ?? "blank"} in Instantly, not the ${to.dailyLimit} this pass is paced on`;
     } catch (e) {
       if (!(e instanceof ProviderError) || e.retryable || !e.status) throw e;
       return e.status === 404 ? `Instantly has no inbox ${inbox}; connect it there first` : `Instantly wouldn't name ${inbox} (${e.message})`;
@@ -185,7 +187,7 @@ async function updateCampaigns(d: Deps, bid: string, seq: SequencerProvider): Pr
   const repo = d.accounts.repo;
   const b = d.accounts.peek(bid)!.state.dataset.business;
   const inboxes = b.fromEmails ?? [];
-  const key = JSON.stringify([b.sendDays, b.sendWindow, b.timezone, b.weeklyNewContacts, inboxes]);
+  const key = JSON.stringify([b.sendDays, b.sendWindow, b.timezone, b.weeklyNewContacts, b.plan.pace?.dailyNew, inboxes]);
   const was = repo.mark(bid, "campaigns");
   if (was === key) return true;
   const campaigns = repo.campaignsOf(seq.name, bid);

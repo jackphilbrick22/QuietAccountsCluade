@@ -1,13 +1,16 @@
 import { scan } from "../breakage/detect.ts";
 import { summarize } from "../breakage/forecast.ts";
 import { quietRateOf } from "../breakage/quiet.ts";
+import { refillRate } from "../breakage/refill.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
-import { goesOutOn, HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
+import { allowedDay, bookedOutStart, goesOutOn, HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
+import { INBOX_DAILY, NOTES_SPAN_DAYS, paceOnePass, type Pace } from "../cadence/pace.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
-import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { isOnePass, ONE_PASS } from "../plans.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, growingSeason, playbook, sellingFrom, sellingSeason } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
@@ -96,7 +99,9 @@ export function find(state: AccountState, now: ISODateTime, features: Features =
   const lastContacted: Record<string, string> = {};
   for (const o of state.outreach) if (!o.holdout) lastContacted[o.customerId] = o.lastTouchOn;
   const newSince = Object.fromEntries(supersededOn(state));
-  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays: 150, newSince }, features);
+  // a one pass works each person once: someone written to is never back on its list (no rescan after 150 days)
+  const cooldownDays = isOnePass(state.dataset.business.plan) ? Infinity : 150;
+  state.scan = scan(state.dataset, { suppressedEmails: state.suppressions, lastContacted, cooldownDays, newSince }, features);
   state.summary = summarize(state.dataset, state.scan);
   const s = state.summary;
   event(state, now, "finder", "win", `Found ${fmtMoney(s.totalValue)} left on the table`, `${plural(s.opportunities, "opportunity", "opportunities")}; ${fmtMoney(s.reachableValue)} of it is with ${plural(s.reachablePeople, "person", "people")} we can reach.`);
@@ -116,6 +121,20 @@ export function find(state: AccountState, now: ISODateTime, features: Features =
 
 export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn: string; limitPeople?: number; approve?: boolean; kickoff?: boolean; features?: Features }): Plan {
   if (!state.scan) find(state, now, opts.features);
+  const b = state.dataset.business;
+  // a one pass: the whole list once, newest first, nobody held back, paced to finish by its end date on its inboxes
+  const pass = isOnePass(b.plan);
+  const inboxes = Math.max(1, b.fromEmails?.length ?? 0);
+  // Planned again before any of it is approved, on other inboxes or to another end date: what's planned is taken back
+  // and the whole list paced again (otherwise a plan keeps what's planned, so a change to a note waiting for the OK stays).
+  const paced = b.plan.pace;
+  const repaced = pass && !!paced && (paced.inboxes !== inboxes || paced.endOn !== b.plan.targetEndOn) && paceable(state);
+  if (repaced)
+    for (const t of state.touches)
+      if (t.status === "planned") {
+        t.status = "cancelled";
+        t.lastError = "Paced again";
+      }
   // Our answer to someone's own new request isn't a sequence: once it went, the always-on follow-ups (the request's own,
   // or the quote sent after it) are theirs like anyone's, and for a month only those (nothing older dug up the next day).
   // An answer still on its way holds them until it goes.
@@ -133,24 +152,45 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   const released = new Set(state.outreach.filter((o) => o.holdout && !o.treatedFrom && o.releaseOn && o.releaseOn <= opts.startOn).map((o) => o.customerId));
   for (const o of state.outreach) if (!released.has(o.customerId) || active.has(o.customerId)) active.add(o.customerId);
   // Follow-ups a newer quote stopped leave that quote to chase: with nothing else queued, they're planned again, for
-  // what came after the stopped notes only (and, already written to, never held back to measure lift).
-  for (const [id, on] of supersededOn(state)) {
-    active.delete(id);
-    released.add(id);
-    if (on > (askedOn.get(id) ?? "")) askedOn.set(id, on);
-  }
+  // what came after the stopped notes only (and, already written to, never held back to measure lift). Not on a one
+  // pass: each person once.
+  if (!pass)
+    for (const [id, on] of supersededOn(state)) {
+      active.delete(id);
+      released.add(id);
+      if (on > (askedOn.get(id) ?? "")) askedOn.set(id, on);
+    }
   // Someone who wrote back (our answer to their request included) is the owner's to talk to: never planned again,
   // nor any other record at their address. Nothing planned means nothing reaches a sending platform either.
   const replied = repliedCheck(state);
   for (const c of state.dataset.customers) if (replied(c.id)) active.add(c.id);
-  const isTrial = state.dataset.business.plan.stage === "trial";
-  const firstEver = !state.touches.some((t) => t.status !== "cancelled");
+  const isTrial = !pass && b.plan.stage === "trial";
+  // a one pass's first plan, whatever came before it (the rest of a list after its free round)
+  const firstEver = pass ? !b.plan.startedOn : !state.touches.some((t) => t.status !== "cancelled");
   // The free round goes to the likeliest replies; paying accounts follow the shop's own strategy.
-  const rank = isTrial ? "reply" : state.summary?.profile?.strategy.rank;
+  const rank = pass ? "newest" : isTrial ? "reply" : state.summary?.profile?.strategy.rank;
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
-  // Everything already on the calendar counts against the pace, so a top-up never doubles it.
+  // Everything already on the calendar counts against the pace, so a top-up never doubles it; on a one pass, every
+  // note still to go keeps its day's room.
   const existingStarts = state.touches.filter((t) => t.step === 1 && ["planned", "approved", "sent", "delivered"].includes(t.status)).map((t) => t.dueAt.slice(0, 10));
-  const plan = planOutreach(state.dataset, state.scan!, { startOn: opts.startOn, limitPeople: opts.limitPeople, skipCustomers: active, applyHoldout: !isTrial, rank, released, contacted, existingStarts, askedOn, features: opts.features });
+  const busy = new Map<string, number>();
+  if (pass) for (const t of state.touches) if (t.status === "planned" || t.status === "approved") busy.set(t.dueAt.slice(0, 10), (busy.get(t.dueAt.slice(0, 10)) ?? 0) + 1);
+  // a one pass starts on its first send day, the day it's first planned with anyone on it (booked out, the day new work
+  // may start), and ends 30 days on
+  const startedOn = b.plan.startedOn ?? bookedOutStart(state.dataset, opts.startOn) ?? nextAllowed(state.dataset, opts.startOn);
+  const endOn = b.plan.targetEndOn ?? addDays(startedOn, ONE_PASS.days);
+  const plan = planOutreach(state.dataset, state.scan!, {
+    startOn: opts.startOn,
+    limitPeople: opts.limitPeople,
+    skipCustomers: active,
+    applyHoldout: !isTrial && !pass,
+    rank,
+    released,
+    contacted,
+    askedOn,
+    features: opts.features,
+    ...(pass ? { pass: { endOn, inboxes, busy } } : { existingStarts }),
+  });
   const status: Touch["status"] = opts.approve ? "approved" : "planned";
   // Someone planned again after their notes were cancelled or skipped: the same opportunity and step give the same
   // id, and two notes with one id collide in the database (one is kept) and in every lookup by id.
@@ -165,11 +205,117 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
   for (const id of plan.holdout)
     if (!state.outreach.some((o) => o.customerId === id)) state.outreach.push({ customerId: id, firstTouchOn: opts.startOn, lastTouchOn: opts.startOn, holdout: true, releaseOn: addDays(opts.startOn, HOLDOUT_DAYS) });
   const flagged = plan.touches.filter((t) => t.flags.length).length;
-  event(state, now, "writer", "action", `Wrote ${plural(plan.touches.length, "note")} for ${plural(plan.people.length, "person", "people")}`, `Each one about their own job, signed by ${state.dataset.business.signerName}. ${flagged ? `${flagged} need a second look.` : "All passed the quality check."}`);
-  if (plan.firstDay && isTrial && firstEver && opts.kickoff !== false) kickoff(state, now, { awaitOk: !opts.approve });
-  if (plan.firstDay) event(state, now, "sender", "action", `Scheduled ${plan.firstDay} → ${plan.lastDay}`, `${state.dataset.business.weeklyNewContacts} new people a week, on your send days, inside your hours.${plan.holdout.length ? ` ${plan.holdout.length} held back to measure true lift.` : ""}`);
+  event(state, now, "writer", "action", `Wrote ${plural(plan.touches.length, "note")} for ${plural(plan.people.length, "person", "people")}`, `Each one about their own job, signed by ${b.signerName}. ${flagged ? `${flagged} need a second look.` : "All passed the quality check."}`);
+  const pace = plan.pace;
+  // started (and paced) only once someone's on it; notes planned before (and not paced again) keep their days
+  if (pace?.lastFirst && plan.people.length) {
+    Object.assign(b.plan, { startedOn, targetEndOn: endOn });
+    recordPace(state, inboxes, endOn, [pace.late, repaced ? undefined : paced?.late]);
+  }
+  if (plan.firstDay && (isTrial || pass) && firstEver && opts.kickoff !== false) kickoff(state, now, { awaitOk: !opts.approve });
+  if (plan.firstDay)
+    event(
+      state,
+      now,
+      "sender",
+      "action",
+      `Scheduled ${plan.firstDay} → ${plan.lastDay}`,
+      pace && b.plan.pace
+        ? `The whole list, newest first, on your send days inside your hours: the last first note ${b.plan.pace.lastFirst}, no inbox over ${INBOX_DAILY} a day.${b.plan.pace.late ? ` ${plural(inboxes, "inbox", "inboxes")} can't finish by ${b.plan.targetEndOn}: it ends about ${b.plan.pace.late.canMeet}.` : ""}`
+        : `${b.weeklyNewContacts} new people a week, on your send days, inside your hours.${plan.holdout.length ? ` ${plan.holdout.length} held back to measure true lift.` : ""}`,
+    );
   state.updatedAt = now;
   return plan;
+}
+
+/**
+ * One pace record for the whole pass: its last first note and its busiest day of first notes to come (a sending
+ * platform's daily new-lead cap, never the monthly weekly pace) are across all its notes, and late, it's late to the
+ * latest date any of it can meet (`lates`: what its pacing said).
+ */
+function recordPace(state: AccountState, inboxes: number, endOn: ISODate, lates: (Pace["late"] | undefined)[]): void {
+  const firsts = passTouches(state).filter((t) => t.step === 1 && t.status !== "cancelled" && t.status !== "skipped");
+  const lastFirst = firsts.map((t) => t.dueAt.slice(0, 10)).sort().pop()!;
+  const toCome = new Map<string, number>();
+  for (const t of firsts) if (t.status === "planned" || t.status === "approved") toCome.set(t.dueAt.slice(0, 10), (toCome.get(t.dueAt.slice(0, 10)) ?? 0) + 1);
+  const all = [...lates, { canMeet: addDays(lastFirst, NOTES_SPAN_DAYS) }];
+  const late = lastFirst > addDays(endOn, -NOTES_SPAN_DAYS) ? all.filter((x) => !!x).sort((x, y) => y.canMeet.localeCompare(x.canMeet))[0] : undefined;
+  state.dataset.business.plan.pace = { inboxes, endOn, lastFirst, dailyNew: Math.max(...toCome.values()), ...(late ? { late } : {}) };
+}
+
+/**
+ * A one pass paced again from `startOn` (an OK that came late, BUSY or OPEN), the way it was first paced: everyone it
+ * hasn't written to yet, in the order they were to start, gets new days around the follow-ups still owed to the rest, so
+ * no inbox goes over 30 a day (moved by days alone, days would run together). Their notes keep their words. Before it
+ * has written to anyone its start and end move with it (its 30 days run from its first send day); after, the end date
+ * stays, and the pace says when it can't be met. `held`: the owner is booked out, and each note keeps how far it was
+ * pushed back so OPEN can bring it back; otherwise that's cleared. Who moved, and the ids of the notes a sending platform
+ * held for them, to take back.
+ */
+function repacePass(state: AccountState, startOn: ISODate, opts: { held?: boolean } = {}): { moved: number; withdrawn: string[] } {
+  const ds = state.dataset;
+  const plan = ds.business.plan;
+  const out = { moved: 0, withdrawn: [] as string[] };
+  if (!isOnePass(plan) || !plan.pace || !plan.startedOn || !plan.targetEndOn) return out;
+  const waits = (t: Touch) => t.status === "planned" || t.status === "approved";
+  const mine = passTouches(state);
+  // each person not written to yet: their note 1, and every note of theirs still to go
+  const people = new Map<string, { first: Touch; notes: Touch[] }>();
+  for (const t of mine) if (t.step === 1 && waits(t)) people.set(t.opportunityId, { first: t, notes: [] });
+  if (!people.size) return out;
+  const busy = new Map<ISODate, number>();
+  for (const t of state.touches) {
+    if (!waits(t)) continue;
+    const p = people.get(t.opportunityId);
+    if (p) p.notes.push(t);
+    else busy.set(t.dueAt.slice(0, 10), (busy.get(t.dueAt.slice(0, 10)) ?? 0) + 1);
+  }
+  const begun = mine.some((t) => !waits(t) && t.status !== "cancelled" && t.status !== "skipped");
+  const endOn = begun ? plan.targetEndOn : addDays(plan.targetEndOn, daysBetween(plan.startedOn, startOn));
+  const order = [...people.values()].sort((x, y) => x.first.dueAt.localeCompare(y.first.dueAt));
+  // on the inboxes it sends from now
+  const inboxes = Math.max(1, ds.business.fromEmails?.length ?? 0);
+  const pace = paceOnePass({ notes: order.map((p) => Math.max(...p.notes.map((t) => t.step))), startOn, endOn, inboxes, busy, sendsOn: (d) => allowedDay(ds, d) });
+  for (const [i, p] of order.entries()) {
+    const days = pace.people[i];
+    if (!days) continue;
+    // a note 1 on another day goes to a sending platform again on that day (its follow-ups go at the platform's own gaps)
+    const again = days[0] !== p.first.dueAt.slice(0, 10);
+    for (const t of p.notes) {
+      const day = days[t.step - 1] ?? t.dueAt.slice(0, 10);
+      const held = (t.heldDays ?? 0) + daysBetween(t.dueAt.slice(0, 10), day);
+      t.heldDays = opts.held && held > 0 ? held : undefined;
+      t.dueAt = `${day}${t.dueAt.slice(10)}`;
+      if (!again) continue;
+      if (t.providerId && !out.withdrawn.includes(t.providerId)) out.withdrawn.push(t.providerId);
+      t.providerId = undefined;
+    }
+    if (again) out.moved++;
+  }
+  if (!begun) Object.assign(plan, { startedOn: startOn, targetEndOn: endOn });
+  recordPace(state, inboxes, endOn, [pace.late]);
+  return out;
+}
+
+/** None of a one pass's notes is past planned (nobody, the owner included, has said OK to them): it can be paced again. */
+export function paceable(state: AccountState): boolean {
+  return passTouches(state).every((t) => t.status === "planned" || t.status === "cancelled");
+}
+
+/**
+ * A one pass's end date moved after it was paced: whether the notes it has still meet it. Once they're set (the owner
+ * said OK), late, the date they meet is 12 days after its last first note, and more inboxes wouldn't change them.
+ * Before the OK, a date they meet is simply theirs; one they don't is left to the next plan, which paces the whole list
+ * again to it. Whether anything changed.
+ */
+export function passEndMoved(state: AccountState): boolean {
+  const plan = state.dataset.business.plan;
+  const p = plan.pace;
+  if (!isOnePass(plan) || !p || !plan.targetEndOn || p.endOn === plan.targetEndOn) return false;
+  const late = p.lastFirst > addDays(plan.targetEndOn, -NOTES_SPAN_DAYS);
+  if (late && paceable(state)) return false;
+  plan.pace = { inboxes: p.inboxes, endOn: plan.targetEndOn, lastFirst: p.lastFirst, dailyNew: p.dailyNew, ...(late ? { late: { canMeet: addDays(p.lastFirst, NOTES_SPAN_DAYS) } } : {}) };
+  return true;
 }
 
 /**
@@ -177,13 +323,15 @@ export function planBatch(state: AccountState, now: ISODateTime, opts: { startOn
  * awaitOk) "Reply OK" — nothing goes out until they do. Once only.
  */
 export function kickoff(state: AccountState, now: ISODateTime, opts: { awaitOk: boolean; again?: boolean }): OwnerMessage | undefined {
-  if (state.ownerMessages.some((m) => m.kind === "kickoff") && !(opts.again && state.awaitingOwnerOk)) return undefined;
+  // a one pass gets a welcome of its own, after a free round's too
+  const pass = isOnePass(state.dataset.business.plan);
+  if (state.ownerMessages.some((m) => m.kind === "kickoff" && (!pass || m.refs?.some((r) => r.kind === "pass"))) && !(opts.again && state.awaitingOwnerOk)) return undefined;
   const firsts = state.touches.filter((t) => t.step === 1 && (t.status === "planned" || t.status === "approved"));
   if (!firsts.length) return undefined;
   const firstDay = firsts.map((t) => t.dueAt.slice(0, 10)).sort()[0]!;
   const people = new Set(firsts.map((t) => t.customerId)).size;
   if (opts.awaitOk) state.awaitingOwnerOk = now;
-  return ownerMsg(state, now, "kickoff", kickoffText(state, firstDay, people, { awaitOk: opts.awaitOk }));
+  return ownerMsg(state, now, "kickoff", kickoffText(state, firstDay, people, { awaitOk: opts.awaitOk }), pass ? [{ kind: "pass", id: firstDay }] : undefined);
 }
 
 export interface RoundApproval {
@@ -199,22 +347,35 @@ export interface RoundApproval {
 }
 
 /**
- * The planned round is approved and goes out on schedule: the owner said OK to the first note (by text, or to Jack,
- * who approves it in the console), or Jack looked it over. An OK that comes after the planned first day moves the
- * whole round forward, spacing kept: it never sends the backlog at once. A seasonal shop's notes that the move takes
- * past their season (fall notes OK'd in December, or in a week that runs past mid-November) are cancelled, and
- * whoever's first note went with them is written again for the next selling window.
+ * An OK to what's planned (the owner's by text, or by phone through Jack's Approve) that comes after its first day moves
+ * it forward to the OK's first send day: it never sends the backlog at once. A one pass is paced again from there, its
+ * start and end with it; a monthly round keeps its spacing.
  */
-export function approveRound(state: AccountState, now: ISODateTime): RoundApproval {
+export function startFromOk(state: AccountState, now: ISODateTime): void {
   const planned = state.touches.filter((t) => t.status === "planned");
   const earliest = planned.map((t) => t.dueAt.slice(0, 10)).sort()[0];
   const today = now.slice(0, 10);
-  const b = state.dataset.business;
-  const start = nextAllowed(state.dataset, Number(now.slice(11, 13)) >= b.sendWindow[1] ? addDays(today, 1) : today);
-  if (earliest && earliest < start) {
-    const shift = daysBetween(earliest, start);
-    for (const t of planned) t.dueAt = `${nextAllowed(state.dataset, addDays(t.dueAt.slice(0, 10), shift))}${t.dueAt.slice(10)}`;
+  const start = nextAllowed(state.dataset, Number(now.slice(11, 13)) >= state.dataset.business.sendWindow[1] ? addDays(today, 1) : today);
+  if (!earliest || earliest >= start) return;
+  if (isOnePass(state.dataset.business.plan) && state.dataset.business.plan.pace) {
+    repacePass(state, start);
+    return;
   }
+  const shift = daysBetween(earliest, start);
+  for (const t of planned) t.dueAt = `${nextAllowed(state.dataset, addDays(t.dueAt.slice(0, 10), shift))}${t.dueAt.slice(10)}`;
+}
+
+/**
+ * The planned round is approved and goes out on schedule: the owner said OK to the first note (by text, or to Jack,
+ * who approves it in the console), or Jack looked it over. A late OK moves it forward first (startFromOk). A seasonal
+ * shop's notes that the move takes past their season (fall notes OK'd in December, or in a week that runs past
+ * mid-November) are cancelled, and whoever's first note went with them is written again for the next selling window.
+ * A one pass's end date is then checked against the notes it has.
+ */
+export function approveRound(state: AccountState, now: ISODateTime): RoundApproval {
+  startFromOk(state, now);
+  const b = state.dataset.business;
+  const planned = state.touches.filter((t) => t.status === "planned");
   const past = planned.filter((t) => outOfSeason(state, t, t.dueAt.slice(0, 10)));
   for (const t of past) {
     t.status = "cancelled";
@@ -226,6 +387,8 @@ export function approveRound(state: AccountState, now: ISODateTime): RoundApprov
   const from = lateFirsts.map((t) => t.dueAt.slice(0, 10)).sort()[0];
   const again = from ? planBatch(state, now, { startOn: nextAllowed(state.dataset, sellingFrom(growingSeason(b), from)), limitPeople: people, kickoff: false }) : undefined;
   const approved = approveAll(state, now);
+  // an end date changed while it waited is met (or not) by the notes it has now
+  passEndMoved(state);
   return { approved, firstDay, ...(again ? { late: { people, firstDay: again.firstDay } } : {}) };
 }
 
@@ -917,7 +1080,8 @@ export function reportWeek(state: AccountState, now: ISODateTime): OwnerMessage 
 /** The close after the free round, once replies have had a week to come in. */
 export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLink?: string; signature?: string } & Features = {}): OwnerMessage | undefined {
   const b = state.dataset.business;
-  if (b.plan.stage !== "trial" || state.ownerMessages.some((m) => m.kind === "close")) return undefined;
+  // a one pass has no free round to close: it ends with its own text (passEndIfDue)
+  if (isOnePass(b.plan) || b.plan.stage !== "trial" || state.ownerMessages.some((m) => m.kind === "close")) return undefined;
   const sent = state.touches.filter((t) => t.status === "sent");
   const pending = state.touches.filter((t) => t.status === "approved" || t.status === "planned");
   // Notes the Guard's brake is holding don't hold the round open forever: a week after the last send, it ends there.
@@ -936,9 +1100,53 @@ export function closeIfDue(state: AccountState, now: ISODateTime, opts: { payLin
   return ownerMsg(state, now, "close", text);
 }
 
+/** Days a one pass waits after its last note for the replies to come in: a week, or three once its end date has passed. */
+const PASS_REPLY_DAYS = { early: 7, late: 3 } as const;
+
+/**
+ * A one pass ends when its list is done: nothing left to send (every note sent, or stopped by a reply, a stop or a
+ * bounce), and the replies to its last notes given time to come in, so the end text's tally counts them.
+ */
+export function passEndIfDue(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  const plan = state.dataset.business.plan;
+  if (!isOnePass(plan) || plan.stage !== "running") return undefined;
+  const sent = passTouches(state).filter((t) => t.status === "sent" || t.status === "delivered" || t.status === "bounced");
+  if (!sent.length || state.touches.some((t) => t.status === "planned" || t.status === "approved" || t.status === "sending")) return undefined;
+  const today = now.slice(0, 10);
+  const last = sent.map((t) => (t.sentAt ?? t.dueAt).slice(0, 10)).sort().pop()!;
+  if (daysBetween(last, today) < (plan.targetEndOn && today > plan.targetEndOn ? PASS_REPLY_DAYS.late : PASS_REPLY_DAYS.early)) return undefined;
+  return endPass(state, now);
+}
+
+/**
+ * The one pass is done (its list ran out, or a person marked it done): nothing more goes out, and the end text (the
+ * tally, then the refill check) waits for the operator. The text is written once.
+ */
+export function endPass(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  const plan = state.dataset.business.plan;
+  if (!isOnePass(plan) || plan.stage === "cancelled") return undefined;
+  plan.stage = "done";
+  plan.doneOn ??= now.slice(0, 10);
+  let stopped = 0;
+  for (const t of state.touches)
+    if (t.status === "planned" || t.status === "approved") {
+      t.status = "cancelled";
+      t.lastError = "Not sent: the pass is done";
+      stopped++;
+    }
+  state.awaitingOwnerOk = undefined;
+  if (state.ownerMessages.some((m) => m.kind === "pass_end")) return undefined;
+  const today = now.slice(0, 10);
+  const text = passEndText(state, today);
+  event(state, now, "reporter", "action", "The pass is done — the last text waits for your OK", `${text.split("\n")[0]}${stopped ? ` ${plural(stopped, "queued note")} stopped.` : ""}`);
+  // offering to keep it going monthly is a question the owner's yes or no answers (the owner texts)
+  return ownerMsg(state, now, "pass_end", text, state.scan && refillRate(state.scan, today).monthly ? [{ kind: "monthly_offer", id: today }] : undefined);
+}
+
 export function billingCheck(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
-  // Only a paying account is charged; a cancelled or paused one gets no billing texts at all.
-  if (state.dataset.business.plan.stage !== "paying") return undefined;
+  // Only a paying monthly account is charged; a cancelled or paused one gets no billing texts at all, and a one pass is
+  // billed per booking.
+  if (isOnePass(state.dataset.business.plan) || state.dataset.business.plan.stage !== "paying") return undefined;
   const g = guaranteeCheck(state, now.slice(0, 10));
   if (!g) return undefined;
   const until = daysBetween(now.slice(0, 10), g.chargeOn);
@@ -1242,20 +1450,34 @@ export function skipPerson(state: AccountState, customerId: string, now: ISODate
  * Sequences already under way are left alone — pausing mid-conversation reads strangely.
  * A moved note a sending platform already holds loses its provider id (it's pushed again on its new date);
  * `withdrawn` lists those ids so the caller pulls the platform's copy.
+ * A one pass waits as a whole and is paced again (repacePass), so its days never run together over its inboxes' limit:
+ * BUSY, everyone it hasn't written to from the day new work may start; OPEN, from the next send day.
  */
 export function setBookedOut(state: AccountState, until: string | undefined, now: ISODateTime): { moved: number; withdrawn: string[] } {
   const withdrawn: string[] = [];
   const ds = state.dataset;
   const today = now.slice(0, 10);
   ds.business.bookedOutUntil = until;
+  const pass = isOnePass(ds.business.plan);
+  let moved = 0;
+  if (pass) {
+    const earliest = nextAllowed(ds, addDays(today, 1));
+    const floor = until ? nextAllowed(ds, addDays(until, -21)) : earliest;
+    const waiting = state.touches.filter((t) => t.status === "approved" || t.status === "planned");
+    if (until ? waiting.some((t) => t.step === 1 && t.dueAt.slice(0, 10) < floor) : waiting.some((t) => t.heldDays)) {
+      const r = repacePass(state, floor > earliest ? floor : earliest, { held: !!until });
+      moved = r.moved;
+      withdrawn.push(...r.withdrawn);
+    }
+  }
   const started = new Set(state.touches.filter((t) => t.step === 1 && (t.status === "sent" || t.status === "delivered")).map((t) => t.opportunityId));
   const byOpp = new Map<string, Touch[]>();
-  for (const t of state.touches) {
-    if (t.status !== "approved" && t.status !== "planned") continue;
-    if (started.has(t.opportunityId)) continue;
-    (byOpp.get(t.opportunityId) ?? byOpp.set(t.opportunityId, []).get(t.opportunityId)!).push(t);
-  }
-  let moved = 0;
+  if (!pass)
+    for (const t of state.touches) {
+      if (t.status !== "approved" && t.status !== "planned") continue;
+      if (started.has(t.opportunityId)) continue;
+      (byOpp.get(t.opportunityId) ?? byOpp.set(t.opportunityId, []).get(t.opportunityId)!).push(t);
+    }
   for (const [oppId, ts] of byOpp) {
     const o = oppById(state.scan?.opportunities, oppId);
     if (!o || !HOLD_WHEN_BOOKED.has(o.type)) continue;
@@ -1285,7 +1507,7 @@ export function setBookedOut(state: AccountState, until: string | undefined, now
     "dispatcher",
     "action",
     until ? `Booked out until ${until} — new work waits` : "Schedule open again — held notes are back on",
-    moved ? `${plural(moved, "person", "people")} moved${until ? ` so their first note lands the week of ${mondayOf(addDays(until, -21))}` : " back to the next send day"}.` : undefined,
+    moved ? `${plural(moved, "person", "people")} moved${until ? ` so their first note lands the week of ${mondayOf(addDays(until, -21))}` : " back, from the next send day"}.` : undefined,
   );
   state.updatedAt = now;
   return { moved, withdrawn };

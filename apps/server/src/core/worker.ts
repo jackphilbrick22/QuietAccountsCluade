@@ -1,4 +1,4 @@
-import { billingCheck, chase, closeIfDue, find, isoWeekKey, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
+import { billingCheck, chase, closeIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { backupIfDue } from "./backup.ts";
 import { localIso } from "./clock.ts";
@@ -11,9 +11,10 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
  *  - Sender: send what's due (or hand the week's people to the sequencer)
  *  - Dispatcher: nudge the owner about hot leads nobody has called
  *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text; with the yearly plan
- *    sold (FEATURE_YEARLY), the renewal ask and settling a year
+ *    sold (FEATURE_YEARLY), the renewal ask and settling a year; a one pass's end once its list is done
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
- *  - Writer: nightly top-up for paying accounts so the list keeps being worked at the weekly pace
+ *  - Writer: nightly top-up for paying monthly accounts so the list keeps being worked at the weekly pace (a one pass
+ *    is the whole list once: never topped up)
  *  - Reader/Ledger: hourly sync from connected software, then match who came back
  *  - Inbox backstop: replies the sending platform never announced by webhook; its disabled webhooks
  *  - Backup: the nightly copy of the database
@@ -134,8 +135,10 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
   const today = local.slice(0, 10);
   const hour = Number(local.slice(11, 13));
   const day = new Date(`${today}T12:00:00Z`).getUTCDay();
-  // Cancelled by text: no notes, no reminders, no reports, no billing texts, no more reading their software.
+  // Cancelled by text: no notes, no reminders, no reports, no billing texts, no more reading their software. A one pass
+  // that's done sends nothing more either, but its late replies still reach the owner.
   const cancelled = biz.profile.plan.stage === "cancelled";
+  const done = biz.profile.plan.stage === "done";
   const step = async (name: string, fn: () => Promise<void>) => {
     try {
       await fn();
@@ -151,6 +154,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
     });
   });
 
+  // (a finished pass still comes here: nothing of it is sent, and its campaigns on the platform stay held)
   if (!biz.paused && !cancelled)
     await step("send", async () => {
       const r = await sendDue(d, bid);
@@ -161,6 +165,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
   await step("dispatch", async () => {
     if (!cancelled) {
       let lapsed = false;
+      let ended = false;
       // The daily checks run once a day from 9am local, marked done in the database: a restart or a slow tick
       // at 9:00 can't skip them for the day.
       const daily = hour >= 9 && d.accounts.repo.mark(bid, "daily") !== today;
@@ -170,6 +175,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
           const f = features(d.cfg);
           closeIfDue(state, local, f);
           billingCheck(state, local);
+          ended = !!passEndIfDue(state, local);
           // A yearly plan never renews by itself: ask a month out, pause at the end if nobody said yes.
           if (f.yearly && renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;
         }
@@ -178,11 +184,13 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
           const wk = isoWeekKey(today);
           const already = state.ownerMessages.some((m) => m.kind === "weekly" && isoWeekKey(m.at.slice(0, 10)) === wk);
           const active = state.touches.some((t) => t.status === "sent");
-          if (!already && active) reportWeek(state, local);
+          if (!already && active && !done) reportWeek(state, local);
         }
       });
       if (daily) d.accounts.repo.setMark(bid, "daily", today);
       if (lapsed) await holdSending(d, bid, "pause");
+      // the list is done: nothing more goes, and its inboxes are free for another client
+      if (ended) await holdSending(d, bid, "done");
     }
     report.ownerMessages += await deliverOwnerMessages(d, bid);
   });
@@ -199,7 +207,7 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
         d.accounts.repo.markScanned(bid, now.toISOString());
       }
       // with Instantly, a client with no inbox of its own isn't planned (its page says so)
-      if (biz.profile.plan.stage === "paying" && !biz.paused && !noInbox(d, biz.profile)) {
+      if (!isOnePass(biz.profile.plan) && biz.profile.plan.stage === "paying" && !biz.paused && !noInbox(d, biz.profile)) {
         const p = await plan(d, bid, { approve: true });
         report.planned += p.people;
       }

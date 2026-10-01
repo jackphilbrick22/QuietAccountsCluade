@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BusinessProfile } from "@qa/engine";
+import { onePassPlan, type BusinessProfile } from "@qa/engine";
 import type { Fetch, SequencedLead } from "../src/contracts.ts";
 import { ProviderError } from "../src/contracts.ts";
 import {
@@ -283,10 +283,10 @@ describe("sending inboxes", () => {
       ],
     });
     const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
-    await p.setInboxName(" Sarah@OakSons-Mail.com", { first: "Sarah", last: "at Oak & Sons Tree" });
+    await p.setInbox(" Sarah@OakSons-Mail.com", { first: "Sarah", last: "at Oak & Sons Tree" });
     const [patch] = api.calls;
     expect(patch).toMatchObject({ method: "PATCH", path: "/accounts/sarah%40oaksons-mail.com", body: { first_name: "Sarah", last_name: "at Oak & Sons Tree" } });
-    expect(await p.inboxName("sarah@oaksons-mail.com")).toEqual({ first: "Sarah", last: "" });
+    expect(await p.readInbox("sarah@oaksons-mail.com")).toEqual({ first: "Sarah", last: "" });
     expect(await p.inboxCampaigns("sarah@oaksons-mail.com")).toEqual([
       { id: "camp-2", name: "QA · Oak & Sons Tree · biz_oak · 2-step" },
       { id: "cold-1", name: "Cold: tree owners" },
@@ -299,7 +299,7 @@ describe("sending inboxes", () => {
     const api = fakeInstantly({});
     api.inbox("gone@oaksons-mail.com").missing = true;
     const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
-    await expect(p.setInboxName("gone@oaksons-mail.com", { first: "Sarah", last: "" })).rejects.toMatchObject({ status: 404 });
+    await expect(p.setInbox("gone@oaksons-mail.com", { first: "Sarah", last: "" })).rejects.toMatchObject({ status: 404 });
   });
 
   it("brings a campaign made earlier up to the business's schedule and inboxes (PATCH /campaigns/{id})", async () => {
@@ -322,6 +322,31 @@ describe("sending inboxes", () => {
     await expect(p.updateCampaign(business({ fromEmails: [] }), "camp-2", {})).rejects.toThrow(/Oak & Sons Tree has no sending inbox of its own/);
     await expect(p.ensureCampaign(business({ id: "biz_new", fromEmails: undefined }), { maxSteps: 2 })).rejects.toThrow(/no sending inbox/);
     expect(api.callsTo("POST", "/campaigns")).toHaveLength(0);
+  });
+
+  it("a one pass's campaigns carry its pace as it is: 30 a day for each inbox and its busiest day of new people, whatever the server's limit", async () => {
+    const api = fakeInstantly({ "GET /campaigns": () => ({ body: { items: [] } }), "POST /campaigns": () => ({ body: { id: "camp-3", status: 0 } }) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch, dailyLimit: 40 });
+    const inboxes = ["sarah@oaksons-mail.com", "dave@oaksons-mail.com", "pat@oaksons-mail.com"];
+    const pass = (dailyNew: number) => business({ fromEmails: inboxes, plan: onePassPlan({ startedOn: "2026-10-05", targetEndOn: "2026-11-04", pace: { inboxes: 3, endOn: "2026-11-04", lastFirst: "2026-10-23", dailyNew } }) });
+    // any other client's 50 a day would be halved under the server's 40
+    await p.ensureCampaign(pass(50), { maxSteps: 3 });
+    expect(api.callsTo("POST", "/campaigns")[0]!.body).toMatchObject({ daily_limit: 90, daily_max_leads: 50 });
+    await p.updateCampaign(pass(50), "camp-3", {});
+    expect(api.callsTo("PATCH", "/campaigns/camp-3")[0]!.body).toMatchObject({ daily_limit: 90, daily_max_leads: 50 });
+    // a first day as full as the inboxes go stays one under the limit, where Instantly would starve the follow-ups
+    await p.updateCampaign(pass(90), "camp-3", {});
+    expect(api.callsTo("PATCH", "/campaigns/camp-3")[1]!.body).toMatchObject({ daily_limit: 90, daily_max_leads: 89 });
+  });
+
+  it("writes an inbox's daily limit with its name in one PATCH, and reads it back", async () => {
+    const api = fakeInstantly({});
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    await p.setInbox("sarah@oaksons-mail.com", { first: "Sarah", last: "at Oak & Sons Tree", dailyLimit: 30 });
+    expect(api.callsTo("PATCH", "/accounts/sarah%40oaksons-mail.com").map((c) => c.body)).toEqual([{ first_name: "Sarah", last_name: "at Oak & Sons Tree", daily_limit: 30 }]);
+    expect(await p.readInbox("sarah@oaksons-mail.com")).toEqual({ first: "Sarah", last: "at Oak & Sons Tree", dailyLimit: 30 });
+    // none set, none read
+    expect(await p.readInbox("dave@oaksons-mail.com")).toEqual({ first: "Jack", last: "Philbrick" });
   });
 });
 

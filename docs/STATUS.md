@@ -248,7 +248,44 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     holidays (New Year's, Memorial Day, July 4, Labor Day, Thanksgiving); worth a rule if Jack wants one.
   - Engine 1,534, server 405, site 108.
 
+- **B3. One-pass mode.**
+  - A plan has a kind: monthly (as before, and any plan with no kind) or one pass, with its own terms ($250 a booking,
+    at most 4 charged, booked within 60 days of the reply, 0 or 150 free first, done 30 days after its first send day)
+    and stages (running, done, paused, cancelled). The operator API and Settings take them and refuse a stage that
+    isn't the kind's. A sign-up from a one-pass page gets a one pass that starts when Jack first plans it.
+  - Every gate checks the kind first: the owner's OK to the first note applies; the 150 limit, nightly top-up, the
+    $497 billing check and the free-round close don't; the whole list goes once, newest first, with no holdout, no 40%
+    share per leak and no 150-day rescan; the console's Plan button takes the whole list.
+  - Pacing (engine `paceOnePass`): the steadiest daily pace that gets the last first note out 12 days before the end
+    date, with follow-ups modelled as Instantly sends them (+4 and +5 days, ahead of new people) and no inbox over 30 a
+    day. When the date can't be met, the pass is planned to the soonest date it can meet, and an alert names that date
+    and how many more inboxes would meet the first. A late OK, BUSY and OPEN pace the pass again.
+  - Instantly: a one pass's campaigns send up to 30 a day per inbox and start no one ahead of the pace (each person is
+    handed over on their first note's day); each inbox's daily limit of 30 is written with its name and read back.
+  - The end: the worker marks the pass done once nothing is left to send and its last replies have had time; done
+    stops everything, frees its inboxes for another client, and closes its alerts.
+  - Owner texts: its own welcome (newest first, the last notes' day, the one-pass promise; "free" only on a freeFirst
+    pass); the end text "Asked 412, 38 wrote back, 9 wanted the work, 6 booked." with the ledger's bookings and no
+    "You paid" line until B4, then monthly if 30 or more a month come due, else "I'll check back next season". It
+    always waits for Jack's OK. MONTHLY from a one-pass owner goes to Jack. No one-pass text says $497.
+  - Who gets monthly: `refillRate` (past customers we can email who stopped or came due in the last 12 months, a month
+    on average), shown in the console when a free 150 or a one pass ends.
+  - The console shows the plan kind, list size, sent so far against the end date, and "— of 4" and "—" placeholders
+    for billable bookings and charges until B4.
+  - Fixture: a 600-person pass on five inboxes gets its last first note out by the end date minus 12 days; on three it
+    raises the alert naming the date it can meet; neither has a holdout, a rescan or a top-up.
+  - Brief notes: with the brief's own rules, 600 people with three notes fit on four inboxes in a 30-day pass (three
+    don't, five leave room); the tests assert the number the engine computes. "It rescans after 150 days" only put
+    people back in a count; planning already skipped them. A one pass needs a "not started" state the brief doesn't
+    list: a running pass with no start day.
+  - Merge notes: B2 and B3 both rewrote the OK to the first note; it now does both (a late OK paces a one pass again,
+    and notes the move takes past their season are written again for the next window).
+  - Left: the "You paid" clause, charges and the CANCEL reply's "no more charges" wording (B4); the fresh export at
+    the end (B6); with direct mail (not Instantly) follow-ups go on the templates' own days.
+  - Engine 1,596, server 443, site 108.
+
 **Live steps for Jack**
+- (B3) On a one pass, check in Instantly that each of its inboxes shows a daily limit of 30 after its first activation.
 - (B1) Keep /fence off every link until January. Look at /tree and /painting on a phone after deploying.
 - (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about
   16 times the database or with BACKUP_DIR on a second volume. Run the first real `docker build` on the host (the

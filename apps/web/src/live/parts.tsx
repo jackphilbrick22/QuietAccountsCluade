@@ -337,6 +337,7 @@ export const MSG_KIND: Record<string, string> = {
   kickoff: "Welcome text",
   renewal: "Year renewal",
   refund: "Yearly refund (issue it, then send)",
+  pass_end: "End of the pass",
   info: "Heads up",
   reply: "Reply to their text",
 };

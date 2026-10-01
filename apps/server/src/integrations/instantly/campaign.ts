@@ -49,22 +49,23 @@
  *    text_only makes Instantly send the plain-text rendering of it.
  *  - Instantly doesn't re-expand "{{...}}" found inside a variable's value.
  *  - daily_limit caps the whole campaign (the spec says "The daily limit for sending emails"; the MCP tool says
- *    per account). We pass the configured number through unchanged.
+ *    per account). We pass the configured number through unchanged, except on a one pass: 30 for each of its inboxes,
+ *    the pace's own limit, which each inbox's account daily_limit (PATCH /accounts/{email}) also holds it to.
  *  - A daily_max_leads of 0 might read as "unlimited" (the help article says blank means unlimited), so it is never sent as 0.
  *    The instant campaign leaves it out (blank = unlimited).
  *  - email_gap / random_wait_max are minutes. 0 might read as "use the default", so the instant campaign sends 1.
  */
-import { ANSWER_HOURS, type BusinessProfile } from "@qa/engine";
+import { ANSWER_HOURS, FOLLOW_UP_GAPS, INBOX_DAILY, isOnePass, type BusinessProfile } from "@qa/engine";
 import type { SequencedLead } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import { toInstantlyTimezone, type InstantlyTimezone } from "./timezones.ts";
 
 /** Most notes one person gets in one sequence. */
 export const MAX_STEPS = 3;
-/** Days Instantly waits after note 1 before note 2. */
-export const STEP2_DELAY_DAYS = 4;
+/** Days Instantly waits after note 1 before note 2 (one definition: the engine paces a one pass by it). */
+export const STEP2_DELAY_DAYS = FOLLOW_UP_GAPS[0];
 /** Days Instantly waits after note 2 before note 3. */
-export const STEP3_DELAY_DAYS = 5;
+export const STEP3_DELAY_DAYS = FOLLOW_UP_GAPS[1];
 /** Instantly's documented max leads per POST /leads/add. */
 export const MAX_LEADS_PER_REQUEST = 1000;
 
@@ -198,8 +199,13 @@ export function buildSteps(steps: number, threadFollowUps = true): InstantlyStep
   });
 }
 
-/** New people per send day so the business's weekly cap holds, leaving room under daily_limit for follow-ups. */
-export function dailyNewLeads(business: Pick<BusinessProfile, "weeklyNewContacts" | "sendDays">, dailyLimit?: number): number | undefined {
+/**
+ * New people per send day so the business's weekly cap holds, leaving room under daily_limit for follow-ups. A one pass
+ * gives its pace's busiest day as it is, kept under its campaigns' daily limit (at or above it, follow-ups starve).
+ */
+export function dailyNewLeads(business: Pick<BusinessProfile, "weeklyNewContacts" | "sendDays" | "plan">, dailyLimit?: number): number | undefined {
+  const paced = isOnePass(business.plan) ? business.plan.pace?.dailyNew : undefined;
+  if (paced) return Math.max(1, dailyLimit ? Math.min(paced, dailyLimit - 1) : paced);
   const days = new Set(business.sendDays.filter((d) => d >= 0 && d <= 6)).size;
   if (!(business.weeklyNewContacts > 0) || days === 0) return undefined;
   let n = Math.max(1, Math.ceil(business.weeklyNewContacts / days));
@@ -242,18 +248,31 @@ function inboxesOf(business: Pick<BusinessProfile, "name" | "fromEmails">): stri
   return inboxes;
 }
 
+/**
+ * A one pass sends up to 30 a day from each of its inboxes, follow-ups included (INBOX_DAILY, what its pace counts on),
+ * whatever the server's daily limit says; any other client goes by the server's.
+ */
+function nurtureSettings(business: BusinessProfile, settings: CampaignSettings): CampaignSettings {
+  return isOnePass(business.plan) ? { ...settings, dailyLimit: INBOX_DAILY * inboxesOf(business).length } : settings;
+}
+
 export function buildCampaignBody(business: BusinessProfile, steps: number, settings: CampaignSettings = {}, ref?: Date): CreateCampaignBody {
-  const body = { ...baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, settings.threadFollowUps ?? true), settings), email_list: inboxesOf(business) };
-  const perDay = dailyNewLeads(business, settings.dailyLimit);
+  const own = nurtureSettings(business, settings);
+  const body = { ...baseBody(campaignName(business, steps), buildSchedule(business, ref), buildSteps(steps, own.threadFollowUps ?? true), own), email_list: inboxesOf(business) };
+  const perDay = dailyNewLeads(business, own.dailyLimit);
   if (perDay !== undefined) body.daily_max_leads = perDay;
   return body;
 }
 
-/** What a later change to the business moves in a campaign made earlier: its schedule, its inboxes, its new-lead pace. */
-export function buildCampaignUpdate(business: BusinessProfile, opts: { instant?: boolean }, settings: CampaignSettings = {}, ref?: Date): Pick<CreateCampaignBody, "campaign_schedule" | "email_list" | "daily_max_leads"> {
+/**
+ * What a later change to the business moves in a campaign made earlier: its schedule, its inboxes, its new-lead pace
+ * (and a one pass's daily limit, which goes with its inboxes).
+ */
+export function buildCampaignUpdate(business: BusinessProfile, opts: { instant?: boolean }, settings: CampaignSettings = {}, ref?: Date): Pick<CreateCampaignBody, "campaign_schedule" | "email_list" | "daily_limit" | "daily_max_leads"> {
   if (opts.instant) return { campaign_schedule: buildInstantSchedule(business, ref), email_list: inboxesOf(business) };
-  const perDay = dailyNewLeads(business, settings.dailyLimit);
-  return { campaign_schedule: buildSchedule(business, ref), email_list: inboxesOf(business), ...(perDay !== undefined ? { daily_max_leads: perDay } : {}) };
+  const own = nurtureSettings(business, settings);
+  const perDay = dailyNewLeads(business, own.dailyLimit);
+  return { campaign_schedule: buildSchedule(business, ref), email_list: inboxesOf(business), ...(isOnePass(business.plan) ? { daily_limit: own.dailyLimit } : {}), ...(perDay !== undefined ? { daily_max_leads: perDay } : {}) };
 }
 
 /** Every day, ANSWER_HOURS (7:00–20:00) local: a request that lands at night is answered at 7:00. */

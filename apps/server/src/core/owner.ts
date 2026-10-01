@@ -1,8 +1,8 @@
-import { addDays, cancelPlan, counted, daysBetween, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, ownerApproves, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, cancelPlan, counted, daysBetween, isOnePass, leadCode, markContacted, NUDGE_MAX_AGE_HOURS, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
-import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, paceAlert, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -87,7 +87,7 @@ const MONTHLY_WORD = /^(monthly|month to month)\b/;
 const GO_RESUME = /^go( ahead| for it)?( (and )?(resume|restart|unpause|start( it| them| sending)?( back)?( up| again)?|turn (it|them) back on|send (it|them)|keep (it )?going|thanks|thank you|thx|ty|jack|man|please|pls))*$/;
 /**
  * A no and nothing else (matched against the words only): "No", "Nope", "No thanks", "Not interested", "Pass for now".
- * With the close or the renewal out, that's the answer to it, not a lead.
+ * With the close, the renewal or a one pass's offer to keep going monthly out, that's the answer to it, not a lead.
  */
 const BARE_NO = /^(no|nope|not interested|(we ll |i ll )?pass)( (thanks|thank you|thx|ty|jack|man|sorry|for now|not now|not right now|not this time|im good|i m good|we re good|were good))*$/;
 /** The whole text is a lead outcome with nothing after it: "No", "Nope", "Done", "Not a fit", "Called him". */
@@ -323,6 +323,17 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const directEmail = d.email.kind === "direct";
   const yearly = d.cfg.FEATURE_YEARLY === "on";
   const planWord = (w: string) => (yearly ? PLAN_WORD : MONTHLY_WORD).test(w);
+  // a question we asked that a yes or a no answers: the close, the renewal, or the end of a one pass offering monthly
+  const asked = (b: Biz) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal") || outstanding(d, b.id, "pass_end");
+  // A one-pass owner who wants to keep going (MONTHLY, or a yes to the end text's offer) is Jack's to set up: nothing
+  // changes on a text alone.
+  const keepGoing = async (b: Biz, choice: "monthly" | "year"): Promise<OwnerCommandResult> => {
+    await d.accounts.withAccount(b.id, (state) => {
+      const at = nowLocal(d, state);
+      state.events.push({ id: `ev_owner_plan_${at}`, at, agent: "reporter", kind: "review", title: `${state.dataset.business.ownerFirstName} wants to keep going ${choice === "year" ? "for a year" : "monthly"}`, detail: `“${text.trim().slice(0, 160)}” — set up the plan and text them how it works.` });
+    });
+    return { businessId: b.id, reply: `${tag(b)}Great. Jack will text you how it works.`, handled: "pass_monthly", needsPerson: true };
+  };
 
   /* ---- our texts (the phone as a whole) ---- */
   if (OPT_OUT.test(bare)) {
@@ -341,13 +352,14 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   /* ---- the first note: nothing goes out until the owner says OK ---- */
   const waitingOk = (one ? [one] : all).filter((b) => !!d.accounts.peek(b.id)?.state.awaitingOwnerOk && b.profile.plan.stage !== "cancelled");
   const hasCode = CODE.test(text);
-  // something else on this phone an "ok" or a "yes" could be answering: a lead waiting on a call, the close, the renewal
-  // (a lead handed off more than a week ago is the operator's to chase, not something a text is likely answering)
-  const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id, true) || outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal"))) || (!!skip && hasWaitingLead(d, skip.id, true));
+  // something else on this phone an "ok" or a "yes" could be answering: a lead waiting on a call, the close, the renewal,
+  // a one pass's offer (a lead handed off more than a week ago is the operator's to chase, not something a text is likely
+  // answering)
+  const otherOpen = (skip?: Biz) => all.some((x) => x !== skip && (hasWaitingLead(d, x.id, true) || asked(x))) || (!!skip && hasWaitingLead(d, skip.id, true));
   // While a first note waits, a text is about something else only when it reads like an answer to it: a short lead
   // outcome said first ("booked 2400", "no answer") with a lead waiting, a bare "no" or "done" with one handed over
-  // this week, or a yes and nothing more with the close or renewal out. "No, say Hey", "Ok but change the sign-off",
-  // "Say estimate, not quoted" and "Add that we won Best of Concord 2025" are changes to the note.
+  // this week, or a yes and nothing more with the close, the renewal or a one pass's offer out. "No, say Hey", "Ok but
+  // change the sign-off", "Say estimate, not quoted" and "Add that we won Best of Concord 2025" are changes to the note.
   // "No, say Hey instead of Hi" is a change to the note, whatever else is open on the phone.
   const aboutOther = () => {
     const scope = named ? [named] : all;
@@ -355,7 +367,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     // words as the owner typed them, less the #code and the business's name ("Booked $2,400 for the oak" is five)
     const typed = text.replace(CODE, " ").trim().split(/\s+/).filter((w) => !named || w.toLowerCase().replace(/[^a-z0-9]/g, "") !== tags.get(named.id)!.toLowerCase()).length;
     const clear = !!lead && (lead.outcome === "booked" || lead.outcome === "no_answer" || lead.outcome === "quoted") && typed <= 5 && OUTCOME_FIRST.test(bare) && !NOTE_EDIT.test(bare);
-    return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (BARE_OUTCOME.test(bare) && scope.some((x) => hasWaitingLead(d, x.id, true))) || (WHOLE_YES.test(bare) && scope.some((x) => outstanding(d, x.id, "close") || outstanding(d, x.id, "renewal")));
+    return (clear && scope.some((x) => hasWaitingLead(d, x.id))) || (BARE_OUTCOME.test(bare) && scope.some((x) => hasWaitingLead(d, x.id, true))) || (WHOLE_YES.test(bare) && scope.some(asked));
   };
   // A change to a first note waiting for the OK. With two waiting and neither named, which note it's for is the
   // owner's to say, and a person sees it too: never read as a lead, never dropped.
@@ -404,11 +416,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     await pause(d, one.id, true);
     return { businessId: one.id, reply: `${tag(one)}Paused. No notes will go out until you text RESUME.`, handled: "pause" };
   }
-  // "Go ahead" / "Go for it" with the close or the renewal out is a yes to it (below), never RESUME
-  const goYes = /^go\b/.test(command) && (one ? [one] : all).some((b) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal"));
+  // "Go ahead" / "Go for it" with the close, the renewal or a one pass's offer out is a yes to it (below), never RESUME
+  const goYes = /^go\b/.test(command) && (one ? [one] : all).some(asked);
   if ((/^(resume|unpause)\b/.test(command) || GO_RESUME.test(command)) && !goYes) {
     if (!one) return askWhich();
     if (one.profile.plan.stage === "cancelled") return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running. Want back in? Reply here and Jack will set it up.`, handled: "resume_cancelled", needsPerson: true };
+    if (one.profile.plan.stage === "done") return { businessId: one.id, reply: `${tag(one)}Your list is done, so there's nothing left to send. Jack will read this too.`, handled: "resume_done", needsPerson: true };
     // The plan itself is paused (a year ran out with no renewal, or Jack paused it): RESUME can't start it again, so
     // it never says "Back on" while nothing goes out. The pause stays, and a person reads it.
     if (one.profile.plan.stage === "paused") {
@@ -449,6 +462,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       return { businessId: one.id, reply: `${tag(one)}You're cancelled, so nothing's running.${c ? " Didn't mean to cancel? Text UNDO." : " Want back in? Reply here and Jack will set it up."}`, handled: "renew_cancelled", needsPerson: !c };
     }
     const choice = /^(monthly|month to month)/.test(bare) ? "monthly" : "year";
+    if (isOnePass(one.profile.plan)) return keepGoing(one, choice);
     // A trial owner picking a plan is a yes to the close: Jack sends the payment link and marks them paying. Nothing
     // turns paying on a text alone.
     if (one.profile.plan.stage === "trial") {
@@ -566,6 +580,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
     });
     await withdrawMoved(d, one.id, pulled);
+    // a one pass is paced again: Jack's alert says whether it still meets its end date
+    if (isOnePass(one.profile.plan)) await paceAlert(d, one.id);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "busy" };
   }
   if (/^(open|not busy|free|room|slow)\b/.test(command)) {
@@ -575,9 +591,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     await d.accounts.withAccount(one.id, (state) => {
       const r = setBookedOut(state, undefined, nowLocal(d, state));
       pulled = r.withdrawn;
-      reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us on your next send day.` : ""}`;
+      // a one pass's are paced again from then, not all on one day
+      const when = isOnePass(state.dataset.business.plan) ? "starting your next send day" : "on your next send day";
+      reply = `Great — new work is back on.${r.moved ? ` ${r.moved} ${r.moved === 1 ? "person" : "people"} we'd held will hear from us ${when}.` : ""}`;
     });
     await withdrawMoved(d, one.id, pulled);
+    if (isOnePass(one.profile.plan)) await paceAlert(d, one.id);
     return { businessId: one.id, reply: `${tag(one)}${reply}`, handled: "open" };
   }
 
@@ -643,11 +662,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     }
     return { businessId: hits[0]?.b.id ?? fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
   }
-  // A bare "No" / "Not interested" with the close or the renewal out answers that, not a lead: it never marks one lost.
-  // A person reads it (it could still be about a lead, so the reply says how to name one).
+  // A bare "No" / "Not interested" with the close, the renewal or a one pass's offer out answers that, not a lead: it
+  // never marks one lost. A person reads it (it could still be about a lead, so the reply says how to name one).
   if (lead?.outcome === "lost" && !hasCode && BARE_NO.test(bare)) {
-    const asked = (one ? [one] : all).find((b) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal"));
-    if (asked) return { businessId: asked.id, reply: `${tag(asked)}Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.`, handled: outstanding(d, asked.id, "close") ? "close_no" : "renewal_no", needsPerson: true };
+    const b = (one ? [one] : all).find(asked);
+    if (b) return { businessId: b.id, reply: `${tag(b)}Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.`, handled: outstanding(d, b.id, "close") ? "close_no" : outstanding(d, b.id, "renewal") ? "renewal_no" : "pass_end_no", needsPerson: true };
   }
   if (lead) {
     // a #code names the lead on its own; a business name mentioned in passing never overrides it
@@ -656,13 +675,15 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     return waitingOk.length && !hasCode ? { ...res, needsPerson: true } : res;
   }
 
-  /* ---- "yes": the answer to the close (or the renewal), never a booking ---- */
+  /* ---- "yes": the answer to the close (or the renewal, or a one pass's offer), never a booking ---- */
   if (AFFIRM.test(t)) {
     if (bare === "yes") await setOwnerTexts(d, fromPhone, undefined); // YES is a carrier opt-in word too
     const pool = one ? [one] : all;
     const closing = pool.filter((b) => outstanding(d, b.id, "close"));
     const renewing = pool.filter((b) => outstanding(d, b.id, "renewal"));
-    if (closing.length + renewing.length > 1) return askWhich();
+    const ending = pool.filter((b) => outstanding(d, b.id, "pass_end"));
+    if (closing.length + renewing.length + ending.length > 1) return askWhich();
+    if (ending[0]) return keepGoing(ending[0], "monthly");
     const b = closing[0] ?? renewing[0];
     if (b && closing.length) {
       await d.accounts.withAccount(b.id, (state) => {
@@ -811,7 +832,6 @@ async function pause(d: Deps, bid: string, paused: boolean): Promise<void> {
   }
 }
 
-/** A close (free round's results) or renewal question sent in the last three weeks, not yet answered. */
 /** A lead we texted the owner that nobody has called yet. */
 function hasWaitingLead(d: Deps, bid: string, fresh = false): boolean {
   const s = d.accounts.peek(bid)?.state;
@@ -820,16 +840,23 @@ function hasWaitingLead(d: Deps, bid: string, fresh = false): boolean {
   return s.replies.some((r) => r.status === "handed_off" && !r.ownerContactedAt && (!fresh || Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${(r.handedOffAt ?? r.receivedAt).slice(0, 19)}Z`) < NUDGE_MAX_AGE_HOURS * 3_600_000));
 }
 
-function outstanding(d: Deps, bid: string, kind: "close" | "renewal"): boolean {
+/**
+ * A question for the owner, not yet answered: the close (the free round's results) or a one pass's end text offering
+ * to keep going monthly, written in the last three weeks, or the renewal in the last 45 days. The one pass's asks only
+ * once Jack let it go to the owner (it always waits for him).
+ */
+function outstanding(d: Deps, bid: string, kind: "close" | "renewal" | "pass_end"): boolean {
   const s = d.accounts.peek(bid)?.state;
   if (!s) return false;
   const b = s.dataset.business;
   if (kind === "close" && b.plan.stage !== "trial") return false;
   if (kind === "renewal" && (b.plan.stage !== "paying" || b.plan.billing !== "annual")) return false;
+  if (kind === "pass_end" && !(isOnePass(b.plan) && b.plan.stage === "done")) return false;
   const today = nowLocal(d, s).slice(0, 10);
   // a renewal already answered (a year from its end is on the books) is never asked again; MONTHLY ends it above
   const answered = (m: (typeof s.ownerMessages)[number]) => kind === "renewal" && !!m.refs?.some((r) => r.kind === "year_end" && (b.plan.yearsPaidOn ?? []).some((y) => y >= r.id));
-  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "close" ? 21 : 45) && !answered(m));
+  const offered = (m: (typeof s.ownerMessages)[number]) => kind !== "pass_end" || (!!m.refs?.some((r) => r.kind === "monthly_offer") && ["sent", "manual"].includes(d.accounts.repo.ownerMessageDelivery(bid, m.id)?.delivery ?? ""));
+  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "renewal" ? 45 : 21) && !answered(m) && offered(m));
 }
 
 /** The client whose lead was texted to this owner most recently. */

@@ -31,8 +31,9 @@
  *    replied. https://help.instantly.ai/en/articles/13886841-why-follow-ups-are-still-sending-to-leads-who-replied
  *    So stopLead keeps leads Instantly has already stopped, which keeps reply tracking and the workspace skip intact.
  *  - An inbox's sender name is its account's first_name + last_name ("Sender first name" / "Sender last name" in
- *    Instantly's CLI). PATCH /api/v2/accounts/{email} { first_name, last_name } sets it (→ Account);
- *    GET /api/v2/accounts/{email} → Account { email, first_name, last_name, ... }.
+ *    Instantly's CLI), and daily_limit is its "Daily email sending limit". PATCH /api/v2/accounts/{email}
+ *    { first_name, last_name, daily_limit } sets them (→ Account); GET /api/v2/accounts/{email} → Account { email,
+ *    first_name, last_name, daily_limit, ... }.
  *    https://developer.instantly.ai/api-reference/account/patch-account ,
  *    https://developer.instantly.ai/api-reference/account/get-account
  *  - GET /api/v2/account-campaign-mappings/{email}?limit&starting_after → { items[{ campaign_id, campaign_name,
@@ -441,13 +442,13 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
       await client.patch(campaignPath(campaignId), buildCampaignUpdate(business, { instant }, settings, now()));
     },
 
-    async setInboxName(inbox, name) {
-      await client.patch(accountPath(inbox), { first_name: name.first, last_name: name.last });
+    async setInbox(inbox, to) {
+      await client.patch(accountPath(inbox), { first_name: to.first, last_name: to.last, ...(to.dailyLimit !== undefined ? { daily_limit: to.dailyLimit } : {}) });
     },
 
-    async inboxName(inbox) {
-      const a = await client.get<{ first_name?: string | null; last_name?: string | null }>(accountPath(inbox));
-      return { first: a?.first_name ?? "", last: a?.last_name ?? "" };
+    async readInbox(inbox) {
+      const a = await client.get<{ first_name?: string | null; last_name?: string | null; daily_limit?: number | null }>(accountPath(inbox));
+      return { first: a?.first_name ?? "", last: a?.last_name ?? "", ...(typeof a?.daily_limit === "number" ? { dailyLimit: a.daily_limit } : {}) };
     },
 
     async inboxCampaigns(inbox) {
