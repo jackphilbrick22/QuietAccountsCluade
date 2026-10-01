@@ -30,7 +30,13 @@ function earliestSpecific(text: string, re: RegExp): number {
   return generic;
 }
 
-/** Which service a quote/job is for, across the business's trades. */
+/**
+ * The service for work whose title names none we know ("Firewood delivery", "No heat", "Fall cleanup"): plain work,
+ * with no clock, no follow-on and no season of its own, so no note says it was a tune-up or a removal.
+ */
+export const UNKNOWN_SERVICE_ID = "gen.work";
+
+/** Which service a quote/job is for, across the business's trades. `matched` is false when the title names none. */
 export function classifyService(title: string, lineItems: LineItem[] = [], trades: TradeId[] = ["general"]): { trade: TradeId; service: ServiceDef; matched: boolean } {
   const lines = [title, ...lineItems.map((l) => l.name)];
   const text = lines.join(" · ");
@@ -52,9 +58,8 @@ export function classifyService(title: string, lineItems: LineItem[] = [], trade
     }
   }
   if (best) return { trade: best.trade, service: best.service, matched: true };
-  const t = trades[0] ?? "general";
-  const pb = playbook(t);
-  return { trade: t, service: pb.services[0] ?? PLAYBOOKS.general.services[0]!, matched: false };
+  // never the trade's first service: "Firewood delivery" isn't a removal, "No heat" isn't a tune-up
+  return { trade: trades[0] ?? "general", service: PLAYBOOKS.general.services.find((s) => s.id === UNKNOWN_SERVICE_ID)!, matched: false };
 }
 
 export function findService(serviceId: string): { trade: TradeId; service: ServiceDef } | undefined {

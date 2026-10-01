@@ -105,7 +105,8 @@ export const FIELDS: Record<Field, FieldSpec> = {
   clientStatus: { names: ["client status", "customer status", "lead status", "is lead", "lead or client"] },
 
   number: {
-    names: ["quote #", "quote number", "quote no", "estimate #", "estimate number", "estimate no", "estimate id", "opportunity number", "job #", "job number", "invoice #", "invoice number", "invoice no", "request #", "number", "#", "id", "doc number", "document number", "ref", "reference"],
+    // "Num" is QuickBooks' own report column for the estimate or invoice number
+    names: ["quote #", "quote number", "quote no", "estimate #", "estimate number", "estimate no", "estimate id", "opportunity number", "job #", "job number", "invoice #", "invoice number", "invoice no", "request #", "number", "#", "id", "doc number", "document number", "ref", "reference", "num"],
     not: /(client|customer|phone|zip|account|property|visit|po)/i,
     looks: "ref",
   },
@@ -212,8 +213,8 @@ const NOT = String.raw`\b(?:not(?:\s+yet)?[\s-]+|never[\s-]+|un-?)`;
 const WAITING_ON_DEPOSIT = String.raw`\b(?:awaiting|pending|needs?|waiting (?:on|for)|no) deposit\b|\bdeposit (?:due|requested|needed|pending|sent|invoice sent)\b`;
 /** The start of the status, past any bullet or dash, allowing for "Customer approved". */
 const LEADS_WITH = String.raw`^\W*(?:(?:customer|client)\s+)?`;
-/** A yes from the customer. "Won't" is not a win. */
-const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received))\b`;
+/** A yes from the customer. "Won't" is not a win. An owner's own "Yes" on their sheet is one too. */
+const SAID_YES = String.raw`(?:accepted|approved|signed|won(?!['’])|sold|closed[\s-]*won|deposit (?:paid|received)|\byes)\b`;
 /**
  * Gone to someone else: "Went with another company", "Hired a competitor", "Lost to ABC Fence", "Closed lost". Only
  * when the other side is a someone: "Went w/ black vinyl" and "Chose another color" are the option they bought.
@@ -241,8 +242,9 @@ const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|aban
 const STILL_OPEN = String.raw`(?:awaiting|sent|pending|open|viewed|outstanding|opened|needs response|follow(?:ing|ed)?[\s-]*up|estimated|bidding|approval|delivery|contacted|unreachable|no (?:response|answer|reply)|waiting|thinking|consider|undecided|on hold|postponed|deferred|nurtur|call ?back|quoted|proposal|submitted|presented|emailed|not (?:moving forward|proceeding) (?:yet|until|till|til|for now|before|this))`;
 /** Waiting on the customer, as a reason written after a "not sold": "Not sold - pending", "Not sold (no response)". */
 const WAITING = String.raw`\b(?:pending|awaiting|waiting|on hold|follow(?:ing|ed)?[\s-]*up|no (?:response|answer|reply)|thinking|consider(?:ing)?|deciding|undecided|open|outstanding|unreachable|needs? (?:response|approval|hoa)|viewed|(?:estimate|proposal|quote) sent|resent|call ?back|postponed|deferred|nurtur\w*)\b`;
-/** "Not sold", "unsold", "no sale": a sale that hasn't happened, yet or at all. */
-const NOT_SOLD = String.raw`(?:${NOT}sold\b|\bno[\s-]+sale\b)`;
+/** "Not sold", "unsold", "no sale", "didn't sell": a sale that hasn't happened, yet or at all. */
+const DID_NOT_SELL = String.raw`\bdid(?:\s+not|n['’]?t)\s+sell\b`;
+const NOT_SOLD = String.raw`(?:${NOT}sold\b|\bno[\s-]+sale\b|${DID_NOT_SELL})`;
 /** "Not booked", "not yet scheduled", "unconverted": the work isn't on the calendar. Says nothing about the answer. */
 const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed?|closed)\b`;
 
@@ -258,6 +260,13 @@ const NOT_ON_CALENDAR = String.raw`${NOT}(?:booked|scheduled|converted|completed
  * a leading no.
  */
 export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
+  // An owner's own one-word answers on a homemade sheet: "Done", "Yes", "Verbal yes", "No", "Passed", "Dead". Only
+  // when that's the whole status, so "Not done", "Yes - said no to the gate" and the rest fall to the rules below.
+  [/^\W*(?:(?:job|work|all|install)\s+)?(?:done|finished|installed)\W*$/i, "converted"],
+  [/^\W*(?:y|yes|yep|yeah|verbal(?:ly)?(?:\s+(?:yes|ok|okay|go))?|(?:a\s+)?go(?:\s+ahead)?|going ahead|went ahead|moving forward|proceeding|awarded|hired(?:\s+us)?|green ?light)\W*$/i, "approved"],
+  [/^\W*(?:n|no|nope|nah|pass(?:ed)?(?:\s+on\s+it)?|did(?:\s+not|n['’]?t)\s+(?:buy|go ahead|go forward|want it|hire us))\W*$/i, "declined"],
+  // "Dead" is the office closing it out, not the customer's answer
+  [/^\W*dead(?:\s+(?:lead|deal|quote|estimate))?\W*$/i, "archived"],
   // Asked for a new price, or got one: "Too expensive - revision requested", "Price too high - sent revised quote".
   // Still open, whatever objection came first; the answer they gave was "not at that price".
   // An answer written after it ("Requoted - sold", "Changes requested - went with another company") is the later word,
@@ -284,7 +293,7 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   // "No response - not sold". Unless a no is written anywhere in it ("Sent - not sold - customer said no"), or it was
   // closed out ("Sent - not sold - cancelled"): nobody is waiting on those.
   [new RegExp(`^(?!.*(?:${SAID_NO}|${CLOSED_OUT}))(?:.*${STILL_OPEN}.*${NOT_SOLD}|.*${NOT_SOLD}.*${WAITING}|(?=.*${NOT_SOLD}).*\\byet\\b)`, "i"), "awaiting_response"],
-  [/\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b/i, "declined"],
+  [new RegExp(String.raw`\bnot[\s-]+sold\b|\bunsold\b|\bno[\s-]+sale\b|${DID_NOT_SELL}`, "i"), "declined"],
   // With no answer in front, not yet sold, or not booked, converted, completed or closed, is still open. Neither is a
   // yes, whatever word follows the "not".
   [new RegExp(`${NOT}(?:sold|booked|converted|completed?|closed)\\b`, "i"), "awaiting_response"],

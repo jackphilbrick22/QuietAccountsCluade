@@ -195,13 +195,25 @@ export function detectKind(table: Table, fileName = ""): { kind: RecordKind; con
   if (has(/^request #$|request status|assessment/)) scores.request += 3;
   if (has(/^visit|visit date|arrival/)) scores.visit += 2;
   if (has(/client since|customer since|client created|lead source/) && !has(/total|amount|status/)) scores.client += 3;
+  // QuickBooks reports say what each row is in a "Transaction Type" column: Estimate, Invoice, Payment
+  const typeCol = headers.findIndex((h) => /^(transaction )?type$/.test(h));
+  if (typeCol >= 0) {
+    const vals = table.rows.slice(0, 200).map((r) => (r[typeCol] ?? "").trim().toLowerCase()).filter(Boolean);
+    const share = (re: RegExp) => (vals.length ? vals.filter((v) => re.test(v)).length / vals.length : 0);
+    if (share(/^(estimate|quote|proposal)$/) >= 0.6) scores.quote += 4;
+    if (share(/^invoice$/) >= 0.6) scores.invoice += 4;
+  }
 
   // file name hints ("Quotes Report.csv", "clients_export.csv")
   if (/quote|estimate|proposal/.test(fname)) scores.quote += 4;
   if (/\bjobs?\b|work.?order/.test(fname)) scores.job += 4;
   if (/invoice/.test(fname)) scores.invoice += 4;
   if (/client|customer|contact/.test(fname)) scores.client += 4;
-  if (/request|lead|inquir/.test(fname)) scores.request += 4;
+  // A request has no price. An owner's "Lead Tracker.csv" with a price and a status (or a sent date) is their list of
+  // quotes, sold and lost included, so the name never outvotes those columns: it counts for quotes instead.
+  const priced = has(/\b(total|amount|price|value|quoted|bid)\b/) && !has(/\b(invoice|balance|amount due|paid)\b/);
+  const pricedQuotes = priced && (has(/\b(status|stage|outcome|sold|won|lost)\b/) || has(/\bsent\b/)) && !has(/^request #$|request status|assessment/);
+  if (/request|lead|inquir/.test(fname)) scores[pricedQuotes ? "quote" : "request"] += 4;
   if (/visit/.test(fname)) scores.visit += 4;
 
   // A plain owner spreadsheet (name, email, price, date) is almost always a list of quotes.

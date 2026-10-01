@@ -116,9 +116,9 @@ export function parseTable(text: string): Table {
   const all = parseRows(text, delimiter);
   if (!all.length) return { headers: [], rows: [], preamble: [], delimiter };
   const h = findHeaderIndex(all);
-  const headers = dedupeHeaders(all[h]!.map((x) => x.replace(/\s+/g, " ").trim()));
-  const width = headers.length;
-  const rows = all
+  const raw = all[h]!.map((x) => x.replace(/\s+/g, " ").trim());
+  const width = raw.length;
+  let rows = all
     .slice(h + 1)
     .filter((r) => !isTotalsRow(r))
     .map((r) => {
@@ -126,7 +126,35 @@ export function parseTable(text: string): Table {
       if (r.length > width) return r.slice(0, width);
       return [...r, ...Array(width - r.length).fill("")];
     });
-  return { headers, rows, preamble: all.slice(0, h).map((r) => r.filter(Boolean).join(" ")), delimiter };
+  const grouped = carryGroupNames(raw, rows);
+  if (grouped) {
+    raw[0] = "Customer";
+    rows = grouped;
+  }
+  return { headers: dedupeHeaders(raw), rows, preamble: all.slice(0, h).map((r) => r.filter(Boolean).join(" ")), delimiter };
+}
+
+/**
+ * QuickBooks' "… by Customer" reports put each customer's name alone on a row above their transactions, under a
+ * blank first header, and leave the first cell of each transaction blank. Carry the name down onto every row under
+ * it, so each row says whose it is. Undefined when the file isn't laid out that way.
+ */
+function carryGroupNames(headers: string[], rows: string[][]): string[][] | undefined {
+  if (headers[0] !== "" || headers.length < 3) return undefined;
+  const isGroup = (r: string[]) => !!r[0] && r.slice(1).every((c) => c === "");
+  const groups = rows.filter(isGroup).length;
+  const under = rows.filter((r) => r[0] === "" && r.slice(1).some(Boolean)).length;
+  if (!groups || under < groups) return undefined;
+  const out: string[][] = [];
+  let name = "";
+  for (const r of rows) {
+    if (isGroup(r)) {
+      name = r[0]!;
+      continue;
+    }
+    out.push(r[0] === "" && name ? [name, ...r.slice(1)] : r);
+  }
+  return out;
 }
 
 function dedupeHeaders(hs: string[]): string[] {

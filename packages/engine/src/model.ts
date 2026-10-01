@@ -99,6 +99,11 @@ export interface Quote {
   total: Money;
   status: QuoteStatus;
   rawStatus: string;
+  /**
+   * The status column said something no rule reads ("Assigned", "Callback 2"), so `status` was guessed from the
+   * dates. Held for a person before anyone writes, never chased as open on that guess.
+   */
+  unreadStatus?: boolean;
   createdOn?: ISODate;
   sentOn?: ISODate;
   approvedOn?: ISODate;

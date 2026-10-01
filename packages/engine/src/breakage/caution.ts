@@ -57,6 +57,8 @@ export function cautionReasons(o: Opportunity, c: Customer | undefined, q: Quote
       out.push(`Priced ${Math.round(q.total / m.p50)}x your usual for this work — may have been a "go away" price`);
   }
   if (q?.rawStatus && statusReadsTwoWays(q.rawStatus)) out.push(`Marked "${q.rawStatus.slice(0, 80)}", which reads two ways — check it before anyone writes`);
+  // a status word we don't know may be the owner's "sold": its open reading was only a guess from the dates
+  else if (q?.unreadStatus) out.push(`Marked "${(q.rawStatus || "?").slice(0, 80)}", which we don't recognise — check it before anyone writes`);
   if (q && o.type === "approved_unscheduled" && cc.noJobsToCheck)
     out.push(`Marked "${q.rawStatus || "approved"}", but there are no jobs on file to check it against — make sure it wasn't already done`);
   const text = [q?.title, ...(q?.lineItems.map((l) => l.name) ?? []), c?.companyName, c?.name, ...(c?.tags ?? [])].filter(Boolean).join(" · ");

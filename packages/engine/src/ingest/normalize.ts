@@ -200,6 +200,20 @@ export function importTable(
   const invoices = new Map(dataset.invoices.map((i) => [i.id, i]));
   const requests = new Map(dataset.requests.map((r) => [r.id, r]));
 
+  // Records with no number, by what they are: whose, what and when (see recId below).
+  const unnumbered = new Map<string, string[]>();
+  const keep = (k: RecordKind, r: { id: string; number?: string; customerId: string }, title: string | undefined, on: string | undefined) => {
+    if (r.number) return;
+    const key = contentKey(k, r.customerId, title, on);
+    (unnumbered.get(key) ?? unnumbered.set(key, []).get(key)!).push(r.id);
+  };
+  for (const q of dataset.quotes) keep("quote", q, q.title, q.createdOn);
+  for (const j of dataset.jobs) keep("job", j, j.title, j.createdOn);
+  for (const i of dataset.invoices) keep("invoice", i, i.subject, i.issuedOn);
+  for (const r of dataset.requests) keep("request", r, r.title, r.createdOn);
+  const seenInFile = new Map<string, number>();
+  const unreadStatuses = new Map<string, number>();
+
   let accepted = 0;
   let rejected = 0;
   let noContact = 0;
@@ -214,9 +228,25 @@ export function importTable(
     if (!p.emails.length && !p.phones.length) noContact++;
     const customer = resolver.resolve(p, source);
     const number = get("number");
-    const recId = (k: RecordKind) => makeId(k[0]!, source, number || `${customer.id}|${row.index}|${get("title")}|${get("createdOn")}|${get("total")}`);
     const lineItems = parseLineItems(get("lineItems"));
+    // Blank when the export has no title (Jobber's are optional): kept as empty text, never dropped.
     const title = get("title") || lineItems.map((l) => l.name).slice(0, 3).join(", ") || get("description").slice(0, 120);
+    // With no number column, a row is known by whose it is, what it's for and when, never by where it sits in the
+    // file: the owner's updated sheet, with rows added on top or re-sorted and Pending changed to Sold, updates the
+    // same records instead of leaving the old Pending copies to be chased. A true duplicate row keeps its own record
+    // by its count, and a record an earlier import keyed another way is found by the same facts.
+    const recId = (k: RecordKind): string => {
+      if (number) return makeId(k[0]!, source, number);
+      const on =
+        k === "quote" ? (parseDate(get("createdOn")) ?? parseDate(get("sentOn")))
+        : k === "job" ? (parseDate(get("createdOn")) ?? parseDate(get("scheduledOn")))
+        : k === "invoice" ? (parseDate(get("issuedOn")) ?? parseDate(get("createdOn")))
+        : parseDate(get("createdOn"));
+      const key = contentKey(k, customer.id, title, on);
+      const n = seenInFile.get(key) ?? 0;
+      seenInFile.set(key, n + 1);
+      return unnumbered.get(key)?.[n] ?? makeId(k[0]!, source, "row", key, n);
+    };
     const itemsTotal = lineItems.reduce((s, l) => s + (l.optional && l.selected === false ? 0 : l.total), 0);
     const total = parseMoney(get("total")) ?? parseMoney(get("subtotal")) ?? (itemsTotal || 0);
     const property = p.address;
@@ -248,11 +278,22 @@ export function importTable(
         jobIds: [] as string[],
       };
       let status = decided ?? read(rawStatus);
+      // A status no rule reads ("Assigned", "Callback 2") is guessed from the dates like a sheet with no status
+      // column, but held for a person: a word we don't know may well be the owner's "sold".
+      const unread = !status && !!(rawStatus || outcome);
       if (!status) status = inferQuoteStatus(base);
       // "Sent" + a converted date means converted, whatever the status column says.
       if (base.convertedOn && status !== "converted") status = "converted";
+      const unreadStatus = unread && status !== "converted" ? true : undefined;
+      if (unreadStatus) {
+        const said = (outcome || rawStatus).slice(0, 40);
+        unreadStatuses.set(said, (unreadStatuses.get(said) ?? 0) + 1);
+      }
       const prev = quotes.get(base.id);
-      quotes.set(base.id, { ...prev, ...stripUndefined(base), status, jobIds: prev?.jobIds ?? [] } as Quote);
+      const q = { ...prev, ...stripUndefined(base), title: title || prev?.title || "", status, unreadStatus, jobIds: prev?.jobIds ?? [] } as Quote;
+      // a re-sent sheet whose status now reads clears the hold
+      if (!unreadStatus) delete q.unreadStatus;
+      quotes.set(base.id, q);
       accepted++;
     } else if (kind === "job" || kind === "visit") {
       const jt = get("jobType");
@@ -275,7 +316,7 @@ export function importTable(
       const qn = get("quoteNumber");
       if (qn) job.quoteRef = qn;
       const prev = jobs.get(job.id);
-      jobs.set(job.id, { ...prev, ...stripUndefined(job) } as Job);
+      jobs.set(job.id, { ...prev, ...stripUndefined(job), title: title || prev?.title || "" } as Job);
       accepted++;
     } else if (kind === "invoice") {
       const bal = parseMoney(get("balance"));
@@ -299,7 +340,8 @@ export function importTable(
       };
       const jn = get("jobNumber");
       if (jn) inv.jobRef = jn;
-      invoices.set(inv.id, { ...invoices.get(inv.id), ...stripUndefined(inv) } as Invoice);
+      const prevInv = invoices.get(inv.id);
+      invoices.set(inv.id, { ...prevInv, ...stripUndefined(inv), subject: title || prevInv?.subject || "" } as Invoice);
       accepted++;
     } else if (kind === "request") {
       const req: ServiceRequest = {
@@ -316,7 +358,8 @@ export function importTable(
       };
       const qn = get("quoteNumber");
       if (qn) req.quoteRef = qn;
-      requests.set(req.id, { ...requests.get(req.id), ...stripUndefined(req) } as ServiceRequest);
+      const prevReq = requests.get(req.id);
+      requests.set(req.id, { ...prevReq, ...stripUndefined(req), title: title || prevReq?.title || "" } as ServiceRequest);
       accepted++;
     } else {
       // client list: the person is the record
@@ -335,6 +378,13 @@ export function importTable(
   }
 
   if (noContact) warnings.push(`${noContact.toLocaleString("en-US")} rows have no email or phone.`);
+  if (unreadStatuses.size) {
+    const n = [...unreadStatuses.values()].reduce((a, b) => a + b, 0);
+    const said = [...unreadStatuses.keys()].slice(0, 6).map((s) => `"${s}"`).join(", ");
+    warnings.push(`${n.toLocaleString("en-US")} quote${n === 1 ? " has a status" : "s have statuses"} we don't recognise (${said}${unreadStatuses.size > 6 ? ", …" : ""}). They're held for a person to check before anyone writes.`);
+  }
+  if (resolver.sharedPhones.size)
+    warnings.push(`${resolver.sharedPhones.size.toLocaleString("en-US")} phone number${resolver.sharedPhones.size === 1 ? " is" : "s are"} shared by people with different names or emails. They're kept as separate customers.`);
 
   const next: Dataset = {
     ...dataset,
@@ -363,6 +413,11 @@ export function importTable(
   return { dataset: next, record };
 }
 
+/** What an unnumbered record is: its kind, whose it is, what it's for and the day it was written. */
+function contentKey(kind: RecordKind, customerId: string, title: string | undefined, on: string | undefined): string {
+  return [kind === "visit" ? "job" : kind, customerId, (title ?? "").toLowerCase().replace(/\s+/g, " ").trim(), on ?? ""].join("|");
+}
+
 function stripUndefined<T extends object>(o: T): Partial<T> {
   const out: Partial<T> = {};
   for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") (out as Record<string, unknown>)[k] = v;
@@ -377,8 +432,11 @@ class CustomerResolver {
   private byId = new Map<string, Customer>();
   private bySource = new Map<string, string>();
   private byEmail = new Map<string, string>();
-  private byPhone = new Map<string, string>();
+  private byPhone = new Map<string, string[]>();
   private byNameAddr = new Map<string, string>();
+  private byName = new Map<string, Set<string>>();
+  /** Numbers that two different people share (a landlord's line, the shop's own number typed as filler). */
+  readonly sharedPhones = new Set<string>();
 
   constructor(existing: Customer[]) {
     for (const c of existing) this.index(structuredCloneCustomer(c));
@@ -388,9 +446,14 @@ class CustomerResolver {
     this.byId.set(c.id, c);
     for (const s of c.sourceIds) this.bySource.set(s, c.id);
     for (const e of c.emails) this.byEmail.set(e, c.id);
-    for (const p of c.phones) this.byPhone.set(p, c.id);
+    for (const p of c.phones) {
+      const ids = this.byPhone.get(p) ?? [];
+      if (!ids.includes(c.id)) this.byPhone.set(p, [...ids, c.id]);
+    }
     const na = nameAddrKey(c.name, c.address?.street);
     if (na) this.byNameAddr.set(na, c.id);
+    const nk = fullNameKey(c.firstName, c.lastName);
+    if (nk) (this.byName.get(nk) ?? this.byName.set(nk, new Set()).get(nk)!).add(c.id);
   }
 
   resolve(p: Person, source: SourceSystem): Customer {
@@ -398,10 +461,28 @@ class CustomerResolver {
     let id: string | undefined;
     if (sourceKey) id = this.bySource.get(sourceKey);
     if (!id) for (const e of p.emails) if ((id = this.byEmail.get(e))) break;
-    if (!id) for (const ph of p.phones) if ((id = this.byPhone.get(ph))) break;
+    // A number alone joins two records only when nothing says they're two people: different emails or clearly
+    // different names on one number stay two customers, so one person's quote is never mailed to the other.
+    if (!id)
+      for (const ph of p.phones) {
+        const ids = this.byPhone.get(ph) ?? [];
+        id = ids.find((x) => !differentPeople(this.byId.get(x)!, p));
+        if (id) break;
+        if (ids.length) this.sharedPhones.add(ph);
+      }
     if (!id) {
       const na = nameAddrKey(p.name, p.address?.street);
       if (na) id = this.byNameAddr.get(na);
+    }
+    // A name and nothing else (QuickBooks' estimate lists) joins the one customer with that exact full name, when one
+    // side has no email, phone or address to go on. Two people with the name, or two records from the software's
+    // own client ids, stay apart.
+    if (!id) {
+      const nk = fullNameKey(p.first, p.last);
+      const same = nk ? [...(this.byName.get(nk) ?? [])] : [];
+      const c = same.length === 1 ? this.byId.get(same[0]!) : undefined;
+      const otherClient = !!sourceKey && !!c?.sourceIds.some((s) => s.startsWith(`${source}:`) && s !== sourceKey);
+      if (c && !otherClient && (isBare(p) || isBare(c))) id = c.id;
     }
     if (id) {
       const c = this.byId.get(id)!;
@@ -409,8 +490,12 @@ class CustomerResolver {
       this.index(c);
       return c;
     }
+    const key = sourceKey ?? p.emails[0] ?? p.phones[0] ?? nameAddrKey(p.name, p.address?.street) ?? p.name;
+    let cid = makeId("c", key);
+    // a second person on a shared number with no email of their own gets an id of their own, not the first one's
+    for (let n = 2; this.byId.has(cid); n++) cid = makeId("c", key, p.name, n);
     const c: Customer = {
-      id: makeId("c", sourceKey ?? p.emails[0] ?? p.phones[0] ?? nameAddrKey(p.name, p.address?.street) ?? p.name),
+      id: cid,
       sourceIds: sourceKey ? [sourceKey] : [],
       name: p.name || p.company || "",
       firstName: p.first,
@@ -437,6 +522,36 @@ class CustomerResolver {
 
 function structuredCloneCustomer(c: Customer): Customer {
   return { ...c, sourceIds: [...c.sourceIds], emails: [...c.emails], phones: [...c.phones], properties: [...c.properties], tags: [...c.tags] };
+}
+
+function letters(s: string | undefined): string {
+  return (s ?? "").toLowerCase().replace(/[^a-z]/g, "");
+}
+
+/** "mike sanderson": a full name, first and last, or nothing when either is missing. */
+function fullNameKey(first: string | undefined, last: string | undefined): string | undefined {
+  const f = letters(first);
+  const l = letters(last);
+  return f.length >= 2 && l.length >= 2 ? `${f} ${l}` : undefined;
+}
+
+function isBare(x: { emails: string[]; phones: string[]; address?: Address }): boolean {
+  return !x.emails.length && !x.phones.length && !x.address?.street;
+}
+
+/**
+ * Two people, not one, on a shared number: both have emails and none in common (unless it's the same full name
+ * with a second address), or neither first nor last name matches. A household (same last name, no clashing emails)
+ * and a name typed two ways ("Mike Sanderson" / "Mike Sandersen") are still one.
+ */
+function differentPeople(c: Customer, p: Person): boolean {
+  const sameName = !!fullNameKey(p.first, p.last) && fullNameKey(c.firstName, c.lastName) === fullNameKey(p.first, p.last);
+  if (c.emails.length && p.emails.length && !p.emails.some((e) => c.emails.includes(e)) && !sameName) return true;
+  const cl = letters(c.lastName);
+  const pl = letters(p.last);
+  const cf = letters(c.firstName);
+  const pf = letters(p.first);
+  return !!cl && !!pl && cl !== pl && (!cf || !pf || cf !== pf);
 }
 
 function nameAddrKey(name: string | undefined, street: string | undefined): string | undefined {
@@ -469,9 +584,10 @@ function mergePerson(c: Customer, p: Person, sourceKey?: string) {
 /* Cross-record linking                                                */
 /* ------------------------------------------------------------------ */
 
-function words(s: string): Set<string> {
+function words(s: string | undefined): Set<string> {
+  // a blank title stored before titles were always kept as text must never stop an import
   return new Set(
-    s
+    (s ?? "")
       .toLowerCase()
       .replace(/[^a-z0-9 ]/g, " ")
       .split(" ")
@@ -479,7 +595,7 @@ function words(s: string): Set<string> {
   );
 }
 
-function similarity(a: string, b: string): number {
+function similarity(a: string | undefined, b: string | undefined): number {
   const A = words(a);
   const B = words(b);
   if (!A.size || !B.size) return 0;
@@ -495,6 +611,12 @@ function similarity(a: string, b: string): number {
 export function linkRecords(ds: Dataset): void {
   const quoteByNumber = new Map<string, Quote>();
   for (const q of ds.quotes) if (q.number) quoteByNumber.set(q.number.replace(/^#/, ""), q);
+  // A title left blank in the export (Jobber's are optional) is kept as empty text, including on records saved
+  // before that was so: every later step reads titles as text.
+  for (const q of ds.quotes) if (typeof q.title !== "string") q.title = "";
+  for (const j of ds.jobs) if (typeof j.title !== "string") j.title = "";
+  for (const i of ds.invoices) if (typeof i.subject !== "string") i.subject = "";
+  for (const r of ds.requests) if (typeof r.title !== "string") r.title = "";
   const quotesByCustomer = new Map<string, Quote[]>();
   for (const q of ds.quotes) {
     q.jobIds = [];

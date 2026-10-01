@@ -3,7 +3,8 @@ import { parseTable } from "../src/ingest/csv.ts";
 import { detect } from "../src/ingest/detect.ts";
 import { decodeText, emptyDataset, ingestFile } from "../src/ingest/index.ts";
 import { parseDate, parseMoney, splitName, greetingName, humanAge, intervalWords, normalizePhone, extractPhones } from "../src/util.ts";
-import type { BusinessProfile, QuoteStatus } from "../src/model.ts";
+import type { BusinessProfile, Dataset, QuoteStatus } from "../src/model.ts";
+import { scan } from "../src/breakage/detect.ts";
 
 const biz: BusinessProfile = {
   id: "b1", name: "Ridgeline Tree Co", trade: "tree", otherTrades: [], software: "unknown", ownerName: "Dave Ridge", ownerFirstName: "Dave",
@@ -536,5 +537,234 @@ describe("a status that says two things at once is held for a person", () => {
       expect(statusReadsTwoWays(mixed), mixed).toBe(true);
     for (const plain of ["Approved", "Awaiting response", "Changes requested", "Converted", "Draft", "Archived", "Unsigned", "Not sold", "Not sold yet", "Pending - not sold", "Approved - awaiting deposit", "Won - needs scheduling", "Sent", "Lost", "Went with ABC Fence", "Completed · Won", "Lost contact - following up"])
       expect(statusReadsTwoWays(plain), plain).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Final review: imports that crashed, guessed or kept stale rows      */
+/* ------------------------------------------------------------------ */
+
+const AT = "2026-09-29T12:00:00Z";
+const load = (files: [string, string][], ds: Dataset = emptyDataset(biz, "2026-09-29")) => {
+  for (const [name, csv] of files) ds = ingestFile(ds, csv, name, AT).dataset;
+  return ds;
+};
+
+describe("a blank title never stops an import", () => {
+  const QUOTES = `Quote #,Client name,Client email,Title,Status,Sent date,Total ($)
+101,Mike Sanderson,mike@gmail.com,Oak removal,Awaiting response,2026-06-02,2400
+102,Jane Doe,jane@gmail.com,,Awaiting response,2026-06-02,900
+`;
+  // Jobber job titles are optional; neither job carries a quote #
+  const JOBS = `Job #,Client name,Client email,Title,Job status,Created date,Completed date,Total
+501,Mike Sanderson,mike@gmail.com,,Completed,2026-06-20,2026-06-25,2400
+502,Jane Doe,jane@gmail.com,Stump grinding,Completed,2026-07-01,2026-07-02,300
+`;
+  it.each([
+    ["quotes then jobs", [["Quotes Report.csv", QUOTES], ["Jobs Report.csv", JOBS]]],
+    ["jobs then quotes", [["Jobs Report.csv", JOBS], ["Quotes Report.csv", QUOTES]]],
+  ] as [string, [string, string][]][])("%s", (_order, files) => {
+    const ds = load(files);
+    expect(ds.jobs.find((j) => j.number === "501")!.title).toBe("");
+    expect(ds.quotes.find((q) => q.number === "102")!.title).toBe("");
+    expect(() => scan(ds)).not.toThrow();
+  });
+  it("a title saved missing before this was fixed is repaired on the next import, not a crash", () => {
+    const ds = load([["Quotes Report.csv", QUOTES]]);
+    for (const q of ds.quotes) if (q.number === "102") (q as { title?: string }).title = undefined;
+    const next = load([["Jobs Report.csv", JOBS]], ds);
+    expect(next.quotes.find((q) => q.number === "102")!.title).toBe("");
+  });
+});
+
+describe("status words an owner types on their own sheet", () => {
+  const status = (s: string) => {
+    const csv = `Name,Email,Work,Status,Sent,Price\nPat Doe,pat@doe.com,Exterior repaint,${s},2026-03-02,4200\n`;
+    return ingestFile(emptyDataset(biz, "2026-09-29"), csv, "estimates.csv", AT, { kind: "quote" }).dataset.quotes[0]!;
+  };
+  it.each<[string, QuoteStatus]>([
+    ["Done", "converted"],
+    ["Finished", "converted"],
+    ["Job done", "converted"],
+    ["Installed", "converted"],
+    ["Yes", "approved"],
+    ["Y", "approved"],
+    ["Verbal yes", "approved"],
+    ["Moving forward", "approved"],
+    ["Went ahead", "approved"],
+    ["Awarded", "approved"],
+    ["No", "declined"],
+    ["N", "declined"],
+    ["Didn't sell", "declined"],
+    ["Did not sell", "declined"],
+    ["Passed", "declined"],
+    ["Dead", "archived"],
+    // still open, whichever way it's written
+    ["Didn't sell yet", "awaiting_response"],
+    ["Not moving forward", "declined"],
+  ])("%s reads as %s", (s, want) => {
+    const q = status(s);
+    expect(q.status).toBe(want);
+    expect(q.unreadStatus).toBeUndefined();
+  });
+  it("a yes that turned something down reads two ways and is held", async () => {
+    const { statusReadsTwoWays } = await import("../src/ingest/fields.ts");
+    expect(statusReadsTwoWays("Yes - said no to the gate")).toBe(true);
+  });
+
+  it("a status nobody recognises is held for a person with a warning, never chased as open on a guess", () => {
+    const SHEET = `Name,Phone,Email,Address,Job,Price,Date,Status
+Mike Sanderson,603-224-1101,mike@gmail.com,"14 Oak Ln, Concord, NH 03301",Oak removal,2400,2026-05-02,Done
+Jane Doe,603-224-1102,jane@gmail.com,"15 Oak Ln, Concord, NH 03301",Pine over garage,1800,2026-05-03,Yes
+Al Finch,603-224-1103,al@gmail.com,"16 Oak Ln, Concord, NH 03301",Maple pruning,900,2026-05-04,Finished
+Bob Jones,603-224-1104,bob@gmail.com,"17 Oak Ln, Concord, NH 03301",Stump grinding,450,2026-05-05,Didn't sell
+Kim Lee,603-224-1105,kim@gmail.com,"18 Oak Ln, Concord, NH 03301",Spruce removal,700,2026-05-06,Assigned
+`;
+    const { dataset: ds, record } = ingestFile(emptyDataset(biz, "2026-09-29"), SHEET, "estimates 2026.csv", AT);
+    expect(record.warnings.join(" ")).toMatch(/1 quote has a status we don't recognise \("Assigned"\)/);
+    const r = scan(ds);
+    const by = (email: string) => r.opportunities.filter((o) => ds.customers.find((c) => c.id === o.customerId)?.emails.includes(email));
+    // the buyers are not told nobody followed up
+    for (const e of ["mike@gmail.com", "al@gmail.com"]) expect(by(e).filter((o) => o.type === "unanswered_quote")).toEqual([]);
+    expect(by("jane@gmail.com").map((o) => o.type)).not.toContain("unanswered_quote");
+    expect(by("bob@gmail.com").map((o) => o.type)).toEqual(["declined_quote"]);
+    const kim = by("kim@gmail.com").find((o) => o.type === "unanswered_quote")!;
+    expect(kim.caution).toEqual(['Marked "Assigned", which we don\'t recognise — check it before anyone writes']);
+    expect(r.primary.some((o) => o.customerId === kim.customerId && !o.caution)).toBe(false);
+  });
+  it("a re-sent sheet whose status now reads clears the hold", () => {
+    const sheet = (s: string) => `Name,Email,Job,Price,Date,Status\nKim Lee,kim@gmail.com,Spruce removal,700,2026-05-06,${s}\n`;
+    const ds = load([["estimates.csv", sheet("Assigned")], ["estimates.csv", sheet("Pending")]]);
+    expect(ds.quotes).toHaveLength(1);
+    expect(ds.quotes[0]!.status).toBe("awaiting_response");
+    expect(ds.quotes[0]!.unreadStatus).toBeUndefined();
+  });
+});
+
+describe("a quote tracker named for leads is read as quotes", () => {
+  const TRACKER = `Name,Phone,Email,Address,Job,Quote Amount,Date,Status
+Mike Sanderson,603-224-1101,mike@gmail.com,"14 Oak Ln, Concord, NH 03301",Oak removal,2400,2026-05-02,Sold
+Jane Doe,603-224-1102,jane@gmail.com,"15 Oak Ln, Concord, NH 03301",Pine over garage,1800,2026-05-03,Lost
+Al Finch,603-224-1103,al@gmail.com,"16 Oak Ln, Concord, NH 03301",Maple pruning,900,2026-05-04,Pending
+`;
+  it.each(["Lead Tracker.csv", "leads 2026.csv"])("%s", (name) => {
+    expect(detect(parseTable(TRACKER), name).kind).toBe("quote");
+    const ds = load([[name, TRACKER]]);
+    expect(ds.requests).toEqual([]);
+    expect(ds.quotes.map((q) => [q.total, q.status])).toEqual([[2400, "converted"], [1800, "declined"], [900, "awaiting_response"]]);
+    // nobody who bought or said no is told "we never got you a price"
+    expect(scan(ds).opportunities.filter((o) => o.type === "unquoted_request")).toEqual([]);
+  });
+  it("a real list of leads, with no price, is still requests", () => {
+    const LEADS = `Name,Email,Phone,Service needed,Date,Status\nMike Sanderson,mike@gmail.com,603-224-1101,Oak removal,2026-09-01,New\n`;
+    expect(detect(parseTable(LEADS), "Leads.csv").kind).toBe("request");
+  });
+});
+
+describe("re-sending an updated sheet with no quote numbers", () => {
+  const V1 = `Name,Email,Job,Price,Date,Status
+Mike Sanderson,mike@gmail.com,Oak removal,2400,2026-05-02,Pending
+Jane Doe,jane@gmail.com,Pine over garage,1800,2026-05-03,Pending
+`;
+  // a month later: a new row on top, and the owner marked the two of them
+  const V2 = `Name,Email,Job,Price,Date,Status
+Al Finch,al@gmail.com,Maple pruning,900,2026-09-01,Pending
+Mike Sanderson,mike@gmail.com,Oak removal,2400,2026-05-02,Sold
+Jane Doe,jane@gmail.com,Pine over garage,1800,2026-05-03,Lost
+`;
+  const statusOf = (ds: Dataset) => Object.fromEntries(ds.quotes.map((q) => [q.title, q.status]));
+  it("updates the same quotes instead of keeping the old Pending copies", () => {
+    const ds = load([["Estimates.csv", V1], ["Estimates.csv", V2]]);
+    expect(ds.quotes).toHaveLength(3);
+    expect(statusOf(ds)).toEqual({ "Oak removal": "converted", "Pine over garage": "declined", "Maple pruning": "awaiting_response" });
+    expect(scan(ds).opportunities.filter((o) => o.type === "unanswered_quote").map((o) => ds.customers.find((c) => c.id === o.customerId)!.name)).toEqual(["Al Finch"]);
+  });
+  it("finds quotes an earlier import keyed by row position, so they're updated too", () => {
+    const ds = load([["Estimates.csv", V1]]);
+    ds.quotes = ds.quotes.map((q, i) => ({ ...q, id: `q_legacy${i}` }));
+    const next = load([["Estimates.csv", V2]], ds);
+    expect(next.quotes.map((q) => q.id).filter((id) => id.startsWith("q_legacy"))).toHaveLength(2);
+    expect(next.quotes).toHaveLength(3);
+    expect(statusOf(next)["Oak removal"]).toBe("converted");
+  });
+  it("two identical rows stay two quotes, the second time too", () => {
+    const TWICE = `Name,Email,Job,Price,Date,Status\nMike Sanderson,mike@gmail.com,Stump grinding,300,2026-05-02,Pending\nMike Sanderson,mike@gmail.com,Stump grinding,300,2026-05-02,Pending\n`;
+    expect(load([["Estimates.csv", TWICE], ["Estimates.csv", TWICE]]).quotes).toHaveLength(2);
+  });
+});
+
+describe("two people on one phone number", () => {
+  const CSV = `Quote #,Client name,Client email,Client phone,Property,Title,Status,Sent date,Total ($)
+101,Mike Sanderson,mike@gmail.com,603-224-5150,"14 Oak Ln, Concord, NH 03301",Oak removal,Awaiting response,2026-06-02,2400
+102,Jane Doe,jane@gmail.com,603-224-5150,"88 Pine St, Bow, NH 03304",Pine over garage,Awaiting response,2026-07-02,1800
+103,Pat Quinn,,603-224-5150,"9 Elm St, Bow, NH 03304",Hedge trim,Awaiting response,2026-07-02,600
+104,Mike Sanderson,,603-224-5150,"14 Oak Ln, Concord, NH 03301",Stump grinding,Awaiting response,2026-07-02,400
+105,Sara Sanderson,,603-224-5150,"14 Oak Ln, Concord, NH 03301",Maple pruning,Awaiting response,2026-07-02,500
+`;
+  it("are kept apart when their names or emails differ, so one's quote never goes to the other", () => {
+    const { dataset: ds, record } = ingestFile(emptyDataset(biz, "2026-09-29"), CSV, "Quotes Report.csv", AT);
+    const whose = (n: string) => ds.customers.find((c) => c.id === ds.quotes.find((q) => q.number === n)!.customerId)!;
+    expect(whose("102").emails).toEqual(["jane@gmail.com"]);
+    expect(whose("102").name).toBe("Jane Doe");
+    expect(whose("103").name).toBe("Pat Quinn");
+    expect(whose("103").emails).toEqual([]);
+    // the same person again, and their household, still join on the number
+    expect(whose("104").id).toBe(whose("101").id);
+    expect(whose("105").id).toBe(whose("101").id);
+    expect(ds.customers).toHaveLength(3);
+    expect(record.warnings.join(" ")).toMatch(/1 phone number is shared by people with different names or emails/);
+  });
+});
+
+describe("QuickBooks estimates", () => {
+  // Reports → Estimates by Customer → Export: the customer's name sits alone above their estimates
+  const GROUPED = `Estimates by Customer
+Ridgeline Tree Co
+All Dates
+
+,Date,Transaction Type,Num,Memo/Description,Amount,Status
+Mike Sanderson,,,,,,
+,05/02/2026,Estimate,1001,Oak removal,"2,400.00",Pending
+,06/01/2026,Estimate,1002,Stump grinding,450.00,Pending
+Total for Mike Sanderson,,,,,"$2,850.00",
+Jane Doe,,,,,,
+,07/02/2026,Estimate,1003,Pine over garage,"1,800.00",Pending
+Total for Jane Doe,,,,,"$1,800.00",
+TOTAL,,,,,"$4,650.00",
+`;
+  const FLAT = `Date,Transaction Type,Num,Customer,Memo/Description,Amount,Status
+05/02/2026,Estimate,1001,Mike Sanderson,Oak removal,"2,400.00",Pending
+07/02/2026,Estimate,1003,Jane Doe,Pine over garage,"1,800.00",Pending
+`;
+  const CUSTOMERS = `Customer,Phone,Email,Billing Address
+Mike Sanderson,(603) 224-1234,mike@gmail.com,"14 Oak Ln, Concord, NH 03301"
+Jane Doe,(603) 224-5678,jane@gmail.com,"88 Pine St, Bow, NH 03304"
+`;
+  it("reads the grouped report the readiness screen asks for", () => {
+    const t = parseTable(GROUPED);
+    expect(t.headers[0]).toBe("Customer");
+    expect(t.rows.map((r) => r[0])).toEqual(["Mike Sanderson", "Mike Sanderson", "Jane Doe"]);
+    const d = detect(t, "Estimates by Customer.csv");
+    expect([d.kind, d.source]).toEqual(["quote", "quickbooks"]);
+    expect(t.headers[d.mapping.fields.number!]).toBe("Num");
+  });
+  it.each([
+    ["grouped, then the customer list", [["Estimates by Customer.csv", GROUPED], ["Customers.csv", CUSTOMERS]]],
+    ["the customer list, then grouped", [["Customers.csv", CUSTOMERS], ["Estimates by Customer.csv", GROUPED]]],
+    ["the flat estimate list, then the customer list", [["Estimates.csv", FLAT], ["Customers.csv", CUSTOMERS]]],
+  ] as [string, [string, string][]][])("%s: each estimate reaches its customer by their name", (_order, files) => {
+    const ds = load(files);
+    expect(ds.customers).toHaveLength(2);
+    const mike = ds.customers.find((c) => c.name === "Mike Sanderson")!;
+    expect(mike.emails).toEqual(["mike@gmail.com"]);
+    expect(ds.quotes.filter((q) => q.customerId === mike.id).map((q) => q.number)).toContain("1001");
+    const primary = scan(ds).primary.map((o) => ds.customers.find((c) => c.id === o.customerId)!.name).sort();
+    expect(primary).toEqual(["Jane Doe", "Mike Sanderson"]);
+  });
+  it("a name two customers share joins neither", () => {
+    const TWO = `Customer,Email\nMike Sanderson,mike@gmail.com\nMike Sanderson,mike.s@yahoo.com\n`;
+    const ds = load([["Customers.csv", TWO], ["Estimates.csv", FLAT]]);
+    const est = ds.quotes.find((q) => q.number === "1001")!;
+    expect(ds.customers.find((c) => c.id === est.customerId)!.emails).toEqual([]);
   });
 });

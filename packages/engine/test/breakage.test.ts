@@ -46,12 +46,12 @@ describe("detectors", () => {
   });
 
   describe("archived_quote", () => {
-    it("fires on a quote filed away without a yes, anchored to the archive date", () => {
+    it("fires on a quote filed away without a yes, dated by the quote, not the day it was filed away", () => {
       const r = scan(dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "archived", sentOn: ago(200), archivedOn: ago(150) })] }));
       const o = oneOpp(r, "c1", "archived_quote");
       expect(o.suppressed).toBeUndefined();
-      expect(o.anchorDate).toBe(ago(150));
-      expect(o.ageDays).toBe(150);
+      expect(o.anchorDate).toBe(ago(200));
+      expect(o.ageDays).toBe(200);
     });
     it("also covers expired quotes", () => {
       const r = scan(dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "expired", sentOn: ago(90) })] }));
@@ -988,5 +988,116 @@ describe("marketing copy checker", () => {
     expect(lintMarketing("80% of sales need 5 follow-ups")).not.toEqual([]);
     expect(lintMarketing("Only 3 spots left")).not.toEqual([]);
     expect(lintMarketing("If nobody asks for a price or a date this month, you don't pay for it.")).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Final review: dates, services and comebacks the scan got wrong      */
+/* ------------------------------------------------------------------ */
+
+describe("a quote filed away long after it went out is about the day they got the price", () => {
+  it("ages, words and checks comebacks from the quote's own date, not the archive day", () => {
+    // archived in a bulk cleanup in August, sent the November before last
+    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Oak removal", status: "archived", sentOn: "2024-11-04", archivedOn: "2026-08-15" })] });
+    const o = oneOpp(scan(ds), "c1", "archived_quote");
+    expect(o.anchorDate).toBe("2024-11-04");
+    expect(o.ageDays).toBeGreaterThan(690);
+    expect(o.evidence.join(" ")).toContain("Filed away back in August");
+    const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.body).not.toContain("August");
+    expect(n.body).toContain("November");
+  });
+  it("a quote older than the age limit stays out however recently it was archived", () => {
+    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "archived", sentOn: "2023-06-01", archivedOn: "2026-08-15" })] });
+    expect(oppsFor(scan(ds), "c1", "archived_quote")).toEqual([]);
+  });
+  it("closing it out still sets a minimum wait", () => {
+    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "archived", sentOn: ago(200), archivedOn: ago(5) })] });
+    expect(oppsFor(scan(ds), "c1", "archived_quote")).toEqual([]);
+    const no = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "declined", sentOn: ago(300), archivedOn: ago(60) })] });
+    expect(oppsFor(scan(no), "c1", "declined_quote")).toEqual([]);
+  });
+  it("someone who bought the other option before it was archived is not chased on it", () => {
+    const ds = dataset({
+      customers: [customer("c1")],
+      quotes: [
+        quote("qa", "c1", { number: "101", title: "Oak removal - option A", status: "archived", sentOn: "2026-06-02", archivedOn: "2026-08-01" }),
+        quote("qb", "c1", { number: "102", title: "Oak removal - option B", status: "converted", sentOn: "2026-06-02", convertedOn: "2026-06-06", jobIds: ["j55"] }),
+      ],
+      jobs: [job("j55", "c1", { title: "Oak removal - option B", quoteId: "qb", completedOn: "2026-06-20" })],
+    });
+    expect(oneOpp(scan(ds), "c1", "archived_quote").suppressed).toBe("already_customer_again");
+  });
+  it("a no is dated by the quote too, so work they bought after it counts", () => {
+    const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { status: "declined", sentOn: ago(300), archivedOn: ago(130) })], jobs: [job("j1", "c1", { completedOn: ago(200) })] });
+    expect(oneOpp(scan(ds), "c1", "declined_quote").suppressed).toBe("already_customer_again");
+  });
+});
+
+describe("work whose title names no service we know", () => {
+  const past = (trade: "tree" | "hvac" | "landscape", title: string, daysAgo: number) =>
+    dataset({ business: { trade, name: "Test Co." }, customers: [customer("c1")], jobs: [job("j1", "c1", { title, total: 400, completedOn: ago(daysAgo) })] });
+  it.each<["tree" | "hvac" | "landscape", string, number]>([
+    ["tree", "Firewood delivery - 1 cord", 100],
+    ["tree", "Arborist consultation", 100],
+    ["hvac", "Diagnostic - no cool", 190],
+    ["hvac", "No heat", 190],
+    ["landscape", "Fall cleanup", 340],
+  ])("%s: “%s” is never taken for the trade's first service", (trade, title, daysAgo) => {
+    const r = scan(past(trade, title, daysAgo));
+    expect(oppsFor(r, "c1", "service_due")).toEqual([]);
+    expect(oppsFor(r, "c1", "missed_upsell")).toEqual([]);
+    for (const o of oppsFor(r, "c1")) expect(o.serviceId).toBe("gen.work");
+  });
+  it("a past customer's note about it says the trade's plain words, not a service they never had", () => {
+    const ds = past("landscape", "Fall cleanup", 340);
+    const o = oneOpp(scan(ds), "c1", "one_and_done");
+    expect(o.jobPhrase).toBe("the landscaping");
+    const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.body).not.toMatch(/mulch|beds/i);
+  });
+});
+
+describe("came back since the quote", () => {
+  it("a paid invoice after the quote counts, with no jobs file", () => {
+    const ds = dataset({
+      business: { software: "quickbooks" },
+      customers: [customer("c1")],
+      quotes: [quote("q1", "c1", { title: "Oak removal", sentOn: ago(150), rawStatus: "Pending" })],
+      invoices: [invoice("i1", "c1", { subject: "For services rendered: Oak removal", status: "paid", balance: 0, issuedOn: ago(110), paidOn: ago(105) })],
+    });
+    expect(oneOpp(scan(ds), "c1", "unanswered_quote").suppressed).toBe("already_customer_again");
+  });
+  it("a sibling quote sent the same day and won later answers this one", () => {
+    const ds = dataset({
+      customers: [customer("c1")],
+      quotes: [
+        quote("q1", "c1", { number: "101", title: "Oak removal - option A", sentOn: ago(120) }),
+        quote("q2", "c1", { number: "102", title: "Oak removal - option B", status: "converted", sentOn: ago(120), convertedOn: ago(116) }),
+      ],
+    });
+    expect(oneOpp(scan(ds), "c1", "unanswered_quote").suppressed).toBe("already_customer_again");
+  });
+  it("good/better/best: the 'Better' sold the same day covers the open 'Best', even with its job done that day", () => {
+    const ds = dataset({
+      business: { trade: "hvac", software: "servicetitan" },
+      customers: [customer("c1")],
+      quotes: [
+        quote("q1", "c1", { title: "AC replacement - Better", total: 9800, status: "converted", sentOn: ago(120), approvedOn: ago(120), jobIds: ["j900"] }),
+        quote("q2", "c1", { title: "AC replacement - Best", total: 12800, sentOn: ago(120), rawStatus: "Open" }),
+      ],
+      jobs: [job("j900", "c1", { title: "AC replacement", quoteId: "q1", completedOn: ago(120) })],
+    });
+    expect(oneOpp(scan(ds), "c1", "unanswered_quote").suppressed).toBe("already_customer_again");
+  });
+  it("a same-day yes for other work doesn't answer this quote", () => {
+    const ds = dataset({
+      customers: [customer("c1")],
+      quotes: [
+        quote("q1", "c1", { title: "Stump grinding", total: 450, status: "converted", sentOn: ago(120), approvedOn: ago(120) }),
+        quote("q2", "c1", { title: "Oak removal", total: 2400, sentOn: ago(120) }),
+      ],
+    });
+    expect(oneOpp(scan(ds), "c1", "unanswered_quote").suppressed).toBeUndefined();
   });
 });

@@ -1,5 +1,5 @@
 import type { BusinessProfile, Customer, Dataset, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
-import { classifyService, climateOf, findService, jobPhrase, monthsUntilSeason, playbook, seasonFit } from "../trades/index.ts";
+import { classifyService, climateOf, findService, jobPhrase, monthsUntilSeason, playbook, seasonFit, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
@@ -116,11 +116,13 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     quietSince: "",
     notRecent: "yes",
   };
+  // Work no service names ("Fall cleanup") keeps the trade's plain words for it, and the trade's own clock
+  const known = svc && o.serviceId !== UNKNOWN_SERVICE_ID ? svc : undefined;
   // "we used to take care of the pines for you" is false once the pines are gone: name the service instead
-  if (o.type === "lapsed_regular" && svc && svc.kind !== "maintenance" && svc.kind !== "recurring") t.job = svc.phrase;
+  if (o.type === "lapsed_regular" && known && known.kind !== "maintenance" && known.kind !== "recurring") t.job = known.phrase;
   // A regular who just missed their usual visit, in a trade that counts that as quiet (cleaning at three weeks),
   // isn't someone "we used to" work for: the note names the day of the last visit and asks them back.
-  if (o.type === "lapsed_regular" && doneOn && playbook(findService(o.serviceId)?.trade ?? b.trade).lapseAfterDays?.length && daysBetween(doneOn, rc.sendOn) <= RECENT_LAPSE_DAYS) {
+  if (o.type === "lapsed_regular" && doneOn && playbook((known && findService(o.serviceId)?.trade) || b.trade).lapseAfterDays?.length && daysBetween(doneOn, rc.sendOn) <= RECENT_LAPSE_DAYS) {
     t.quietSince = `${monthName(doneOn)} ${Number(doneOn.slice(8))}`;
     t.notRecent = "";
   }

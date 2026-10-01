@@ -291,8 +291,22 @@ function fromQuote(ctx: Ctx, q: Quote): Opportunity | undefined {
     }
     case "archived":
     case "expired":
-      return base(ctx, "archived_quote", q.customerId, { kind: "quote", id: q.id }, q.total, q.archivedOn ?? d, q.title, q.lineItems,
-        `Quote from ${when} was filed away without a yes. Nobody ever followed up.`, ev);
+    case "declined": {
+      const type = q.status === "declined" ? "declined_quote" : "archived_quote";
+      // Dated by the quote itself, not the day it was filed away: a 2023 quote archived in an August cleanup is
+      // still "back in November 2023" to the homeowner, the age limits and the fresh-look line count from then, and
+      // anyone who bought since the price went out has come back. The close-out day only sets a minimum wait, so a
+      // quote closed out last week isn't chased this week.
+      if (q.archivedOn) {
+        if (daysBetween(q.archivedOn, ctx.asOf) < WINDOW[type].minDays) return undefined;
+        ev.push(`${type === "declined_quote" ? "Marked declined" : "Filed away"} ${spokenWhen(q.archivedOn, ctx.asOf)}`);
+      }
+      return type === "declined_quote"
+        ? base(ctx, type, q.customerId, { kind: "quote", id: q.id }, q.total, d ?? q.archivedOn, q.title, q.lineItems,
+            `Said no ${when}. Plans change — worth one respectful check-in.`, ev)
+        : base(ctx, type, q.customerId, { kind: "quote", id: q.id }, q.total, d ?? q.archivedOn, q.title, q.lineItems,
+            `Quote from ${when} was filed away without a yes. Nobody ever followed up.`, ev);
+    }
     case "changes_requested": {
       const asked = q.changesRequestedOn ?? d;
       // re-quoted since? then it's handled
@@ -307,9 +321,6 @@ function fromQuote(ctx: Ctx, q: Quote): Opportunity | undefined {
       return base(ctx, "approved_unscheduled", q.customerId, { kind: "quote", id: q.id }, q.total, said, q.title, q.lineItems,
         `Said yes ${said ? spokenWhen(said, ctx.asOf) : ""} — and never got on the schedule.`.replace(/\s+—/, " —"), [...ev, "Approved, but there's no job for it"]);
     }
-    case "declined":
-      return base(ctx, "declined_quote", q.customerId, { kind: "quote", id: q.id }, q.total, q.archivedOn ?? d, q.title, q.lineItems,
-        `Said no ${when}. Plans change — worth one respectful check-in.`, ev);
     default:
       return undefined;
   }
@@ -601,12 +612,26 @@ function applySuppressions(ctx: Ctx, o: Opportunity): void {
     return;
   }
 
-  // They came back on their own after this opportunity's anchor date.
+  // They came back on their own after this opportunity's anchor date: a job, a bill for work (an owner who invoiced
+  // instead of converting the quote), or a yes on another quote, dated by the yes. A yes on another option sent the
+  // same day for the same work (good/better/best, option A or B) answers this one too.
   if (!["unpaid_invoice", "service_due", "missed_upsell", "lapsed_regular", "one_and_done", "declined_option"].includes(o.type)) {
+    const self = o.source.kind === "quote" ? quotes.find((q) => q.id === o.source.id) : undefined;
+    const sameWork = (q: Quote) => {
+      if (!self) return false;
+      const a = classifyService(self.title, self.lineItems, ctx.trades);
+      const b = classifyService(q.title, q.lineItems, ctx.trades);
+      return a.matched && b.matched && a.service.id === b.service.id;
+    };
     const cameBack = jobs.some((j) => {
       const d = jobDate(j);
       return d && d > anchor && j.status !== "cancelled" && !(o.source.kind === "job" && o.source.id === j.id);
-    }) || quotes.some((q) => q.id !== o.source.id && (q.status === "converted" || q.status === "approved") && (quoteDate(q) ?? "") > anchor);
+    }) || (ctx.invoicesBy.get(c.id) ?? []).some((i) => BILLED.has(i.status) && (i.issuedOn ?? i.paidOn ?? "") > anchor)
+      || quotes.some((q) => {
+        if (q.id === o.source.id || (q.status !== "converted" && q.status !== "approved")) return false;
+        const yes = q.approvedOn ?? q.convertedOn ?? quoteDate(q) ?? "";
+        return yes > anchor || (!!self && quoteDate(q) === quoteDate(self) && sameWork(q));
+      });
     if (cameBack) {
       o.suppressed = "already_customer_again";
       return;
