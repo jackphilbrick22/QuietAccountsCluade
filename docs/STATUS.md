@@ -158,8 +158,8 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     headline, promise and button sit in the first screen (Playwright check).
   - Brief notes: Housecall Pro's export path is Jobs → Actions → Export (no filter step); the reference form sent
     "hcp", which /start recorded as unknown software; the sticky price line needs two lines at 390px.
-  - Left: an engine-written example Friday text on /lawn (now possible with A6's wording), then remove the old
-    site's apps/site/src/friday.ts and its server test; the file drop is C1; Lighthouse not run (not available here).
+  - Left: the file drop is C1; Lighthouse not run (not available here). /lawn keeps the reference page's one Friday
+    line; the old site's unused example Friday text (apps/site/src/friday.ts) and its server test are gone.
 
 - **A8. Deploy kit, not a deploy.** Nothing was deployed.
   - A root Dockerfile (Node 22, pnpm from packageManager via corepack) builds the console and runs the server and
