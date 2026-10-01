@@ -201,8 +201,9 @@ Updated every loop iteration. Newest first.
   in five batches.
   - Money and plans: Settings can record a yearly plan (billing, year price, paid years); a second RENEW
     changes nothing; RENEW and MONTHLY work from the paid year running today, so years never overlap; every
-    plan change by text goes to Jack's queue to collect or refund; CANCEL refunds a renewed year that hadn't
-    started; RESUME after a year ran out says it's still paused (and the direct sender honours a paused plan).
+    plan change by text goes to Jack's queue to collect or refund; CANCEL takes a renewed year that hadn't
+    started off the plan (the owner is told Jack refunds it only if it was paid); RESUME after a year ran out
+    says it's still paused (and the direct sender honours a paused plan).
   - Owner texts: a text without a #code can be about a lead reported in the last 14 days, and asks when
     two fit; "Go ahead" answers the close or the renewal instead of running RESUME; a text with a #code is
     never a plan change, pause or booked-out command; BUSY and STATUS act only on the command shapes.
@@ -211,7 +212,7 @@ Updated every loop iteration. Newest first.
     instant answer now get their follow-ups; a "today" answer is never sent late at night.
   - Surface: one Instantly campaign per client (the business id is in the name); forwarded requests and
     exports are read from every recipient field (Delivered-To, Cc, Bcc, provider envelopes); Don't send,
-    Hold and edits reach Instantly or are refused with a reason; record ids are 64-bit (SHA-256), not 32.
+    Hold and edits reach Instantly or are refused with a reason; two records whose ids collide are kept apart.
   - Import: blank titles no longer crash it; archived quotes are dated by the quote, not the archive day;
     status words owners type (Done, Yes, Didn't sell) are read, and any we don't know is held for a person;
     "Leads…csv" with prices is read as quotes; unknown work never becomes the trade's first service; paid
@@ -223,8 +224,24 @@ Updated every loop iteration. Newest first.
   record (the database save never deletes); an edit made in the seconds before Instantly's "sent" webhook
   arrives re-pushes from note 1 (BUSY's take-back has the same race).
 
+- Verification pass over the sweep's fixes (four lenses, each finding checked by a skeptic): 17 reported, 14
+  confirmed, all fixed and tested.
+  - Record ids stay the 32-bit ones every stored account already has (a 64-bit switch would have duplicated
+    records on the next Jobber pull or re-upload); a new record whose id is taken by a different one gets a
+    salted id instead, for quotes, jobs, invoices, requests and forwarded leads.
+  - Anyone who replied to our instant answer is never planned again, and nothing for them reaches Instantly;
+    a newer quote that stops an older sequence gets its own follow-up.
+  - Re-sent sheets with no title column match rows by customer and date (Notes edits no longer make a new
+    quote); QuickBooks carry-down only on the real grouped report; "Sales by Customer Detail" reads as paid
+    sales; "Yes - waiting on HOA" is a yes held for a person.
+  - Settings: a renewed year can be taken off, going Monthly drops years not started, moving the first paid
+    day forward keeps fees paid so far; switching billing asks for the day it starts.
+  - Owner texts: "Monthly cleaning booked 180" is a lead, not a plan change; a bare "No" to the close or the
+    renewal never marks a lead lost; "Go ahead and resume" resumes; "Ok cool" is a plain yes.
+  - Engine 1,316, server 295.
+
 **Next**
-- One narrow verification pass over the sweep's fixes; then wrap up.
+- Wrap up: the summary for Jack.
 
 ## 2026-09-30 — iteration 2
 
