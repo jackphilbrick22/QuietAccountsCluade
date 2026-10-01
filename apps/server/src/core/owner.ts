@@ -454,9 +454,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     let r = { stopped: 0, refund: 0, line: "" };
     let until = "";
     let partWay = 0;
+    let renewed = false;
     await d.accounts.withAccount(one.id, (state) => {
       const at = nowLocal(d, state);
       r = cancelPlan(state, at, { paused: one.paused });
+      // a renewed year that hadn't started may or may not have been paid: Jack checks, and refunds it if it was
+      renewed = !!state.cancelled?.years?.length;
       until = `${fmtClock(at)} tomorrow`;
       // a sending platform can't take someone back mid-sequence: UNDO won't give them the rest of their notes
       if (d.email.kind === "sequencer") partWay = new Set(underWay(state, (state.cancelled?.touches ?? []).map((x) => x.id)).map((x) => x.customerId)).size;
@@ -471,6 +474,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       businessId: one.id,
       reply: `${tag(one)}Done — cancelled. No more notes, no more charges.${r.line ? ` ${r.line}` : ""} So far: ${tt.booked} booked, $${Math.round(tt.bookedValue).toLocaleString("en-US")} on your ledger, and everything we found stays yours. Didn't mean it? Text UNDO${multi ? ` ${tags.get(one.id)}` : ""} by ${until} ${partWay ? `to pick back up; the ${partWay === 1 ? "1 person" : `${partWay} people`} already part-way through their notes won't get the rest.` : "and it all picks back up."}`,
       handled: "cancel",
+      ...(renewed ? { needsPerson: true } : {}),
     };
   }
   if (/^undo\b/.test(bare)) {
@@ -485,7 +489,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       return { businessId: b.id, reply: `${tag(b)}Glad you're staying. Jack will put everything back himself today and text you.`, handled: "undo_platform", needsPerson: true };
     }
     let r: ReturnType<typeof undoCancel>;
+    let renewed = false;
     await d.accounts.withAccount(b.id, (state) => {
+      renewed = !!state.cancelled?.years?.length;
       r = undoCancel(state, nowLocal(d, state), { platform: d.email.kind === "sequencer" });
     });
     const res = r!;
@@ -504,7 +510,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     if (!res.paused) await holdSending(d, b.id, "resume").catch((e) => d.log(`[owner] ${b.id} resume on the sending platform failed: ${(e as Error).message}`));
     d.accounts.repo.audit(b.id, "owner-sms", "undo_cancel", { restored: res.restored });
     const lost = res.stopped ? ` ${res.stopped} ${res.stopped === 1 ? "person was" : "people were"} part-way through their notes; those follow-ups stay stopped.` : "";
-    return { businessId: b.id, reply: `${tag(b)}Back on.${res.stopped ? "" : " Nothing was lost."} ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${lost}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel" };
+    return { businessId: b.id, reply: `${tag(b)}Back on.${res.stopped ? "" : " Nothing was lost."} ${res.restored ? `${res.restored} ${res.restored === 1 ? "note is" : "notes are"} back in line.` : "We'll pick up on your next send day."}${lost}${res.paused ? " You'd paused before, so it stays paused until you text RESUME." : ""}`, handled: "undo_cancel", ...(renewed ? { needsPerson: true } : {}) };
   }
   // "BUSY until Nov 15" / "busy 6 weeks" / "OPEN": new work waits for room on the schedule.
   if (BUSY.test(command)) {

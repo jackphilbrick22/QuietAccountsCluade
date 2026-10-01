@@ -563,6 +563,8 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
   const dirty = Object.keys(patch).length > 0;
   const set = <K extends keyof BusinessProfile>(k: K, v: BusinessProfile[K]) => setD((x) => ({ ...x, [k]: v }));
   const yearly = d.plan.billing === "annual";
+  // a billing switch waits for the day it starts, so the two are saved together
+  const needsDay = (d.plan.billing ?? "monthly") !== (b.plan.billing ?? "monthly") && !!b.plan.paidOn && !d.plan.paidOn;
   const num = (v: string, lo: number, hi: number, fallback: number) => {
     const n = Number(v.replace(/[^0-9.]/g, ""));
     return Number.isFinite(n) && v !== "" ? Math.max(lo, Math.min(hi, n)) : fallback;
@@ -649,14 +651,14 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
           </Field>
           <NumField id="ls-trial" label="Free round size (people)" value={d.plan.trialSize} onChange={(v) => set("plan", { ...d.plan, trialSize: num(v, 10, 1000, d.plan.trialSize) })} />
           <Field id="ls-billing" label="Billing" hint="Yearly: paid up front, twelve months for the price of ten.">
-            <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual"))}>
+            <select id="ls-billing" className={cx(selectCls, "w-full")} value={yearly ? "annual" : "monthly"} onChange={(e) => set("plan", withBilling(d.plan, e.target.value as "monthly" | "annual", b.plan))}>
               <option value="monthly">Monthly</option>
               <option value="annual">Yearly</option>
             </select>
           </Field>
           <NumField id="ls-price-m" label="Monthly price ($)" value={d.plan.monthlyPrice} onChange={(v) => set("plan", { ...d.plan, monthlyPrice: num(v, 0, 100000, d.plan.monthlyPrice) })} />
           {yearly && <NumField id="ls-price-y" label="Year price ($)" value={annualPrice(d)} onChange={(v) => set("plan", { ...d.plan, annualPrice: num(v, 0, 1000000, annualPrice(d)) })} />}
-          <Field id="ls-paid" label="First paid day" hint={yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>
+          <Field id="ls-paid" label="First paid day" hint={needsDay ? "Set the day the new billing starts from (the old day if it was always this way), then save." : yearly ? "The day their paid year started: set it once the payment link is paid." : "Set this when they pay. The guarantee counts months from here."}>
             <input id="ls-paid" type="date" className={smallInputCls} value={d.plan.paidOn ?? ""} onChange={(e) => set("plan", withPaidOn(d.plan, e.target.value || undefined))} />
           </Field>
           {yearly && (
@@ -681,13 +683,13 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
       </Group>
 
       <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t border-line bg-bg/95 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-lg sm:border sm:px-4">
-        <Btn variant="primary" disabled={!dirty || !!busy} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
+        <Btn variant="primary" disabled={!dirty || !!busy || needsDay} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
           {busy === "save" ? "Saving…" : "Save changes"}
         </Btn>
         <Btn variant="ghost" disabled={!dirty} onClick={() => setD(b)}>
           Discard
         </Btn>
-        <span className="text-[12.5px] text-ink-3">{dirty ? `${Object.keys(patch).length} change${Object.keys(patch).length === 1 ? "" : "s"} not saved` : "Everything saved"}</span>
+        <span className="text-[12.5px] text-ink-3">{needsDay ? "Set the first paid day for the new billing to save" : dirty ? `${Object.keys(patch).length} change${Object.keys(patch).length === 1 ? "" : "s"} not saved` : "Everything saved"}</span>
         <span className="ml-auto">
           <ConfirmBtn note="Delete this client and all its data?" confirmLabel="Yes, delete" onConfirm={() => void run("delete", () => api("DELETE", `/businesses/${encodeURIComponent(id)}`), `Deleted ${b.name}`).then((r) => r && go({ area: "live", tab: "clients" }))}>
             Delete client
@@ -710,7 +712,8 @@ function diff(a: BusinessProfile, b: BusinessProfile): Patch {
     if (k === "plan") {
       const p = b.plan;
       const yearly = p.billing === "annual";
-      // a yearly plan sends its price and paid years too (left out, the server would keep it billed monthly)
+      // a yearly plan sends its price too (left out, the server would keep it billed monthly); the paid years go whenever
+      // they changed, whatever the billing (a year taken off before going monthly stays off)
       v = {
         stage: p.stage,
         trialSize: p.trialSize,
@@ -718,7 +721,7 @@ function diff(a: BusinessProfile, b: BusinessProfile): Patch {
         ...(p.paidOn ? { paidOn: p.paidOn } : {}),
         billing: yearly ? "annual" : "monthly",
         ...(yearly && p.annualPrice !== undefined ? { annualPrice: p.annualPrice } : {}),
-        ...(yearly && JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
+        ...(JSON.stringify(p.yearsPaidOn ?? []) !== JSON.stringify(a.plan.yearsPaidOn ?? []) ? { yearsPaidOn: p.yearsPaidOn ?? [] } : {}),
       };
     }
     out[k] = v;
@@ -729,22 +732,29 @@ function diff(a: BusinessProfile, b: BusinessProfile): Patch {
 type Plan = BusinessProfile["plan"];
 const uniqSorted = (xs: string[]) => [...new Set(xs)].sort();
 
-/** Going yearly: the first paid day starts a paid year; earlier years stay as history. */
-function withBilling(p: Plan, billing: "monthly" | "annual"): Plan {
-  if (billing === "monthly") return { ...p, billing };
-  return { ...p, billing, yearsPaidOn: uniqSorted([...(p.yearsPaidOn ?? []).filter((y) => !p.paidOn || y < p.paidOn), ...(p.paidOn ? [p.paidOn] : [])]) };
+/**
+ * A new billing starts on a day Jack sets: once there's a first paid day, it's cleared until he does, so the switch and
+ * its day are saved together (the switch saved alone reads as a correction from the old day, and a day set after it
+ * as another correction, so what was paid before the switch would drop out of their fees). Back to the saved billing,
+ * the saved day and years come back. Going yearly, earlier years stay as history and the day is one of the paid years.
+ */
+function withBilling(p: Plan, billing: "monthly" | "annual", saved: Plan): Plan {
+  if (billing === (saved.billing ?? "monthly")) return { ...p, billing, paidOn: saved.paidOn, yearsPaidOn: saved.yearsPaidOn };
+  if (saved.paidOn) return { ...p, billing, paidOn: undefined };
+  return withPaidOn({ ...p, billing, paidOn: undefined }, p.paidOn);
 }
 
 /**
- * A new first paid day on a yearly plan: after the last year ran out it's a new year alongside the old ones; otherwise
- * it corrects the day the year started.
+ * A new first paid day on a yearly plan, judged against the year it moves (the listed year it falls in, else the
+ * first paid day's): a day inside that year corrects the day it started; a day already listed (the renewed year, once
+ * it's paid) or a year or more after it (a new year after one ran out) is a year alongside the others.
  */
 function withPaidOn(p: Plan, paidOn: string | undefined): Plan {
   if (p.billing !== "annual" || !paidOn) return { ...p, paidOn };
   const years = p.yearsPaidOn ?? [];
-  const last = [...years].sort().at(-1);
-  const after = !!last && addMonths(last, 12) <= paidOn;
-  return { ...p, paidOn, yearsPaidOn: uniqSorted([...years.filter((y) => after || y !== p.paidOn), paidOn]) };
+  const moved = [...years].sort().filter((y) => y <= paidOn).pop() ?? p.paidOn;
+  const corrects = !!moved && !years.includes(paidOn) && paidOn < addMonths(moved, 12);
+  return { ...p, paidOn, yearsPaidOn: uniqSorted([...years.filter((y) => !corrects || y !== moved), paidOn]) };
 }
 
 function Group({ title, children }: { title: string; children: ReactNode }) {

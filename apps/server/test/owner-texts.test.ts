@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { feesPaid, generateSample, leadCode, type OwnerMessage } from "@qa/engine";
+import { earlyLeaveRefund, feesPaid, generateSample, grossFees, guaranteeCheck, leadCode, paidYearOn, type OwnerMessage } from "@qa/engine";
 import { deliverOwnerMessages, sendDue } from "../src/core/ops.ts";
 import { readAmount, readLeadText } from "../src/core/owner.ts";
 import { tick } from "../src/core/worker.ts";
@@ -1025,6 +1025,99 @@ describe("verification review: owner texts that read two ways", () => {
     expect(await r.sms("Go")).toBe("Great — which one: RENEW for another year, or MONTHLY to go month to month? Your notes are still paused: text RESUME to restart them.");
     expect(latest(r, "ridge")).toMatchObject({ handled: "ask_renewal", needs_person: 1 });
     expect(r.d.accounts.peek("ridge")!.paused).toBe(true);
+  });
+});
+
+describe("sweep: a renewed year that may never be paid, and moving the first paid day", () => {
+  const plan = (h: Harness) => state(h, "ridge").dataset.business.plan;
+  const biz = (h: Harness) => state(h, "ridge").dataset.business;
+  const lastText = (h: Harness) => h.d.accounts.repo.ownerTexts("ridge")[0]!;
+  // a yearly plan paid Oct 20, 2025; RENEW by text adds the year from Oct 20, 2026
+  const yearly = async (h: Harness, opts: { paidForItself?: boolean } = {}) => {
+    await h.business("ridge");
+    expect((await settings(h, { billing: "annual", paidOn: "2025-10-20", yearsPaidOn: ["2025-10-20"] })).status).toBe(200);
+    if (opts.paidForItself)
+      await h.d.accounts.withAccount("ridge", (s) => {
+        s.recoveries.push({ id: "rec-y1", customerId: "c-y1", record: { kind: "job", id: "j-y1" }, value: 9000, cameBackOn: "2026-03-10", match: "same_record", confidence: 1, tier: "traced" });
+      });
+  };
+  // what the console's Settings saves for the plan (the paid years only when they changed)
+  const settings = (h: Harness, p: Record<string, unknown>) => h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", ...p } });
+
+  it("RENEW, then Monthly in Settings: the renewed year comes off, so a year never paid is never refunded or settled (sweep 1)", async () => {
+    const h = make();
+    await yearly(h, { paidForItself: true });
+    expect(await h.sms("RENEW")).toContain("another year from October 20");
+    // the owner would rather go month to month: Billing Monthly and First paid day Oct 20, saved together
+    expect((await settings(h, { billing: "monthly", paidOn: "2026-10-20" })).status).toBe(200);
+    expect(plan(h)).toMatchObject({ billing: "monthly", paidOn: "2026-10-20", yearsPaidOn: ["2025-10-20"], priorFees: 4970 });
+    expect(paidYearOn(biz(h), "2027-01-15")).toBeUndefined();
+    // a CANCEL in January promises nothing back: the paid year ended, and the monthly months were used
+    h.setNow("2027-01-15T15:00:00Z");
+    const done = await h.sms("CANCEL");
+    expect(done).toMatch(/^Done — cancelled\./);
+    expect(done).not.toMatch(/comes back to your card|refund/);
+    expect(plan(h).yearRefunds ?? []).toEqual([]);
+    expect(feesPaid(biz(h), "2027-01-15").total).toBe(4970 + 3 * 497);
+  });
+
+  it("MONTHLY then RENEW by text, never paid: taking the year off in Settings sticks, and the first year counts once (sweep 1)", async () => {
+    for (const fix of ["take the year off", "set the day back"] as const) {
+      const h = make();
+      await yearly(h);
+      expect(await h.sms("monthly")).toContain("month to month from October 20");
+      expect(await h.sms("renew")).toContain("another year from October 20");
+      expect(plan(h)).toMatchObject({ billing: "annual", paidOn: "2026-10-20", yearsPaidOn: ["2025-10-20", "2026-10-20"], priorFees: 4970 });
+      // the payment link is never paid: Jack clicks x on the year, or sets First paid day back to the year before
+      const res = fix === "take the year off" ? await settings(h, { billing: "annual", paidOn: "2026-10-20", yearsPaidOn: ["2025-10-20"] }) : await settings(h, { billing: "annual", paidOn: "2025-10-20" });
+      expect(res.status, fix).toBe(200);
+      expect(plan(h), fix).toMatchObject({ billing: "annual", paidOn: "2025-10-20", priorFees: 0 });
+      expect(plan(h).yearsPaidOn, fix).toEqual(fix === "take the year off" ? ["2025-10-20"] : ["2025-10-20", "2026-10-20"]);
+      // one year paid, counted once
+      expect(grossFees(biz(h), "2026-10-01").total, fix).toBe(4970);
+    }
+  });
+
+  it("the renewed year is paid and Jack sets First paid day to it: the year before stays paid, judged and refundable (sweep 2)", async () => {
+    const h = make();
+    await yearly(h);
+    await h.sms("RENEW");
+    // what the console sends: the day moves to a year already listed, and the years don't change
+    expect((await settings(h, { billing: "annual", paidOn: "2026-10-20" })).status).toBe(200);
+    expect(plan(h)).toMatchObject({ billing: "annual", paidOn: "2026-10-20", yearsPaidOn: ["2025-10-20", "2026-10-20"], priorFees: 4970 });
+    expect(grossFees(biz(h), "2026-09-29").total).toBe(4970);
+    expect(grossFees(biz(h), "2026-11-01").total).toBe(9940);
+    expect(paidYearOn(biz(h), "2026-09-29")).toBe("2025-10-20");
+    // the running year's last month is still judged, and leaving now still gets its early-leave math
+    expect(guaranteeCheck(state(h, "ridge"), "2026-09-29")!.chargeOn).toBe("2026-10-20");
+    expect(earlyLeaveRefund(state(h, "ridge"), "2026-09-29")).toMatchObject({ yearStart: "2025-10-20", refund: 4970 });
+    // a day inside the year it started still only corrects it
+    const c = make();
+    await yearly(c);
+    expect((await settings(c, { billing: "annual", paidOn: "2025-10-25", yearsPaidOn: ["2025-10-25"] })).status).toBe(200);
+    expect(plan(c)).toMatchObject({ paidOn: "2025-10-25", yearsPaidOn: ["2025-10-25"] });
+    expect(plan(c).priorFees ?? 0).toBe(0);
+    expect(grossFees(biz(c), "2026-09-29").total).toBe(4970);
+  });
+
+  it("CANCEL after a RENEW that was only texted promises nothing for the renewed year, goes to Jack, and UNDO by text works (sweep 4, 5)", async () => {
+    const h = make();
+    await yearly(h, { paidForItself: true });
+    await h.sms("RENEW");
+    h.setNow("2026-10-01T14:00:00Z");
+    const done = await h.sms("CANCEL");
+    expect(done).toContain("If you'd already paid for the year you renewed from October 20, Jack will refund all of it.");
+    expect(done).not.toMatch(/\$4,970|comes back to your card/);
+    expect(done).toContain("and it all picks back up.");
+    expect(lastText(h)).toMatchObject({ handled: "cancel", needs_person: 1 });
+    expect(state(h, "ridge").cancelled).toMatchObject({ years: ["2026-10-20"] });
+    expect(state(h, "ridge").cancelled!.refund).toBeUndefined();
+    // nothing waits in the queue as owed to them
+    expect(h.d.accounts.repo.ownerMessages("ridge", { delivery: "review" }).filter((m) => m.kind === "refund")).toEqual([]);
+    // UNDO by text puts it all back, the renewed year too, and Jack sees it
+    expect(await h.sms("UNDO")).toMatch(/^Back on\./);
+    expect(lastText(h)).toMatchObject({ handled: "undo_cancel", needs_person: 1 });
+    expect(plan(h)).toMatchObject({ stage: "paying", yearsPaidOn: ["2025-10-20", "2026-10-20"] });
   });
 });
 

@@ -348,31 +348,42 @@ describe("final review: RENEW, MONTHLY and CANCEL around the paid year", () => {
     expect(st.dataset.business.plan).toMatchObject({ stage: "paused", yearsPaidOn: ["2026-10-01"] });
   });
 
-  it("CANCEL after RENEW refunds the year that hadn't started, in full, and a restore puts it back", () => {
+  it("CANCEL after a RENEW that was only texted never promises the renewed year back: Jack decides, and UNDO by text still works", () => {
     const st = annual();
-    // the running year's jobs covered it, so only the renewed year comes back
+    // the running year's jobs covered it, so nothing of it comes back
     st.recoveries = [{ id: "rec1", customerId: "c1", record: { kind: "job", id: "j9" }, value: 6000, cameBackOn: "2027-03-10", match: "reply", confidence: 1, tier: "traced" } as unknown as Recovery];
     renewPlan(st, "year", "2027-09-03T10:00:00");
     const r = cancelPlan(st, "2027-09-20T10:00:00");
-    expect(r.refund).toBe(4970);
-    expect(r.line).toBe("The year you renewed from October 1 hadn't started yet, so all $4,970.00 of it comes back to your card within 5 business days.");
-    expect(st.ownerMessages.find((m) => m.kind === "refund")).toMatchObject({ text: expect.stringContaining("the year you renewed from October 1 hadn't started yet, so all $4,970.00 of it goes back to your card"), refs: [{ kind: "year_refund", id: "2027-10-01" }] });
+    // nothing says the renewed year's payment link was ever paid
+    expect(r.refund).toBe(0);
+    expect(r.line).toBe("If you'd already paid for the year you renewed from October 1, Jack will refund all of it.");
+    expect(st.ownerMessages.some((m) => m.kind === "refund")).toBe(false);
+    expect(st.dataset.business.plan.yearRefunds ?? []).toEqual([]);
+    expect(st.cancelled).toMatchObject({ years: ["2027-10-01"] });
+    expect(st.cancelled!.refund).toBeUndefined();
+    expect(st.events.at(-1)!.detail).toMatch(/The renewed year from 2027-10-01 hadn't started and came off the paid years\. .* if it was paid, refund \$4,970\.00\./);
     expect(st.dataset.business.plan.yearsPaidOn).toEqual(["2026-10-01"]);
     expect(feesPaid(st.dataset.business, "2027-11-01").total).toBe(4970);
-    // money may be on its way: UNDO is a person's, and their restore puts the year back
-    expect(undoCancel(st, "2027-09-20T11:00:00")).toEqual({ refused: "refund" });
-    undoCancel(st, "2027-09-20T11:00:00", { override: true });
+    // no refund was promised, so UNDO by text works and the renewed year is back (Jack is told to take it off if he'd refunded it)
+    expect(undoCancel(st, "2027-09-20T11:00:00")).toEqual({ restored: 0, stopped: 0, paused: false });
     expect(st.dataset.business.plan).toMatchObject({ stage: "paying", yearsPaidOn: ["2026-10-01", "2027-10-01"] });
+    expect(st.events.at(-1)!.detail).toMatch(/The renewed year from 2027-10-01 is back on the paid years: if you'd already refunded it, take it off in Settings\.$/);
   });
 
-  it("with nothing traced, the running year's refund and the renewed year come back together", () => {
+  it("with nothing traced, only the running year's refund is promised; the renewed year is Jack's call", () => {
     const st = annual();
     renewPlan(st, "year", "2027-09-03T10:00:00");
     const r = cancelPlan(st, "2027-09-20T10:00:00");
-    expect(r.refund).toBe(9940);
-    expect(r.line).toBe("$9,940.00 of what you paid ahead comes back to your card within 5 business days.");
-    const text = st.ownerMessages.find((m) => m.kind === "refund")!.text;
-    expect(text).toMatch(/so \$4,970\.00 of it comes back\. And the year you renewed from October 1 hadn't started yet, so all \$4,970\.00 of it comes back too: \$9,940\.00 in all goes back to your card within 5 business days\.$/);
+    expect(r.refund).toBe(4970);
+    expect(r.line).toBe("$4,970.00 of your year comes back to your card within 5 business days. If you'd already paid for the year you renewed from October 1, Jack will refund all of it.");
+    const refunds = st.ownerMessages.filter((m) => m.kind === "refund");
+    expect(refunds).toHaveLength(1);
+    expect(refunds[0]).toMatchObject({ refs: [{ kind: "year_refund", id: "2026-10-01" }] });
+    expect(refunds[0]!.text).toMatch(/You keep the lower of those, so \$4,970\.00 goes back to your card within 5 business days\.$/);
+    expect(refunds[0]!.text).not.toContain("renewed");
+    expect(st.cancelled).toMatchObject({ refund: { yearStart: "2026-10-01", amount: 4970 }, years: ["2027-10-01"] });
+    // the running year's refund was promised: UNDO is a person's
+    expect(undoCancel(st, "2027-09-20T11:00:00")).toEqual({ refused: "refund" });
   });
 });
 

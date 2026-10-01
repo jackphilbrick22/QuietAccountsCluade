@@ -982,33 +982,27 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
       touches.push({ id: t.id, status: t.status });
       t.status = "cancelled";
     }
-  let refund = 0;
   let line = "";
   const b = state.dataset.business;
+  const cents = (m: number) => fmtMoney(m, { cents: true });
   const early = stageBefore !== "trial" ? earlyLeaveRefund(state, today) : undefined;
-  const earlyRefund = early && early.refund > 0 ? early.refund : 0;
-  if (earlyRefund) plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early!.yearStart), { yearStart: early!.yearStart, amount: earlyRefund, early: true }];
-  // A year renewed but not started yet was never used: all of it comes back, and it comes off the paid years (so it's
-  // never counted as charged, settled or refunded again; that's why it needs no yearRefunds entry).
+  // only the running year's unused part is promised: it was paid, and it's what the cancel's refund text is about
+  const refund = early && early.refund > 0 ? early.refund : 0;
+  if (refund) plan.yearRefunds = [...(plan.yearRefunds ?? []).filter((r) => r.yearStart !== early!.yearStart), { yearStart: early!.yearStart, amount: refund, early: true }];
+  // A year renewed but not started yet was never used, and a RENEW text alone doesn't say it was ever paid. It comes off
+  // the paid years (so it's never counted as charged, settled or refunded by us); whether it's refunded is Jack's call,
+  // so the owner is told what happens if they'd paid, never promised the money.
   const ahead = stageBefore !== "trial" ? [...(plan.yearsPaidOn ?? [])].filter((y) => y > today).sort() : [];
   const aheadAmount = round2(ahead.length * annualPrice(b));
   if (ahead.length) plan.yearsPaidOn = (plan.yearsPaidOn ?? []).filter((y) => y <= today);
-  refund = round2(earlyRefund + aheadAmount);
   if (refund) {
-    const cents = (m: number) => fmtMoney(m, { cents: true });
+    line = `${cents(refund)} of your year comes back to your card within 5 business days.`;
+    const math = `here's the math on your year: you paid ${cents(early!.paid)} and used ${plural(early!.monthsUsed, "month")}${early!.quiet ? ` (${early!.quiet} quiet, so free)` : ""}. Month to month that's ${fmtMoney(early!.asMonthly)}, and the jobs on your ledger in that time came to ${fmtMoney(early!.traced)}. You keep the lower of those, so ${cents(refund)}`;
+    ownerMsg(state, now, "refund", `${b.ownerFirstName}, ${math} goes back to your card within 5 business days.`, [{ kind: "year_refund", id: early!.yearStart }]);
+  }
+  if (ahead.length) {
     const days = ahead.map((y) => `${monthName(y)} ${Number(y.slice(8))}${ahead.length > 1 ? `, ${y.slice(0, 4)}` : ""}`).join(" and ");
-    const notStarted = `the ${ahead.length === 1 ? "year" : "years"} you renewed from ${days} hadn't started yet, so all ${cents(aheadAmount)} of ${ahead.length === 1 ? "it" : "them"}`;
-    line = earlyRefund && ahead.length ? `${cents(refund)} of what you paid ahead comes back to your card within 5 business days.` : ahead.length ? `${notStarted[0]!.toUpperCase()}${notStarted.slice(1)} comes back to your card within 5 business days.` : `${cents(refund)} of your year comes back to your card within 5 business days.`;
-    const math = early && earlyRefund ? `here's the math on your year: you paid ${cents(early.paid)} and used ${plural(early.monthsUsed, "month")}${early.quiet ? ` (${early.quiet} quiet, so free)` : ""}. Month to month that's ${fmtMoney(early.asMonthly)}, and the jobs on your ledger in that time came to ${fmtMoney(early.traced)}. You keep the lower of those, so ${cents(earlyRefund)}` : "";
-    ownerMsg(
-      state,
-      now,
-      "refund",
-      `${b.ownerFirstName}, ${
-        !ahead.length ? `${math} goes back to your card within 5 business days.` : !math ? `${notStarted} goes back to your card within 5 business days.` : `${math} of it comes back. And ${notStarted} comes back too: ${cents(refund)} in all goes back to your card within 5 business days.`
-      }`,
-      [...(earlyRefund ? [{ kind: "year_refund" as const, id: early!.yearStart }] : []), ...ahead.map((y) => ({ kind: "year_refund" as const, id: y }))],
-    );
+    line = `${line ? `${line} ` : ""}If you'd already paid for the ${ahead.length === 1 ? "year" : "years"} you renewed from ${days}, Jack will refund all of it.`;
   }
   plan.stage = "cancelled";
   state.cancelled = {
@@ -1017,13 +1011,14 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
     touches,
     ...(state.awaitingOwnerOk ? { awaitingOwnerOk: state.awaitingOwnerOk } : {}),
     ...(opts.paused ? { paused: true } : {}),
-    // the cancel's refund text names this year (the running one, else the first not started)
-    ...(refund ? { refund: { yearStart: earlyRefund ? early!.yearStart : ahead[0]!, amount: refund } } : {}),
+    // the running year's refund, the only one promised (a renewed year that hadn't started is Jack's call, so it alone
+    // never stops UNDO by text)
+    ...(refund ? { refund: { yearStart: early!.yearStart, amount: refund } } : {}),
     ...(ahead.length ? { years: ahead } : {}),
   };
   // a cancelled account isn't waiting for anyone's OK
   state.awaitingOwnerOk = undefined;
-  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${fmtMoney(refund, { cents: true })}.` : ""}${ahead.length ? ` That includes ${fmtMoney(aheadAmount, { cents: true })} for the renewed year from ${ahead.join(", ")} that hadn't started: refund that part only if it was paid.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
+  event(state, now, "guard", "warning", "Owner cancelled by text", `${plural(touches.length, "queued note")} stopped. No further charges.${refund ? ` Yearly refund due: ${cents(refund)}.` : ""}${ahead.length ? ` The renewed year from ${ahead.join(", ")} hadn't started and came off the paid years. They were told you'd refund it if they'd paid: if it was paid, refund ${cents(aheadAmount)}.` : ""} UNDO works until ${addDays(today, 1)} ${now.slice(11, 16)}.`);
   state.updatedAt = now;
   return { stopped: touches.length, refund, line };
 }
@@ -1046,7 +1041,7 @@ export function undoCancel(state: AccountState, now: ISODateTime, opts: { platfo
   if (!c || plan.stage !== "cancelled") return undefined;
   if (!opts.override && Date.parse(`${now.slice(0, 19)}Z`) - Date.parse(`${c.at.slice(0, 19)}Z`) > 24 * 3_600_000) return { refused: "late" };
   if (c.refund && !opts.override) return { refused: "refund" };
-  // an operator restoring the plan withdraws the refund that was never issued, and puts back a renewed year it took off
+  // an operator restoring the plan withdraws the refund that was never issued; either way a renewed year it took off goes back
   if (c.refund) plan.yearRefunds = (plan.yearRefunds ?? []).filter((r) => !(r.early && r.yearStart === c.refund!.yearStart));
   if (c.years?.length) plan.yearsPaidOn = [...new Set([...(plan.yearsPaidOn ?? []), ...c.years])].sort();
   plan.stage = c.stageBefore;
@@ -1066,7 +1061,7 @@ export function undoCancel(state: AccountState, now: ISODateTime, opts: { platfo
   }
   if (c.awaitingOwnerOk) state.awaitingOwnerOk = c.awaitingOwnerOk;
   state.cancelled = undefined;
-  event(state, now, "guard", "action", opts.override ? "The plan was restored after a cancel" : "Owner undid the cancel", `${plural(restored, "note")} back in line.${stoppedPeople.size ? ` ${plural(stoppedPeople.size, "person was", "people were")} part-way through their notes; those follow-ups stay stopped.` : ""}${c.paused ? " Still paused, as before." : ""}`);
+  event(state, now, "guard", "action", opts.override ? "The plan was restored after a cancel" : "Owner undid the cancel", `${plural(restored, "note")} back in line.${stoppedPeople.size ? ` ${plural(stoppedPeople.size, "person was", "people were")} part-way through their notes; those follow-ups stay stopped.` : ""}${c.paused ? " Still paused, as before." : ""}${c.years?.length ? ` The renewed year from ${c.years.join(", ")} is back on the paid years: if you'd already refunded it, take it off in Settings.` : ""}`);
   state.updatedAt = now;
   return { restored, stopped: stoppedPeople.size, paused: !!c.paused };
 }

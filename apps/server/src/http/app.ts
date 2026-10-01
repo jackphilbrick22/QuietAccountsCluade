@@ -34,6 +34,7 @@ import {
   addDays,
   addMonths,
   grossFees,
+  round2,
 } from "@qa/engine";
 import { z } from "zod";
 import { instantlyWebhookKey } from "../integrations/instantly/webhooks.ts";
@@ -315,12 +316,29 @@ export function createApp(d: HttpDeps): Hono<Env> {
       if (planPatch) {
         const before = b.plan;
         const next = { ...before, ...planPatch };
-        // A new arrangement from a later day (a monthly plan the owner paid a year for, a new year after one ran out,
-        // a year going monthly): what they paid before it stays in their fees. An earlier or same day is a correction.
-        const lastYear = [...(before.yearsPaidOn ?? []), ...(before.paidOn ? [before.paidOn] : [])].sort().pop();
+        const listed = planPatch.yearsPaidOn;
+        // Taking off the year the first paid day points to (MONTHLY then RENEW by text, never paid): the plan goes back
+        // to the paid year before it.
+        const back = next.billing === "annual" && before.paidOn && next.paidOn === before.paidOn && listed && !listed.includes(before.paidOn) ? [...listed].sort().filter((y) => y < before.paidOn!).pop() : undefined;
+        if (back) next.paidOn = back;
+        // The first paid day going back to an earlier paid year (that one taken off, or the day set back): the years from
+        // there are the plan's again, so what they cost comes back out of priorFees, and they're counted once, not twice.
+        if (next.billing === "annual" && before.paidOn && next.paidOn && next.paidOn < before.paidOn && (before.yearsPaidOn ?? []).includes(next.paidOn)) {
+          const again = grossFees({ ...b, plan: { ...next, yearsPaidOn: (next.yearsPaidOn ?? []).filter((y) => y < before.paidOn!), priorFees: 0 } }, before.paidOn).total;
+          next.priorFees = Math.max(0, round2((before.priorFees ?? 0) - again));
+        }
+        // Moving the first paid day forward starts a new arrangement from that day (a monthly plan the owner paid a year
+        // for, a year going monthly, the renewed year once it's paid, a new year after one ran out): what they paid
+        // before it stays in their fees. A yearly plan's day moved inside the year it started, with that year not kept,
+        // only corrects the day; so does an earlier day, or a monthly plan's day moved on its own. (A billing switch
+        // saved apart from its new day reads as a correction from the old one: the console saves them together.)
         const switched = (before.billing ?? "monthly") !== (next.billing ?? "monthly");
-        const newYear = before.billing === "annual" && next.billing === "annual" && !!lastYear && !!next.paidOn && next.paidOn >= addMonths(lastYear, 12);
-        if (before.paidOn && next.paidOn && next.paidOn > before.paidOn && (switched || newYear)) next.priorFees = grossFees(b, addDays(next.paidOn, -1)).total;
+        const corrects = before.billing === "annual" && !!before.paidOn && !!next.paidOn && next.paidOn < addMonths(before.paidOn, 12) && !(listed ?? []).includes(before.paidOn);
+        // what was paid is the years still listed before the new day (a year the console corrected isn't one of them)
+        if (before.paidOn && next.paidOn && next.paidOn > before.paidOn && (switched || (next.billing === "annual" && !corrects)))
+          next.priorFees = grossFees({ ...b, plan: { ...before, yearsPaidOn: next.yearsPaidOn } }, addDays(next.paidOn, -1)).total;
+        // month to month from that day: a year that would start on or after it (a renewal not taken) comes off, as with MONTHLY by text
+        if (switched && next.billing !== "annual" && next.paidOn) next.yearsPaidOn = (next.yearsPaidOn ?? []).filter((y) => y < next.paidOn!);
         // a yearly plan's first paid day is one of its paid years, so its refunds, renewal ask and year floor all run
         if (next.billing === "annual" && next.paidOn && !(next.yearsPaidOn ?? []).includes(next.paidOn)) next.yearsPaidOn = [...(next.yearsPaidOn ?? []), next.paidOn].sort();
         b.plan = next;

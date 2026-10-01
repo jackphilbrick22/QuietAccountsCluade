@@ -110,9 +110,10 @@ describe("owner texts BUSY / OPEN", () => {
   it("cancels in one text and refunds the unused year; UNDO then goes to a person, never the software", async () => {
     const done = await sms("cancel");
     expect(done).toMatch(/Done — cancelled\. No more notes, no more charges\./);
-    // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor), and the
-    // renewed year that hadn't started comes back in full
-    expect(done).toContain("$9,940.00 of what you paid ahead comes back to your card within 5 business days");
+    // a yearly plan with nothing on its ledger yet: never more than the jobs it brought in (the year floor). The renewed
+    // year was only texted, never known to be paid, so it's never promised: Jack refunds it if it was paid
+    expect(done).toContain("$4,970.00 of your year comes back to your card within 5 business days. If you'd already paid for the year you renewed from October 20, Jack will refund all of it.");
+    expect(done).not.toContain("$9,940");
     expect(done).toMatch(/Text UNDO by \d{1,2}(:\d\d)?(am|pm) tomorrow/);
     let ov = await api("GET", "/api/businesses/ridge-tree");
     expect((ov.business as { plan: { stage: string } }).plan.stage).toBe("cancelled");
