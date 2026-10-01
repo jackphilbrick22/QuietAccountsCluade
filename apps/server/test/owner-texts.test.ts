@@ -955,6 +955,20 @@ describe("verification review: owner texts that read two ways", () => {
     expect(plan(y, "ridge").yearsPaidOn).toEqual(["2026-03-01", "2027-03-01"]);
   });
 
+  it("a plan word with a reason after it goes to a person and never touches the lead waiting (second check 2)", async () => {
+    const h = make();
+    await h.business("ridge");
+    await renewalOut(h, "ridge", "2025-10-20", "2026-10-20");
+    await addLead(h, "ridge", "r1", "Karen Whitfield", "2026-09-29T08:00:00");
+    for (const text of ["Monthly - the year is too expensive", "Yearly is too expensive, monthly please", "Monthly, no thanks on the year", "Monthly. Talked it over with my wife", "Renew, already talked to Jack"]) {
+      expect(await h.sms(text), text).toBe("Jack will read this and get back to you. To change your plan, text just RENEW or MONTHLY. About a lead? Text it with the #code.");
+      expect(latest(h, "ridge"), text).toMatchObject({ handled: "plan_unclear", needs_person: 1 });
+    }
+    expect(reply(h, "ridge", "r1")).toMatchObject({ status: "handed_off" });
+    expect(reply(h, "ridge", "r1").outcome).toBeUndefined();
+    expect(plan(h, "ridge")).toMatchObject({ billing: "annual", yearsPaidOn: ["2025-10-20"] });
+  });
+
   it("a bare No to the close or the renewal never marks a lead the owner already reported lost; a person reads it (sweep 6)", async () => {
     const h = make({ now: "2026-09-24T14:00:00Z" });
     await h.business("ridge");
@@ -1098,6 +1112,22 @@ describe("sweep: a renewed year that may never be paid, and moving the first pai
     expect(plan(c)).toMatchObject({ paidOn: "2025-10-25", yearsPaidOn: ["2025-10-25"] });
     expect(plan(c).priorFees ?? 0).toBe(0);
     expect(grossFees(biz(c), "2026-09-29").total).toBe(4970);
+  });
+
+  it("a quiet last month dated the day the first paid day moves to still comes off the year it ended (second check 1)", async () => {
+    for (const billing of ["annual", "monthly"] as const) {
+      const h = make();
+      await yearly(h);
+      await h.sms("RENEW");
+      // the year's last month was quiet: its refund is dated the day the renewed year starts
+      await h.d.accounts.withAccount("ridge", (s) => {
+        s.dataset.business.plan.freeMonths = ["2026-10-20"];
+      });
+      expect(feesPaid(biz(h), "2026-10-19").total, billing).toBe(4970);
+      // Jack moves the first paid day to it afterwards: the renewed year once paid, or month to month from it
+      expect((await settings(h, { billing, paidOn: "2026-10-20" })).status, billing).toBe(200);
+      expect(feesPaid(biz(h), "2026-10-26").total, billing).toBe(billing === "annual" ? 9525.83 : 5052.83);
+    }
   });
 
   it("CANCEL after a RENEW that was only texted promises nothing for the renewed year, goes to Jack, and UNDO by text works (sweep 4, 5)", async () => {

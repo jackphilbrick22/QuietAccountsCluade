@@ -240,6 +240,14 @@ Updated every loop iteration. Newest first.
     renewal never marks a lead lost; "Go ahead and resume" resumes; "Ok cool" is a plain yes.
   - Engine 1,316, server 295.
 
+- Second verification pass over those fixes: 6 reported, 5 confirmed (30 → 14 → 5), all fixed and tested.
+  A renewal reply that starts with a plan word and gives a reason ("Monthly - the year is too expensive") goes
+  to Jack and never touches a lead; "Yes - backed out", "Yes - changed mind", "Approved - cancelled" are held
+  for a person, never told "you gave us the go-ahead"; a quote dated before the request's follow-up was planned
+  is still the one chased; QuickBooks Desktop's Sales by Customer Detail (a Name column on every line) reads as
+  paid sales; a quiet last month dated the day Jack moves the first paid day still comes off that year's fees.
+  Engine 1,319, server 297.
+
 **Next**
 - Wrap up: the summary for Jack.
 

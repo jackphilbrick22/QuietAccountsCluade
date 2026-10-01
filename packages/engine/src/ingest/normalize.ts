@@ -189,15 +189,17 @@ export function importTable(
 ): ImportResult {
   const { kind, source } = detection;
   const fields = { ...detection.mapping.fields };
-  // QuickBooks' "… by Customer" detail reports keep a running total in "Balance", not what's owed; what's owed is
-  // their "Open Balance". One with neither that nor a status (Sales by Customer Detail, which setup asks for) lists
-  // past sales, line by line: those were paid, and never read as money still to collect.
-  if (table.grouped && source === "quickbooks") {
+  // QuickBooks' "… by Customer" detail reports (Type and Num columns, grouped by customer or with a Name column of
+  // their own) keep a running total in "Balance", not what's owed; what's owed is their "Open Balance". One with
+  // neither that nor a status (Sales by Customer Detail, which setup asks for) lists past sales, line by line: those
+  // were paid, and never read as money still to collect.
+  const detail = source === "quickbooks" && (!!table.grouped || (table.headers.some((h) => /^(transaction )?type$/i.test(h)) && table.headers.some((h) => /^num$/i.test(h))));
+  if (detail) {
     const open = table.headers.findIndex((h) => /^open balance$/i.test(h));
     if (open >= 0) fields.balance = open;
     else delete fields.balance;
   }
-  const pastSales = kind === "invoice" && !!table.grouped && source === "quickbooks" && fields.balance === undefined && fields.status === undefined;
+  const pastSales = kind === "invoice" && detail && fields.balance === undefined && fields.status === undefined;
   const mapping = { ...detection.mapping, fields };
   const warnings = [...detection.warnings];
   const rows: Row[] = table.rows.map((r, index) => {

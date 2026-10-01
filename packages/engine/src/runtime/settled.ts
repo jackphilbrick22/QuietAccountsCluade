@@ -73,13 +73,13 @@ const NEWER_QUOTE = /^No longer needed: (their request got a quote|they've had a
 
 /**
  * People whose latest follow-ups a newer quote stopped, with nothing queued for them since, and the day those were
- * planned. That quote is the one to chase now: it gets its own follow-up, though we wrote to them lately (planBatch,
- * find). Anything from before the stopped notes stays left alone.
+ * planned (for a request's follow-up, the request's own day). That quote is the one to chase now: it gets its own
+ * follow-up, though we wrote to them lately (planBatch, find). Anything from before that day stays left alone.
  */
 export function supersededOn(state: AccountState): Map<string, string> {
   const live = new Set<string>();
   // each planned sequence (an opportunity planned twice is two): whose, the day it was planned, and whether a newer quote stopped it
-  const seqs = new Map<string, { customerId: string; on: string; stopped: boolean }>();
+  const seqs = new Map<string, { customerId: string; on: string; stopped: boolean; from?: string }>();
   for (const t of state.touches) {
     if (t.status === "planned" || t.status === "approved" || t.status === "sending") live.add(t.customerId);
     if (t.instant) continue;
@@ -88,12 +88,17 @@ export function supersededOn(state: AccountState): Map<string, string> {
     // planned before the day was recorded: the day its note 1 was due (later, so never too eager)
     const on = t.plannedOn ?? (t.step === 1 ? t.dueAt.slice(0, 10) : "");
     if (on > s.on) s.on = on;
-    if (t.status === "cancelled" && NEWER_QUOTE.test(t.lastError ?? "")) s.stopped = true;
+    if (t.status === "cancelled" && NEWER_QUOTE.test(t.lastError ?? "")) {
+      s.stopped = true;
+      // the quote that answered a request is dated from the request on, often before its follow-up was planned (the
+      // sheet comes in days later): release from the request's own day, so that quote is the one chased next
+      if (t.chases?.kind === "request" && /request got a quote/.test(t.lastError!)) s.from = state.dataset.requests.find((r) => r.id === t.chases!.id)?.createdOn?.slice(0, 10);
+    }
   }
-  const latest = new Map<string, { on: string; stopped: boolean }>();
+  const latest = new Map<string, { on: string; stopped: boolean; from?: string }>();
   for (const s of seqs.values()) if (s.on >= (latest.get(s.customerId)?.on ?? "")) latest.set(s.customerId, s);
   const out = new Map<string, string>();
-  for (const [id, s] of latest) if (s.stopped && s.on && !live.has(id)) out.set(id, s.on);
+  for (const [id, s] of latest) if (s.stopped && s.on && !live.has(id)) out.set(id, s.from && s.from < s.on ? s.from : s.on);
   return out;
 }
 

@@ -415,6 +415,13 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     });
     return { businessId: fallback().id, reply: lines.join("\n"), handled: "status" };
   }
+  // A plan word with a reason after it ("Monthly - the year is too expensive", "Renew, already talked to Jack") is the
+  // plan choice and could be a lead's outcome too: a person reads it, and no lead is touched. Only a booking ("Monthly
+  // cleaning booked 180") goes on to the lead, where Claude or a person reads it.
+  if (/^(renew|yearly|annual|monthly|month to month)\b/.test(command) && !PLAN.test(command) && readLeadText(text)?.outcome !== "booked") {
+    const b = fallback();
+    return { businessId: b.id, reply: `${tag(b)}Jack will read this and get back to you. To change your plan, text just RENEW or MONTHLY. About a lead? Text it with the #code.`, handled: "plan_unclear", needsPerson: true };
+  }
   // Yearly plans: RENEW keeps the year, MONTHLY goes month to month. YEARLY switches a monthly plan over.
   if (PLAN.test(command)) {
     if (!one) return askWhich();

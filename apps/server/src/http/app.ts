@@ -33,6 +33,7 @@ import {
   quietRates,
   addDays,
   addMonths,
+  annualRefund,
   grossFees,
   round2,
 } from "@qa/engine";
@@ -335,8 +336,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
         const switched = (before.billing ?? "monthly") !== (next.billing ?? "monthly");
         const corrects = before.billing === "annual" && !!before.paidOn && !!next.paidOn && next.paidOn < addMonths(before.paidOn, 12) && !(listed ?? []).includes(before.paidOn);
         // what was paid is the years still listed before the new day (a year the console corrected isn't one of them)
-        if (before.paidOn && next.paidOn && next.paidOn > before.paidOn && (switched || (next.billing === "annual" && !corrects)))
+        if (before.paidOn && next.paidOn && next.paidOn > before.paidOn && (switched || (next.billing === "annual" && !corrects))) {
           next.priorFees = grossFees({ ...b, plan: { ...before, yearsPaidOn: next.yearsPaidOn } }, addDays(next.paidOn, -1)).total;
+          // a quiet last month of a paid year is dated the day the new arrangement starts: it's the old year's, so its
+          // refund comes off what that year cost (the new arrangement only counts quiet months after its first day)
+          const month = addMonths(next.paidOn, -1);
+          if (before.billing === "annual" && b.plan.freeMonths.includes(next.paidOn) && (next.yearsPaidOn ?? []).some((y) => y <= month && month < addMonths(y, 12)))
+            next.priorFees = round2(next.priorFees - annualRefund(b));
+        }
         // month to month from that day: a year that would start on or after it (a renewal not taken) comes off, as with MONTHLY by text
         if (switched && next.billing !== "annual" && next.paidOn) next.yearsPaidOn = (next.yearsPaidOn ?? []).filter((y) => y < next.paidOn!);
         // a yearly plan's first paid day is one of its paid years, so its refunds, renewal ask and year floor all run

@@ -712,6 +712,26 @@ Jane Doe,jane@gmail.com,Chain link fence,1900,2026-08-05,Approved - waiting on H
     for (const next of ["Yes - awaiting deposit", "Approved - pending scheduling", "Sold - waiting to be scheduled"]) expect(statusReadsTwoWays(next), next).toBe(false);
   });
 
+  it("a yes that came undone is never read as a go-ahead: held for a person, never told it's not on the schedule", async () => {
+    const SHEET = `Name,Email,Job,Price,Date,Status
+Mike Sanderson,mike@gmail.com,Cedar privacy fence,6200,2026-08-20,Yes - backed out
+Kim Lee,kim@gmail.com,Picket fence,2100,2026-08-21,Yes - changed mind
+Jane Doe,jane@gmail.com,Chain link fence,1900,2026-08-22,Yes - fell through
+Al Finch,al@gmail.com,Vinyl fence,4800,2026-08-23,Yes - cancelled
+Bob Jones,bob@gmail.com,Gate repair,650,2026-08-24,Approved - cancelled
+`;
+    const JOBS = `Client,Email,Job,Date,Total,Status\nPat Doe,pat@doe.com,Fence install,2026-07-01,5000,Complete\n`;
+    const ds = load([["Fence estimates.csv", SHEET], ["jobs.csv", JOBS]]);
+    expect(ds.quotes.filter((q) => q.status === "approved").map((q) => q.title)).toEqual(["Gate repair"]);
+    const r = scan(ds);
+    const mine = r.opportunities.filter((o) => ds.quotes.some((q) => q.customerId === o.customerId));
+    for (const o of mine) expect(o.caution?.length, `${o.type} for ${o.customerId}`).toBeGreaterThan(0);
+    const { statusReadsTwoWays } = await import("../src/ingest/fields.ts");
+    for (const s of ["Yes - backed out", "Yes - changed their mind", "Approved - cancelled", "Sold - fell through", "Signed - pulled out"]) expect(statusReadsTwoWays(s), s).toBe(true);
+    // a yes on its own, before its next step, or closed won, still reads one way
+    for (const s of ["Yes", "Y - awaiting deposit", "Closed won", "Approved - pending scheduling"]) expect(statusReadsTwoWays(s), s).toBe(false);
+  });
+
   it("a status nobody recognises is held for a person with a warning, never chased as open on a guess", () => {
     const SHEET = `Name,Phone,Email,Address,Job,Price,Date,Status
 Mike Sanderson,603-224-1101,mike@gmail.com,"14 Oak Ln, Concord, NH 03301",Oak removal,2400,2026-05-02,Done
@@ -913,6 +933,23 @@ TOTAL,,,,,,,,"$3,000.00",
       ["2003", -50, 0, "void"],
     ]);
     expect(ds.customers).toHaveLength(2);
+    expect(scan(ds).opportunities.filter((o) => o.type === "unpaid_invoice")).toEqual([]);
+  });
+  it("Sales by Customer Detail with a Name column on every line (QuickBooks Desktop) reads as past sales too", () => {
+    const DESKTOP = `,Type,Date,Num,Memo,Name,Item,Qty,Sales Price,Amount,Balance
+Mike Sanderson,,,,,,,,,,
+,Invoice,03/02/2026,2001,Oak removal,Mike Sanderson,Tree removal,1,"2,000.00","2,000.00","2,000.00"
+,Invoice,03/02/2026,2001,Stump,Mike Sanderson,Stump grinding,1,400.00,400.00,"2,400.00"
+Total Mike Sanderson,,,,,,,,,"2,400.00",
+Jane Doe,,,,,,,,,,
+,Sales Receipt,04/10/2026,2002,Maple pruning,Jane Doe,Pruning,1,650.00,650.00,650.00
+Total Jane Doe,,,,,,,,,650.00,
+`;
+    const ds = load([["Customers.csv", CUSTOMERS], ["Sales by Customer Detail.csv", DESKTOP]]);
+    expect(ds.invoices.map((i) => [i.number, i.total, i.balance, i.status])).toEqual([
+      ["2001", 2400, 0, "paid"],
+      ["2002", 650, 0, "paid"],
+    ]);
     expect(scan(ds).opportunities.filter((o) => o.type === "unpaid_invoice")).toEqual([]);
   });
   it("a balance report reads what's owed from its Open Balance, never the running Balance", () => {

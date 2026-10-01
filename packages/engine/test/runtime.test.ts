@@ -959,6 +959,22 @@ describe("always-on: a newer quote that stops a follow-up gets followed up itsel
     expect(planOn(st, "2026-10-13").people).toEqual([]);
   });
 
+  it("a quote dated before the request's follow-up was planned (the sheet came in later) is still the one chased", () => {
+    const st = emptyState(dataset({ business: paying, customers: [customer("c1")], requests: [request("r1", "c1", { title: "Oak over the garage", createdOn: ASOF, createdAt: `${ASOF}T13:30:00Z` })] }), NOW);
+    answerNewRequests(st, `${ASOF}T10:00:00`);
+    markSent(st, st.touches[0]!.id, `${ASOF}T10:02:00`, "msg-answer");
+    expect(planOn(st, "2026-10-01").people).toEqual(["c1"]);
+    sendFirst(st);
+    // Dave priced it on the 30th; the sheet with that quote comes in on the 5th
+    st.dataset.quotes = [quote("q1", "c1", { title: "Oak over the garage", total: 1800, sentOn: "2026-09-30" })];
+    expect(dropSettled(st, "2026-10-05T12:00:00").map((t) => t.lastError)).toContain("No longer needed: their request got a quote");
+    expect(planOn(st, "2026-10-06").people).toEqual(["c1"]);
+    const chasing = touchesOf(st, "c1").filter((t) => t.chases?.id === "q1");
+    expect(chasing.length).toBeGreaterThan(1);
+    expect(chasing.every((t) => t.status === "approved" && t.dueAt >= "2026-10-06")).toBe(true);
+    expect(planOn(st, "2026-10-07").people).toEqual([]);
+  });
+
   it("a revised quote that stopped the old quote's notes: the revised one is chased, never the old one again", () => {
     const st = emptyState(dataset({ business: paying, customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Dead oak over the garage", total: 2400, sentOn: ago(60) })] }), NOW);
     expect(planOn(st, ASOF).people).toEqual(["c1"]);

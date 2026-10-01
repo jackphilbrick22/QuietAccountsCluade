@@ -235,6 +235,8 @@ const UNDERCUT = String.raw`(?:${OTHERS}\s+(?:quoted|priced|bid)\s+(?:\w+\s+)?(?
  * no, so a no that one rule hears can't slip past another.
  */
 const SAID_NO = String.raw`(?:declin|reject|disapprov|denied|not interested|\bsaid no\b|\bno,? thank(?:s|\s+you)\b|\blost\b(?!\s+(?:contact|touch|track|(?:the |their |his |her )?(?:paperwork|number|email|phone)))|\bdid(?:\s+not|n['’]?t)\s+win\b|${COMPETITOR}|\bwent (?:with|w/)|too (?:expensive|pricey|costly)|(?:price|cost)d?\s+(?:is\s+|was\s+)?too high|${UNDERCUT}|(?:quoted|priced|bid|estimated) too high|not (?:moving forward|proceeding)(?!\s+(?:yet|until|till|til|for now|before|this (?:season|year|month))))`;
+/** A yes that came undone after it was given: "backed out", "changed their mind", "fell through", "pulled out". */
+const BACKED_OUT = String.raw`\bbacked out\b|\bchanged (?:(?:their|his|her|my|our) )?minds?\b|\bfell through\b|\bdid(?:\s+not|n['’]?t) go ahead\b|\bno longer\b|\bpulled out\b|\brefund`;
 /** Closed out by the software or the office, not answered by the customer: "Expired", "Cancelled", "No go". */
 const CLOSED_OUT = String.raw`(?:expir|archiv|dismiss|no go|closed|inactive|abandon|stale|cancel|\bvoid|delet|duplicate|disqualif)`;
 /**
@@ -316,9 +318,10 @@ export const QUOTE_STATUS_MAP: [RegExp, import("../model.ts").QuoteStatus][] = [
   [/\bclosed[\s-]*won\b|\bwon\b(?!['’])/i, "approved"],
   // Work exists: ServiceTitan "Sold", Housecall Pro "Copied to job", QuickBooks "Converted", PaintScout "Invoiced" and "Paid".
   [/(converted|job created|copied to job|\bsold\b|complete|invoiced|\b(?:un)?paid\b|scheduled|in progress)/i, "converted"],
-  // An owner's own yes leads the same way: "Yes - waiting on HOA" is a yes with a condition, never an unanswered quote
-  // (statusReadsTwoWays holds it for a person).
-  [new RegExp(`(approved|accepted|\\bsigned\\b|booked|client approved|customer approved|pro approved)|${OWNER_YES}`, "i"), "approved"],
+  // An owner's own yes leads the same way, on its own or before a next step or a condition: "Yes", "Y - awaiting
+  // deposit", "Yes - waiting on HOA" (a yes with a condition, never an unanswered quote; statusReadsTwoWays holds it for
+  // a person). Anything else after it ("Yes - backed out", "Yes - fell through") isn't read as a yes: a person reads it.
+  [new RegExp(`(approved|accepted|\\bsigned\\b|booked|client approved|customer approved|pro approved)|${OWNER_YES}(?:\\W*$|(?=.*(?:${WAITING}|${NEXT_STEP})))`, "i"), "approved"],
   // Closed by the software or the office — NOT a customer decision (expired, dismissed, cancelled, No Go).
   [/(expir)/i, "expired"],
   [new RegExp(CLOSED_OUT, "i"), "archived"],
@@ -339,7 +342,9 @@ export function statusReadsTwoWays(raw: string): boolean {
   const revision = /changes? requested|\brequest(?:ed)? changes\b|\brevisions? (?:requested|needed)\b|\brevised\b|\bre-?quoted\b/i.test(raw);
   const waiting = new RegExp(WAITING, "i").test(raw);
   const onCondition = new RegExp(WAITING, "i").test(raw.replace(new RegExp(NEXT_STEP, "gi"), " "));
-  return (yes && no) || (yes && revision) || (yes && onCondition) || (no && (revision || waiting));
+  // a yes that came undone: "Yes - backed out", "Approved - cancelled", "Sold - fell through"
+  const undone = new RegExp(`${CLOSED_OUT}|${BACKED_OUT}`, "i").test(raw.replace(/\bclosed[\s-]*won\b/gi, " "));
+  return (yes && no) || (yes && revision) || (yes && onCondition) || (yes && undone) || (no && (revision || waiting));
 }
 
 /** Per-software status words that mean something different there. */
