@@ -77,6 +77,7 @@ import {
   type Deps,
 } from "../core/ops.ts";
 import { ownerCommand, shortNames } from "../core/owner.ts";
+import { pasteOwnerText, textsToSend } from "../core/textsToSend.ts";
 import { workerHealth } from "../core/worker.ts";
 import { verifyTwilioSignature } from "../providers/sms.ts";
 
@@ -463,7 +464,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const r = res!;
     if (!r || "refused" in r) return c.json({ error: "Couldn't restore it." }, 409);
     // the cancel's refund was never issued: its text is withdrawn
-    if (cancelled.refund) repo.db.run(`UPDATE owner_messages SET delivery = 'cancelled' WHERE ${theirs} AND delivery IN ('review','pending','failed')`, ...args);
+    if (cancelled.refund) repo.db.run(`UPDATE owner_messages SET delivery = 'cancelled' WHERE ${theirs} AND delivery IN ('review','pending','failed','manual')`, ...args);
     if (!r.paused) await holdSending(d, id, "resume");
     repo.audit(id, "operator", "restore-plan", r);
     return c.json({ ok: true, ...r });
@@ -604,19 +605,28 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true });
   });
 
+  // Where the hand-off text a reply action made went, now the dispatcher has run (nothing when it made none): the
+  // console says what really happened, "on Texts to send" by hand, never "texted" unless it was.
+  const handedTo = (bid: string, mid: string | undefined) => {
+    const m = mid ? repo.ownerMessageDelivery(bid, mid) : undefined;
+    return m ? { delivery: m.delivery, channel: m.channel, error: m.error } : {};
+  };
+
   // A person sorts a reply the rules couldn't place; the same dispatch runs (yes → owner text, stop → suppress).
   const Intent = z.object({ intent: z.enum(["wants_it", "wants_price", "question", "later", "already_done", "not_interested", "moved", "wrong_person", "stop", "complaint", "auto_reply", "bounce", "unclear"]) });
   op.post("/businesses/:id/replies/:rid/intent", async (c) => {
     const { intent } = Intent.parse(await c.req.json());
     const bid = c.req.param("id");
     let found = false;
-    await d.accounts.withAccount(bid, (state) => {
+    const made = await d.accounts.withAccount(bid, (state) => {
+      const n = state.ownerMessages.length;
       found = !!relabelReply(state, c.req.param("rid"), intent, localIso(d.clock(), state.dataset.business.timezone).slice(0, 19));
+      return state.ownerMessages[n]?.id;
     });
     if (!found) return c.json({ error: "No such reply" }, 404);
     repo.audit(bid, c.get("actor") ?? "operator", "reply.intent", { rid: c.req.param("rid"), intent });
     await deliverOwnerMessages(d, bid);
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...handedTo(bid, made) });
   });
 
   // Hand a reply to the owner: a hot one is texted again; anything else is handed off as a question for them.
@@ -624,19 +634,21 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const bid = c.req.param("id");
     const rid = c.req.param("rid");
     let found = false;
-    await d.accounts.withAccount(bid, (state) => {
+    const made = await d.accounts.withAccount(bid, (state) => {
       const r = state.replies.find((x) => x.id === rid);
       if (!r) return;
       found = true;
+      const n = state.ownerMessages.length;
       const now = localIso(d.clock(), state.dataset.business.timezone).slice(0, 19);
       if (r.status === "handed_off" && !r.ownerContactedAt)
         state.ownerMessages.push({ id: `om_again_${r.id}_${now}`, at: now, kind: "handoff", text: handoffText(state, r), refs: r.customerId ? [{ kind: "customer", id: r.customerId }] : undefined });
       else relabelReply(state, rid, r.intent === "wants_it" || r.intent === "wants_price" ? r.intent : "question", now);
+      return state.ownerMessages[n]?.id;
     });
     if (!found) return c.json({ error: "No such reply" }, 404);
     repo.audit(bid, c.get("actor") ?? "operator", "reply.handoff", { rid });
     await deliverOwnerMessages(d, bid);
-    return c.json({ ok: true });
+    return c.json({ ok: true, ...handedTo(bid, made) });
   });
 
   // Drop an AI draft the operator won't send.
@@ -666,11 +678,20 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // nothing to send (already sent, or withdrawn): say so instead of reporting a send that didn't happen
     if (!Number(moved.changes)) return c.json({ ok: false, error: "That text isn't waiting to be sent any more (it was sent or withdrawn)." }, 409);
     await deliverOwnerMessages(d, c.req.param("id"), { allowBilling: true });
-    const after = d.accounts.repo.db.get<{ delivery: string; error: string | null }>("SELECT delivery, error FROM owner_messages WHERE business_id = ? AND id = ?", c.req.param("id"), c.req.param("mid"));
+    const after = repo.ownerMessageDelivery(c.req.param("id"), c.req.param("mid"));
     repo.audit(c.req.param("id"), "operator", "owner-message.approve", { id: c.req.param("mid"), delivery: after?.delivery });
     // 200 either way (the approval stands); the console reads ok/delivery and says what really happened
-    const sent = after?.delivery === "sent";
-    return c.json({ ok: sent, delivery: after?.delivery, ...(sent ? {} : { error: after?.error ?? undefined }) });
+    const went = after?.delivery === "sent" || after?.delivery === "manual"; // manual: on Texts to send
+    return c.json({ ok: went, delivery: after?.delivery, ...(went ? {} : { error: after?.error ?? undefined }) });
+  });
+
+  // Owner texts by hand (SMS_PROVIDER=manual): every client's texts waiting to be sent, newest first; the operator
+  // texts one from his phone, then marks it sent.
+  op.get("/texts-to-send", (c) => c.json(textsToSend(d)));
+  op.post("/businesses/:id/owner-messages/:mid/sent", (c) => {
+    if (!repo.sentByHand(c.req.param("id"), c.req.param("mid"), d.clock().toISOString())) return c.json({ error: "That text isn't waiting to be sent any more." }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "owner-message.sent_by_hand", { id: c.req.param("mid") });
+    return c.json({ ok: true });
   });
 
   op.get("/businesses/:id/close-preview", (c) => {
@@ -704,6 +725,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json(links(id));
   });
 
+  // A text the owner sent the operator's phone, pasted in: the same handler as the Twilio webhook, from their cell.
+  op.post("/businesses/:id/owner-texts", async (c) => {
+    const { text } = z.object({ text: z.string().trim().min(1).max(1600) }).parse(await c.req.json());
+    const res = await pasteOwnerText(d, c.req.param("id"), text);
+    if ("refused" in res) return c.json({ error: res.refused }, 409);
+    repo.audit(res.businessId, c.get("actor") ?? "operator", "owner-text.paste", { body: text });
+    return c.json(res);
+  });
   // Every text the owner sent us, newest first, with what we did about it.
   op.get("/businesses/:id/owner-texts", (c) => c.json(repo.ownerTexts(c.req.param("id"), { limit: Math.min(500, Number(c.req.query("limit") ?? 100)) })));
   op.post("/businesses/:id/owner-texts/:seq/done", (c) => c.json({ ok: repo.finishOwnerText(c.req.param("id"), Number(c.req.param("seq")), d.clock().toISOString()) }));

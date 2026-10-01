@@ -19,6 +19,17 @@ export class LogNotifier implements OwnerNotifier {
   }
 }
 
+/**
+ * Until Twilio clears carrier registration nothing is texted from here: each owner text waits on the console's
+ * "Texts to send" list, and the operator texts it from his own phone and marks it sent (deliverOwnerMessages).
+ */
+export class ManualNotifier implements OwnerNotifier {
+  readonly name = "manual";
+  async notify() {
+    return { id: `sms-manual-${randomUUID()}`, channel: "manual" as const };
+  }
+}
+
 export class TwilioNotifier implements OwnerNotifier {
   readonly name = "twilio";
   constructor(

@@ -101,7 +101,24 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     lead just marked reached (a later fix let recently reported leads match). "(603) 555-0142" was read as $603.
   - Server 345.
 
+- **A5. Owner texts without Twilio.**
+  - SMS_PROVIDER=manual is the production default until Twilio clears (used when the setting is unset and the server
+    has production secrets); dev and tests keep the log; SMS_PROVIDER=twilio changes nothing.
+  - Every owner text waits on the console's "Texts to send" list (all clients, newest first): business, owner's
+    first name, cell, the text, Copy and Sent. Money texts reach it only after Jack approves them in Needs a person.
+  - Each client's Overview has "Paste their reply": it goes through the same handler as the Twilio webhook, from
+    the owner's cell on file. OK starts the first round, BOOKED 2400 #code records the booking, PAUSE and CANCEL work;
+    our answer goes on the list. A client with no cell on file is refused with the reason.
+  - CANCEL clears that client's list (except a refund we owe and the answer to the CANCEL); STOP wins (waiting texts
+    go by email or to Needs a person). The console says where a hand-off went ("On Texts to send…").
+  - Left: NOT OURS (B4); reminders to an owner who hasn't called a lead count from the hand-off, not from when Jack
+    texts it; two older toasts still say "Texted to the owner".
+  - Server 361.
+
 **Live steps for Jack**
+- (A5) Leave SMS_PROVIDER unset (or manual) in production until Twilio clears carrier registration. Work "Texts to
+  send" in the console and paste each owner reply on their client's Overview. When Twilio clears, set
+  SMS_PROVIDER=twilio with TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and TWILIO_FROM.
 - (A1) Leave FEATURE_NEW_REQUESTS and FEATURE_YEARLY unset (off) in production.
 - (A3) Give each client its own inbox, connected in Instantly, in Settings before planning; keep client inboxes out
   of your cold campaigns. Check the Instantly API key can update accounts and campaigns and read account-campaign

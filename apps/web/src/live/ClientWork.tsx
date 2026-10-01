@@ -281,6 +281,7 @@ export function OwnerTextsTab({ id }: { id: string }) {
             { value: "review", label: "Waiting for you" },
             { value: "failed", label: "Failed" },
             { value: "pending", label: "Sending" },
+            { value: "manual", label: "To send by hand" },
             { value: "sent", label: "Sent" },
           ]}
         />
@@ -296,7 +297,7 @@ export function OwnerTextsTab({ id }: { id: string }) {
                 <Pill tone={m.kind === "handoff" ? "accent" : m.kind === "sla_nudge" ? "warn" : "neutral"}>{MSG_KIND[m.kind] ?? m.kind}</Pill>
                 <Pill tone={dv.tone}>{dv.label}</Pill>
                 {when(m.at)}
-                {m.channel ? ` · by ${m.channel}` : ""}
+                {m.channel ? ` · by ${m.channel === "manual" ? "hand" : m.channel}` : ""}
               </span>
               <p className="note-body text-[13.5px] leading-relaxed">{m.text}</p>
               {(m.delivery === "review" || m.delivery === "failed") && (

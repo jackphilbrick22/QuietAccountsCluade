@@ -1,17 +1,19 @@
 import { useEffect, useState } from "react";
-import { KeyRound, ListChecks, LogOut, MonitorPlay, Plus, Users } from "lucide-react";
+import { KeyRound, ListChecks, LogOut, MessageSquare, MonitorPlay, Plus, Users } from "lucide-react";
 import { useApp } from "../store/app";
 import { cx, Wordmark } from "../components/ui";
 import { Box, Btn, smallInputCls } from "../components/table";
-import { API_BASE, type ReviewQueue } from "./api";
+import { API_BASE, type ReviewQueue, type TextToSendRow } from "./api";
 import { useApi, useLive } from "./store";
 import { LiveClients, NewClient } from "./Clients";
 import { LiveClient } from "./Client";
 import { LiveReview } from "./Review";
+import { TextsToSend } from "./TextsToSend";
 
 const NAV = [
   { id: "clients", label: "Clients", icon: Users },
   { id: "review", label: "Needs a person", icon: ListChecks },
+  { id: "texts", label: "Texts to send", icon: MessageSquare },
 ] as const;
 
 export function LiveShell() {
@@ -30,8 +32,9 @@ function Console() {
   const signOut = useLive((s) => s.signOut);
   const health = useLive((s) => s.health);
   const review = useApi<ReviewQueue>("/review", { poll: 60_000 });
-  const count = review.data?.items.length ?? 0;
-  const tab = view.tab === "client" && view.detail ? "client" : view.tab === "new" ? "new" : view.tab === "review" ? "review" : "clients";
+  const texts = useApi<TextToSendRow[]>("/texts-to-send", { poll: 60_000 });
+  const badge = { review: review.data?.items.length ?? 0, texts: texts.data?.length ?? 0 };
+  const tab = view.tab === "client" && view.detail ? "client" : view.tab === "new" ? "new" : view.tab === "review" || view.tab === "texts" ? view.tab : "clients";
 
   return (
     <div className="min-h-full lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
@@ -61,7 +64,7 @@ function Console() {
             >
               <n.icon size={17} />
               <span className="flex-1">{n.label}</span>
-              {n.id === "review" && count > 0 && <span className="num rounded-full bg-accent px-2 text-[12px] leading-5 font-bold text-on-accent">{count}</span>}
+              {n.id !== "clients" && badge[n.id] > 0 && <span className="num rounded-full bg-accent px-2 text-[12px] leading-5 font-bold text-on-accent">{badge[n.id]}</span>}
             </button>
           ))}
           <button type="button" onClick={() => go({ area: "live", tab: "new" })} className="flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left text-[14px] font-semibold whitespace-nowrap text-ink-2 hover:bg-surface-2 hover:text-ink">
@@ -99,6 +102,7 @@ function Console() {
         {tab === "new" && <NewClient />}
         {tab === "client" && <LiveClient id={view.detail!} />}
         {tab === "review" && <LiveReview queue={review} />}
+        {tab === "texts" && <TextsToSend list={texts} />}
       </main>
     </div>
   );

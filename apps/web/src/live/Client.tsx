@@ -10,6 +10,7 @@ import { copy, useAction, useApi, useLive, type ClientTab } from "./store";
 import { ErrorNote, IntentPill, OutcomeForm, ReadinessPanel, ago, when } from "./parts";
 import { stageOf, tradeLabel } from "./Clients";
 import { ActivityTab, FilesTab, NotesTab, OwnerTextsTab, RepliesTab, SettingsTab } from "./ClientWork";
+import { PasteReply } from "./TextsToSend";
 
 const TABS: { id: ClientTab; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -197,6 +198,8 @@ function OverviewTab({ id, o }: { id: string; o: Overview }) {
           sub={o.quiet?.since && o.quiet.since.quotes >= 5 ? `was ${quietPct(o.quiet.before.rate)} before us` : o.quiet?.backlog ? `${o.quiet.backlog.answered} of ${o.quiet.backlog.followed} old quotes answered` : "quotes with no yes or no"}
         />
       </Kpis>
+
+      <PasteReply key={id} id={id} />
 
       <Section title={`Waiting on the owner (${o.waitingOnOwner?.length ?? 0})`} sub="Hot leads we texted the owner that haven't been called. Log what happened when the owner tells you.">
         <Box>

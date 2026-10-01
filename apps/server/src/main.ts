@@ -9,7 +9,7 @@ import { Accounts } from "./core/accounts.ts";
 import { startWorker } from "./core/worker.ts";
 import { createApp, type HttpDeps } from "./http/app.ts";
 import { LogEmailProvider, SmtpEmailProvider } from "./providers/email.ts";
-import { LogNotifier, TwilioNotifier } from "./providers/sms.ts";
+import { LogNotifier, ManualNotifier, TwilioNotifier } from "./providers/sms.ts";
 import { createMailCheck } from "./providers/mailcheck.ts";
 import { createLlm } from "./agents/llm.ts";
 import { createInstantlyProvider, parseInstantlyWebhook } from "./integrations/instantly/index.ts";
@@ -37,7 +37,8 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
   else email = new LogEmailProvider();
   // No log fallback behind Twilio: an owner without a cell is emailed or lands in review (deliverOwnerMessages),
   // never quietly "sent" to stdout.
-  const notifier = cfg.SMS_PROVIDER === "twilio" ? new TwilioNotifier({ accountSid: cfg.TWILIO_ACCOUNT_SID!, authToken: cfg.TWILIO_AUTH_TOKEN!, from: cfg.TWILIO_FROM! }) : new LogNotifier();
+  const notifier =
+    cfg.SMS_PROVIDER === "twilio" ? new TwilioNotifier({ accountSid: cfg.TWILIO_ACCOUNT_SID!, authToken: cfg.TWILIO_AUTH_TOKEN!, from: cfg.TWILIO_FROM! }) : cfg.SMS_PROVIDER === "manual" ? new ManualNotifier() : new LogNotifier();
   const llm = createLlm({ apiKey: cfg.ANTHROPIC_API_KEY, model: cfg.CLAUDE_MODEL, log });
   const fsm =
     cfg.JOBBER_CLIENT_ID && cfg.JOBBER_CLIENT_SECRET

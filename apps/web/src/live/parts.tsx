@@ -6,6 +6,7 @@ import { cx, Pill } from "../components/ui";
 import { Box, Btn, selectCls, smallInputCls } from "../components/table";
 import { api, type Person } from "./api";
 import { copy, useAction, useApi } from "./store";
+import { handoffToast, type HandoffResult } from "./ownerSend";
 
 /* ------------------------------ names for ids ------------------------------ */
 
@@ -138,10 +139,11 @@ export function OutcomeForm({ bid, reply, suggested, compact }: { bid: string; r
 
 /* ------------------------------ act on a reply ------------------------------ */
 
+/** `done` leads the toast; a yes, a price or a question adds where its hand-off text went (handoffToast). */
 const RELABEL: { value: string; label: string; done: string }[] = [
-  { value: "wants_it", label: "Wants it done", done: "Marked a yes — texted to the owner" },
-  { value: "wants_price", label: "Wants a price", done: "Marked wants a price — texted to the owner" },
-  { value: "question", label: "Has a question", done: "Marked a question — texted to the owner" },
+  { value: "wants_it", label: "Wants it done", done: "Marked a yes" },
+  { value: "wants_price", label: "Wants a price", done: "Marked wants a price" },
+  { value: "question", label: "Has a question", done: "Marked a question" },
   { value: "later", label: "Later", done: "Marked later" },
   { value: "already_done", label: "Already had it done", done: "Marked already done" },
   { value: "not_interested", label: "No thanks", done: "Marked no thanks" },
@@ -215,7 +217,7 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
           >
             Write an answer
           </Btn>
-          <Btn disabled={!!busy} onClick={() => void run("handoff", () => api("POST", `${base}/handoff`), handedOff ? "Texted to the owner again" : "Texted to the owner")}>
+          <Btn disabled={!!busy} onClick={() => void run("handoff", () => api<HandoffResult>("POST", `${base}/handoff`), (r) => handoffToast(r, { again: handedOff }))}>
             {handedOff ? "Text it to the owner again" : "Hand it to the owner"}
           </Btn>
           <div className="flex items-end gap-1.5">
@@ -232,7 +234,7 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
                 ))}
               </select>
             </div>
-            <Btn disabled={!intent || !!busy} onClick={() => void run("intent", () => api("POST", `${base}/intent`, { intent }), RELABEL.find((x) => x.value === intent)?.done)}>
+            <Btn disabled={!intent || !!busy} onClick={() => void run("intent", () => api<HandoffResult>("POST", `${base}/intent`, { intent }), (r) => handoffToast(r, { marked: RELABEL.find((x) => x.value === intent)?.done }))}>
               Save
             </Btn>
           </div>
@@ -336,11 +338,13 @@ export const MSG_KIND: Record<string, string> = {
   renewal: "Year renewal",
   refund: "Yearly refund (issue it, then send)",
   info: "Heads up",
+  reply: "Reply to their text",
 };
 
 export const DELIVERY: Record<string, { label: string; tone: "ok" | "warn" | "bad" | "neutral" | "info" }> = {
   sent: { label: "Sent", tone: "ok" },
   pending: { label: "Sending", tone: "info" },
+  manual: { label: "To send by hand", tone: "warn" },
   review: { label: "Waiting for you", tone: "warn" },
   failed: { label: "Failed", tone: "bad" },
   cancelled: { label: "Not needed", tone: "neutral" },

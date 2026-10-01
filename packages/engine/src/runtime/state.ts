@@ -46,7 +46,8 @@ export interface AccountState {
 export interface OwnerMessage {
   id: string;
   at: ISODateTime;
-  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund";
+  /** "reply": our answer to a text the owner sent the operator's phone, to text back by hand (SMS_PROVIDER=manual). */
+  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply";
   text: string;
   refs?: { kind: string; id: string }[];
 }

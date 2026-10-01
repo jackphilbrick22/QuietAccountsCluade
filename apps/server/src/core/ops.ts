@@ -813,8 +813,9 @@ async function tidyPushed(d: Deps, bid: string, seq: SequencerProvider): Promise
 
 /**
  * Stop — or restart — everything a business sends. Pause and resume flip its campaigns on the sending platform
- * too (a resume never restarts a cancelled or braked business); cancel also cancels what's queued and takes back
- * every note the platform still holds. Every stop (owner text or link, Settings, delete, the operator) comes here.
+ * too (a resume never restarts a cancelled or braked business); cancel also cancels what's queued, takes back
+ * every note the platform still holds, and takes the owner's texts off "Texts to send" (a refund we owe them aside).
+ * Every stop (owner text or link, Settings, delete, the operator) comes here.
  */
 export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume" | "cancel"): Promise<void> {
   if (!d.accounts.repo.exists(bid)) return;
@@ -832,6 +833,8 @@ export async function holdSending(d: Deps, bid: string, mode: "pause" | "resume"
       s.dataset.business.senders = undefined;
     });
     closeInboxAlerts(d, bid);
+    // what waits to be texted by hand goes no further either, as the dispatcher would have it (deliverOwnerMessages)
+    d.accounts.repo.skipManual(bid, CANCELLED_OWNER);
   }
   const l = d.accounts.peek(bid)!;
   if (!l.state.dataset.business.platformPaused) await holdPlatform(d, bid, mode === "cancel" ? "a cancel" : "a pause");
@@ -1230,6 +1233,9 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 
 const BILLING_KINDS = new Set(["close", "precharge", "free_month", "refund"]);
 
+/** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them. */
+const CANCELLED_OWNER = "Cancelled: nothing more goes to the owner.";
+
 /** Twilio refuses a number that texted STOP (error 21610): the owner is opted out at the carrier. */
 const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
 
@@ -1237,6 +1243,7 @@ const CARRIER_OPTED_OUT = /\b21610\b|unsubscribed recipient/i;
  * Owner messages go out by text. With no cell on file, or texts turned off (the owner texted STOP, or their carrier
  * says they did), they go by email through the direct mail provider when there is one; otherwise they're marked
  * failed, which puts them in the operator's review queue. Nothing is ever "sent" to a log in production.
+ * By hand (SMS_PROVIDER=manual), a text waits on the "Texts to send" list until the operator marks it sent.
  * A cancelled client gets nothing more, except the refund text when they leave a yearly plan early.
  */
 export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowBilling?: boolean } = {}): Promise<number> {
@@ -1246,11 +1253,11 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
     const loaded = d.accounts.peek(m.business_id);
     if (!loaded) continue;
     const b = loaded.state.dataset.business;
-    const done = (delivery: "sent" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
+    const done = (delivery: "sent" | "manual" | "failed" | "skipped", f: { channel?: string; providerId?: string; error?: string } = {}) =>
       d.accounts.repo.markOwnerMessage(m.business_id, m.id, delivery, { ...f, at: d.clock().toISOString() });
     // the one exception: the refund we owe them when they leave a yearly plan early
     if (b.plan.stage === "cancelled" && m.kind !== "refund") {
-      done("skipped", { error: "Cancelled: nothing more goes to the owner." });
+      done("skipped", { error: CANCELLED_OWNER });
       continue;
     }
     // a refund text waits for a person even with auto-send on: someone has to issue the refund first
@@ -1262,7 +1269,9 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { allowB
     if (!why) {
       try {
         const res = await d.notifier.notify({ phone: b.ownerPhone, email: b.ownerEmail }, m.text);
-        done("sent", { channel: res.channel, providerId: res.id });
+        // by hand: it waits on the "Texts to send" list until the operator marks it sent
+        if (res.channel === "manual") done("manual");
+        else done("sent", { channel: res.channel, providerId: res.id });
         n++;
         continue;
       } catch (e) {
@@ -1329,6 +1338,8 @@ export async function setOwnerTexts(d: Deps, phone: string, off: { by: "owner" |
           : { id: `ev_texts_on_${at}`, at, agent: "guard", kind: "action", title: `${b.ownerFirstName} turned texts back on`, detail: "Hand-offs and reports are texted again." },
       );
     });
+  // texts still waiting to be sent by hand go the way any text to them goes now: by email, or to the review queue
+  if (off) for (const bid of bids) d.accounts.repo.unqueueManual(bid);
   return bids;
 }
 

@@ -5,7 +5,7 @@ import { cx, Pill } from "../components/ui";
 import { Box, Btn, Chip, PageHead, selectCls } from "../components/table";
 import { api, type Overview, type ReviewItem, type ReviewQueue } from "./api";
 import { copy, useAction, useApi, useLive, type ClientTab, type Query } from "./store";
-import { ownerSendToast, type OwnerSendResult } from "./ownerSend";
+import { ourAnswerLabel, ownerSendToast, type OwnerSendResult } from "./ownerSend";
 import { ErrorNote, IntentPill, MSG_KIND, NoteEditor, noteChanged, OutcomeForm, ReplyActions, when } from "./parts";
 import { ClearBrake } from "./Client";
 
@@ -119,6 +119,7 @@ function AssignReply({ id, skip, other }: { id: string; skip: string[]; other: b
 function Item({ it }: { it: ReviewItem }) {
   const go = useApp((s) => s.go);
   const setTab = useLive((s) => s.setClientTab);
+  const sms = useLive((s) => s.health?.sms);
   const { busy, run } = useAction();
   const [editing, setEditing] = useState(false);
   const open = (tab: ClientTab) => {
@@ -254,7 +255,9 @@ function Item({ it }: { it: ReviewItem }) {
             The owner {HANDLED[it.handled] ?? "texted us"}:
           </div>
           <blockquote className="note-body rounded-md bg-bg px-3 py-2 text-[13px]">“{it.text}”</blockquote>
-          <p className="text-[12.5px] text-ink-3">We texted back: {it.reply}</p>
+          <p className="text-[12.5px] text-ink-3">
+            {ourAnswerLabel(sms, it.handled)}: {it.reply}
+          </p>
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
               Mark handled

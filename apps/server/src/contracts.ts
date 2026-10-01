@@ -159,8 +159,8 @@ export type InboundEvent =
 
 export interface OwnerNotifier {
   name: string;
-  /** Send a text (or email fallback) to the owner. Returns a provider id. */
-  notify(to: { phone?: string; email?: string }, text: string): Promise<{ id: string; channel: "sms" | "email" | "log" }>;
+  /** Send a text (or email fallback) to the owner. Returns a provider id; "manual" means a person texts it by hand. */
+  notify(to: { phone?: string; email?: string }, text: string): Promise<{ id: string; channel: "sms" | "email" | "log" | "manual" }>;
 }
 
 /* ------------------------------------------------------------------ */

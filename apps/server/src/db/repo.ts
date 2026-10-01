@@ -344,11 +344,41 @@ export class Repo {
     return this.db.all("SELECT business_id, id, kind, text FROM owner_messages WHERE delivery = 'pending' ORDER BY at LIMIT ?", limit);
   }
 
-  markOwnerMessage(bid: string, id: string, delivery: "sent" | "review" | "failed" | "skipped", fields: { channel?: string; providerId?: string; error?: string; at?: string } = {}): void {
+  markOwnerMessage(bid: string, id: string, delivery: "sent" | "manual" | "review" | "failed" | "skipped", fields: { channel?: string; providerId?: string; error?: string; at?: string } = {}): void {
     this.db.run(
       "UPDATE owner_messages SET delivery = ?, channel = COALESCE(?, channel), provider_id = COALESCE(?, provider_id), error = ?, delivered_at = COALESCE(?, delivered_at) WHERE business_id = ? AND id = ?",
       delivery, fields.channel ?? null, fields.providerId ?? null, fields.error ?? null, delivery === "sent" ? (fields.at ?? new Date().toISOString()) : null, bid, id,
     );
+  }
+
+  /** Where one text to the owner stands now (read back after the dispatcher ran, so the console says what happened). */
+  ownerMessageDelivery(bid: string, id: string): { delivery: string; channel: string | null; error: string | null } | undefined {
+    return this.db.get("SELECT delivery, channel, error FROM owner_messages WHERE business_id = ? AND id = ?", bid, id);
+  }
+
+  /** The "Texts to send" list (SMS_PROVIDER=manual): every client's texts waiting to be sent by hand, newest first. */
+  manualOwnerMessages(limit = 500): { business_id: string; id: string; at: string; kind: string; text: string }[] {
+    return this.db.all("SELECT business_id, id, at, kind, text FROM owner_messages WHERE delivery = 'manual' ORDER BY at DESC, id LIMIT ?", limit);
+  }
+
+  /** A text straight onto the list: the reply to a text the owner sent the operator's own phone. */
+  addManualOwnerMessage(bid: string, m: OwnerMessage): void {
+    this.db.run("INSERT INTO owner_messages (business_id, id, at, kind, text, data, delivery) VALUES (?, ?, ?, ?, ?, ?, 'manual')", bid, m.id, m.at, m.kind, m.text, JSON.stringify(m));
+  }
+
+  /** The operator texted it by hand: it leaves the list as sent. False when it wasn't on the list. */
+  sentByHand(bid: string, id: string, at: string): boolean {
+    return Number(this.db.run("UPDATE owner_messages SET delivery = 'sent', channel = 'manual', delivered_at = ? WHERE business_id = ? AND id = ? AND delivery = 'manual'", at, bid, id).changes) > 0;
+  }
+
+  /** Off the list and back to the dispatcher, which decides again how it goes (the owner texted STOP). */
+  unqueueManual(bid: string): void {
+    this.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND delivery = 'manual'", bid);
+  }
+
+  /** Off the list for good (the client cancelled): skipped with the reason, except a refund we owe them. */
+  skipManual(bid: string, error: string): void {
+    this.db.run("UPDATE owner_messages SET delivery = 'skipped', error = ? WHERE business_id = ? AND delivery = 'manual' AND kind != 'refund'", error, bid);
   }
 
   ownerMessages(bid: string, opts: { delivery?: string; limit?: number } = {}): { id: string; at: string; kind: string; text: string; delivery: string; channel: string | null; delivered_at: string | null }[] {

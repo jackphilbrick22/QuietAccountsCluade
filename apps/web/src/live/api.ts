@@ -214,6 +214,27 @@ export interface OwnerTextRow {
   done_at: string | null;
 }
 
+/** GET /api/texts-to-send: every client's owner texts waiting to be sent by hand (SMS_PROVIDER=manual), newest first. */
+export interface TextToSendRow {
+  businessId: string;
+  businessName: string;
+  ownerFirstName: string;
+  phone: string | null;
+  messageId: string;
+  at: string;
+  kind: string;
+  text: string;
+}
+
+/** POST /api/businesses/:id/owner-texts: what a pasted owner text did, and whether the answer is on Texts to send. */
+export interface PastedText {
+  reply: string;
+  handled?: string;
+  needsPerson?: boolean;
+  queued: boolean;
+  why?: string;
+}
+
 interface ReviewBase {
   businessId: string;
   businessName: string;
