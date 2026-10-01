@@ -178,6 +178,10 @@ describe("sign-up from the site", () => {
     expect(JSON.parse(row.detail)).toMatchObject({ ref, offer: "monthly", trade: "lawn" });
     const onePass = await start({ ...form, company: "Tall Pine Tree", first: "Ryan", cell: "603-555-0123", offer: "one_pass" });
     expect(alertsFor(onePass.json.id as string).find((a) => a.kind === "signup")!.detail).toContain("Offer: one pass. Trade: tree.");
+    // what /painting sends: its trade, whatever the company's name suggests
+    const painting = await start({ ...form, company: "Fresh Coat Co", first: "Joe", cell: "603-555-0126", trade: "painting", offer: "one_pass", ref: "page=painting" });
+    expect(d.accounts.peek(painting.json.id as string)!.state.dataset.business.trade).toBe("painting");
+    expect(alertsFor(painting.json.id as string).find((a) => a.kind === "signup")!.detail).toContain("Offer: one pass. Trade: painting.");
     // only the two offers there are; a ref longer than the page ever sends is refused, not cut
     expect((await start({ ...form, company: "Odd Offer Co", cell: "603-555-0124", offer: "yearly" })).status).toBe(400);
     expect((await start({ ...form, company: "Long Ref Co", cell: "603-555-0125", ref: "x".repeat(201) })).status).toBe(400);

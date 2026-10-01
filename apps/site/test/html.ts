@@ -3,7 +3,8 @@ import { renderPage } from "../build/render.ts";
 import { PAGES, type SitePage } from "../src/trades.ts";
 
 /** The pages as the build writes them (markers filled), and plain-text views of them for the word rules. */
-export const lawn = PAGES.find((p) => p.id === "lawn")!;
+export const page = (id: string) => PAGES.find((p) => p.id === id)!;
+export const lawn = page("lawn");
 
 export function rendered(file: string, page?: SitePage): string {
   return renderPage(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), page);

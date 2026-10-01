@@ -1,6 +1,6 @@
 /**
  * What the start form sends, kept apart from the page so it can be tested without one. Page URLs carry only business
- * info (?co=, ?src=, UTM tags); the owner's name and cell only ever travel in the form's own POST.
+ * info (?co=, ?q=, ?j=, ?src=, UTM tags); the owner's name and cell only ever travel in the form's own POST.
  */
 export const JACK = { text: "603-340-7673", tel: "+16033407673" };
 
@@ -48,6 +48,12 @@ export function companyFromQuery(search: string): string {
     .trim()
     .slice(0, 60)
     .trim();
+}
+
+/** `?q=` (his quote count, estimated from his public reviews) and `?j=` (his average job): a whole number, or nothing. */
+export function numberFromQuery(search: string, key: "q" | "j"): number | undefined {
+  const v = Number(new URLSearchParams(search).get(key)?.replace(/[$,\s]/g, ""));
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : undefined;
 }
 
 /** `ref`: the page, then any ?src= and UTM tags, cut to the 200 characters /start keeps (whole tags only). */

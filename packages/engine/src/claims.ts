@@ -146,6 +146,14 @@ export const CLAIMS: Claim[] = [
     caveat: "$117.92 per lead from search (LocaliQ), $37.29 from Local Services ads (99 Calls, 99calls.com/blog/lsa-cost-per-lead-by-industry). Agency and platform data, not a survey of every shop; the owner's own cost beats it.",
   },
   {
+    id: "lead-cost-painting",
+    text: "A painting request from Google search costs about $138.",
+    source: "LocaliQ search ad benchmarks (3,211 campaigns, 2024–25)",
+    url: "https://localiq.com/blog/home-services-search-advertising-benchmarks/",
+    year: 2025,
+    caveat: "$138.38 per lead for Paint & Painting (CPC $13.74, 10.80% conversion), April 2024 to March 2025. Agency and platform data, not a survey of every shop; the owner's own cost beats it.",
+  },
+  {
     id: "angi-putting-off",
     text: "71% of homeowners put off at least one home project last year; interior painting was one of the most put off.",
     source: "Angi 2025 State of Home Spending Pulse (1,000 homeowners)",

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { companyFromQuery, netlifyBody, NETLIFY_FIELDS, refFor, signupBody, smsLink, type Signup } from "../src/form.ts";
-import { blocks, lawn, rendered } from "./html.ts";
+import { companyFromQuery, netlifyBody, NETLIFY_FIELDS, numberFromQuery, refFor, signupBody, smsLink, type Signup } from "../src/form.ts";
+import { PAGES } from "../src/trades.ts";
+import { blocks, rendered } from "./html.ts";
 
 const sign: Signup = { company: "Green Acre Lawn", first: "Pat", cell: "603-555-0122", software: "jobber", trade: "lawn", offer: "monthly", ref: "page=lawn&src=k12", website: "" };
 
@@ -16,10 +17,18 @@ describe("what the start form sends", () => {
     expect(sent.get("form-name")).toBe("start");
     expect([...sent.keys()].filter((k) => k !== "form-name").sort()).toEqual([...NETLIFY_FIELDS].sort());
     expect(sent.get("consent")).toBe("true");
-    const copy = blocks(rendered("lawn/index.html", lawn), /<form name="start"/, "form");
-    expect(copy).toHaveLength(1);
-    expect(copy[0]).toMatch(/data-netlify="true" netlify-honeypot="website" hidden/);
-    expect([...copy[0]!.matchAll(/<input name="(\w+)">/g)].map((m) => m[1])).toEqual([...NETLIFY_FIELDS]);
+    for (const p of PAGES) {
+      const copy = blocks(rendered(`${p.id}/index.html`, p), /<form name="start"/, "form");
+      expect(copy, p.id).toHaveLength(1);
+      expect(copy[0]).toMatch(/data-netlify="true" netlify-honeypot="website" hidden/);
+      expect([...copy[0]!.matchAll(/<input name="(\w+)">/g)].map((m) => m[1])).toEqual([...NETLIFY_FIELDS]);
+    }
+  });
+
+  it("a one-pass page sends its offer and its trade the same way", () => {
+    const tree = { ...sign, company: "Tall Pine Tree", trade: "tree", offer: "one_pass" as const, ref: "page=tree" };
+    expect(signupBody(tree)).toMatchObject({ trade: "tree", offer: "one_pass", consent: true });
+    expect(new URLSearchParams(netlifyBody(tree)).get("offer")).toBe("one_pass");
   });
 
   it("?co= fills the company: at most 60 characters, never markup", () => {
@@ -28,6 +37,13 @@ describe("what the start form sends", () => {
     expect(companyFromQuery(`?co=${"A".repeat(80)}`)).toHaveLength(60);
     expect(companyFromQuery("?co=%20%20Two%0A%20Lines%20")).toBe("Two Lines");
     expect(companyFromQuery("?src=k12")).toBe("");
+  });
+
+  it("?q= and ?j= are whole numbers or nothing: never a name, never markup", () => {
+    expect(numberFromQuery("?co=Tall+Pine&q=420&j=3100", "q")).toBe(420);
+    expect(numberFromQuery("?q=420&j=%243%2C100", "j")).toBe(3100);
+    expect(numberFromQuery("?q=419.6", "q")).toBe(420);
+    for (const q of ["", "?q=", "?q=0", "?q=-5", "?q=Pat", "?q=4e400", "?j=1"]) expect(numberFromQuery(q, "q"), q).toBeUndefined();
   });
 
   it("`ref` is the page, ?src= and the UTM tags, cut to the 200 characters /start keeps, and never a name or a cell", () => {

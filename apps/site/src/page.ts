@@ -1,4 +1,5 @@
-import { companyFromQuery, netlifyBody, refFor, signupBody, smsLink, type Signup } from "./form.ts";
+import { sums, whole as n } from "./calc.ts";
+import { companyFromQuery, netlifyBody, numberFromQuery, refFor, signupBody, smsLink, type Signup } from "./form.ts";
 import { fillIn } from "./note.ts";
 
 /**
@@ -160,18 +161,43 @@ const calc = document.querySelector<HTMLElement>("#calc");
 if (calc) {
   const count = $<HTMLInputElement>("#cN");
   const job = $<HTMLInputElement>("#cJ");
-  const n = (x: number) => Math.round(x).toLocaleString("en-US");
+  const d = calc.dataset;
+  const lead = { booked: +d.booked!, asked: +d.asked! };
+  const pay = d.each ? { each: +d.each, cap: +d.cap! } : undefined;
   const fill = (r: HTMLInputElement) => r.style.setProperty("--p", `${((+r.value - +r.min) / (+r.max - +r.min)) * 100}%`);
   const run = () => {
-    const jobs = Math.round((+count.value * +calc.dataset.booked!) / +calc.dataset.asked!);
+    const m = sums(+count.value, +job.value, lead, pay);
     $("#oN").textContent = n(+count.value);
     $("#oJ").textContent = `$${n(+job.value)}`;
-    $("#rJobs").textContent = n(jobs);
-    $("#rVal").textContent = `$${n(jobs * +job.value)}`;
+    $("#rJobs").textContent = n(m.jobs);
+    $("#rVal").textContent = `$${n(m.value)}`;
+    if (pay) {
+      $("#rPay").textContent = `$${n(m.pay!)}`;
+      $("#rShare").textContent = m.share!;
+    }
     fill(count);
     fill(job);
   };
-  count.addEventListener("input", run);
-  job.addEventListener("input", run);
+  // his own number from here on, not an example
+  const mine = (r: HTMLInputElement) => ($(`#${r.id}Eg`).hidden = true);
+  // a link from Jack's email can carry his quote count, estimated from his public reviews (where the page says so),
+  // and his average job; the slider keeps either within its range
+  const q = numberFromQuery(location.search, "q");
+  const j = numberFromQuery(location.search, "j");
+  const estimate = document.querySelector<HTMLElement>("#estNote");
+  if (q && estimate) {
+    count.value = String(q);
+    estimate.hidden = false;
+    mine(count);
+  }
+  if (j) {
+    job.value = String(j);
+    mine(job);
+  }
+  for (const r of [count, job])
+    r.addEventListener("input", () => {
+      mine(r);
+      run();
+    });
   run();
 }

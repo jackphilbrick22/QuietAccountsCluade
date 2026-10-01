@@ -2,7 +2,8 @@ import type { Plugin } from "vite";
 import { claim } from "@qa/engine";
 import { JACK, NETLIFY_FIELDS } from "../src/form.ts";
 import { fillIn } from "../src/note.ts";
-import { FAMILY, LABEL, MONTHLY, ONE_PASS_CARD, PAGES, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
+import { sums, whole as n } from "../src/calc.ts";
+import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
 import { exampleHandoff, exampleNote, SLOTS } from "./examples.ts";
 
 /**
@@ -17,14 +18,13 @@ export const IMPORT_EMAIL = "quotes@quietaccounts.com";
 export const EXAMPLE_SIGNER = "Sarah";
 
 const esc = (s: string) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-const n = (x: number) => Math.round(x).toLocaleString("en-US");
 const usd = (x: number) => `$${n(x)}`;
 const k = (x: number) => `$${Math.round(x / 100) / 10}k`;
 const arrow = `<span class="arr" aria-hidden="true">&rarr;</span>`;
-const SOFTWARE: [Software, string, string][] = [
-  ["jobber", "Jobber", "Emails you a file"],
-  ["housecall_pro", "Housecall Pro", "Forward one report"],
-  ["other", "Something else", "Any export or spreadsheet"],
+const SOFTWARE: [Software, string][] = [
+  ["jobber", "Jobber"],
+  ["housecall_pro", "Housecall Pro"],
+  ["other", "Something else"],
 ];
 
 export function pageFor(path: string): SitePage | undefined {
@@ -57,6 +57,8 @@ function fragment(key: string, page?: SitePage): string {
     if (!c) throw new Error(`No claim "${arg}" in packages/engine/src/claims.ts`);
     return esc(name === "claim" ? c.text : c.source);
   }
+  // a result in the page's own words: the label, and with :family the disclosure too
+  if (name === "label") return labelText(arg === "family");
   if (name === "footer") return footer();
   if (name === "card") return card(arg as Offer);
   if (!page) throw new Error(`<!--qa:${key}--> needs a page in PAGES`);
@@ -78,7 +80,7 @@ function fragment(key: string, page?: SitePage): string {
     case "note":
       return note(page);
     case "handoff":
-      return handoff();
+      return handoff(page);
   }
   throw new Error(`Unknown marker <!--qa:${key}-->`);
 }
@@ -93,16 +95,17 @@ function sticky(p: SitePage): string {
   return `<div class="sticky" id="sticky" aria-hidden="true"><span>${esc(line)}<small>${esc(small)}</small></span><a class="btn" href="#start" tabindex="-1">${esc(p.words.button)} ${arrow}</a></div>`;
 }
 
-const labelFor = (proofs: Proof[]) => `<p class="label">${esc(LABEL)}${proofs.some((x) => x.family) ? ` ${esc(FAMILY)}` : ""}</p>`;
+const labelText = (family: boolean) => `${esc(LABEL)}${family ? ` ${esc(FAMILY)}` : ""}`;
+const labelFor = (proofs: Proof[]) => `<p class="label">${labelText(proofs.some((x) => x.family))}</p>`;
 const jobsText = (x: Proof) => `${usd(x.value)}${x.over ? "+" : ""}`;
 
 function tally(x: Proof): string {
-  return `<figure class="tally"><figcaption>${esc(x.shop)}, ${esc(x.where)} &middot; first ${x.asked}</figcaption><div class="tally-row"><div><b>${x.asked}</b><span>asked</span></div><div><b>${x.wroteBack}</b><span>wrote back</span></div><div><b>${x.booked}</b><span>booked</span></div><div class="hot"><b>${k(x.value)}${x.over ? "+" : ""}</b><span>in jobs</span></div></div>${labelFor([x])}</figure>`;
+  return `<figure class="tally"><figcaption>${esc(x.shop)}, ${esc(x.where)} &middot; ${x.otherTrade ? esc(x.otherTrade) : `first ${x.asked}`}</figcaption><div class="tally-row"><div><b>${x.asked}</b><span>asked</span></div><div><b>${x.wroteBack}</b><span>wrote back</span></div><div><b>${x.booked}</b><span>booked</span></div><div class="hot"><b>${k(x.value)}${x.over ? "+" : ""}</b><span>in jobs</span></div></div>${labelFor([x])}</figure>`;
 }
 
 function result(x: Proof): string {
   const s = x.shot;
-  return `<article class="card"><h3>${esc(x.shop)}</h3><p class="meta">${esc(x.where)} &middot; ${esc(x.list)}</p><p class="money">${jobsText(x)}<small>in jobs</small></p><div class="mini"><span><b>${x.asked}</b> asked</span><span><b>${x.wroteBack}</b> wrote back</span><span><b>${x.booked}</b> booked</span></div><p class="note">${esc(x.note)}</p>${labelFor([x])}<figure class="shot"><img src="/src/assets/${s.file}" width="${s.width}" height="${s.height}" loading="lazy" alt="${esc(s.alt)}"><figcaption>${esc(s.by)}</figcaption></figure></article>`;
+  return `<article class="card"><h3>${esc(x.shop)}</h3><p class="meta">${esc(x.where)} &middot; ${esc(x.otherTrade ?? x.list)}</p><p class="money">${jobsText(x)}<small>in jobs</small></p><div class="mini"><span><b>${x.asked}</b> asked</span><span><b>${x.wroteBack}</b> wrote back</span><span><b>${x.booked}</b> booked</span></div><p class="note">${esc(x.note)}</p>${labelFor([x])}<figure class="shot"><img src="/src/assets/${s.file}" width="${s.width}" height="${s.height}" loading="lazy" alt="${esc(s.alt)}"><figcaption>${esc(s.by)}</figcaption></figure></article>`;
 }
 
 /** What the first 150 got the shops, as ranges; a range that counts Dow's says so. */
@@ -114,16 +117,25 @@ function ranges(proofs: Proof[]): string {
   return `<div class="expect"><p>What the first 150 got ${["one", "two", "three"][proofs.length - 1] ?? proofs.length} shops</p><div class="expect-row"><span><b>${span((x) => x.wroteBack, String)}</b>wrote back</span><span><b>${span((x) => x.booked, String)}</b>booked</span><span><b>${span((x) => x.value, k)}</b>in jobs</span></div>${labelFor(proofs)}</div>`;
 }
 
+/** A slider whose starting number is an example, and says so until he slides it (or a link sets it). */
 function slider(id: string, out: string, s: Slider): string {
-  return `<div class="slider"><label for="${id}"><span>${esc(s.label)}</span><output id="${out}" for="${id}">${s.money ? usd(s.value) : n(s.value)}</output></label><input type="range" id="${id}" min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}"></div>`;
+  return `<div class="slider"><label for="${id}"><span>${esc(s.label)}</span><span class="val"><output id="${out}" for="${id}">${s.money ? usd(s.value) : n(s.value)}</output><small class="eg" id="${id}Eg">Example</small></span></label><input type="range" id="${id}" min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}"></div>`;
 }
 
-/** The money: his count times his average job, at the lead shop's own rate. Works out the defaults for no-JS. */
+/**
+ * The money: his count times his average job, at the lead shop's own rate; on a one pass, also what he'd pay for
+ * those jobs, with his past customers on top. Works out the defaults for no-JS. A ?q= link's count is an estimate, and
+ * the line saying so waits hidden for it.
+ */
 function calc(p: SitePage): string {
   const lead = p.proofs[0]!;
   const c = p.calc;
-  const jobs = Math.round((c.count.value * lead.booked) / lead.asked);
-  return `<div class="calc" id="calc" data-booked="${lead.booked}" data-asked="${lead.asked}">${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${Math.round((lead.booked / lead.asked) * 100)}%</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(jobs)}</b><span>jobs booked</span></div><div class="hot"><b id="rVal">${usd(jobs * c.job.value)}</b><span>left on the table</span></div></div><p class="fine">${esc(c.fine)}</p>${labelFor([lead])}</div>${cta(p, true)}</div>`;
+  const pay = p.words.pay;
+  const m = sums(c.count.value, c.job.value, lead, pay);
+  const data = `data-booked="${lead.booked}" data-asked="${lead.asked}"${pay ? ` data-each="${pay.each}" data-cap="${pay.cap}"` : ""}`;
+  const paid = pay ? `<p class="pay">You'd pay <b id="rPay">${usd(m.pay!)}</b>, that's <b id="rShare">${m.share}</b> of it.</p>` : "";
+  const estimate = c.estimate ? `<p class="fine" id="estNote" hidden>${esc(c.estimate)}</p>` : "";
+  return `<div class="calc" id="calc" ${data}>${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${m.rate}</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(m.jobs)}</b><span>jobs booked</span></div><div class="hot"><b id="rVal">${usd(m.value)}</b><span>left on the table${pay ? ", plus your past customers" : ""}</span></div></div>${paid}<p class="fine">${esc(c.fine)}</p>${estimate}${labelFor([lead])}</div>${cta(p, true)}</div>`;
 }
 
 /**
@@ -131,14 +143,14 @@ function calc(p: SitePage): string {
  * {company} and {signer} version beside it for the page to fill in as he types.
  */
 function note(p: SitePage): string {
-  const shown = exampleNote(p.companyExample, EXAMPLE_SIGNER);
-  const open = exampleNote(SLOTS.company, SLOTS.signer);
+  const shown = exampleNote(p.trade, p.companyExample, EXAMPLE_SIGNER);
+  const open = exampleNote(p.trade, SLOTS.company, SLOTS.signer);
   return `<div class="ex ex-note"><div class="nh"><span>Note 1 &middot; Example</span><span>from your office</span></div><div class="nb" data-template="${esc(open.main)}">${esc(shown.main)}</div><div class="nf" data-template="${esc(open.foot)}">${esc(shown.foot)}</div></div>`;
 }
 
 /** The text the owner gets when someone wants the work, as the engine writes it. */
-function handoff(): string {
-  return `<div class="ex qw-feed"><p class="qw-day">Example &middot; a text to you</p><div class="sms"><small>Quiet Accounts &middot; 9:12 AM</small><p>${esc(exampleHandoff())}</p></div></div>`;
+function handoff(p: SitePage): string {
+  return `<div class="ex qw-feed"><p class="qw-day">Example &middot; a text to you</p><div class="sms"><small>Quiet Accounts &middot; 9:12 AM</small><p>${esc(exampleHandoff(p.trade))}</p></div></div>`;
 }
 
 /**
@@ -150,7 +162,7 @@ function handoff(): string {
 function form(p: SitePage): string {
   const w = p.words;
   const consent = (company: string) => esc(fillIn(w.consent, company, ""));
-  const picker = SOFTWARE.map(([id, name, small], i) => `<button type="button" class="sw sw-${id}${i ? "" : " on"}" data-sw="${id}" role="radio" aria-checked="${i ? "false" : "true"}"><b>${name}</b><small>${small}</small></button>`).join("");
+  const picker = SOFTWARE.map(([id, name], i) => `<button type="button" class="sw sw-${id}${i ? "" : " on"}" data-sw="${id}" role="radio" aria-checked="${i ? "false" : "true"}"><b>${name}</b><small>${esc(w.picker[id])}</small></button>`).join("");
   const steps = SOFTWARE.map(([id], i) => `<p data-step="${id}"${i ? " hidden" : ""}>${p.exportStep[id]}</p>`).join("");
   return `<div class="fcard" id="start">
 <form id="form" data-page="${esc(p.id)}" data-trade="${esc(p.trade)}" data-offer="${w.offer}" data-signer="${EXAMPLE_SIGNER}" autocomplete="on" novalidate>
@@ -161,7 +173,7 @@ function form(p: SitePage): string {
     ${note(p)}
     <p class="rv-sig" id="sigHint">Signed ${EXAMPLE_SIGNER}, an example name, until you type yours below.</p>
     <p class="rv-h">The text you get when someone wants the work</p>
-    ${handoff()}
+    ${handoff(p)}
     <div class="fgrid">
       <div class="field"><label for="first">Your first name</label><input id="first" name="first" autocomplete="given-name" maxlength="60" required placeholder="Dave"></div>
       <div class="field"><label for="cell">Your cell <small>(the yeses come here)</small></label><input id="cell" name="cell" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="40" required placeholder="555-555-0100"></div>
@@ -176,9 +188,9 @@ function form(p: SitePage): string {
 </form>
 <div class="done" id="done" tabindex="-1" hidden>
   <h3 id="doneH">Got it. One thing left.</h3>
-  <p class="lead">Send us the export and we'll have the first note ready for you to read within one business day.</p>
+  <p class="lead">${esc(w.sendUs)}</p>
   <div class="dstep"><span class="n">1</span><div>${steps}</div></div>
-  <div class="dstep"><span class="n">2</span><p>Forward that email, as it is, to<br><span class="drop">${IMPORT_EMAIL}</span></p></div>
+  <div class="dstep"><span class="n">2</span><p>${esc(w.forward)}<br><span class="drop">${IMPORT_EMAIL}</span></p></div>
   <div class="dstep"><span class="n">3</span><p>You'll get a text from <b>Jack</b> within one business day with the first note to read. Change anything you want and text OK. The first notes go out the next weekday morning.</p></div>
 </div>
 </div>
@@ -190,9 +202,9 @@ function footer(): string {
   return `<footer class="foot"><div class="wrap"><span>Quiet Accounts &middot; ${ADDRESS} &middot; ${new Date().getFullYear()}</span><span>Text <a href="sms:${JACK.tel}">${JACK.text}</a> &middot; <a href="${CALL}">Rather talk it through? 15 minutes</a></span></div></footer>`;
 }
 
-/** A front-page card: its offer in one line, and links only to the pages that are built. */
+/** A front-page card: its offer in one line, and links only to the pages that are built and meant to be found. */
 function card(offer: Offer): string {
-  const c = offer === "monthly" ? MONTHLY.card : ONE_PASS_CARD;
-  const links = PAGES.filter((p) => p.words.offer === offer).map((p) => `<a class="go" href="/${p.id}">${esc(p.name)} ${arrow}</a>`);
+  const c = (offer === "monthly" ? MONTHLY : ONE_PASS).card;
+  const links = PAGES.filter((p) => p.words.offer === offer && !p.unlinked).map((p) => `<a class="go" href="/${p.id}">${esc(p.name)} ${arrow}</a>`);
   return `<article class="offer"><h2>${esc(c.title)}</h2><p>${esc(c.text)}</p>${links.join("")}</article>`;
 }

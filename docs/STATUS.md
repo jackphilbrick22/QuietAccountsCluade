@@ -196,7 +196,32 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     away Jack's unsaved Settings edits; emptying "Notes come from (name)" goes back to "<signer> at <business>".
   - Engine 1,489, server 395 (timing tests rerun alone under load).
 
+- **B1. Site: the tree page, plus painting and fence.**
+  - /tree, /painting and /fence from reference/cold-email-page.html, each one HTML file and one trades.ts entry on
+    A7's shared pieces. The form sits in the hero: company name and "Get my first note →" show his first note and the
+    text he'd get without sending; the rest sends offer one_pass and the page's trade. Every button carries "$250 per
+    booked job, never more than $1,000"; the consent box adds the $250 sentence; no free offer anywhere.
+  - Each page's note and text are the engine's own words to its own example customer (an old tree quote, a painting
+    estimate, a fence quote). The calculator uses Nelson Fence's 2.7% and adds "You'd pay $X, that's Y% of it"
+    (X = min(jobs, 4) × $250); ?q= sets the quote count and shows the Google-reviews line, ?j= the average job; each
+    starting number says "Example" until he slides it.
+  - Results lead with Nelson Fence; every result carries the label; tree and fence show Dow's only with the family
+    disclosure and Capital City as "a landscaper's past customers"; painting never names Dow's. claims.ts has the
+    painting lead cost ($138, LocaliQ). "When do I pay?" is the pricing card word for word.
+  - The front page links /tree and /painting; nothing links /fence. The sticky header now sticks; every word on a
+    solid background meets WCAG AA contrast. Lighthouse on a phone (local build): performance 98, accessibility 100
+    on /, /lawn, /tree, /painting and /fence.
+  - Brief notes: the painting "Why $250?" line in §5 ("Our two old-quote shops each booked 4 from 150") counts Dow's,
+    which §1 forbids there, so painting says Nelson Fence alone; tree and fence name both shops with the disclosure.
+    The reference CSS's overflow-x: hidden on html and body stopped the sticky header sticking.
+  - Left: what the pages promise for billing (the $250 pay link, NOT OURS, the whole list in about four weeks) needs
+    B3 and B4 before the first one-pass booking; /cleaning is C3.
+  - Also: a flaky server test that "forged" an owner link by changing its last two characters to "xx" (the real link
+    about 1 time in 4,096) now never picks the link's own characters; the links' 144-bit MAC was never the problem.
+  - Site 108, engine 1,489, server 395.
+
 **Live steps for Jack**
+- (B1) Keep /fence off every link until January. Look at /tree and /painting on a phone after deploying.
 - (A8) Deploy: pick one always-on host with a volume at /data (Fly: auto-stop off, internal_port 8787), sized about
   16 times the database or with BACKUP_DIR on a second volume. Run the first real `docker build` on the host (the
   base image pull and corepack's pnpm download are untested). Fill every required setting from .env.example (an https

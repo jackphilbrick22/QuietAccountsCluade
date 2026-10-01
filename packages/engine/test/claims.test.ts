@@ -20,6 +20,13 @@ describe("claims", () => {
     expect(c.source).toMatch(/99 Calls/);
   });
 
+  it("the painting lead cost is LocaliQ's search figure, with LocaliQ's own page", () => {
+    const c = claim("lead-cost-painting")!;
+    expect(c.text).toBe("A painting request from Google search costs about $138.");
+    expect(c.source).toMatch(/^LocaliQ/);
+    expect(c.url).toBe("https://localiq.com/blog/home-services-search-advertising-benchmarks/");
+  });
+
   it("Jobber facts say only what its Help Center says: two reminders up to 90 days out, and no price for Campaigns", () => {
     expect(claim("jobber-two-reminders")!.text).toMatch(/up to two reminders.*90 days/);
     for (const id of ["jobber-campaigns-not-retroactive", "jobber-campaigns-add-on"]) {
