@@ -238,7 +238,8 @@ describe("end to end", () => {
     const token = ownerToken;
     const ok = await app.request(`/api/owner/${token}/overview`);
     expect(ok.status).toBe(200);
-    const forged = await app.request(`/api/owner/${token.slice(0, -2)}xx/overview`);
+    // (never the real link: about 1 in 4,096 links already ends in "xx")
+    const forged = await app.request(`/api/owner/${token.slice(0, -2)}${token.endsWith("xx") ? "yy" : "xx"}/overview`);
     expect(forged.status).toBe(401);
     // a link without this client's link key (the old unversioned kind) doesn't open it
     expect((await app.request(`/api/owner/${sign("test-app-secret-0123456789", `owner|${bid}`)}/overview`)).status).toBe(401);
