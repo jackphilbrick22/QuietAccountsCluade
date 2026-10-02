@@ -63,7 +63,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 describe("the build", () => {
   it("writes / and a page per path (/lawn/index.html is Netlify's /lawn), their assets, and a zip of all of it", () => {
     const built = files(dist);
-    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "tree/index.html", "painting/index.html", "fence/index.html"]));
+    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "cleaning/index.html", "tree/index.html", "painting/index.html", "fence/index.html"]));
     for (const shot of ["tom-text", "david-text", "ryan-text"]) expect(built.some((f) => f.startsWith(`assets/${shot}`) && f.endsWith(".jpg")), shot).toBe(true);
     const zipped = unzip(`${dist}.zip`);
     expect([...zipped.keys()].sort()).toEqual([...built].sort());
@@ -348,7 +348,7 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.close();
   });
 
-  it("each slider is an example until he slides it, and only a page that says so takes ?q= as his count", async () => {
+  it("each slider is an example until he slides it; only a page that says so takes ?q= as his count, and ?j= only as his average job", async () => {
     let page = await open("/painting");
     expect(await page.isVisible("#estNote")).toBe(false);
     expect([await page.isVisible("#cNEg"), await page.isVisible("#cJEg")]).toEqual([true, true]);
@@ -364,6 +364,19 @@ describe.runIf(playwright)("in Chromium", () => {
     // a number past the slider's end stops at its end
     page = await open("/fence?q=99999");
     expect(await page.inputValue("#cN")).toBe("3000");
+    await page.close();
+    // /cleaning's job slider is what a regular pays a year, so a link's average cleaning leaves claims.ts's example alone
+    for (const link of ["/cleaning?j=215", "/cleaning?co=Sparkle%20Home&q=900&j=190"]) {
+      page = await open(link);
+      expect([await page.inputValue("#cN"), await page.inputValue("#cJ")], link).toEqual(["80", "5580"]);
+      expect([await page.textContent("#oJ"), await page.textContent("#rJobs"), await page.textContent("#rVal")], link).toEqual(["$5,580", "9", "$50,220"]);
+      expect([await page.isVisible("#cNEg"), await page.isVisible("#cJEg")], link).toEqual([true, true]);
+      await page.close();
+    }
+    // his own year still makes it his
+    page = await open("/cleaning?j=215");
+    await slide(page, "#cJ", 4000);
+    expect([await page.textContent("#oJ"), await page.textContent("#rVal"), await page.isVisible("#cJEg")]).toEqual(["$4,000", "$36,000", false]);
     await page.close();
   });
 
@@ -600,6 +613,40 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.click("#dzSendB");
     await page.waitForSelector("#dzSent", { state: "visible" });
     expect(posts.slice(1).map((r: Any) => JSON.parse(r.postData()).files.map((f: AuditFile) => f.name))).toEqual([["Quotes Report.csv"], ["Quotes Report.csv", "Jobs Report.csv"]]);
+    await page.close();
+  });
+
+  it("/cleaning signs him up as a cleaning shop on the monthly offer, asks how many regulars he can take, and reads his file as a cleaning shop's", { timeout: 120_000 }, async () => {
+    const posts: Any[] = [];
+    const page = await open("/cleaning?co=Sparkle%20Home&src=c03", withServer, async (r) => {
+      posts.push(r.request());
+      await r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' });
+    });
+    expect(await page.locator("#reveal .nb").textContent()).toBe(exampleNote("cleaning", "Sparkle Home", EXAMPLE_SIGNER).main);
+    await firstScreen(page, "#reveal .btn");
+    const kim = { company: "Sparkle Home", first: "Kim", cell: "603-555-0127" };
+    await page.fill("#first", kim.first);
+    await page.fill("#cell", kim.cell);
+    await page.click('.sw[data-sw="other"]');
+    await page.check("#consent");
+    await page.click("#submit");
+    await page.waitForSelector("#done", { state: "visible" });
+    const s: Signup = { ...kim, software: "other", trade: "cleaning", offer: "monthly", ref: "page=cleaning&src=c03", website: "" };
+    expect(JSON.parse(posts[0].postData())).toEqual(signupBody(s));
+    expect(await page.textContent('[data-step="other"]')).toBe("Send any export of your clients with their last cleaning date and email. We'll text you where to click.");
+    expect(await page.textContent("#done .pace")).toBe("One question we'll text you: how many new regulars can you take this month? We pace the notes to that.");
+    // a booking export whose services can't say what the shop does: the page's trade does, so his note is about the cleaning
+    const services = ["Booking ID,Customer Name,Email,Service,Frequency,Booking Date,Price,Status", ...Array.from({ length: 24 }, (_, i) => `${7000 + i},Ann Lee ${i % 4},ann${i % 4}@gmail.com,Weekly service,Every other week,2026-0${3 + Math.floor(i / 8)}-${10 + (i % 8)},160.00,Completed`)];
+    const vague: AuditFile = { name: "Bookings.csv", text: services.join("\n") };
+    await pick(page, [vague]);
+    await page.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    const want = runAudit([vague], { company: kim.company, signer: kim.first, trade: "cleaning" });
+    expect(want.trade).toBe("cleaning");
+    expect(await page.textContent("#rnBody")).toBe(want.past!.note!.body);
+    expect(want.past!.note!.body).toContain("Kim at Sparkle Home. We used to take care of the regular cleaning for you");
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSent", { state: "visible" });
+    expect(JSON.parse(posts[1].postData())).toEqual(withFile(s, [vague], want));
     await page.close();
   });
 

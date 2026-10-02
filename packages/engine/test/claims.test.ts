@@ -27,6 +27,29 @@ describe("claims", () => {
     expect(c.url).toBe("https://localiq.com/blog/home-services-search-advertising-benchmarks/");
   });
 
+  it("the two cleaning figures are MaidCentral's index and our arithmetic on it, and each says its own number", () => {
+    const churn = claim("cleaning-churn")!;
+    expect(churn.text).toBe("A cleaning company holding steady at 100 regulars loses about 80 a year and replaces them (MaidCentral: 6.89% a month).");
+    expect(churn.figure).toBe(6.89);
+    // 100 regulars, 6.89% of them a month, for twelve months: about 80
+    expect(Math.round((100 * churn.figure! * 12) / 100 / 10) * 10).toBe(80);
+    const regular = claim("cleaning-regular-value")!;
+    expect(regular.text).toBe("One biweekly client is worth about $5,580 a year.");
+    expect(regular.figure).toBe(5580);
+    // $214.60 a visit, every other week
+    expect(Math.round((214.6 * 26) / 10) * 10).toBe(regular.figure);
+    for (const c of [churn, regular]) {
+      expect(c.source).toMatch(/^MaidCentral Professional Cleaning Index, Aug 2026/);
+      expect(c.url).toBe("https://maidcentral.com/cleaning-industry-statistics-2026/");
+      expect(c.caveat).toMatch(/owner-complaints-brief\.md line \d+/);
+    }
+    expect(churn.source).not.toBe(regular.source);
+  });
+
+  it("a claim's figure, where it has one, is the number its text says", () => {
+    for (const c of CLAIMS.filter((x) => x.figure !== undefined)) expect(c.text, c.id).toContain(c.figure!.toLocaleString("en-US"));
+  });
+
   it("Jobber facts say only what its Help Center says: two reminders up to 90 days out, and no price for Campaigns", () => {
     expect(claim("jobber-two-reminders")!.text).toMatch(/up to two reminders.*90 days/);
     for (const id of ["jobber-campaigns-not-retroactive", "jobber-campaigns-add-on"]) {

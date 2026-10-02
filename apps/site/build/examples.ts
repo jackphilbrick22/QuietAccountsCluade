@@ -40,6 +40,15 @@ const EXAMPLES: Partial<Record<TradeId, Example>> = {
     subject: "Re: the mowing",
     reply: "Yes, put us back on. Same day as before works. Call me at 603-555-0187, mornings are best.",
   },
+  // a regular every other Tuesday from March, the last of them September 1, then nothing: two months quiet by November
+  cleaning: {
+    asOf: "2026-11-03",
+    customer: { id: "c1", first: "Nancy", last: "Gagnon", street: "17 Elm St" },
+    types: ["lapsed_regular"],
+    records: (customerId) => ({ jobs: Array.from({ length: 13 }, (_, i) => ({ id: `j${i}`, customerId, title: "Biweekly cleaning", lineItems: [], total: 215, status: "completed", rawStatus: "Completed", completedOn: addDays("2026-09-01", -i * 14), recurring: true })) }),
+    subject: "Re: the regular cleaning",
+    reply: "Yes, please put us back on. Every other Tuesday like before. Text me at 603-555-0152.",
+  },
   tree: {
     asOf: "2026-10-20",
     customer: { id: "thibodeau", first: "Gail", last: "Thibodeau", street: "31 Birch Hill Rd" },

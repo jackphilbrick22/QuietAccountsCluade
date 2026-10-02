@@ -1,4 +1,4 @@
-import type { TradeId } from "@qa/engine";
+import { claim, type TradeId } from "@qa/engine";
 
 /**
  * Everything on the pages that changes by page, read at build time (build/render.ts), never shipped to the browser.
@@ -88,7 +88,7 @@ const DOWS: Proof = {
   },
   family: true,
 };
-/** Capital City on the one-pass pages, where the lists are old quotes. */
+/** Capital City on another trade's page: the one-pass pages, where the lists are old quotes, and /cleaning. */
 const LANDSCAPER: Proof = { ...CAPITAL, otherTrade: "a landscaper's past customers" };
 
 /**
@@ -161,13 +161,27 @@ export interface SitePage {
   companyExample: string;
   /** In page order; the first one leads (the hero's tally, the calculator's rate). */
   proofs: Proof[];
-  /** `estimate`: shown only when a link's ?q= set the count, which then comes from his public reviews, not his list. */
-  calc: { count: Slider; job: Slider; rateLine: string; rateLabel: string; fine: string; estimate?: string };
+  /**
+   * `estimate`: shown only when a link's ?q= set the count, which then comes from his public reviews, not his list.
+   * `result`: what the sum counts, when it isn't jobs booked and the money left on the table.
+   * `perYear`: the job slider is a regular's year, not a job, so a link's ?j= (his average job) leaves it alone.
+   */
+  calc: { count: Slider; job: Slider; rateLine: string; rateLabel: string; fine: string; estimate?: string; result?: { jobs: string; value: string }; perYear?: true };
   /** Step 1 after the form, by software. Trusted HTML; menu paths only from the vendor's own help pages. */
   exportStep: Record<Software, string>;
+  /** The question Jack texts after the form, said in its last step (/cleaning: how many new regulars he can take). */
+  ask?: string;
   /** What a one-pass page calls its quotes ("estimates" on /painting), in the result of a file he drops. */
   quotes?: "quotes" | "estimates";
 }
+
+/** A monthly page's past visits: one report from Jobber or Housecall Pro. */
+const PAST_VISITS = {
+  // help.getjobber.com: Visits Report ("Insights > Reports … Visits under Work reports", "Export to CSV", emailed to the login address)
+  jobber: "In Jobber: <b>Insights &rarr; Reports &rarr; Visits &rarr; All time &rarr; Export to CSV.</b> It doesn't download; Jobber emails it to your login address.",
+  // help.housecallpro.com: How to Import & Export Jobs and Customers
+  housecall_pro: "In Housecall Pro: <b>Jobs &rarr; Actions &rarr; Export &rarr; Send file.</b> It emails you the file.",
+};
 
 export const PAGES: SitePage[] = [
   {
@@ -185,12 +199,33 @@ export const PAGES: SitePage[] = [
       fine: "Capital City Landscaping, NH: 17 booked out of 150 asked. Your first 150 show your real number.",
     },
     exportStep: {
-      // help.getjobber.com: Visits Report ("Insights > Reports … Visits under Work reports", "Export to CSV", emailed to the login address)
-      jobber: "In Jobber: <b>Insights &rarr; Reports &rarr; Visits &rarr; All time &rarr; Export to CSV.</b> It doesn't download; Jobber emails it to your login address.",
-      // help.housecallpro.com: How to Import & Export Jobs and Customers
-      housecall_pro: "In Housecall Pro: <b>Jobs &rarr; Actions &rarr; Export &rarr; Send file.</b> It emails you the file.",
+      ...PAST_VISITS,
       other: "Export your customers or visits, with dates and emails, from whatever you use, as a CSV or spreadsheet. Not sure how? Reply to our text and we'll walk you through it.",
     },
+  },
+  {
+    id: "cleaning",
+    name: "House cleaning",
+    trade: "cleaning",
+    words: MONTHLY,
+    companyExample: "Ridgeline Cleaning",
+    proofs: [LANDSCAPER, { ...NELSON, otherTrade: "a fence company's old quotes" }, { ...DOWS, otherTrade: "a tree company's old quotes" }],
+    calc: {
+      // 100 regulars held steady, losing the churn claims.ts gives every month for a year: about 80
+      count: { label: "Regulars lost in the last year", min: 10, max: 400, step: 5, value: Math.round((figure("cleaning-churn") * 12) / 10) * 10 },
+      job: { label: "What a regular pays you a year", min: 1000, max: 15000, step: 10, value: figure("cleaning-regular-value"), money: true },
+      rateLine: "If they come back like a landscaper's past customers did:",
+      rateLabel: "come back when asked",
+      fine: "Capital City Landscaping, NH, a landscaper: 17 booked out of 150 past customers asked. Your first 150 show your real number.",
+      result: { jobs: "regulars back", value: "a year, back on your schedule" },
+      perYear: true,
+    },
+    exportStep: {
+      ...PAST_VISITS,
+      // BookingKoala, Launch27 and ZenMaid each take their own clicks (ZenMaid's only on its top plan), so Jack texts them
+      other: "Send any export of your clients with their last cleaning date and email. We'll text you where to click.",
+    },
+    ask: "One question we'll text you: how many new regulars can you take this month? We pace the notes to that.",
   },
   {
     id: "tree",
@@ -248,6 +283,13 @@ export const PAGES: SitePage[] = [
     quotes: "quotes",
   },
 ];
+
+/** A figure from packages/engine/src/claims.ts, never typed in here. */
+function figure(id: string): number {
+  const f = claim(id)?.figure;
+  if (f === undefined) throw new Error(`No figure for "${id}" in packages/engine/src/claims.ts`);
+  return f;
+}
 
 /** A one pass works the old quotes and the past customers: two reports from Jobber or Housecall Pro. */
 function oldQuotes(quotes: "quotes" | "estimates"): SitePage["exportStep"] {

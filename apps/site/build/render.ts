@@ -125,17 +125,18 @@ function slider(id: string, out: string, s: Slider): string {
 /**
  * The money: his count times his average job, at the lead shop's own rate; on a one pass, also what he'd pay for
  * those jobs, with his past customers on top. Works out the defaults for no-JS. A ?q= link's count is an estimate, and
- * the line saying so waits hidden for it.
+ * the line saying so waits hidden for it. A link's ?j=, his average job, never sets a slider that's a regular's year.
  */
 function calc(p: SitePage): string {
   const lead = p.proofs[0]!;
   const c = p.calc;
   const pay = p.words.pay;
   const m = sums(c.count.value, c.job.value, lead, pay);
-  const data = `data-booked="${lead.booked}" data-asked="${lead.asked}"${pay ? ` data-each="${pay.each}" data-cap="${pay.cap}"` : ""}`;
+  const data = `data-booked="${lead.booked}" data-asked="${lead.asked}"${pay ? ` data-each="${pay.each}" data-cap="${pay.cap}"` : ""}${c.perYear ? " data-per-year" : ""}`;
   const paid = pay ? `<p class="pay">You'd pay <b id="rPay">${usd(m.pay!)}</b>, that's <b id="rShare">${m.share}</b> of it.</p>` : "";
   const estimate = c.estimate ? `<p class="fine" id="estNote" hidden>${esc(c.estimate)}</p>` : "";
-  return `<div class="calc" id="calc" ${data}>${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${m.rate}</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(m.jobs)}</b><span>jobs booked</span></div><div class="hot"><b id="rVal">${usd(m.value)}</b><span>left on the table${pay ? ", plus your past customers" : ""}</span></div></div>${paid}<p class="fine">${esc(c.fine)}</p>${estimate}${labelFor([lead])}</div>${cta(p, true)}</div>`;
+  const counts = c.result ?? { jobs: "jobs booked", value: `left on the table${pay ? ", plus your past customers" : ""}` };
+  return `<div class="calc" id="calc" ${data}>${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${m.rate}</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(m.jobs)}</b><span>${esc(counts.jobs)}</span></div><div class="hot"><b id="rVal">${usd(m.value)}</b><span>${esc(counts.value)}</span></div></div>${paid}<p class="fine">${esc(c.fine)}</p>${estimate}${labelFor([lead])}</div>${cta(p, true)}</div>`;
 }
 
 /**
@@ -192,7 +193,7 @@ function form(p: SitePage): string {
   <div class="dstep"><span class="n">1</span><div>${steps}</div></div>
   <div class="dstep"><span class="n">2</span><p>${esc(w.forward)}<br><span class="drop">${IMPORT_EMAIL}</span></p></div>
   ${fileDrop(p)}
-  <div class="dstep"><span class="n">3</span><p>You'll get a text from <b>Jack</b> within one business day with the first note to read. Change anything you want and text OK. The first notes go out the next weekday morning.</p></div>
+  <div class="dstep"><span class="n">3</span><div><p>You'll get a text from <b>Jack</b> within one business day with the first note to read. Change anything you want and text OK. The first notes go out the next weekday morning.</p>${p.ask ? `<p class="pace">${esc(p.ask)}</p>` : ""}</div></div>
 </div>
 </div>
 <form name="start" data-netlify="true" netlify-honeypot="website" hidden>${NETLIFY_FIELDS.map((f) => `<input name="${f}">`).join("")}</form>`;

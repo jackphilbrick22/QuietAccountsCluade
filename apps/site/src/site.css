@@ -134,6 +134,7 @@ h2{font-size:clamp(31px,7.6vw,48px);line-height:1.04;font-weight:700}
 .dstep .n{flex:0 0 28px;height:28px;border-radius:50%;background:var(--orange-deep);color:#fff;font-family:var(--mono);font-size:13px;display:grid;place-items:center;font-weight:500}
 .dstep p{color:var(--ink-2);font-size:15px}
 .dstep b{color:var(--ink)}
+.dstep .pace{margin-top:8px;color:var(--ink);font-weight:700}
 .drop{font-family:var(--mono);font-size:14px;background:var(--paper);border:1px dashed #999;padding:6px 10px;border-radius:8px;display:inline-block;margin-top:6px;word-break:break-all}
 /* the other way to send it: his file, read on his screen */
 .dfile{padding:14px 0;border-top:1px solid var(--line)}

@@ -599,7 +599,19 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     - The console's onboarding software guides have no cleaning-tool entries. The /cleaning page export step is C3.
     - Nothing has been checked against a real export file from any of the three tools.
 
+- **C3. Site: the cleaning page.**
+  - /cleaning is the monthly page with cleaning words (one HTML file and a trades.ts entry). Headline "Clients who stopped booking, back on your schedule." It has the same one button and price line, consent box, labels, Dow's disclosure and postal address as /lawn. At 390px the button shows without scrolling (Playwright check).
+  - Money section: "You lose about 80 regulars a year." The two figures are new claims in claims.ts with their source beside them: 6.89% of regulars lost a month, and about $5,580 a year for a biweekly client. Both come from MaidCentral's Professional Cleaning Index for Aug 2026; the brief's research lines 369 and 395 are right. The calculator starts at 80 regulars and $5,580 (both read from claims.ts) and uses Capital City's 11%, labelled "a landscaper's past customers". Every result is labelled.
+  - A link's ?j= (the average job) doesn't touch /cleaning's slider, because that slider is what a regular pays a year. The page keeps $5,580 labelled Example: a `perYear` flag in trades.ts, which page.ts honours the way /lawn ignores ?q= (Chromium test). Cleaning links need only ?co= and ?src=.
+  - The example note is the engine's own note to a regular who stopped ("We haven't been by for the regular cleaning since September 1… Want us back on your usual schedule?").
+  - After the form: Jobber's Visits report; for BookingKoala, Launch27, ZenMaid or a spreadsheet, the brief's one line, with no menu paths. Then "One question we'll text you: how many new regulars can you take this month? We pace the notes to that." New FAQ: "We're booked solid." The form sends trade cleaning and offer monthly, and a dropped file is read as a cleaning shop's.
+  - The front page's lawn-and-cleaning card links /cleaning. /fence stays unlinked.
+  - Screenshots: apps/site/screenshots/cleaning-390.png and cleaning-1280.png. Not deployed.
+  - Left: Lighthouse not run (not on this machine).
+  - With C1, C2 and C3 on top of B6 and the holiday rule: engine 1,781, site 178, server 565.
+
 **Live steps for Jack**
+- (C3) Text each cleaning owner the clicks for his software. ZenMaid: Reports → Data exports → Export data → Appointments (only on its Pro Max plan). BookingKoala: Bookings → Booking Time Logs → Export, plus Customers → Customers → Export (the customer file has emails but no dates, and time logs exist only if clocking in is on; otherwise "Download booking CSV"). Launch27: Bookings → Download CSV (active bookings only).
 - (Holidays) On Thanksgiving, open one Instantly client's page. Its campaigns that were Active should say Paused in Instantly, and its activity should say "Sending platform paused for this client: Because of Thanksgiving, a holiday".
 - By Saturday those should be Active again, and the follow-ups due over the holiday should go out Monday.
 - If one of that client's campaigns was already paused before the holiday (by you, or by Instantly's bounce protection), it should still be in that state on Saturday.

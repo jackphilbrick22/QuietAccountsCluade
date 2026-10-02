@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { claim, emptyState, generateSample, lintMarketing, reportWeek } from "@qa/engine";
 import { ADDRESS, CALL } from "../build/render.ts";
@@ -100,6 +101,10 @@ describe.each(PAGES.map((p) => [`/${p.id}`, p] as const))("%s, like every page",
       expect(html).toContain(`<input type="range" id="${id}" min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}">`);
       expect(html).toMatch(new RegExp(`for="${id}">[^<]*</output><small class="eg" id="${id}Eg">Example</small>`));
     }
+  });
+
+  it("lets a link's ?j=, his average job, set the job slider only where the slider is his average job", () => {
+    expect(/<div class="calc" id="calc"[^>]* data-per-year>/.test(html)).toBe(p.calc.job.label !== "Your average job");
   });
 
   it("gives a screen reader the Jobber table in rows: the column headers, then a row header and two cells a line", () => {
@@ -269,6 +274,122 @@ describe("/lawn", () => {
     const friday = reportWeek(emptyState(ds, "2026-10-02T16:00:00"), "2026-10-02T16:00:00");
     expect(friday.kind).toBe("weekly");
     for (const line of [/^Notes out: \d+ \(to \d+ people\)$/m, /^Wrote back: \d+$/m, /^Booked: \d+/m]) expect(friday.text).toMatch(line);
+  });
+});
+
+/* ------------------------------ /cleaning: the monthly template, with cleaning words ------------------------------ */
+
+describe("/cleaning", () => {
+  const p = page("cleaning");
+  const html = rendered("cleaning/index.html", p);
+  const text = visibleText(html);
+  const money = textOf(blocks(html, /<section class="sec" id="money">/, "section")[0]!);
+  const churn = claim("cleaning-churn")!;
+  const regular = claim("cleaning-regular-value")!;
+
+  it("gives the result, the promise and the price first, in the brief's words, on the monthly offer", () => {
+    expect(h1(html)).toBe("Clients who stopped booking, back on your schedule.");
+    expect(promise(html)).toBe("Done for you. Any month nobody asks to come back, you don't pay.");
+    expect(textOf(blocks(html, /<ul class="ticks/, "ul")[0]!)).toBe("First 150 free, then $497/mo if you say yes No call, no card Your part: send one export");
+    expect(text).toContain("Free for the first 150. Then $497 a month, only if you say yes.");
+    expect(text).toContain("Any month nobody asks to come back is free. Only if you say yes after the first 150 We text you before every charge.");
+    expect(text).toContain("Your first 150 are free, then $497 a month if you say yes.");
+    expect(p.words).toBe(MONTHLY);
+    expect(html).toContain('data-page="cleaning" data-trade="cleaning" data-offer="monthly"');
+    expect(text).not.toMatch(/owe nothing|\$250|mowing|lawn|landscaping compan/i);
+  });
+
+  it("says what a cleaning company loses in claims.ts's words, with their source beside them, never typed into the page", () => {
+    expect(money).toContain(`You lose about 80 regulars a year. ${churn.text} ${regular.text}`);
+    expect(money).toContain(`Regulars lost: ${churn.source}. A regular's year: ${regular.source}.`);
+    expect(churn.text).toContain("(MaidCentral: 6.89% a month)");
+    expect(count(text, "6.89%")).toBe(1);
+    // the claim, and the calculator's example that's read from it
+    expect(count(text, "$5,580")).toBe(2);
+    // the page and its trades.ts entry say neither figure themselves
+    for (const file of ["cleaning/index.html", "src/trades.ts"]) expect(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), file).not.toMatch(/6\.89|5,?580/);
+  });
+
+  it("works out the calculator: regulars lost in a year × what one pays a year × Capital City's 11%, as a landscaper's past customers", () => {
+    // about 80 lost a year: 100 regulars held steady, 6.89% of them a month
+    expect(p.calc.count).toMatchObject({ label: "Regulars lost in the last year", value: Math.round((churn.figure! * 12) / 10) * 10 });
+    expect(p.calc.count.value).toBe(80);
+    expect(p.calc.job).toMatchObject({ label: "What a regular pays you a year", value: regular.figure, money: true });
+    expect(html).toContain('<output id="oN" for="cN">80</output><small class="eg" id="cNEg">Example</small>');
+    expect(html).toContain('<output id="oJ" for="cJ">$5,580</output><small class="eg" id="cJEg">Example</small>');
+    const calc = blocks(html, /<div class="calc"/, "section")[0]!;
+    // a regular's year, which no link's average job sets
+    expect(calc).toContain('data-booked="17" data-asked="150" data-per-year>');
+    // 80 at 17 in 150 is 9 regulars, $50,220 a year at $5,580 each
+    expect(textOf(calc)).toContain(
+      `If they come back like a landscaper's past customers did: 11% come back when asked 9 regulars back $50,220 a year, back on your schedule Capital City Landscaping, NH, a landscaper: 17 booked out of 150 past customers asked. Your first 150 show your real number. ${LABEL}`,
+    );
+    expect(html).not.toMatch(/id="rPay"|id="estNote"/);
+  });
+
+  it("leads with Capital City as a landscaper's past customers, names every other shop's trade, and labels them all", () => {
+    expect(textOf(blocks(html, /<figure class="tally">/, "figure")[0]!)).toBe(`Capital City Landscaping, NH · a landscaper's past customers 150 asked 28 wrote back 17 booked $34k in jobs ${LABEL}`);
+    const [capital, nelson, dows] = cards(html).map(textOf);
+    expect(capital).toContain("Capital City Landscaping NH · a landscaper's past customers $34,000 in jobs");
+    expect(nelson).toContain("Nelson Fence CT · a fence company's old quotes $19,800 in jobs");
+    expect(dows).toContain(`Dow's Tree Service NH · a tree company's old quotes $10,000+ in jobs`);
+    expect(dows).toContain(`${LABEL} ${FAMILY}`);
+    expect(textOf(blocks(html, /<div class="plan free">/, "ul")[0]!)).toContain(`12–28 wrote back 4–17 booked $10k–$34k in jobs ${LABEL} ${FAMILY}`);
+    expect(count(text, LABEL)).toBe(6);
+    expect(count(text, FAMILY)).toBe(2);
+  });
+
+  it("shows the cleaning note the engine writes to a regular who stopped, labeled an example", () => {
+    const note = textOf(blocks(html, /<div class="nb"/, "div")[0]!);
+    expect(note).toBe(`Hi Nancy, Sarah at Ridgeline Cleaning. We haven't been by for the regular cleaning since September 1, and I wanted to make sure you're all set. Want us back on your usual schedule? Reply with a day that works and I'll put you back on. Sarah`);
+    expect(count(html, "Note 1 &middot; Example")).toBe(2);
+    expect(count(html, "Example &middot; a text to you")).toBe(2);
+    expect(count(html, '<span class="ex-tag">Example</span>')).toBe(2);
+    expect(blocks(html, /<div class="hero-side"/, "p")[0]).toContain('<p class="qw-day">Example</p>');
+  });
+
+  it("keeps each example customer to one story: the engine's note and text are to the first one on the list, and no one in the hero", () => {
+    const sms = textOf(blocks(html, /<div class="sms">/, "p")[0]!);
+    const note = textOf(blocks(html, /<div class="nb"/, "div")[0]!);
+    const [, first, last, street] = /NEW — (\w+) (\w+), (.+?) Last job/.exec(sms)!;
+    const [, month, job] = /Last job: (\w{3}) \d+ · \$[\d,]+ · (.+?) They said/.exec(sms)!;
+    expect(textOf(blocks(html, /<li class="we">/, "li")[0]!)).toContain(`Example ${first![0]}. ${last} · ${job!.toLowerCase()} ${month} 2026 `);
+    const side = blocks(html, /<div class="hero-side"/, "section")[0]!;
+    const hero = [...side.matchAll(/<b class="qw-title">([^<]*) wants it done<\/b>[\s\S]*?<span class="qw-meta">([^<&]*)/g)].map((m) => [m[1]!, m[2]!.trim()] as const);
+    expect(hero).toEqual([["Karen Doucette", "22 Summer St"], ["Mark Lefebvre", "5 Church St"]]);
+    for (const [name, at] of hero) for (const part of [...name.split(" "), at]) for (const engine of [sms, note]) expect(engine, part).not.toMatch(new RegExp(`\\b${part}\\b`));
+    expect(textOf(side)).not.toMatch(new RegExp(`\\b(?:${first}|${last}|${street})\\b`));
+  });
+
+  it("asks Jobber for its Visits report, and anyone else for the brief's one line, with no vendor's menu path", () => {
+    expect(textOf(/<p data-step="jobber">([\s\S]*?)<\/p>/.exec(html)![1]!)).toBe("In Jobber: Insights → Reports → Visits → All time → Export to CSV. It doesn't download; Jobber emails it to your login address.");
+    expect(textOf(/<p data-step="other" hidden>([\s\S]*?)<\/p>/.exec(html)![1]!)).toBe("Send any export of your clients with their last cleaning date and email. We'll text you where to click.");
+    // Jack texts the BookingKoala, Launch27 and ZenMaid clicks; the page names those tools only in the FAQ, with no path
+    for (const tool of ["BookingKoala", "Launch27", "ZenMaid"]) expect(count(text, tool), tool).toBe(1);
+    expect(text).not.toMatch(/time logs|data exports|download (booking )?csv|pro max/i);
+    expect(answer(html, "I don't use Jobber.")).toBe(`BookingKoala, Launch27, ZenMaid, Housecall Pro or a spreadsheet. Anything that exports your clients with their last cleaning date and email works. Pick "Something else" at the top and we'll text you where to click.`);
+  });
+
+  it("after the form, asks how many new regulars he can take, and only this page asks", () => {
+    const done = textOf(html.slice(html.indexOf('<div class="done" id="done"'), html.indexOf('<form name="start"')));
+    expect(done).toMatch(/3 You'll get a text from Jack .* The first notes go out the next weekday morning\. One question we'll text you: how many new regulars can you take this month\? We pace the notes to that\.$/);
+    for (const other of PAGES.filter((x) => x !== p)) expect(rendered(`${other.id}/index.html`, other), other.id).not.toContain('class="pace"');
+  });
+
+  it("answers what the software backs, the new monthly questions and 'We're booked solid.', in the brief's words", () => {
+    expect(answer(html, "We're booked solid.")).toBe("Tell us how many you can take. We pace the notes to it.");
+    const answers = faq(html);
+    expect(answers).toContain("change anything you want and text OK. The first notes go out the next weekday morning.");
+    expect(answers).toContain("Up to three short notes over a week or two");
+    expect(answers).toContain("The first 150 are free (then $497 a month if you say yes), so you see your own numbers before you pay anything.");
+    expect(answers).toContain("a person, not a bot, reads every reply");
+    expect(answer(html, "How do I cancel?")).toBe("Text 603-340-7673 and say you're done. That's the whole process. Nothing goes out after that.");
+    expect(answer(html, "When do I pay, and how?")).toBe(answer(rendered("lawn/index.html", lawn), "When do I pay, and how?"));
+    expect(answer(html, "What counts as asking to come back?")).toBe("Someone we wrote to asks for a date, a price or their old slot. You get each one by text, the same day.");
+    expect(MONTHLY_PROMISES.some((x) => answer(html, "What if nothing comes back?").includes(x))).toBe(true);
+    const jobber = textOf(blocks(html, /<section class="sec band" id="jobber">/, "section")[0]!);
+    expect(jobber).toContain("A month nobody asks to come back The add-on bills anyway $0");
+    for (const id of ["jobber-campaigns-not-retroactive", "jobber-campaigns-add-on"]) expect(jobber).toContain(`${claim(id)!.text}`);
   });
 });
 
@@ -462,11 +583,11 @@ describe("/", () => {
   it("is the logo, one line and two cards, linking only pages that are built and meant to be found", () => {
     expect(h1(html)).toBe("We write to your old customers and quotes in your name. You get a text when one wants the work.");
     const offers = blocks(html, /<article class="offer">/, "article").map(textOf);
-    expect(offers).toEqual([`${MONTHLY.card.title} ${MONTHLY.card.text} Lawn and landscaping →`, `${ONE_PASS.card.title} ${ONE_PASS.card.text} Tree service → Painting →`]);
+    expect(offers).toEqual([`${MONTHLY.card.title} ${MONTHLY.card.text} Lawn and landscaping → House cleaning →`, `${ONE_PASS.card.title} ${ONE_PASS.card.text} Tree service → Painting →`]);
     expect(MONTHLY.card.text).toBe("Past customers back on your schedule. First 150 free, then $497 a month if you say yes.");
     expect(ONE_PASS.card.text).toBe("One pass through your old quotes and past customers. $250 per booked job, never more than $1,000.");
     const links = [...html.matchAll(/href="(\/[^"]*)"/g)].map((m) => m[1]).filter((h) => !h!.startsWith("/src/"));
-    expect(links).toEqual(["/lawn", "/tree", "/painting"]);
+    expect(links).toEqual(["/lawn", "/cleaning", "/tree", "/painting"]);
     expect(html).not.toMatch(/<form|<script|class="btn"/);
   });
 

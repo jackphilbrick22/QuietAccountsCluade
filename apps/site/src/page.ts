@@ -326,7 +326,7 @@ if (calc) {
   // his own number from here on, not an example
   const mine = (r: HTMLInputElement) => ($(`#${r.id}Eg`).hidden = true);
   // a link from Jack's email can carry his quote count, estimated from his public reviews (where the page says so),
-  // and his average job; the slider keeps either within its range
+  // and his average job (unless the slider is a regular's year); the slider keeps either within its range
   const q = numberFromQuery(location.search, "q");
   const j = numberFromQuery(location.search, "j");
   const estimate = document.querySelector<HTMLElement>("#estNote");
@@ -335,7 +335,7 @@ if (calc) {
     estimate.hidden = false;
     mine(count);
   }
-  if (j) {
+  if (j && d.perYear === undefined) {
     job.value = String(j);
     mine(job);
   }

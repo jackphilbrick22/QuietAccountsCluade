@@ -10,6 +10,8 @@ export interface Claim {
   text: string;
   /** Short attribution shown under the claim. */
   source: string;
+  /** The claim's number, for a page that works with it (the cleaning calculator); the text says it in words. */
+  figure?: number;
   url: string;
   year: number;
   /** How much weight to put on it. */
@@ -152,6 +154,24 @@ export const CLAIMS: Claim[] = [
     url: "https://localiq.com/blog/home-services-search-advertising-benchmarks/",
     year: 2025,
     caveat: "$138.38 per lead for Paint & Painting (CPC $13.74, 10.80% conversion), April 2024 to March 2025. Agency and platform data, not a survey of every shop; the owner's own cost beats it.",
+  },
+  {
+    id: "cleaning-churn",
+    text: "A cleaning company holding steady at 100 regulars loses about 80 a year and replaces them (MaidCentral: 6.89% a month).",
+    source: "MaidCentral Professional Cleaning Index, Aug 2026 (150,000+ cleanings a month)",
+    figure: 6.89,
+    url: "https://maidcentral.com/cleaning-industry-statistics-2026/",
+    year: 2026,
+    caveat: "Vendor data: recurring clients lost a month, 6.89% across all companies, 7.54% at small ones (docs/research/owner-complaints-brief.md line 395). The 80 is our arithmetic: 100 × 6.89% × 12 months is about 83. Held at 100, the losses are replaced; left alone, about 57% of a book is gone in a year.",
+  },
+  {
+    id: "cleaning-regular-value",
+    text: "One biweekly client is worth about $5,580 a year.",
+    source: "MaidCentral Professional Cleaning Index, Aug 2026 ($214.60 a job at small companies, 26 visits a year)",
+    figure: 5580,
+    url: "https://maidcentral.com/cleaning-industry-statistics-2026/",
+    year: 2026,
+    caveat: "Our arithmetic on vendor data: $214.60 revenue per job at small companies × 26 every-other-week visits = $5,579.60 (docs/research/owner-complaints-brief.md line 369). $219.50 across all companies would be about $5,707. Revenue, not profit; the owner's own price beats it.",
   },
   {
     id: "angi-putting-off",
