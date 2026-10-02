@@ -1,4 +1,5 @@
-import type { LineItem, SeasonFit, TradeId } from "../model.ts";
+import { soldMonthly } from "../breakage/assumptions.ts";
+import type { Dataset, LineItem, SeasonFit, TradeId } from "../model.ts";
 import { OFFERED_TRADES, PLAYBOOKS } from "./playbooks.ts";
 import { climateOf, type Climate, type ServiceDef, type TradePlaybook } from "./types.ts";
 
@@ -164,8 +165,9 @@ const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
   hvac: /\b(hvac|furnace|a\/?c|air condition\w*|heat pump|mini-?split|duct\w*|thermostat|tune-?up|igniter)\b/i,
   pest: /\b(pest|termites?|rodents?|mosquito\w*|ticks?|wasps?|hornets?|bed ?bugs?|ants?)\b/i,
   junk_removal: /\b(junk|haul\w*|clean-?out|debris|dumpster|demolition|removal - |pickup)\b/i,
-  // "Standard Cleaning" is what booking software (BookingKoala, Launch27) calls a regular house clean
-  cleaning: /\b(maid|move-?out|deep clean|standard clean\w*|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
+  // "Standard Cleaning" and "Recurring Cleaning" are what booking software (BookingKoala, Launch27) calls a regular house
+  // clean; a landscaper's "Recurring Clean Up" is a yard's
+  cleaning: /\b(maid|move-?out|deep clean|(standard|recurring) clean(?![\s-]*ups?\b)\w*|bi-?weekly clean\w*|house ?clean\w*|carpet clean\w*|post-construction clean)\b/i,
   // plain "lights" is landscape and path lighting too; these name holiday or permanent roofline work
   holiday_lighting: /\b(christmas|xmas|holiday (light\w*|decor\w*|display)|c9s?|c7s?|mini[- ]lights|wreaths?|garlands?|roofline|permanent (led |house |home |roofline |track |eave |christmas |holiday )?light\w*|trimlight|gemstone lights?|jellyfish lights?|light(s|ing)? (take-?down|removal|storage)|take-?down (&|and|\+|\/) storage)\b/i,
   // "deck stain" and "deck wash" are shared with painting and washing on purpose, so neither shop reads as a second
@@ -178,6 +180,8 @@ const TRADE_WORDS: Partial<Record<TradeId, RegExp>> = {
  * lighting work: it votes for lighting alone.
  */
 const SETTLED_BY: Partial<Record<TradeId, RegExp>> = {
+  // "Standard Cleaning (3 Bed / 2 Bath)" counts bedrooms, not flower beds
+  cleaning: /\b(standard|recurring) clean(ing)?\b(?![\s-]*ups?\b)/i,
   holiday_lighting: /\b((christmas|xmas|holiday) (lights?|lighting|light install\w*|decor\w*|display)|c9s?|c7s?|mini[- ]lights|permanent (led |house |home |roofline |track |eave |christmas |holiday )?light(s|ing)?|trimlight|gemstone lights?|jellyfish lights?)\b/i,
 };
 
@@ -210,4 +214,20 @@ export function detectTrade(titles: string[]): { trade: TradeId; others: TradeId
   // a second trade needs real work of its own (5+ titles only it could mean), not shared words
   const others = ranked.slice(1).filter(([t, c]) => c / classified >= 0.15 && (only[t] ?? 0) >= 5).map(([t]) => t).slice(0, 3);
   return { trade: top, others, confidence: Math.round((n / classified) * 100) / 100, counts };
+}
+
+/**
+ * The trade a shop's own records read, from every title in them: quotes, jobs and visits, requests, and invoice
+ * subjects (an invoices-only export). With the trade of the page he signed up on, the titles pick among the trades that
+ * page's offer sells, and the page's own stands when they can't tell, or tie; the trade they read most stays one of his
+ * others, so mowing visits on /tree are still mowing. The site's audit and the account it signs him up for both read
+ * it here, so the account writes the note he was shown.
+ */
+export function readTrade(ds: Pick<Dataset, "quotes" | "jobs" | "requests" | "invoices">, page?: TradeId): { trade: TradeId; others: TradeId[] } {
+  const d = detectTrade([...ds.quotes.map((q) => q.title), ...ds.jobs.map((j) => j.title), ...ds.requests.map((r) => r.title), ...ds.invoices.map((i) => i.subject)]);
+  if (!page) return { trade: d.trade, others: d.others };
+  if (d.trade === "general") return { trade: page, others: [] };
+  let trade = page;
+  for (const [t, n] of Object.entries(d.counts) as [TradeId, number][]) if (soldMonthly(t) === soldMonthly(page) && n > (d.counts[trade] ?? 0)) trade = t;
+  return { trade, others: [d.trade, ...d.others].filter((t) => t !== trade) };
 }

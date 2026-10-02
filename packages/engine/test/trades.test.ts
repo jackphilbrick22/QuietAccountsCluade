@@ -313,6 +313,23 @@ describe("reading the trade from their own titles", () => {
     expect(detectTrade(shop(["Standard Cleaning", 8], ["Deep Clean", 4], ["Move Out Clean", 3]))).toMatchObject({ trade: "cleaning", others: [] });
   });
 
+  it("'Recurring Cleaning' is too, and a booking's bedrooms are no flower beds", () => {
+    expect(detectTrade(shop(["Recurring Cleaning", 12]))).toMatchObject({ trade: "cleaning", others: [] });
+    // the service names booking software writes, with the frequency or the house's size after them
+    expect(detectTrade(shop(["Recurring Cleaning (Biweekly)", 9], ["Standard Cleaning (3 Bed / 2 Bath)", 6], ["Recurring Cleaning - 4 beds 2 baths", 5]))).toMatchObject({ trade: "cleaning", others: [], confidence: 1 });
+    // a landscaper's beds are still a landscaper's
+    expect(detectTrade(shop(["Mulch beds", 8], ["Bed edging", 5]))).toMatchObject({ trade: "landscape" });
+  });
+
+  it("a landscaper's 'Recurring Clean Up' is yard work: a clean-up is no house cleaning", () => {
+    for (const cleanup of ["Recurring Clean Up", "Recurring Clean Ups", "Standard Clean-up", "Standard Cleanup"]) {
+      const d = detectTrade(shop([cleanup, 8], ["Weekly Mowing", 6]));
+      expect([d.trade, d.others], cleanup).toEqual(["lawn", []]);
+    }
+    // nor does it settle a title as cleaning: the beds in it are flower beds
+    expect(detectTrade(shop(["Recurring Clean Up - mulch beds", 8], ["Weekly Mowing", 6]))).toMatchObject({ trade: "landscape", others: ["lawn"] });
+  });
+
   it("a painting shop that stains decks still reads as painting", () => {
     expect(detectTrade(shop(["Deck stain", 10], ["Exterior house painting", 6], ["Interior - 3 rooms", 5], ["Kitchen cabinet painting", 3]))).toMatchObject({ trade: "painting", others: [] });
   });

@@ -135,6 +135,27 @@ h2{font-size:clamp(31px,7.6vw,48px);line-height:1.04;font-weight:700}
 .dstep p{color:var(--ink-2);font-size:15px}
 .dstep b{color:var(--ink)}
 .drop{font-family:var(--mono);font-size:14px;background:var(--paper);border:1px dashed #999;padding:6px 10px;border-radius:8px;display:inline-block;margin-top:6px;word-break:break-all}
+/* the other way to send it: his file, read on his screen */
+.dfile{padding:14px 0;border-top:1px solid var(--line)}
+.dz{display:grid;gap:4px;justify-items:center;text-align:center;padding:16px 14px;border:2px dashed #B9B5AD;border-radius:14px;background:var(--paper);cursor:pointer;transition:border-color .15s,background-color .15s}
+.dz.over,.dz:focus-within{border-color:var(--orange-deep);background:var(--orange-soft)}
+.dz b{font-family:var(--display);font-size:18px;font-weight:700;letter-spacing:-.01em;line-height:1.25}
+.dz span{font-size:13.5px;line-height:1.45;color:var(--ink-2);max-width:42ch}
+.dz input{font:inherit;font-size:14px;color:var(--ink-2);max-width:100%;min-height:44px;margin-top:8px}
+.dz input::file-selector-button{font:inherit;font-weight:800;font-size:15px;min-height:44px;padding:0 16px;margin-right:10px;border:1.5px solid var(--ink);border-radius:10px;background:var(--card);color:var(--ink);cursor:pointer}
+.dz-busy{margin-top:12px;font-size:15px;font-weight:700;color:var(--ink-2)}
+.dz-out{display:grid;gap:14px;margin-top:14px}
+.dz-files{font-family:var(--mono);font-size:12px;color:var(--ink-3);overflow-wrap:anywhere}
+.dz-h{font-family:var(--display);font-size:20px;font-weight:700;letter-spacing:-.015em;line-height:1.25}
+.dz-s{font-size:14.5px;color:var(--ink-2);margin-top:4px}
+.dz-k{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);margin-top:12px}
+.dz-rows{display:grid;gap:4px;margin-top:6px}
+.dz-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:baseline;padding:8px 12px;border-radius:8px;background:var(--paper);font-size:14.5px;color:var(--ink-2)}
+.dz-row span+span{font-weight:800;color:var(--ink);font-variant-numeric:tabular-nums;text-align:right}
+.dz-ok{font-size:15px;font-weight:700;color:#14693B}
+.btn2{appearance:none;border:0;cursor:pointer;font:inherit;font-weight:800;font-size:17px;min-height:48px;padding:12px 22px;border-radius:12px;background:var(--navy);color:#fff}
+.btn2:focus-visible{outline:3px solid var(--peach);outline-offset:3px}
+.btn2:disabled{opacity:.6;cursor:default}
 
 /* finished work: notes, replies, the text on your phone */
 .ex{min-width:0}

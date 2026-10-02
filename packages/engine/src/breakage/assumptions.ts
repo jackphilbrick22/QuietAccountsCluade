@@ -111,7 +111,7 @@ export function alwaysOnFor(b: BusinessProfile, f: Features = {}): boolean {
 }
 
 /** Past customers: what the monthly trades work, and the one-pass trades too. */
-const PAST_CUSTOMERS: BreakageType[] = ["lapsed_regular", "one_and_done", "service_due"];
+export const PAST_CUSTOMERS: BreakageType[] = ["lapsed_regular", "one_and_done", "service_due"];
 /** Old quotes and requests: the one-pass trades only. */
 const OLD_QUOTES: BreakageType[] = ["unanswered_quote", "archived_quote", "changes_requested", "approved_unscheduled", "unquoted_request", "declined_quote"];
 const MONTHLY_TRADES = new Set<TradeId>(["lawn", "landscape", "cleaning"]);

@@ -9,11 +9,11 @@ import { INBOX_DAILY, NOTES_SPAN_DAYS, paceOnePass, type Pace } from "../cadence
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, noAmount, ownerReported, type LiftReport } from "../ledger/attribution.ts";
-import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
+import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch, TradeId } from "../model.ts";
 import { ackFor, annualPrice, annualRefund, checkInLine, closeMessage, earlyLeaveRefund, exportAskText, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { isOnePass, ONE_PASS } from "../plans.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
-import { detectTrade, growingSeason, playbook, SEASONAL_TRADES, sellingFrom, sellingSeason } from "../trades/index.ts";
+import { growingSeason, playbook, readTrade, SEASONAL_TRADES, sellingFrom, sellingSeason } from "../trades/index.ts";
 import { alwaysOnFor, FRESH_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, makeId, mondayOf, monthName, plural, round2, sendableEmail, weekday } from "../util.ts";
 import type { AccountState, OwnerMessage } from "./state.ts";
@@ -1890,12 +1890,16 @@ export function takeRequest(state: AccountState, lead: RequestEmail, receivedAt:
   return { requestId, customerId: c.id, duplicate: false };
 }
 
-/** Setup never asks what trade they're in: their own quote and job titles say it. Only fills an unset trade. */
-export function adoptTrade(state: AccountState, now: ISODateTime): boolean {
+/**
+ * Setup never asks what trade they're in: their own titles say it (readTrade). Fills an unset trade; never overrides
+ * one the operator set. `page` is the trade of the site page a sign-up's file came from: an account that still has it
+ * is read the way the site's audit read the file, so it writes the note he was shown.
+ */
+export function adoptTrade(state: AccountState, now: ISODateTime, page?: TradeId): boolean {
   const ds = state.dataset;
-  if (ds.business.trade !== "general") return false;
-  const d = detectTrade([...ds.quotes.map((q) => q.title), ...ds.jobs.map((j) => j.title), ...ds.requests.map((r) => r.title)]);
-  if (d.trade === "general") return false;
+  if (ds.business.trade !== "general" && ds.business.trade !== page) return false;
+  const d = readTrade(ds, page);
+  if (d.trade === "general" || (d.trade === ds.business.trade && d.others.join() === ds.business.otherTrades.join())) return false;
   ds.business.trade = d.trade;
   ds.business.otherTrades = d.others;
   event(state, now, "reader", "info", `Looks like a ${playbook(d.trade).label.toLowerCase()} business${d.others.length ? ` (also ${d.others.map((t) => playbook(t).label.toLowerCase()).join(", ")})` : ""}`, "Read from your own quote and job titles. Notes use that trade's words, seasons and follow-ups.");

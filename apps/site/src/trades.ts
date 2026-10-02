@@ -165,6 +165,8 @@ export interface SitePage {
   calc: { count: Slider; job: Slider; rateLine: string; rateLabel: string; fine: string; estimate?: string };
   /** Step 1 after the form, by software. Trusted HTML; menu paths only from the vendor's own help pages. */
   exportStep: Record<Software, string>;
+  /** What a one-pass page calls its quotes ("estimates" on /painting), in the result of a file he drops. */
+  quotes?: "quotes" | "estimates";
 }
 
 export const PAGES: SitePage[] = [
@@ -206,6 +208,7 @@ export const PAGES: SitePage[] = [
       estimate: "Quote count: estimated from your public Google reviews. Your export gives the real count.",
     },
     exportStep: oldQuotes("quotes"),
+    quotes: "quotes",
   },
   {
     id: "painting",
@@ -223,6 +226,7 @@ export const PAGES: SitePage[] = [
       estimate: "Estimate count: worked out from your public Google reviews. Your export gives the real count.",
     },
     exportStep: oldQuotes("estimates"),
+    quotes: "estimates",
   },
   {
     id: "fence",
@@ -241,6 +245,7 @@ export const PAGES: SitePage[] = [
       estimate: "Quote count: estimated from your public Google reviews. Your export gives the real count.",
     },
     exportStep: oldQuotes("quotes"),
+    quotes: "quotes",
   },
 ];
 

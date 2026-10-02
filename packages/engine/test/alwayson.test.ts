@@ -5,7 +5,7 @@ import { FRESH_SEQUENCE, SEQUENCES } from "../src/copy/templates.ts";
 import { answerNewRequests, answerTime, dueTouches, markSent } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { weeklyReport } from "../src/reports/owner.ts";
-import { ASOF, ago, business, customer, dataset, NEW_REQUESTS, quote, request } from "./fixtures.ts";
+import { ASOF, ago, business, customer, dataset, job, NEW_REQUESTS, quote, request } from "./fixtures.ts";
 
 const paying = (over = {}) => business({ plan: { stage: "paying", trialSize: 150, monthlyPrice: 497, freeMonths: [], paidOn: ago(40) }, ...over });
 
@@ -179,6 +179,29 @@ describe("one-tap setup: the trade is read from their own titles", () => {
     expect(st.events.at(-1)!.title).toMatch(/tree service business/i);
     st.dataset.business.trade = "fence";
     expect(adoptTrade(st, `${ASOF}T10:00:00`)).toBe(false);
+  });
+
+  it("a file from a site page is read the way the site's audit read it, while the account still has that page's trade", async () => {
+    const { adoptTrade } = await import("../src/runtime/agents.ts");
+    const at = `${ASOF}T10:00:00`;
+    const titled = (trade: "lawn" | "landscape" | "tree", title: string) =>
+      emptyState(dataset({ business: business({ trade }), jobs: Array.from({ length: 8 }, (_, i) => job(`j${i}`, "c1", { title })) }), at);
+    // a cleaning shop's file from /lawn is a cleaning shop's
+    const st = titled("lawn", "Recurring Cleaning (Biweekly)");
+    expect(adoptTrade(st, at)).toBe(false);
+    expect(adoptTrade(st, at, "lawn")).toBe(true);
+    expect(st.dataset.business.trade).toBe("cleaning");
+    // mowing from /tree stays a tree shop's, with the mowing beside it; read again, nothing changes and nothing's said
+    const tree = titled("tree", "Weekly mowing");
+    expect(adoptTrade(tree, at, "tree")).toBe(true);
+    expect([tree.dataset.business.trade, tree.dataset.business.otherTrades]).toEqual(["tree", ["lawn"]]);
+    const said = tree.events.length;
+    expect(adoptTrade(tree, at, "tree")).toBe(false);
+    expect(tree.events).toHaveLength(said);
+    // a trade the operator set since stands
+    const set = titled("landscape", "Recurring Cleaning (Biweekly)");
+    expect(adoptTrade(set, at, "lawn")).toBe(false);
+    expect(set.dataset.business.trade).toBe("landscape");
   });
 });
 

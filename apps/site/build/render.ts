@@ -191,10 +191,51 @@ function form(p: SitePage): string {
   <p class="lead">${esc(w.sendUs)}</p>
   <div class="dstep"><span class="n">1</span><div>${steps}</div></div>
   <div class="dstep"><span class="n">2</span><p>${esc(w.forward)}<br><span class="drop">${IMPORT_EMAIL}</span></p></div>
+  ${fileDrop(p)}
   <div class="dstep"><span class="n">3</span><p>You'll get a text from <b>Jack</b> within one business day with the first note to read. Change anything you want and text OK. The first notes go out the next weekday morning.</p></div>
 </div>
 </div>
 <form name="start" data-netlify="true" netlify-honeypot="website" hidden>${NETLIFY_FIELDS.map((f) => `<input name="${f}">`).join("")}</form>`;
+}
+
+/**
+ * The other way to send the file, in the step after the form: he drops it (or picks it, on a phone) and the audit
+ * reads it on his screen, in a worker that loads only then. The result shows right here (page.ts fills it in): on a
+ * one-pass page the quotes nobody answered, and on every page the past customers who haven't booked since, with the
+ * first note to one of them. Nothing leaves until he presses send, and that needs a server; without one he forwards
+ * the email as usual. A one-pass page asks for two exports: a send with only one of them says which is still to come.
+ */
+function fileDrop(p: SitePage): string {
+  const quotes = p.words.offer === "one_pass" ? (p.quotes ?? "quotes") : undefined;
+  const none = quotes
+    ? `We couldn't find ${quotes} nobody answered or past customers to write to in that file. It needs your ${quotes} or your past jobs, with dates and your customers' emails, like Jobber's Quotes report or its Visits report.`
+    : "We couldn't find past customers to write to in that file. It needs your visits or jobs, with dates and your clients' emails, like Jobber's Visits report.";
+  const quoteResult = quotes
+    ? `<div class="dz-r" id="rQuotes" hidden><p class="dz-h"><span id="rqValue"></span> is sitting in <span id="rqCount"></span> nobody answered.</p><p class="dz-s" id="rqRange"></p><p class="dz-k">When they were sent</p><div class="dz-rows" id="rqAges"></div></div>`
+    : "";
+  const email = quotes ? "the emails" : "the email";
+  // page.ts shows the one that names what his sends haven't brought yet
+  const need = quotes
+    ? `<p class="dz-ok" data-need="past" role="status" hidden>Your ${quotes} are in. For your past customers, drop your visits or jobs export here too, or forward it as above.</p>
+      <p class="dz-ok" data-need="quotes" role="status" hidden>Your past customers are in. For your ${quotes} nobody answered, drop your ${quotes} export here too, or forward it as above.</p>`
+    : "";
+  return `<div class="dfile" id="dfile"${quotes ? ` data-quotes="${quotes}"` : ""}>
+    <label class="dz" id="dz"><b>Have the file already? Drop it here.</b><span>Or choose it below. It's read right here, on your screen, and goes nowhere until you send it.</span><input type="file" id="dzFile" multiple accept=".csv,.tsv,.txt,text/csv,text/plain"></label>
+    <p class="dz-busy" id="dzBusy" role="status" hidden>Reading it on your screen&hellip;</p>
+    <p class="err" id="dzErr" role="alert" hidden>That file didn't read. Send the export as your software made it, as a CSV, or forward ${email} as above.</p>
+    <div class="dz-out" id="dzOut" hidden>
+      <p class="dz-files" id="dzFiles"></p>
+      ${quoteResult}
+      <div class="dz-r" id="rPast" hidden><p class="dz-h" id="rpHead"></p><p class="dz-s" id="rpPaid"></p><p class="dz-k">When they were last here</p><div class="dz-rows" id="rpWhen"></div></div>
+      <p class="dz-s" id="dzNone" hidden>${esc(none)}</p>
+      <div class="ex ex-note" id="rNote" hidden><div class="nh"><span id="rnTo"></span><span>from your office</span></div><div class="nb" id="rnBody"></div><div class="nf" id="rnFoot"></div></div>
+      <div id="dzSend" hidden><button type="button" class="btn2" id="dzSendB">Send this file</button></div>
+      <p class="dz-ok" id="dzSent" role="status" hidden>It's all in, so there's no email to forward. Jack will text you the first note to read.</p>
+      ${need}
+      <p class="err" id="dzSendErr" role="alert" hidden>That didn't go through. Forward ${email} as above, or <a id="smsFile" href="sms:${JACK.tel}">text Jack at ${JACK.text}</a>.</p>
+      <p class="dz-s" id="dzFwd" hidden>To send ${quotes ? "them" : "it"}, forward ${email} as above, as usual.</p>
+    </div>
+  </div>`;
 }
 
 /** The trust footer: the postal address, the text number, and the only place the 15-minute call is offered. */

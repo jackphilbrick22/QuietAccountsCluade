@@ -1,8 +1,9 @@
 /**
  * Lawn and cleaning exports, made the same way on every run (seeded, never random between runs): a mowing shop's 40
  * clients and their 1,640 visits as Jobber's Visits report writes them, newest-first and oldest-first; the same
- * history as a bookings export; a cleaning shop's client list with and without a frequency column; and a mowing shop
- * through the seasons, its Visits report as it stands on any day.
+ * history as a Jobs report, an Invoices report and a bookings export; a cleaning shop's client list with and without a
+ * frequency column, and its bookings of regulars who started with a deep clean; and a mowing shop through the seasons,
+ * its Visits report as it stands on any day.
  */
 import { toCSV } from "../src/ingest/csv.ts";
 import type { ISODate } from "../src/model.ts";
@@ -148,6 +149,36 @@ export function visitsReport(clients: LawnClient[], order: "newest" | "oldest", 
   );
 }
 
+/**
+ * Jobber's Jobs report for the same jobs: one row per job, worth what its visits done billed. A job with visits still
+ * on the calendar, or one the owner never closed, is "Active" with no completed date; the rest are archived.
+ */
+export function jobsReport(clients: LawnClient[]): string {
+  const jobs = clients.flatMap((c) => [...new Set(c.visits.map((v) => v.job))].map((job) => ({ c, visits: c.visits.filter((v) => v.job === job) })));
+  return toCSV(
+    ["Job #", "Client name", "Client email", "Title", "Job status", "Job type", "Created date", "Start date", "Completed date", "Total ($)"],
+    jobs.map(({ c, visits }) => {
+      const done = visits.filter((v) => v.done);
+      const open = visits.some((v) => !v.done);
+      const first = visits[0]!;
+      return [
+        first.job, c.name, c.email, first.title, open ? "Active" : "Archived", first.recurring ? "Recurring" : "One-off", usDate(addDays(first.date, -7)), usDate(first.date),
+        open ? "" : usDate(done.at(-1)!.date), done.reduce((s, v) => s + v.amount, 0).toFixed(2),
+      ];
+    }),
+  );
+}
+
+/** Jobber's Invoices report for the same work, and nothing else of it: a bill for each visit done, paid the day it's issued. */
+export function invoicesReport(clients: LawnClient[]): string {
+  return toCSV(
+    ["Invoice #", "Client name", "Client email", "Subject", "Status", "Issued date", "Due date", "Paid date", "Total ($)", "Balance ($)", "Job #"],
+    rowsOf(clients).filter(({ v }) => v.done).sort(byDate).map(({ c, v }, i) => [
+      20001 + i, c.name, c.email, `For services rendered: ${v.title}`, "Paid", usDate(v.date), usDate(addDays(v.date, 30)), usDate(v.date), v.amount.toFixed(2), "0.00", v.job,
+    ]),
+  );
+}
+
 /** The same people and visits as a bookings export, the way cleaning booking software writes one. */
 export function bookingsExport(clients: LawnClient[]): string {
   return toCSV(
@@ -206,6 +237,41 @@ export function cleaningClientList(clients: ListedClient[], withFrequency: boole
 /** Days since the last visit after which a cleaning client counts as gone, by what the list says (none: 45). */
 export function cleaningThreshold(f: Frequency | undefined): number {
   return f === "Weekly" || f === "Every other week" ? 21 : 45;
+}
+
+export interface BookedClient {
+  name: string;
+  email: string;
+  /** Stopped coming: not cleaned in the last two months. */
+  stopped: boolean;
+  bookings: { date: ISODate; service: string; frequency: string; price: number }[];
+}
+
+/**
+ * Ten regulars cleaned every other week, each started with an initial deep clean 7 to 11 months before CLEANING_ASOF
+ * and cleaned again 3 to 12 days before it: their deep clean has come due again, and they're still on the schedule.
+ * Three more were cleaned every other week until 2 to 4 months before it, and one had a deep clean 8 months before it
+ * and nothing since.
+ */
+export function deepCleanClients(): BookedClient[] {
+  const deep = (daysAgo: number) => ({ date: addDays(CLEANING_ASOF, -daysAgo), service: "Initial Deep Clean", frequency: "One-time", price: 300 });
+  // every other week, from `from` days before CLEANING_ASOF up to `to` days before it
+  const regular = (from: number, to: number) =>
+    Array.from({ length: Math.floor((from - to) / 14) + 1 }, (_, k) => ({ date: addDays(CLEANING_ASOF, -(to + 14 * k)), service: "Recurring Cleaning", frequency: "Every other week", price: 160 })).reverse();
+  return Array.from({ length: 14 }, (_, i) => {
+    const [first, last] = [FIRST[i]!, LAST[20 + i]!];
+    const started = 210 + (i % 5) * 30;
+    const bookings = i < 10 ? [deep(started), ...regular(started - 14, 3 + i)] : i < 13 ? regular(300, 60 + (i - 10) * 30) : [deep(240)];
+    return { name: `${first} ${last}`, email: `${first.toLowerCase()}.${last.toLowerCase()}@outlook.com`, stopped: i >= 10, bookings };
+  });
+}
+
+/** Their bookings export, every booking done. */
+export function deepCleanBookings(clients: BookedClient[]): string {
+  return toCSV(
+    ["Booking ID", "Customer Name", "Email", "Service", "Frequency", "Booking Date", "Price", "Status"],
+    clients.flatMap((c) => c.bookings.map((b) => ({ c, b }))).sort((x, y) => (x.b.date < y.b.date ? -1 : 1)).map(({ c, b }, i) => [80001 + i, c.name, c.email, b.service, b.frequency, usDate(b.date), b.price.toFixed(2), "Completed"]),
+  );
 }
 
 

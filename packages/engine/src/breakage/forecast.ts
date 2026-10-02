@@ -1,7 +1,8 @@
-import type { BreakageType, Dataset, Money, Opportunity } from "../model.ts";
+import type { BreakageType, Dataset, ISODate, Money, Opportunity } from "../model.ts";
 import { addDays, daysBetween, fmtMoney, round2, sum } from "../util.ts";
-import { BREAKAGE_LABEL } from "./assumptions.ts";
-import { averageJob, type ScanResult } from "./detect.ts";
+import { BREAKAGE_LABEL, PAST_CUSTOMERS } from "./assumptions.ts";
+import { averageJob, BILLED, type ScanResult } from "./detect.ts";
+import { jobDate, lapseAfter, rhythmOf, visitBook } from "./visits.ts";
 import { shopProfile, type ShopProfile } from "./profile.ts";
 import { callList, type CallList } from "./calllist.ts";
 import { quietRateOf } from "./quiet.ts";
@@ -113,6 +114,64 @@ export function onTheTable(ds: Dataset, result: ScanResult, s: DrawerSummary): O
     ? `Every month about ${near100(perMonth.value)} of what you quote goes quiet — nobody says yes or no. That's ${Math.round(perMonth.shareOfQuoted * 100)} cents of every quoted dollar${wastedLeadSpend ? `, and ${near100(wastedLeadSpend)} a year in leads you paid for and never heard from again` : ""}.`
     : `${s.audit.silent.count.toLocaleString("en-US")} of your quotes never got a yes or a no.`;
   return { silentNow: { count: s.audit.silent.count, value: s.audit.silent.value }, perMonth, requestsNeverPriced, pastCustomersNotBack, wastedLeadSpend, line };
+}
+
+/** A past customer who stopped booking: when they were last here, and what they paid in their last year with the shop. */
+export interface StoppedCustomer {
+  customerId: string;
+  /** Their last visit or job, or a bill issued after it; with no jobs file, their last bill. */
+  lastOn: ISODate;
+  /**
+   * Their bills in the 365 days up to lastOn; with no billed amounts there, what their work done in those days billed,
+   * when every piece of it carries an amount. Undefined when it doesn't: a fixed-price contract's visits carry none,
+   * and the one-off work beside them is no figure for what they paid.
+   */
+  paidLastYear?: Money;
+  /** A regular who stopped coming, not someone who came once or whose work came due again. */
+  regular: boolean;
+}
+
+/**
+ * The past customers a plan can write to, from the scan: lapsed regulars, one-time customers and work come due, with
+ * an email and nothing holding them back (came back, work on now). Work come due counts only once they've stopped
+ * coming too: a regular still on the schedule whose deep clean came due again hasn't left. What each paid comes from
+ * their own records only, each counted once: a job's own record (a Jobs report beside the Visits report) only when its
+ * visits aren't here.
+ */
+export function stoppedCustomers(ds: Dataset, result: ScanResult): StoppedCustomer[] {
+  const kinds = new Map<string, Set<BreakageType>>();
+  for (const o of result.opportunities)
+    if (PAST_CUSTOMERS.includes(o.type) && !o.suppressed && o.channels.includes("email")) (kinds.get(o.customerId) ?? kinds.set(o.customerId, new Set()).get(o.customerId)!).add(o.type);
+  const book = visitBook(ds);
+  const work = new Map<string, { on: ISODate; total: number }[]>();
+  const bills = new Map<string, { on: ISODate; total: number }[]>();
+  const add = (m: typeof work, id: string, on: ISODate | undefined, total: number) => {
+    if (kinds.has(id) && on && on <= ds.asOf) (m.get(id) ?? m.set(id, []).get(id)!).push({ on, total });
+  };
+  for (const j of ds.jobs) if (book.worked(j) && !book.hasVisits(j)) add(work, j.customerId, jobDate(j), j.total);
+  for (const i of ds.invoices) if (BILLED.has(i.status)) add(bills, i.customerId, i.issuedOn ?? i.paidOn, i.total);
+  return [...kinds].flatMap(([customerId, types]) => {
+    const done = work.get(customerId) ?? [];
+    const billed = bills.get(customerId) ?? [];
+    const lastOn = [...done, ...billed].reduce<ISODate>((m, x) => (x.on > m ? x.on : m), "");
+    if (!lastOn) return [];
+    // only work come due: they've stopped once they're past the time a customer of theirs goes quiet, by how often
+    // they come when they're on a rhythm (their visits, else their bills)
+    if (!types.has("lapsed_regular") && !types.has("one_and_done")) {
+      const pace = rhythmOf((done.length ? done : billed).map((x) => ({ date: x.on })).sort((a, b) => (a.date < b.date ? -1 : 1)));
+      if (daysBetween(lastOn, ds.asOf) < lapseAfter(ds.business.trade, pace.recurring ? pace.median : undefined).days) return [];
+    }
+    const from = addDays(lastOn, -365);
+    const inYear = (xs: { on: ISODate; total: number }[]) => xs.filter((x) => x.on > from);
+    const did = inYear(done);
+    const paid = sum(inYear(billed), (x) => x.total) || (did.length && did.every((x) => x.total > 0) ? sum(did, (x) => x.total) : undefined);
+    return [{ customerId, lastOn, paidLastYear: paid ? round2(paid) : undefined, regular: types.has("lapsed_regular") }];
+  });
+}
+
+/** What a group of them paid together in their last year: undefined when anyone's records don't say. */
+export function paidTogether(people: StoppedCustomer[]): Money | undefined {
+  return people.reduce<Money | undefined>((t, x) => (t === undefined || x.paidLastYear === undefined ? undefined : round2(t + x.paidLastYear)), 0);
 }
 
 export interface DrawerSummary {

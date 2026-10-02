@@ -402,7 +402,7 @@ function addDaysISO(d: ISODate, n: number): ISODate {
 }
 
 /** Invoices that show we did the work: sent or paid, never a draft or a void. */
-const BILLED = new Set<Invoice["status"]>(["paid", "awaiting_payment", "past_due"]);
+export const BILLED = new Set<Invoice["status"]>(["paid", "awaiting_payment", "past_due"]);
 
 /** A lawn or landscape shop's winter work: snow plowing and removal, salting, ice. */
 const WINTER_WORK = /\b(snow|plow\w*|plough\w*|salt(ing)?|ice|icing|de-?ic\w*|winter maintenance)\b/i;

@@ -58,5 +58,7 @@ describe("what the start form sends", () => {
     const link = smsLink("O'Brien & Sons", "Pat");
     expect(link.startsWith("sms:+16033407673?&body=")).toBe(true);
     expect(decodeURIComponent(link.split("body=")[1]!)).toBe("Hi Jack, it's Pat at O'Brien & Sons. I tried to sign up on your site and it didn't go through.");
+    // the file he sends after signing up says what he tried
+    expect(decodeURIComponent(smsLink("O'Brien & Sons", "Pat", "send my file").split("body=")[1]!)).toBe("Hi Jack, it's Pat at O'Brien & Sons. I tried to send my file on your site and it didn't go through.");
   });
 });

@@ -5,10 +5,13 @@ import { fileURLToPath } from "node:url";
 import { inflateRawSync } from "node:zlib";
 import { build } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { generateSample, lintMarketing } from "@qa/engine";
 import { exampleNote } from "../build/examples.ts";
 import { EXAMPLE_SIGNER } from "../build/render.ts";
-import { netlifyBody, signupBody } from "../src/form.ts";
+import { runAudit, type AuditFile } from "../src/audit.ts";
+import { netlifyBody, signupBody, withFile, type Signup } from "../src/form.ts";
 import { PAGES } from "../src/trades.ts";
+import { lawnClients, visitsReport } from "../../../packages/engine/test/lawn-fixtures.ts";
 
 /**
  * `pnpm build:site` as Netlify gets it: a page per path, dist.zip beside it, no engine in what the browser loads.
@@ -67,12 +70,15 @@ describe("the build", () => {
     for (const f of built) expect(zipped.get(f)!.equals(readFileSync(join(dist, f))), f).toBe(true);
   });
 
-  it("ships no engine and no audit worker to the browser: the notes were written at build time", () => {
+  it("ships the engine only in the audit's worker, a file of its own: the page's notes were written at build time", () => {
     const js = files(dist).filter((f) => extname(f) === ".js");
-    expect(js).toHaveLength(1);
-    const code = readFileSync(join(dist, js[0]!), "utf8");
-    expect(code.length).toBeLessThan(12_000);
-    expect(code).not.toMatch(/lapsed_regular|We used to take care|libphonenumber|Worker\(/);
+    expect(js.map((f) => f.replace(/-[\w-]{8}\.js$/, ""))).toEqual(["assets/page", "assets/worker"]);
+    const page = readFileSync(join(dist, js[0]!), "utf8");
+    expect(page.length).toBeLessThan(12_000);
+    expect(page).not.toMatch(/lapsed_regular|We used to take care|libphonenumber/);
+    // the page only names the worker; nothing loads it until a file is dropped (below)
+    expect(page).toContain(`new Worker("/${js[1]}"`);
+    expect(readFileSync(join(dist, js[1]!), "utf8")).toMatch(/lapsed_regular[\s\S]*We used to take care/);
     expect(readFileSync(join(dist, "index.html"), "utf8")).not.toContain("<script");
   });
 });
@@ -159,7 +165,9 @@ describe.runIf(playwright)("in Chromium", () => {
   it("every tap target is at least 44px tall, form and footer included", async () => {
     for (const path of ["/", ...PAGES.map((p) => `/${p.id}`)]) {
       const page = await open(path);
-      await page.evaluate(() => document.querySelector("#reveal")?.removeAttribute("hidden"));
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll("#reveal, #done, #done [hidden]")) el.removeAttribute("hidden");
+      });
       const small = await page.evaluate(() =>
         [...document.querySelectorAll<HTMLElement>("a, button, summary, input:not([type=hidden]):not([type=checkbox]):not(.hp), label.consent")]
           .filter((el) => el.offsetParent && !el.closest("[aria-hidden=true]") && el.getBoundingClientRect().height < 44)
@@ -173,9 +181,10 @@ describe.runIf(playwright)("in Chromium", () => {
   it("every word on a solid background has WCAG AA contrast: 4.5:1, or 3:1 for large text, buttons and the sticky bar included", async () => {
     for (const path of ["/", ...PAGES.map((p) => `/${p.id}`)]) {
       const page = await open(path);
-      // all of it that can show: the rest of the form, the step after it, the FAQ answers, the sticky bar
+      // all of it that can show: the rest of the form, the step after it and a file's result, the FAQ answers, the sticky bar
       await page.evaluate(() => {
         for (const id of ["reveal", "done"]) document.getElementById(id)?.removeAttribute("hidden");
+        for (const el of document.querySelectorAll("#done [hidden]")) el.removeAttribute("hidden");
         for (const d of document.querySelectorAll("details")) d.open = true;
         document.getElementById("sticky")?.classList.add("show");
       });
@@ -356,5 +365,272 @@ describe.runIf(playwright)("in Chromium", () => {
     page = await open("/fence?q=99999");
     expect(await page.inputValue("#cN")).toBe("3000");
     await page.close();
+  });
+
+  /* ------------------------------ his file, in the 'Got it' step ------------------------------ */
+
+  const lawnFile: AuditFile = { name: "Visits Report.csv", text: visitsReport(lawnClients(), "newest") };
+  const pat = { company: "Green Acre Lawn", first: "Pat", cell: "603-555-0122" };
+  /** Signs up from the page's form, as he would, and waits for "Got it". */
+  async function signUp(page: Any, who: { company: string; first: string; cell: string }) {
+    await page.fill("#company", who.company);
+    await page.click("#submit");
+    await page.fill("#first", who.first);
+    await page.fill("#cell", who.cell);
+    await page.check("#consent");
+    await page.click("#submit");
+    await page.waitForSelector("#done", { state: "visible" });
+  }
+  const pick = (page: Any, files: AuditFile[]) => page.setInputFiles("#dzFile", files.map((f) => ({ name: f.name, mimeType: "text/csv", buffer: Buffer.from(f.text) })));
+  /** A file dragged onto the zone and let go. */
+  const drop = (page: Any, f: AuditFile) =>
+    page.evaluate(([name, text]: string[]) => {
+      const dt = new DataTransfer();
+      dt.items.add(new File([text!], name!, { type: "text/csv" }));
+      document.querySelector("#dz")!.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+    }, [f.name, f.text]);
+  /** Every request the page makes from here on. */
+  function watch(page: Any) {
+    const seen: Any[] = [];
+    page.on("request", (r: Any) => seen.push(r));
+    return seen;
+  }
+  const lines = (page: Any, sel: string) => page.locator(`${sel} .dz-row`).evaluateAll((rows: HTMLElement[]) => rows.map((r) => [...r.children].map((c) => c.textContent)));
+
+  it("a past-customers-only file is a result, right in 'Got it'; nothing leaves until he presses send, and then it goes with his sign-up", { timeout: 120_000 }, async () => {
+    const { posts, post } = recorder();
+    const page = await open("/lawn", withServer, async (r) => {
+      posts.push(r.request());
+      await r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' });
+    });
+    const seen = watch(page);
+    await signUp(page, pat);
+    expect(posts).toHaveLength(1);
+    // the drop zone, and nothing of the result yet
+    expect(await page.isVisible("#dz")).toBe(true);
+    expect(await page.isVisible("#dzOut")).toBe(false);
+    const from = seen.length;
+    await pick(page, [lawnFile]);
+    await page.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    // read on his screen: the audit's worker loaded with the file, and nothing else went anywhere
+    expect(seen.slice(0, from).filter((r: Any) => /worker/.test(r.url()))).toEqual([]);
+    expect(seen.slice(from).map((r: Any) => `${r.method()} ${r.url()}`)).toEqual([expect.stringMatching(/^GET http:\/\/site\.test\/assets\/worker-[\w-]+\.js$/)]);
+    expect(posts).toHaveLength(1);
+    // the same audit, his company and name in it; no quotes, and no "we couldn't find"
+    const want = runAudit([lawnFile], { company: pat.company, signer: pat.first, trade: "lawn" });
+    const past = want.past!;
+    expect(await page.textContent("#dzFiles")).toBe("Read on your screen: Visits Report.csv");
+    expect(await page.textContent("#rpHead")).toBe(`${past.people} past customers haven't been back.`);
+    expect(await page.textContent("#rpPaid")).toBe(`In their last year with you, they paid $${past.paid!.toLocaleString("en-US")} between them.`);
+    expect(await lines(page, "#rpWhen")).toEqual(past.when.map((w) => [w.label, `${w.people} ${w.people === 1 ? "person" : "people"}`, `$${w.paid!.toLocaleString("en-US")}`]));
+    expect(await page.textContent("#rnTo")).toBe(`Note 1 · to ${past.note!.name}`);
+    expect(await page.textContent("#rnBody")).toBe(past.note!.body);
+    expect(await page.textContent("#rnBody")).toContain("Pat at Green Acre Lawn");
+    expect(await page.textContent("#rnFoot")).toBe(past.note!.foot);
+    for (const hidden of ["#rQuotes", "#dzNone", "#dzFwd", "#dzErr", "#dzBusy"]) expect(await page.isVisible(hidden), hidden).toBe(false);
+    // what he reads keeps the words rules too
+    expect(lintMarketing(await page.innerText("#done"))).toEqual([]);
+    // the press sends it: a second /start with the same sign-up, the file, and the audit's own numbers
+    expect(await page.textContent("#dzSendB")).toBe("Send this file");
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSent", { state: "visible" });
+    expect(posts).toHaveLength(2);
+    expect(posts[1].url()).toBe("https://api.example.test/start");
+    const s: Signup = { ...pat, software: "jobber", trade: "lawn", offer: "monthly", ref: "page=lawn", website: "" };
+    expect(JSON.parse(posts[1].postData())).toEqual(withFile(s, [lawnFile], want));
+    expect(await page.isVisible("#dzSend")).toBe(false);
+    await page.close();
+  });
+
+  it("a Visits report whose mowing visits carry no amounts: who and when, and no money line or column; the send carries no figure", { timeout: 120_000 }, async () => {
+    const { posts, post } = recorder();
+    const page = await open("/lawn", withServer, post);
+    await signUp(page, pat);
+    const fixed: AuditFile = { name: "Visits Report.csv", text: visitsReport(lawnClients(), "newest", false) };
+    await pick(page, [fixed]);
+    await page.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    const want = runAudit([fixed], { company: pat.company, signer: pat.first, trade: "lawn" });
+    expect(want.past!.paid).toBeUndefined();
+    expect(await page.textContent("#rpHead")).toBe(`${want.past!.people} past customers haven't been back.`);
+    expect(await page.isVisible("#rpPaid")).toBe(false);
+    expect(await lines(page, "#rpWhen")).toEqual(want.past!.when.map((w) => [w.label, `${w.people} ${w.people === 1 ? "person" : "people"}`]));
+    expect(await page.innerText("#rPast")).not.toContain("$");
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSent", { state: "visible" });
+    expect(JSON.parse(posts[1].postData()).audit.past).toEqual({ people: want.past!.people });
+    await page.close();
+  });
+
+  it("without a server, a file dragged in shows its result and he's asked to forward the email as usual; nothing is sent", { timeout: 120_000 }, async () => {
+    const { posts, post } = recorder();
+    const page = await open("/lawn", dist, post, 1280);
+    const seen = watch(page);
+    await signUp(page, pat);
+    const from = seen.length;
+    await drop(page, lawnFile);
+    await page.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    expect(await page.textContent("#rpHead")).toMatch(/^\d+ past customers haven't been back\.$/);
+    expect(await page.isVisible("#rNote")).toBe(true);
+    expect(await page.isVisible("#dzFwd")).toBe(true);
+    expect(await page.isVisible("#dzSend")).toBe(false);
+    // only the Netlify sign-up went anywhere; the file stayed on his screen
+    expect(posts.map((r) => r.url())).toEqual(["http://site.test/"]);
+    expect(seen.slice(from).map((r: Any) => r.method())).toEqual(["GET"]);
+    await page.close();
+  });
+
+  it("on a one-pass page: his quotes nobody answered and his past customers, and the send carries the one-pass sign-up", { timeout: 120_000 }, async () => {
+    const posts: Any[] = [];
+    const page = await open("/tree", withServer, async (r) => {
+      posts.push(r.request());
+      await r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' });
+    });
+    const ryan = { company: "Tall Pine Tree", first: "Ryan", cell: "603-555-0123" };
+    await signUp(page, ryan);
+    // the Quotes report, then the Jobs report a moment later: the second joins the first
+    const sample = generateSample({ trade: "tree", asOf: new Date().toISOString().slice(0, 10) }).files;
+    const [quotes, jobs] = ["Quotes Report.csv", "Jobs Report.csv"].map((n) => sample.find((f) => f.name === n)!);
+    await pick(page, [quotes!]);
+    await page.waitForSelector("#rQuotes", { state: "visible", timeout: 30_000 });
+    await pick(page, [jobs!]);
+    await page.waitForFunction(() => document.querySelector("#dzFiles")!.textContent!.includes("Jobs Report.csv"), undefined, { timeout: 30_000 });
+    await page.waitForSelector("#rPast", { state: "visible" });
+    const want = runAudit([quotes!, jobs!], { company: ryan.company, signer: ryan.first, trade: "tree" });
+    const money = (x: number) => `$${x.toLocaleString("en-US")}`;
+    expect(await page.textContent("#dzFiles")).toBe("Read on your screen: Quotes Report.csv, Jobs Report.csv");
+    expect(await page.innerText("#rQuotes .dz-h")).toBe(`${money(want.silent.value)} is sitting in ${want.silent.count.toLocaleString("en-US")} quotes nobody answered.`);
+    expect(await lines(page, "#rqAges")).toEqual(want.byAge.filter((a) => a.count).map((a) => [a.label, a.count.toLocaleString("en-US"), money(a.value)]));
+    expect(await page.textContent("#rpHead")).toBe(`${want.past!.people.toLocaleString("en-US")} past customers haven't been back.`);
+    // the note is the quote's
+    expect(await page.textContent("#rnBody")).toBe(want.hottest!.body);
+    expect(await page.textContent("#dzSendB")).toBe("Send these files");
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSent", { state: "visible" });
+    const sent = JSON.parse(posts[1].postData());
+    expect(sent).toMatchObject({ ...ryan, trade: "tree", offer: "one_pass", consent: true, audit: { quotes: want.quotes, silent: want.silent, perMonth: want.perMonth.value } });
+    expect(sent.files.map((f: AuditFile) => f.name)).toEqual(["Quotes Report.csv", "Jobs Report.csv"]);
+    await page.close();
+  });
+
+  it("a file with no one to write to says which export to send, and offers no send; a send that fails says what to do instead", { timeout: 120_000 }, async () => {
+    let answer = 201;
+    const posts: Any[] = [];
+    const page = await open("/painting", withServer, async (r) => {
+      posts.push(r.request());
+      await r.fulfill({ status: answer, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: "{}" });
+    });
+    await signUp(page, { company: "Fresh Coat Co", first: "Joe", cell: "603-555-0126" });
+    await pick(page, [{ name: "contacts.csv", text: "Name,Email\nAnn Lee,ann@gmail.com\n" }]);
+    await page.waitForSelector("#dzNone", { state: "visible", timeout: 30_000 });
+    expect(await page.textContent("#dzNone")).toBe("We couldn't find estimates nobody answered or past customers to write to in that file. It needs your estimates or your past jobs, with dates and your customers' emails, like Jobber's Quotes report or its Visits report.");
+    for (const hidden of ["#rQuotes", "#rPast", "#rNote", "#dzSend", "#dzFwd"]) expect(await page.isVisible(hidden), hidden).toBe(false);
+    // a real file, then the server turns it away
+    const sample = generateSample({ trade: "painting", asOf: new Date().toISOString().slice(0, 10) }).files.find((f) => f.name === "Quotes Report.csv")!;
+    await pick(page, [sample]);
+    await page.waitForSelector("#dzSend", { state: "visible", timeout: 30_000 });
+    expect(await page.innerText("#rQuotes .dz-h")).toMatch(/ estimates nobody answered\.$/);
+    answer = 503;
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSendErr", { state: "visible" });
+    expect(await page.textContent("#dzSendErr")).toBe("That didn't go through. Forward the emails as above, or text Jack at 603-340-7673.");
+    // the text to Jack has his company and name in it, and says what he tried: both files went, the one with no one in it too
+    expect(decodeURIComponent(await page.getAttribute("#smsFile", "href"))).toBe("sms:+16033407673?&body=Hi Jack, it's Joe at Fresh Coat Co. I tried to send my files on your site and it didn't go through.");
+    expect(await page.isVisible("#dzSend")).toBe(true);
+    expect(posts).toHaveLength(2);
+    await page.close();
+  });
+
+  it("a one-pass send with only the quotes, or only the past jobs, says which export is still to come; there's no email to forward only once both are in", { timeout: 120_000 }, async () => {
+    for (const [path, first, then] of [["/tree", "Quotes Report.csv", "Jobs Report.csv"], ["/painting", "Jobs Report.csv", "Quotes Report.csv"]] as const) {
+      const { posts, post } = recorder();
+      const page = await open(path, withServer, post);
+      await signUp(page, { company: "Tall Pine Tree", first: "Ryan", cell: "603-555-0123" });
+      const sample = generateSample({ trade: path === "/tree" ? "tree" : "painting", asOf: new Date().toISOString().slice(0, 10) }).files;
+      const file = (name: string) => sample.find((f) => f.name === name)!;
+      await pick(page, [file(first)]);
+      await page.waitForSelector("#dzSend", { state: "visible", timeout: 30_000 });
+      expect(await page.textContent("#dzSendB")).toBe("Send this file");
+      await page.click("#dzSendB");
+      const need = first === "Quotes Report.csv" ? "past" : "quotes";
+      await page.waitForSelector(`[data-need="${need}"]`, { state: "visible" });
+      expect(await page.innerText("#dzOut"), path).not.toContain("no email to forward");
+      expect(await page.isVisible("#dzSent")).toBe(false);
+      expect(await page.textContent(`[data-need="${need}"]`)).toBe(
+        need === "past"
+          ? "Your quotes are in. For your past customers, drop your visits or jobs export here too, or forward it as above."
+          : "Your past customers are in. For your estimates nobody answered, drop your estimates export here too, or forward it as above.",
+      );
+      // the other export, dropped here too: it goes on its own, and then it's all in
+      await pick(page, [file(then)]);
+      await page.waitForSelector("#dzSend", { state: "visible", timeout: 30_000 });
+      expect(await page.textContent("#dzFiles")).toBe(`Read on your screen: ${then}`);
+      await page.click("#dzSendB");
+      await page.waitForSelector("#dzSent", { state: "visible" });
+      expect(await page.isVisible("[data-need]")).toBe(false);
+      expect(posts.slice(1).map((r: Any) => JSON.parse(r.postData()).files.map((f: AuditFile) => f.name))).toEqual([[first], [then]]);
+      await page.close();
+    }
+  });
+
+  it("a file picked while another is being sent is never dropped: its result keeps its send, and that send carries it", { timeout: 120_000 }, async () => {
+    const posts: Any[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const page = await open("/tree", withServer, async (r) => {
+      posts.push(r.request());
+      // the first file's send waits until the second file's result is showing
+      if (posts.length === 2) await gate;
+      await r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' });
+    });
+    await signUp(page, { company: "Tall Pine Tree", first: "Ryan", cell: "603-555-0123" });
+    const sample = generateSample({ trade: "tree", asOf: new Date().toISOString().slice(0, 10) }).files;
+    const [quotes, jobs] = ["Quotes Report.csv", "Jobs Report.csv"].map((n) => sample.find((f) => f.name === n)!);
+    await pick(page, [quotes!]);
+    await page.waitForSelector("#dzSend", { state: "visible", timeout: 30_000 });
+    await page.click("#dzSendB");
+    await page.waitForFunction(() => document.querySelector<HTMLButtonElement>("#dzSendB")!.disabled);
+    await pick(page, [jobs!]);
+    await page.waitForFunction(() => document.querySelector("#dzFiles")!.textContent!.includes("Jobs Report.csv"), undefined, { timeout: 30_000 });
+    release();
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>("#dzSendB")!.disabled);
+    // the quotes went; the newer result, with the Jobs report in it, still has its send and no "it's in"
+    expect(await page.isVisible("#dzSend")).toBe(true);
+    expect(await page.textContent("#dzSendB")).toBe("Send these files");
+    for (const hidden of ["#dzSent", "[data-need]", "#dzSendErr"]) expect(await page.isVisible(hidden), hidden).toBe(false);
+    await page.click("#dzSendB");
+    await page.waitForSelector("#dzSent", { state: "visible" });
+    expect(posts.slice(1).map((r: Any) => JSON.parse(r.postData()).files.map((f: AuditFile) => f.name))).toEqual([["Quotes Report.csv"], ["Quotes Report.csv", "Jobs Report.csv"]]);
+    await page.close();
+  });
+
+  it("a file that won't read, or an audit that won't load, doesn't stop the next file: it reads on its own", { timeout: 120_000 }, async () => {
+    const page = await open("/lawn", withServer, (r) => r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' }));
+    await signUp(page, pat);
+    // a folder dragged onto the zone comes as a file that can't be read
+    await page.evaluate(() => {
+      const text = File.prototype.text;
+      File.prototype.text = function (this: File) {
+        return this.name === "Old jobs" ? Promise.reject(new DOMException("A folder", "NotReadableError")) : text.call(this);
+      };
+    });
+    await drop(page, { name: "Old jobs", text: "" });
+    await page.waitForSelector("#dzErr", { state: "visible" });
+    await pick(page, [lawnFile]);
+    await page.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    expect(await page.textContent("#dzFiles")).toBe("Read on your screen: Visits Report.csv");
+    expect(await page.isVisible("#dzErr")).toBe(false);
+    await page.close();
+    // the audit's worker doesn't load the first time (he's gone offline a moment): the next try loads it again
+    const again = await open("/lawn", withServer, (r) => r.fulfill({ status: 201, headers: { "access-control-allow-origin": "*" }, contentType: "application/json", body: '{"ok":true}' }));
+    let tries = 0;
+    await again.route(/\/assets\/worker-[\w-]+\.js$/, (r: Any) => (tries++ ? r.fallback() : r.abort()));
+    await signUp(again, pat);
+    await pick(again, [lawnFile]);
+    await again.waitForSelector("#dzErr", { state: "visible" });
+    await pick(again, [lawnFile]);
+    await again.waitForSelector("#dzOut", { state: "visible", timeout: 30_000 });
+    expect(await again.textContent("#rpHead")).toMatch(/^\d+ past customers haven't been back\.$/);
+    expect(tries).toBe(2);
+    await again.close();
   });
 });

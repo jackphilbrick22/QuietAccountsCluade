@@ -55,6 +55,10 @@ import {
   CHARGE_TEXTS,
   isMonth,
   type PlanState,
+  plural,
+  soldMonthly,
+  paidTogether,
+  stoppedCustomers,
 } from "@qa/engine";
 import { z } from "zod";
 import { features, signupOrigins } from "../config.ts";
@@ -1155,7 +1159,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     consent: z.literal(true),
     files: z.array(z.object({ name: z.string().min(1).max(200), text: z.string().min(1) })).max(5).optional(),
     // the site's own audit numbers and nothing else: unknown keys are dropped, never stored
-    audit: z.object({ quotes: z.number(), silent: z.object({ count: z.number(), value: z.number() }), perMonth: z.number() }).partial().optional(),
+    audit: z.object({ quotes: z.number(), silent: z.object({ count: z.number(), value: z.number() }), perMonth: z.number(), past: z.object({ people: z.number(), paid: z.number().optional() }) }).partial().optional(),
     ref: z.string().max(200).optional(),
     /** A field people can't see; anything in it is a bot. */
     website: z.string().max(500).optional(),
@@ -1229,9 +1233,20 @@ export function createApp(d: HttpDeps): Hono<Env> {
     let read = "";
     if (f.files?.length && mayRead) {
       try {
-        const res = await importFiles(d, id, f.files as FileIn[]);
+        // read as the site's audit read it: the titles pick among the trades the page's offer sells
+        const was = d.accounts.peek(id)!.state.dataset.business.trade;
+        const res = await importFiles(d, id, f.files as FileIn[], trade === "general" ? undefined : trade);
         const s = d.accounts.peek(id)!.state;
-        read = `Their file is in (${res.map((r) => `${r.accepted} ${r.kind}s`).join(", ")}): ${s.summary?.audit?.silent.count ?? 0} quotes never answered, ${fmtMoney(s.summary?.audit?.silent.value ?? 0, { compact: true })}.`;
+        // what its offer works in the file: quotes nobody answered (not on a monthly trade's), and past customers
+        const silent = soldMonthly(s.dataset.business.trade) ? undefined : s.summary?.audit?.silent;
+        const past = s.scan ? stoppedCustomers(s.dataset, s.scan) : [];
+        const paid = paidTogether(past);
+        const found = [
+          ...(silent?.count ? [`${plural(silent.count, "quote")} never answered, ${fmtMoney(silent.value, { compact: true })}`] : []),
+          ...(past.length ? [`${plural(past.length, "past customer hasn't", "past customers haven't")} been back${paid ? ` (paid ${fmtMoney(paid, { compact: true })} in their last year)` : ""}`] : []),
+        ];
+        const readAs = s.dataset.business.trade !== was ? ` and reads as ${s.dataset.business.trade}` : "";
+        read = `Their file is in (${res.map((r) => `${r.accepted} ${r.kind}s`).join(", ")})${readAs}: ${found.join(", and ") || "nobody in it to write to"}.`;
       } catch (e) {
         read = `Their file didn't read (${(e as Error).message.slice(0, 120)}). Ask them for the export by text.`;
       }

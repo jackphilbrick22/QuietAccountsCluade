@@ -59,6 +59,8 @@ export interface VisitBook {
    * visits here.
    */
   jobAhead(j: Job): boolean | undefined;
+  /** A job's own record whose visits the data has: the work done is in them, so it isn't counted again. */
+  hasVisits(j: Job): boolean;
   /** How many days without a visit a client of theirs goes before they've gone quiet: the trade's rule, by how often they come. */
   quietAfter(customerId: string): number;
 }
@@ -151,12 +153,13 @@ export function visitBook(ds: Dataset): VisitBook {
   const ahead = (j: Job) => !!j.visit && j.status !== "cancelled" && !j.undone && (jobDate(j) ? !dated(j) : !DONE_JOB.has(j.status) && j.status !== "unknown") && !stopped(j);
   // the visits here run past the day: some are still to come
   const seesAhead = ds.jobs.some((j) => j.visit && !!jobDate(j) && !dated(j));
+  const visitsOfJob = (j: Job) => (j.visit || !j.number ? undefined : visitsOf.get(ref(j.customerId, j.number)));
   const jobAhead = (j: Job) => {
-    const visits = j.visit || !j.number ? undefined : visitsOf.get(ref(j.customerId, j.number));
+    const visits = visitsOfJob(j);
     if (!visits) return undefined;
     return visits.some(ahead) || (seesAhead || stopped(visits[0]!) ? false : undefined);
   };
-  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j)), missed, markedThrough, stopped, ahead, jobAhead, quietAfter };
+  return { worked: (j) => plain(j) || (unmarked(j) && !missed(j) && !stopped(j)), missed, markedThrough, stopped, ahead, jobAhead, hasVisits: (j) => !!visitsOfJob(j), quietAfter };
 }
 
 /**

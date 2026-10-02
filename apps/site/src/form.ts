@@ -1,3 +1,5 @@
+import type { AuditFile, AuditResult } from "./audit.ts";
+
 /**
  * What the start form sends, kept apart from the page so it can be tested without one. Page URLs carry only business
  * info (?co=, ?q=, ?j=, ?src=, UTM tags); the owner's name and cell only ever travel in the form's own POST.
@@ -32,6 +34,15 @@ export function signupBody(s: Signup): Record<string, string | true> {
   };
 }
 
+/**
+ * The second POST to /start, when he sends the file he dropped: the same sign-up (so the server finds his account),
+ * the file, and the audit's own numbers, the only ones /start keeps.
+ */
+export function withFile(s: Signup, files: AuditFile[], r: Pick<AuditResult, "quotes" | "silent" | "perMonth" | "past">) {
+  const past = r.past && { people: r.past.people, paid: r.past.paid };
+  return { ...signupBody(s), files: files.map((f) => ({ name: f.name.slice(0, 200), text: f.text })), audit: { quotes: r.quotes, silent: r.silent, perMonth: r.perMonth.value, ...(past ? { past } : {}) } };
+}
+
 /** Every field the static copy of the form declares, so Netlify keeps all of them. */
 export const NETLIFY_FIELDS = ["company", "first", "cell", "software", "trade", "offer", "consent", "ref", "website"] as const;
 
@@ -64,8 +75,8 @@ export function refFor(page: string, search: string): string {
   return all.length <= 200 ? all : all.slice(0, all.lastIndexOf("&", 200));
 }
 
-/** When the send fails: a text to Jack with his company already in it, so the lead is never lost. */
-export function smsLink(company: string, first: string): string {
-  const body = `Hi Jack, it's ${first} at ${company}. I tried to sign up on your site and it didn't go through.`;
+/** When a send fails, the sign-up's or his file's: a text to Jack with his company already in it, so the lead is never lost. */
+export function smsLink(company: string, first: string, tried = "sign up"): string {
+  const body = `Hi Jack, it's ${first} at ${company}. I tried to ${tried} on your site and it didn't go through.`;
   return `sms:${JACK.tel}?&body=${encodeURIComponent(body)}`;
 }

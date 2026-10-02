@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { scan, type ScanResult } from "../src/breakage/detect.ts";
+import { paidTogether, stoppedCustomers } from "../src/breakage/forecast.ts";
 import { readiness } from "../src/breakage/readiness.ts";
 import { visitBook } from "../src/breakage/visits.ts";
 import { parseTable, toCSV } from "../src/ingest/csv.ts";
@@ -12,8 +13,8 @@ import { attribute } from "../src/ledger/attribution.ts";
 import { dueTouches, find, planBatch } from "../src/runtime/agents.ts";
 import { emptyState } from "../src/runtime/state.ts";
 import { addDays, daysBetween, round2 } from "../src/util.ts";
-import { ago, ASOF, business, customer, dataset, job, oneOpp, oppsFor, reachable } from "./fixtures.ts";
-import { bookingsExport, CLEANING_ASOF, cleaningClientList, cleaningClients, cleaningThreshold, LAWN_ASOF, lawnClients, VISIT_ROWS, visitsReport, type LawnClient } from "./lawn-fixtures.ts";
+import { ago, ASOF, business, customer, dataset, invoice, job, oneOpp, oppsFor, reachable } from "./fixtures.ts";
+import { bookingsExport, CLEANING_ASOF, cleaningClientList, cleaningClients, cleaningThreshold, deepCleanBookings, deepCleanClients, jobsReport, LAWN_ASOF, lawnClients, VISIT_ROWS, visitsReport, type BookedClient, type LawnClient } from "./lawn-fixtures.ts";
 
 const lawn = (over: Partial<BusinessProfile> = {}) => business({ trade: "lawn", name: "Greenline Lawn Care", avgJobValue: undefined, ...over });
 const cleaning = () => business({ trade: "cleaning", name: "Sparkle House Cleaning", avgJobValue: undefined });
@@ -918,5 +919,143 @@ describe("a visit the export says went by undone", () => {
     // and a booking skipped after a note is no comeback
     const id = ds.customers[0]!.id;
     expect(attribute(ds, [{ customerId: id, firstTouchOn: "2026-07-20", lastTouchOn: "2026-07-20" }], { replied: new Set([id]) })).toEqual([]);
+  });
+});
+
+describe("who stopped, and what they paid", () => {
+  const clients = lawnClients();
+  const load = (perVisit: boolean) => {
+    const ds = read(visitsReport(clients, "newest", perVisit), "Visits Report.csv").dataset;
+    const idOf = (c: LawnClient) => ds.customers.find((x) => x.emails.includes(c.email))!.id;
+    return { ds, idOf };
+  };
+  /** The last visit done, and what the visits done in the year up to it billed. */
+  const truth = (c: LawnClient) => {
+    const done = c.visits.filter((v) => v.done);
+    const last = done.at(-1)!.date;
+    return { last, paid: round2(done.filter((v) => v.date > addDays(last, -365)).reduce((s, v) => s + v.amount, 0)) };
+  };
+
+  it("the Visits report's 15 lapsed regulars, each last here on their last visit done, with what their visits that year billed", () => {
+    const { ds, idOf } = load(true);
+    const stopped = stoppedCustomers(ds, scan(ds));
+    const lapsed = clients.filter((c) => c.lapsed);
+    expect(stopped.map((x) => x.customerId).sort()).toEqual(lapsed.map(idOf).sort());
+    for (const c of lapsed) {
+      const t = truth(c);
+      expect(stopped.find((x) => x.customerId === idOf(c)), c.name).toEqual({ customerId: idOf(c), lastOn: t.last, paidLastYear: t.paid, regular: true });
+    }
+  });
+
+  it("counts each job once when the Jobs report comes beside the Visits report: its visits, not its own record too", () => {
+    const { ds: visits } = load(true);
+    const both = read(jobsReport(clients), "Jobs Report.csv", lawn(), LAWN_ASOF, visits).dataset;
+    expect(both.jobs.filter((j) => !j.visit && j.total > 0).length).toBeGreaterThan(40);
+    const byId = (xs: ReturnType<typeof stoppedCustomers>) => [...xs].sort((a, b) => (a.customerId < b.customerId ? -1 : 1));
+    const alone = stoppedCustomers(visits, scan(visits));
+    expect(byId(stoppedCustomers(both, scan(both)))).toEqual(byId(alone));
+    // the Jobs report on its own still says what they paid, from its own records
+    const jobs = read(jobsReport(clients), "Jobs Report.csv").dataset;
+    const fromJobs = stoppedCustomers(jobs, scan(jobs));
+    expect(fromJobs.length).toBeGreaterThan(10);
+    for (const x of fromJobs) expect(x.paidLastYear, x.customerId).toBeGreaterThan(0);
+  });
+
+  it("goes by the bills when the visits carry no amounts, and by nothing it would have to guess", () => {
+    const { ds, idOf } = load(false);
+    const [billed, unbilled] = clients.filter((c) => c.lapsed);
+    const last = truth(billed!).last;
+    // a bill a month for the season up to the last visit, and one the year before that, which doesn't count
+    ds.invoices.push(
+      ...[1, 2, 3].map((m) => invoice(`i${m}`, idOf(billed!), { subject: "Monthly mowing", total: 220, status: "paid", issuedOn: addDays(last, -30 * (m - 1)) })),
+      invoice("i0", idOf(billed!), { subject: "Monthly mowing", total: 999, status: "paid", issuedOn: addDays(last, -400) }),
+      invoice("void", idOf(billed!), { total: 500, status: "void", issuedOn: last }),
+    );
+    const stopped = stoppedCustomers(ds, scan(ds));
+    expect(stopped.find((x) => x.customerId === idOf(billed!))).toMatchObject({ lastOn: last, paidLastYear: 660 });
+    // blank "Visit based ($)" and no bills: no figure at all, never an estimate
+    expect(stopped.find((x) => x.customerId === idOf(unbilled!))).toEqual({ customerId: idOf(unbilled!), lastOn: truth(unbilled!).last, paidLastYear: undefined, regular: true });
+    // and together they paid what nobody can say, though one of them is known
+    expect([paidTogether(stopped.filter((x) => x.customerId === idOf(billed!))), paidTogether(stopped)]).toEqual([660, undefined]);
+  });
+
+  it("with no bills, shows what their visits billed only when every visit carries an amount", () => {
+    const { ds, idOf } = load(false);
+    const stopped = stoppedCustomers(ds, scan(ds));
+    // the fixed-price contracts' visits carry none: none of the 15 has a figure, the one with a $175 clean-up included
+    expect(stopped).toHaveLength(15);
+    expect(stopped.filter((x) => x.paidLastYear !== undefined)).toEqual([]);
+    expect(paidTogether(stopped)).toBeUndefined();
+    const cleanup = clients.find((c) => c.lapsed && c.visits.some((v) => v.title === "Fall cleanup"))!;
+    expect(stopped.some((x) => x.customerId === idOf(cleanup))).toBe(true);
+    // billed per visit, every one of them is known, and together they paid the sum
+    const { ds: priced } = load(true);
+    const all = stoppedCustomers(priced, scan(priced));
+    expect(paidTogether(all)).toBe(round2(clients.filter((c) => c.lapsed).reduce((s, c) => s + truth(c).paid, 0)));
+    expect(paidTogether([])).toBe(0);
+  });
+
+  it("a regular still on the schedule whose deep clean came due again hasn't stopped; one who stopped, or had only the deep clean, has", () => {
+    const people = deepCleanClients();
+    const ds = read(deepCleanBookings(people), "Bookings.csv", cleaning(), CLEANING_ASOF).dataset;
+    const result = scan(ds);
+    const idOf = (c: BookedClient) => ds.customers.find((x) => x.emails.includes(c.email))!.id;
+    const [still, gone] = [people.filter((c) => !c.stopped), people.filter((c) => c.stopped)];
+    // the scan still finds the deep clean due for each of the ten; they just aren't people who stopped
+    for (const c of still) expect(oneOpp(result, idOf(c), "service_due").suppressed, c.name).toBeUndefined();
+    const stopped = stoppedCustomers(ds, result);
+    expect(stopped.map((x) => x.customerId).sort()).toEqual(gone.map(idOf).sort());
+    const last = (c: BookedClient) => c.bookings.at(-1)!;
+    for (const c of gone)
+      expect(stopped.find((x) => x.customerId === idOf(c)), c.name).toEqual({
+        customerId: idOf(c),
+        lastOn: last(c).date,
+        paidLastYear: c.bookings.filter((b) => b.date > addDays(last(c).date, -365)).reduce((s, b) => s + b.price, 0),
+        regular: last(c).service === "Recurring Cleaning",
+      });
+  });
+
+  it("work come due for someone on a rhythm counts once they're past the time a customer of theirs goes quiet", () => {
+    // quarterly window cleaning: a deep clean a year ago came due, and the last visit was 70 days ago, inside the rhythm
+    const quarterly = (lastAgo: number) =>
+      dataset({
+        business: { trade: "cleaning" },
+        customers: [customer("ann")],
+        jobs: [
+          job("deep", "ann", { title: "Deep clean", total: 300, completedOn: ago(lastAgo + 300) }),
+          ...[lastAgo + 270, lastAgo + 180, lastAgo + 90, lastAgo].map((d, i) => job(`w${i}`, "ann", { title: "Window cleaning", total: 120, completedOn: ago(d) })),
+        ],
+      });
+    const due = (ds: Dataset) => scan(ds).opportunities.filter((o) => o.type === "service_due" && !o.suppressed).length;
+    const inside = quarterly(70);
+    expect(due(inside)).toBe(1);
+    expect(stoppedCustomers(inside, scan(inside))).toEqual([]);
+    // past it (1¾ times their 90 days), they've stopped
+    const past = quarterly(170);
+    expect(stoppedCustomers(past, scan(past)).map((x) => [x.customerId, x.lastOn])).toEqual([["ann", ago(170)]]);
+  });
+
+  it("a cleaning client list: who's past their threshold, regular or not, with no money to show", () => {
+    const people = cleaningClients();
+    const ds = read(cleaningClientList(people, true), "Clients.csv", cleaning(), CLEANING_ASOF).dataset;
+    const stopped = stoppedCustomers(ds, scan(ds));
+    const gone = people.filter((p) => p.daysAgo >= cleaningThreshold(p.frequency));
+    const idOf = (email: string) => ds.customers.find((c) => c.emails.includes(email))!.id;
+    expect(stopped.map((x) => x.customerId).sort()).toEqual(gone.map((p) => idOf(p.email)).sort());
+    for (const p of gone) expect(stopped.find((x) => x.customerId === idOf(p.email))).toEqual({ customerId: idOf(p.email), lastOn: p.lastCleaning, paidLastYear: undefined, regular: p.frequency !== "One-time" });
+  });
+
+  it("leaves out anyone held back: no email, or work on now", () => {
+    const ds = dataset({
+      business: { trade: "cleaning" },
+      customers: [customer("ann"), customer("bo", { emails: [] }), customer("cy")],
+      jobs: [
+        ...[ago(120), ago(106), ago(92)].map((d, i) => job(`a${i}`, "ann", { title: "Biweekly cleaning", total: 160, completedOn: d, recurring: true })),
+        ...[ago(120), ago(106), ago(92)].map((d, i) => job(`b${i}`, "bo", { title: "Biweekly cleaning", total: 160, completedOn: d, recurring: true })),
+        ...[ago(120), ago(106), ago(92)].map((d, i) => job(`c${i}`, "cy", { title: "Biweekly cleaning", total: 160, completedOn: d, recurring: true })),
+        job("c-next", "cy", { title: "Deep clean", status: "scheduled", completedOn: undefined, scheduledOn: ago(-5) }),
+      ],
+    });
+    expect(stoppedCustomers(ds, scan(ds))).toEqual([{ customerId: "ann", lastOn: ago(92), paidLastYear: 480, regular: true }]);
   });
 });

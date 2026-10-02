@@ -113,6 +113,55 @@ describe.each(PAGES.map((p) => [`/${p.id}`, p] as const))("%s, like every page",
     expect(roles).toEqual(["columnheader columnheader columnheader", ...Array(roles.length - 1).fill("rowheader cell cell")]);
   });
 
+  it("takes his file only in the 'Got it' step, as the other way to send it: a drop zone with a plain file picker, and no sample", () => {
+    const done = html.slice(html.indexOf('<div class="done" id="done" tabindex="-1" hidden>'), html.indexOf('<form name="start"'));
+    const drop = done.slice(done.indexOf('<div class="dfile" id="dfile"'));
+    for (const one of ['id="dfile"', '<input type="file"', "Have the file already? Drop it here."]) {
+      expect(count(html, one), one).toBe(1);
+      expect(done, one).toContain(one);
+    }
+    // after forwarding the email, before the text from Jack that follows either way
+    expect(textOf(done)).toMatch(/2 Forward th(at email|ose emails), as (it is|they are), to quotes@quietaccounts\.com Have the file already\? Drop it here\. .* 3 You'll get a text from Jack/);
+    expect(drop).toMatch(/<label class="dz" id="dz">.*<input type="file" id="dzFile" multiple accept="\.csv,\.tsv,\.txt,text\/csv,text\/plain"><\/label>/);
+    expect(textOf(drop)).toContain("It's read right here, on your screen, and goes nowhere until you send it.");
+    // with a server he sends it from here; without one, the page asks him to forward the email (a one pass's two) as usual
+    expect(drop).toContain('<button type="button" class="btn2" id="dzSendB">Send this file</button>');
+    const email = w.offer === "monthly" ? "the email" : "the emails";
+    expect(textOf(drop)).toContain(w.offer === "monthly" ? "To send it, forward the email as above, as usual." : "To send them, forward the emails as above, as usual.");
+    expect(textOf(drop)).toContain(`That file didn't read. Send the export as your software made it, as a CSV, or forward ${email} as above.`);
+    expect(drop).toContain(`That didn't go through. Forward ${email} as above, or <a id="smsFile" href="sms:+16033407673">text Jack at 603-340-7673</a>.`);
+    expect(html).not.toMatch(/sample/i);
+  });
+
+  it("after a send, says there's no email to forward only once both of a one pass's exports are in, and otherwise which is still to come", () => {
+    const after = [...html.matchAll(/<p class="dz-ok" (?:id="dzSent"|data-need="(\w+)") role="status" hidden>([^<]*)<\/p>/g)].map((m) => [m[1] ?? "all", textOf(m[2]!)]);
+    const all = ["all", "It's all in, so there's no email to forward. Jack will text you the first note to read."];
+    if (w.offer === "monthly") expect(after).toEqual([all]);
+    else
+      expect(after).toEqual([
+        all,
+        ["past", `Your ${p.quotes} are in. For your past customers, drop your visits or jobs export here too, or forward it as above.`],
+        ["quotes", `Your past customers are in. For your ${p.quotes} nobody answered, drop your ${p.quotes} export here too, or forward it as above.`],
+      ]);
+  });
+
+  it("names the export a file needs, and never Jobber's Re-engagement report, which has no emails", () => {
+    const none = textOf(/<p class="dz-s" id="dzNone" hidden>([^<]*)<\/p>/.exec(html)![1]!);
+    expect(none).toContain(w.offer === "monthly" ? "like Jobber's Visits report." : "like Jobber's Quotes report or its Visits report.");
+    expect(textOf(/<p data-step="jobber">([\s\S]*?)<\/p>/.exec(html)![1]!)).toMatch(/\bVisits\b/);
+    expect(html).not.toMatch(/re-?engagement/i);
+  });
+
+  it("shows a one-pass page's quotes nobody answered in its own word, and a monthly page's past customers alone", () => {
+    const quotes = /<div class="dz-r" id="rQuotes" hidden>[\s\S]*?<\/div><\/div>/.exec(html)?.[0];
+    if (w.offer === "monthly") expect(quotes).toBeUndefined();
+    else {
+      expect(textOf(quotes!)).toBe("is sitting in nobody answered. When they were sent");
+      expect(html).toContain(`<div class="dfile" id="dfile" data-quotes="${p.quotes}">`);
+    }
+    expect(textOf(/<div class="dz-r" id="rPast" hidden>[\s\S]*?<\/div><\/div>/.exec(html)![0])).toBe("When they were last here");
+  });
+
   it("keeps the words rules, and the footer", () => wordRules(html, w.offer));
 });
 

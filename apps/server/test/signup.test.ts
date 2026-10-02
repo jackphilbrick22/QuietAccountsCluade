@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { generateSample } from "@qa/engine";
+import { fmtMoney, generateSample, planOutreach } from "@qa/engine";
 import { loadConfig } from "../src/config.ts";
 import { Db } from "../src/db/sqlite.ts";
 import { Repo } from "../src/db/repo.ts";
@@ -10,6 +10,9 @@ import { Accounts } from "../src/core/accounts.ts";
 import { createApp, type HttpDeps } from "../src/http/app.ts";
 import { LogEmailProvider } from "../src/providers/email.ts";
 import { LogNotifier } from "../src/providers/sms.ts";
+import { runAudit } from "../../site/src/audit.ts";
+import { signupBody, withFile, type Signup } from "../../site/src/form.ts";
+import { deepCleanBookings, deepCleanClients, lawnClients, VISIT_ROWS, visitsReport } from "../../../packages/engine/test/lawn-fixtures.ts";
 
 /** The site's Start button: the owner's file, their name and cell, and nothing goes out until a person looks. */
 describe("sign-up from the site", () => {
@@ -89,7 +92,7 @@ describe("sign-up from the site", () => {
     const early = await api("POST", `/businesses/${id}/plan`, {});
     expect(early.status).toBe(409);
     expect(early.json.error).toContain("mailing address");
-    await api("PATCH", `/businesses/${id}`, { mailingAddress: "9 Carter St, Concord, NH 03301" });
+    await api("PATCH", `/businesses/${id}`, { mailingAddress: "14 Main St, Bow, NH 03304" });
     const p = await api("POST", `/businesses/${id}/plan`, {});
     expect(p.status).toBe(200);
     expect(p.json.awaitingOk).toBe(true);
@@ -140,6 +143,82 @@ describe("sign-up from the site", () => {
     await start({ ...form, company: "Pine Knot Tree", first: "Sam", cell: "603-555-0188", files });
     expect(bizNamed("Pine Knot Tree")).toHaveLength(1);
     expect(d.accounts.peek(id)!.state.dataset.quotes.length).toBeGreaterThan(100);
+  });
+
+  it("takes the file dropped in the site's 'Got it' step, sent as the site sends it, after a one-pass sign-up from /tree, /painting or /fence too", { timeout: 60_000 }, async () => {
+    // its own sign-up counts, so the hour's limit is the test's alone
+    const site = createApp(d);
+    const lawn = { name: "Visits Report.csv", text: visitsReport(lawnClients(), "newest") };
+    const pages = [["lawn", "monthly"], ["tree", "one_pass"], ["painting", "one_pass"], ["fence", "one_pass"]] as const;
+    for (const [i, [trade, offer]] of pages.entries()) {
+      const s: Signup = { company: `Second Look ${trade}`, first: "Robin", cell: `603-555-03${10 + i}`, software: "jobber", trade, offer, ref: `page=${trade}`, website: "" };
+      const first = await start(signupBody(s), undefined, {}, site);
+      const id = first.json.id as string;
+      expect(d.accounts.peek(id)!.state.dataset.business.plan.kind, trade).toBe(offer === "one_pass" ? "one_pass" : undefined);
+      const files = trade === "lawn" ? [lawn] : generateSample({ trade, asOf: "2026-09-29" }).files.filter((f) => /^(Quotes|Jobs) Report\.csv$/.test(f.name));
+      const audit = runAudit(files, { company: s.company, signer: s.first, trade, today: "2026-09-29" });
+      const again = await start(withFile(s, files, audit), undefined, {}, site);
+      expect(again.json, trade).toEqual({ ok: true, id: "thanks" });
+      expect(bizNamed(s.company), trade).toHaveLength(1);
+      const ds = d.accounts.peek(id)!.state.dataset;
+      expect(ds.imports.map((x) => x.fileName).sort(), trade).toEqual(files.map((f) => f.name).sort());
+      if (trade === "lawn") expect(ds.jobs).toHaveLength(VISIT_ROWS);
+      else expect(ds.quotes.length, trade).toBeGreaterThan(100);
+      // the operator reads what the owner saw: past customers on their own, and on a one-pass page his quotes too
+      const past = `${audit.past!.people} past customers haven't been back (paid $`;
+      const detail = alertsFor(id).find((a) => a.title === `${s.company} came back through the site with a file`)!.detail;
+      if (trade === "lawn") expect(detail).toContain(`Their file is in (${VISIT_ROWS} visits): ${past}${Math.round(audit.past!.paid! / 1000)}k in their last year).`);
+      else expect(detail, trade).toMatch(new RegExp(`Their file is in \\(.*\\): ${audit.silent.count.toLocaleString("en-US")} quotes never answered, \\$[\\d.]+[kM], and ${past.replace(/[()$]/g, "\\$&")}`));
+      expect(detail, trade).not.toMatch(/\b0 quotes|\$0\b/);
+      const row = d.accounts.repo.db.get<{ detail: string }>("SELECT detail FROM audit WHERE business_id = ? AND action = 'signup.again'", id)!;
+      expect(JSON.parse(row.detail).audit, trade).toEqual({ quotes: audit.quotes, silent: audit.silent, perMonth: audit.perMonth.value, past: { people: audit.past!.people, paid: audit.past!.paid } });
+      const items = (await api("GET", "/review")).json.items as { kind: string; businessId: string }[];
+      expect(items.some((x) => x.kind === "ready" && x.businessId === id), trade).toBe(true);
+    }
+  });
+
+  it("reads a file the way the site's audit did when its titles aren't the page's trade: Jack's count and the planned note are the owner's", { timeout: 120_000 }, async () => {
+    const site = createApp(d);
+    const cleaning = generateSample({ trade: "cleaning", asOf: "2026-09-29" }).files.filter((f) => f.name === "Jobs Report.csv");
+    const mowing = [{ name: "Visits Report.csv", text: visitsReport(lawnClients(), "newest") }];
+    // a cleaning shop's jobs on /lawn (the front page's "Lawn and cleaning" card links /lawn), and mowing visits on /tree
+    const cases = [["lawn", "monthly", cleaning, "cleaning", " and reads as cleaning"], ["tree", "one_pass", mowing, "tree", ""]] as const;
+    for (const [i, [page, offer, files, reads, readAs]] of cases.entries()) {
+      const s: Signup = { company: `Other Trade ${page}`, first: "Robin", cell: `603-555-04${10 + i}`, software: "jobber", trade: page, offer, ref: `page=${page}`, website: "" };
+      const id = (await start(signupBody(s), undefined, {}, site)).json.id as string;
+      const audit = runAudit(files, { company: s.company, signer: s.first, trade: page, today: "2026-09-29" });
+      expect(audit.trade, page).toBe(reads);
+      await start(withFile(s, files, audit), undefined, {}, site);
+      const st = d.accounts.peek(id)!.state;
+      expect(st.dataset.business.trade, page).toBe(reads);
+      if (page === "tree") expect(st.dataset.business.otherTrades).toEqual(["lawn"]);
+      const detail = alertsFor(id).find((a) => a.title === `${s.company} came back through the site with a file`)!.detail;
+      expect(detail, page).toContain(`${readAs}: ${audit.past!.people} past customers haven't been back (paid ${fmtMoney(audit.past!.paid!, { compact: true })} in their last year).`);
+      // the note he was shown is one the account plans, word for word, once Jack adds the mailing address
+      const ds = { ...st.dataset, business: { ...st.dataset.business, mailingAddress: "14 Main St, Bow, NH 03304" } };
+      const plan = planOutreach(ds, st.scan!, { startOn: ds.asOf, applyHoldout: false });
+      expect(plan.touches.some((t) => t.step === 1 && t.channel === "email" && t.body.startsWith(`${audit.past!.note!.body}\n\n`)), page).toBe(true);
+    }
+  });
+
+  it("counts only who stopped, as the site did, and says what they paid only when the file says it for every one of them", { timeout: 60_000 }, async () => {
+    const site = createApp(d);
+    // a cleaning shop's regulars still on the schedule whose first deep clean came due, and the four who stopped; then
+    // a mowing shop's Visits report on fixed-price jobs, its visits with no amounts
+    const deep = [{ name: "Bookings.csv", text: deepCleanBookings(deepCleanClients()) }];
+    const fixed = [{ name: "Visits Report.csv", text: visitsReport(lawnClients(), "newest", false) }];
+    const cases = [[deep, " and reads as cleaning", "4 past customers haven't been back (paid $7,820 in their last year)."], [fixed, "", "23 past customers haven't been back."]] as const;
+    for (const [i, [files, readAs, said]] of cases.entries()) {
+      const s: Signup = { company: `Who Stopped ${i}`, first: "Robin", cell: `603-555-05${10 + i}`, software: "jobber", trade: "lawn", offer: "monthly", ref: "page=lawn", website: "" };
+      const id = (await start(signupBody(s), undefined, {}, site)).json.id as string;
+      const audit = runAudit([...files], { company: s.company, signer: s.first, trade: "lawn", today: "2026-09-29" });
+      await start(withFile(s, [...files], audit), undefined, {}, site);
+      const detail = alertsFor(id).find((a) => a.title === `${s.company} came back through the site with a file`)!.detail;
+      expect(detail, s.company).toContain(`${readAs}: ${said}`);
+      expect(said, s.company).toContain(`${audit.past!.people} past customers`);
+      const row = d.accounts.repo.db.get<{ detail: string }>("SELECT detail FROM audit WHERE business_id = ? AND action = 'signup.again'", id)!;
+      expect(JSON.parse(row.detail).audit.past, s.company).toEqual(audit.past!.paid ? { people: audit.past!.people, paid: audit.past!.paid } : { people: audit.past!.people });
+    }
   });
 
   it("a new company on a cell that's already a client's: made without that cell, and the operator is warned", async () => {

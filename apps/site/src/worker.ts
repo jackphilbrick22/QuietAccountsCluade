@@ -1,14 +1,16 @@
-import { runAudit, sampleAudit, type AuditFile, type AuditOptions } from "./audit.ts";
-import type { TradeId } from "@qa/engine";
+import { runAudit, type AuditFile, type AuditOptions } from "./audit.ts";
 
-/** Runs the audit off the main thread so the page keeps moving while a few thousand quotes are read. */
-export type AuditRequest = { id: number; files: AuditFile[]; opts: AuditOptions } | { id: number; sample: TradeId; opts: AuditOptions };
+/** Runs the audit off the main thread so the page keeps moving while a few thousand rows are read. */
+export interface AuditRequest {
+  id: number;
+  files: AuditFile[];
+  opts: AuditOptions;
+}
 
 self.onmessage = (e: MessageEvent<AuditRequest>) => {
   const m = e.data;
   try {
-    const result = "sample" in m ? sampleAudit(m.sample, m.opts) : runAudit(m.files, m.opts);
-    self.postMessage({ id: m.id, result });
+    self.postMessage({ id: m.id, result: runAudit(m.files, m.opts) });
   } catch (err) {
     self.postMessage({ id: m.id, error: err instanceof Error ? err.message : String(err) });
   }

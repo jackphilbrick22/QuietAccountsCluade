@@ -73,6 +73,7 @@ import {
   type Reply,
   type RoundApproval,
   type Touch,
+  type TradeId,
 } from "@qa/engine";
 import { features, type Config } from "../config.ts";
 import type { Loaded } from "../db/repo.ts";
@@ -223,7 +224,8 @@ function nowLocal(d: Deps, state: AccountState): string {
 /* Reader: import files                                                */
 /* ------------------------------------------------------------------ */
 
-export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promise<{ file: string; kind: string; source: string; accepted: number; rows: number; warnings: string[]; assisted: boolean }[]> {
+/** `page`: the trade of the site page a sign-up's file came from (adoptTrade). */
+export async function importFiles(d: Deps, bid: string, files: FileIn[], page?: TradeId): Promise<{ file: string; kind: string; source: string; accepted: number; rows: number; warnings: string[]; assisted: boolean }[]> {
   const out: { file: string; kind: string; source: string; accepted: number; rows: number; warnings: string[]; assisted: boolean }[] = [];
   // Mapping assist happens before taking the lock (it can take seconds).
   const prepared = await Promise.all(
@@ -262,7 +264,7 @@ export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promis
       out.push({ file: p.f.name, kind: record.kind, source: record.source, accepted: record.accepted, rows: record.rows, warnings: record.warnings, assisted: p.assisted });
     }
     state.dataset.asOf = at.slice(0, 10);
-    adoptTrade(state, at);
+    adoptTrade(state, at, page);
     ledgerPass(state, at, features(d.cfg));
     exportRead(state, before, at);
   });

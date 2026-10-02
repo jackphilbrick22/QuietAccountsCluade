@@ -1,12 +1,16 @@
+import type { TradeId } from "@qa/engine";
+import type { AuditFile, AuditResult } from "./audit.ts";
 import { sums, whole as n } from "./calc.ts";
-import { companyFromQuery, netlifyBody, numberFromQuery, refFor, signupBody, smsLink, type Signup } from "./form.ts";
+import { companyFromQuery, netlifyBody, numberFromQuery, refFor, signupBody, smsLink, withFile, type Signup } from "./form.ts";
 import { fillIn } from "./note.ts";
+import type { AuditRequest } from "./worker.ts";
+import AuditWorker from "./worker.ts?worker";
 
 /**
  * The page's one form, its notes, its buttons and the sticky bar. The first press of the button only shows his note
  * and the text he'd get (a ?co= link shows them on load); nothing leaves the page until the second press, with his
  * name, cell and the consent box. No engine here: the notes were written at build time, and this only fills in his
- * company and name.
+ * company and name. The engine comes only with a file he drops after signing up, in the audit's worker.
  */
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const all = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
@@ -22,7 +26,8 @@ const consent = field("consent");
 const software = field("software");
 const reveal = $("#reveal");
 const button = $<HTMLButtonElement>("#submit");
-let signedUp = false;
+/** What he signed up with: a file he drops afterwards goes to the server with it. */
+let signup: Signup | undefined;
 
 /* ------------------------------ his note, as he types ------------------------------ */
 
@@ -72,15 +77,11 @@ function check(rules: [HTMLInputElement, boolean][]): HTMLInputElement | undefin
   return rules.find(([, ok]) => !ok)?.[0];
 }
 
-async function send(s: Signup): Promise<boolean> {
-  try {
-    const res = server
-      ? await fetch(`${server}/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(signupBody(s)) })
-      : await fetch("/", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: netlifyBody(s) });
-    return res.ok;
-  } catch {
-    return false;
-  }
+const wentThrough = (res: Promise<Response>) => res.then((r) => r.ok, () => false);
+const toServer = (body: object) => wentThrough(fetch(`${server}/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }));
+
+function send(s: Signup): Promise<boolean> {
+  return server ? toServer(signupBody(s)) : wentThrough(fetch("/", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: netlifyBody(s) }));
 }
 
 form.addEventListener("submit", async (e) => {
@@ -121,8 +122,152 @@ form.addEventListener("submit", async (e) => {
   done.hidden = false;
   done.focus({ preventScroll: true });
   $("#start").scrollIntoView({ behavior: smooth(), block: "start" });
-  signedUp = true;
+  signup = s;
   stick();
+});
+
+/* ------------------------------ his file, read on his screen ------------------------------ */
+
+const dz = $("#dz");
+const dzFile = $<HTMLInputElement>("#dzFile");
+const sendFile = $<HTMLButtonElement>("#dzSendB");
+const noun = $("#dfile").dataset.quotes;
+/** The files dropped since the last send: the Visits report joins the Quotes report dropped before it. */
+let held: File[] = [];
+/** The latest result, and the files it was read from. */
+let read: { from: File[]; files: AuditFile[]; result: AuditResult } | undefined;
+/** What his sends have brought the server so far: on a one-pass page, his quotes and his past jobs. */
+const sent = { quotes: false, past: false };
+let worker: Worker | undefined;
+let turn = 0;
+
+/** The audit, in its worker: loaded with the first file, and answering only the latest. */
+function audit(id: number, files: AuditFile[], opts: AuditRequest["opts"]): Promise<AuditResult> {
+  worker ??= new AuditWorker();
+  return new Promise((resolve, reject) => {
+    worker!.onmessage = (e: MessageEvent<{ id: number; result?: AuditResult; error?: string }>) => {
+      if (e.data.id === id) (e.data.result ? resolve(e.data.result) : reject(new Error(e.data.error)));
+    };
+    // it didn't load, or it died: the next file starts a new one
+    worker!.onerror = () => {
+      worker?.terminate();
+      worker = undefined;
+      reject(new Error("The audit didn't load."));
+    };
+    worker!.postMessage({ id, files, opts } satisfies AuditRequest);
+  });
+}
+
+async function take(picked: File[]) {
+  if (!picked.length || !signup) return;
+  const mine = ++turn;
+  held = [...held.filter((f) => !picked.some((x) => x.name === f.name)), ...picked].slice(-5);
+  const from = held;
+  read = undefined;
+  for (const id of ["#dzOut", "#dzErr"]) $(id).hidden = true;
+  $("#dzBusy").hidden = false;
+  try {
+    const files = await Promise.all(from.map(async (f) => ({ name: f.name, text: await f.text() })));
+    // a newer file came in while these were read: it reads them all again
+    if (mine !== turn) return;
+    read = { from, files, result: await audit(mine, files, { company: signup.company, signer: signup.first, trade: form.dataset.trade as TradeId }) };
+    show(read);
+  } catch {
+    // what he just picked didn't read (a folder, say): the files before it read on, with his next one or alone
+    held = held.filter((f) => !picked.includes(f));
+    if (mine === turn) $("#dzErr").hidden = false;
+  } finally {
+    if (mine === turn) $("#dzBusy").hidden = true;
+  }
+}
+
+dz.addEventListener("dragover", (e) => {
+  e.preventDefault();
+  dz.classList.add("over");
+});
+dz.addEventListener("dragleave", () => dz.classList.remove("over"));
+dz.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dz.classList.remove("over");
+  void take([...(e.dataTransfer?.files ?? [])]);
+});
+dzFile.addEventListener("change", () => {
+  void take([...(dzFile.files ?? [])]);
+  dzFile.value = "";
+});
+
+const money = (x: number) => `$${n(x)}`;
+const count = (k: number, one: string, many: string) => `${n(k)} ${k === 1 ? one : many}`;
+const monthYear = (iso: string) => new Date(`${iso}T12:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+
+/** A row a cell at a time, as text: names from his file never go in as HTML. */
+function rows(el: HTMLElement, list: string[][]) {
+  el.replaceChildren(
+    ...list.map((cells) => {
+      const row = document.createElement("div");
+      row.className = "dz-row";
+      row.append(...cells.map((text) => Object.assign(document.createElement("span"), { textContent: text })));
+      return row;
+    }),
+  );
+}
+
+/** What his file says: quotes nobody answered (one-pass pages), past customers who haven't been back, and a first note. */
+function show({ files, result: r }: NonNullable<typeof read>) {
+  const quotes = !!noun && r.silent.count > 0;
+  const past = r.past;
+  $("#dzFiles").textContent = `Read on your screen: ${files.map((f) => f.name).join(", ")}`;
+  if (noun) {
+    $("#rQuotes").hidden = !quotes;
+    $("#rqValue").textContent = money(r.silent.value);
+    $("#rqCount").textContent = count(r.silent.count, noun.slice(0, -1), noun);
+    $("#rqRange").textContent = `Read ${count(r.quotes, noun.slice(0, -1), noun)}${r.from && r.to ? `, ${monthYear(r.from)} to ${monthYear(r.to)}` : ""}. ${n(r.won.count)} became work, ${n(r.saidNo.count)} got a no.`;
+    rows($("#rqAges"), r.byAge.filter((a) => a.count).map((a) => [a.label, n(a.count), money(a.value)]));
+  }
+  $("#rPast").hidden = !past;
+  if (past) {
+    $("#rpHead").textContent = `${count(past.people, "past customer hasn't", "past customers haven't")} been back.`;
+    // what they paid, only when his file says it for every one of them
+    $("#rpPaid").hidden = !past.paid;
+    $("#rpPaid").textContent = past.paid ? `In their last year with you, they paid ${money(past.paid)}${past.people > 1 ? " between them" : ""}.` : "";
+    rows($("#rpWhen"), past.when.map((w) => [w.label, count(w.people, "person", "people"), ...(w.paid ? [money(w.paid)] : [])]));
+  }
+  const found = quotes || !!past;
+  const note = quotes ? r.hottest : past?.note;
+  $("#dzNone").hidden = found;
+  $("#rNote").hidden = !note;
+  $("#rnTo").textContent = note ? `Note 1 · to ${note.name}` : "";
+  $("#rnBody").textContent = note?.body ?? "";
+  $("#rnFoot").textContent = note?.foot ?? "";
+  $("#dzSend").hidden = !server || !found;
+  sendFile.textContent = files.length > 1 ? "Send these files" : "Send this file";
+  $("#dzFwd").hidden = !!server || !found;
+  for (const el of all("#dzSent, #dzSendErr, [data-need]")) el.hidden = true;
+  $("#dzOut").hidden = false;
+}
+
+sendFile.addEventListener("click", async () => {
+  if (!read || !signup) return;
+  const { from, files, result: r } = read;
+  const mine = turn;
+  sendFile.disabled = true;
+  const ok = await toServer(withFile(signup, files, r));
+  sendFile.disabled = false;
+  if (ok) {
+    // the server has these: a file dropped from here on is sent on its own
+    held = held.filter((f) => !from.includes(f));
+    sent.quotes ||= r.quotes > 0;
+    sent.past ||= r.hasPastWork || !!r.past;
+  }
+  // a file he picked while this went out has its own result, and its own send
+  if (mine !== turn) return;
+  // on a one-pass page, the export still to come: his past jobs, or his quotes
+  const need = !noun || (sent.quotes && sent.past) ? "" : sent.quotes ? "past" : "quotes";
+  $("#dzSend").hidden = ok;
+  $("#dzSent").hidden = !ok || !!need;
+  for (const el of all("[data-need]")) el.hidden = !ok || el.dataset.need !== need;
+  $("#dzSendErr").hidden = ok;
+  if (!ok) $<HTMLAnchorElement>("#smsFile").href = smsLink(signup.company, signup.first, `send my file${files.length > 1 ? "s" : ""}`);
 });
 
 /* ------------------------------ every other button leads back to the form ------------------------------ */
@@ -130,9 +275,9 @@ form.addEventListener("submit", async (e) => {
 for (const a of all<HTMLAnchorElement>('a[href="#start"]')) {
   a.addEventListener("click", (e) => {
     e.preventDefault();
-    if (signedUp || reveal.hidden) {
+    if (signup || reveal.hidden) {
       $("#start").scrollIntoView({ behavior: smooth(), block: "start" });
-      if (!signedUp) company.focus({ preventScroll: true });
+      if (!signup) company.focus({ preventScroll: true });
       return;
     }
     // his note is showing, so the form runs long: straight to the first field he hasn't filled
@@ -147,7 +292,7 @@ for (const a of all<HTMLAnchorElement>('a[href="#start"]')) {
 const sticky = $("#sticky");
 const inView = new Map<Element, boolean>();
 function stick() {
-  sticky.classList.toggle("show", !signedUp && ![...inView.values()].some(Boolean));
+  sticky.classList.toggle("show", !signup && ![...inView.values()].some(Boolean));
 }
 const watch = new IntersectionObserver((entries) => {
   for (const x of entries) inView.set(x.target, x.isIntersecting);
