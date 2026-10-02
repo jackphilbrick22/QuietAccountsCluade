@@ -1,5 +1,5 @@
 import type { BusinessProfile, Customer, Dataset, Features, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
-import { classifyService, climateOf, findService, growingSeason, jobPhrase, monthsUntilSeason, playbook, SEASONAL_TRADES, seasonFit, sellingWindow, stateOf, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
+import { classifyService, classifyWork, climateOf, findService, growingSeason, jobPhrase, monthsUntilSeason, playbook, SEASONAL_TRADES, seasonFit, sellingWindow, stateOf, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
@@ -143,11 +143,12 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     const next = svc;
     t.option = next?.phrase ?? "the next step";
     const src = o.source.kind === "job" ? rc.ds.jobs.find((j) => j.id === o.source.id) : undefined;
-    const title = src?.title ?? rc.ds.invoices.find((i) => i.id === o.source.id)?.subject;
-    t.mainJob = title ? jobPhrase(title, b.trade) : "the work";
+    const title = src?.title ?? rc.ds.invoices.find((i) => i.id === o.source.id)?.subject ?? "";
+    // a booking with no title (ZenMaid's appointments have none) is what its frequency says it was
+    const did = classifyWork({ title, lineItems: src?.lineItems, recurring: src?.recurring }, [b.trade, ...b.otherTrades]);
+    t.mainJob = title ? jobPhrase(title, b.trade) : did.matched ? did.service.phrase : "the work";
     // the homeowner's sentence for it, never the owner-facing reason
-    const did = title ? classifyService(title, src?.lineItems ?? [], [b.trade, ...b.otherTrades]).service : undefined;
-    const followOn = did?.followOns?.find((f) => f.serviceId === o.serviceId);
+    const followOn = did.service.followOns?.find((f) => f.serviceId === o.serviceId);
     t.why = followOn?.pitch ?? "";
     t.ask = followOn?.ask ?? "";
     t.noAsk = t.ask ? "" : "yes";

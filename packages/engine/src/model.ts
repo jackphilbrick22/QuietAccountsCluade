@@ -40,6 +40,8 @@ export type SourceSystem =
   | "service_autopilot"
   | "workiz"
   | "zenmaid"
+  | "bookingkoala"
+  | "launch27"
   | "gorilladesk"
   | "spreadsheet"
   | "unknown";

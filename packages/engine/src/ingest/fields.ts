@@ -28,6 +28,7 @@ export type Field =
   | "smsOptIn"
   | "clientCreatedOn"
   | "clientStatus"
+  | "clientType"
   // what
   | "number"
   | "title"
@@ -38,6 +39,8 @@ export type Field =
   | "balance"
   | "perVisit"
   | "done"
+  | "clockedIn"
+  | "series"
   | "status"
   | "outcome"
   | "salesperson"
@@ -59,7 +62,8 @@ export type Field =
   | "paidOn"
   | "assessmentOn"
   | "viewedOn"
-  | "lastJobOn";
+  | "lastJobOn"
+  | "nextVisitOn";
 
 export interface FieldSpec {
   names: string[];
@@ -107,6 +111,10 @@ export const FIELDS: Record<Field, FieldSpec> = {
   smsOptIn: { names: ["sms opt in", "text opt in", "sms consent", "receives sms", "texting consent", "sms marketing"] },
   clientCreatedOn: { names: ["client created", "client created date", "customer since", "customer created", "created date (client)", "client since"] },
   clientStatus: { names: ["client status", "customer status", "lead status", "is lead", "lead or client"] },
+  // How a booking tool files a client (ZenMaid's contact Type), read for whether a visit is on the calendar
+  // (BOOKED_CLIENT). Only a tool's own column is read as one (VENDOR_COLUMNS), never a spelling: an owner's "Customer
+  // Status" saying "Recurring customer" is how they came, not that a visit is booked.
+  clientType: { names: [] },
 
   number: {
     // "Num" is QuickBooks' own report column for the estimate or invoice number
@@ -131,6 +139,13 @@ export const FIELDS: Record<Field, FieldSpec> = {
   perVisit: { names: ["visit based", "per visit", "price per visit"], looks: "money" },
   // Jobber's "Visit completed": Yes once the visit is marked done, No while it's still to come or went by undone
   done: { names: ["visit completed", "visit complete", "marked complete"] },
+  // When the provider started the job, on a booking tool's time log: a log with none was never worked. Only a tool's
+  // own column is read as one (VENDOR_COLUMNS), never a spelling: elsewhere a crew that doesn't use the clock leaves it
+  // blank on visits it did.
+  clockedIn: { names: [] },
+  // The recurring series a booking belongs to, on a booking tool's export (ZenMaid's Subscription ID): blank on a
+  // booking made once. Only a tool's own column is read as one (VENDOR_COLUMNS).
+  series: { names: [] },
   balance: { names: ["balance", "balance due", "amount due", "outstanding", "open balance", "remaining balance", "due"], not: /(date)/i, looks: "money" },
   status: {
     names: ["status", "quote status", "job status", "invoice status", "estimate status", "state", "stage", "pipeline stage", "deal stage", "work status", "opportunity status", "approval status"],
@@ -164,6 +179,9 @@ export const FIELDS: Record<Field, FieldSpec> = {
     names: ["last closed job", "last job", "last job date", "last service", "last service date", "last visit", "last visit date", "last completed job", "last appointment", "last appointment date", "last booking", "last booking date", "last cleaning", "last cleaning date"],
     looks: "date",
   },
+  // A client's next visit on the calendar, on a booking tool's client list (ZenMaid's Next Appointment). Only a tool's
+  // own column is read as one (VENDOR_COLUMNS).
+  nextVisitOn: { names: [] },
 };
 
 /** Fields that each record kind can use. */
@@ -185,7 +203,7 @@ export const KIND_FIELDS: Record<RecordKind, Field[]> = {
   ],
   client: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip", "tags", "leadSource", "marketingOptOut", "smsOptIn",
-    "clientCreatedOn", "clientStatus", "createdOn", "description", "lastJobOn", "jobType",
+    "clientCreatedOn", "clientStatus", "clientType", "createdOn", "description", "lastJobOn", "nextVisitOn", "jobType",
   ],
   request: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip", "leadSource",
@@ -193,7 +211,7 @@ export const KIND_FIELDS: Record<RecordKind, Field[]> = {
   ],
   visit: [
     "clientId", "name", "firstName", "lastName", "company", "email", "phone", "mobile", "address", "street", "street2", "city", "state", "zip",
-    "number", "title", "description", "lineItems", "total", "perVisit", "done", "status", "jobNumber", "jobType", "crew", "scheduledOn", "completedOn",
+    "number", "title", "description", "lineItems", "total", "perVisit", "done", "clockedIn", "series", "status", "jobNumber", "jobType", "crew", "scheduledOn", "completedOn",
   ],
 };
 
@@ -207,8 +225,11 @@ export const KIND_SIGNALS: Record<RecordKind, RegExp[]> = {
   visit: [/\bvisit\b/i, /\bcrew\b/i, /\broute\b/i, /arrival/i, /\bbookings?\b/i],
 };
 
-/** Header fingerprints that identify the software that produced the file. */
-export const SOURCE_SIGNALS: { source: SourceSystem; patterns: RegExp[] }[] = [
+/**
+ * Header fingerprints that identify the software that produced the file. `beside`: a tool's columns an owner's own
+ * sheet has too, which count only beside one of the tool's own.
+ */
+export const SOURCE_SIGNALS: { source: SourceSystem; patterns: RegExp[]; beside?: RegExp[] }[] = [
   { source: "jobber", patterns: [/^quote #$/i, /^client name$/i, /changes requested/i, /^converted( date)?$/i, /^property$/i, /^job #$/i, /jobber/i, /^sent to$/i, /^visits? assigned to$/i] },
   { source: "housecall_pro", patterns: [/^estimate #$/i, /^customer$/i, /outcome/i, /^option( name)?$/i, /housecall/i, /^customer tags$/i, /^job source$/i, /^customer (first|last) name$/i] },
   { source: "servicetitan", patterns: [/business unit/i, /^estimate (name|id)$/i, /sold on/i, /campaign( name)?/i, /servicetitan/i, /^job type$/i, /^location( address)?$/i, /^customer id$/i] },
@@ -219,8 +240,157 @@ export const SOURCE_SIGNALS: { source: SourceSystem; patterns: RegExp[] }[] = [
   { source: "lmn", patterns: [/\blmn\b/i, /^estimate name$/i, /^division$/i] },
   { source: "service_autopilot", patterns: [/service autopilot/i, /^sa id$/i] },
   { source: "workiz", patterns: [/workiz/i] },
-  { source: "zenmaid", patterns: [/zenmaid/i] },
+  // the cleaning booking tools: column names only their exports use (see VENDOR_COLUMNS for where each comes from).
+  // BookingKoala's "Provider" (who cleaned) and "Industry" can be on anyone's sheet, and its clock ("Clocked in",
+  // "Clocked out", "Time reported") on any crew's timesheet.
+  { source: "zenmaid", patterns: [/zenmaid/i, /^customer emails$/i, /^is first clean\?$/i, /^subscription (id|end date)$/i, /^latest appointment (date|start time|end time)$/i, /^most recent clean$/i, /^cleaning weekday$/i, /^(emails|phone numbers) \(all\)$/i] },
+  { source: "bookingkoala", patterns: [/booking ?koala/i, /^provider (status|payment)$/i, /^travel (distance|time)$/i, /^(estimated job length|total payable amount|pricing parameters|package addons)$/i, /^number of (active |cancelled )?bookings$/i, /^additional (email addresse|phone number)\(s\)$/i], beside: [/^provider$/i, /^industry$/i, /^clocked (in|out)$/i, /^time reported$/i] },
+  { source: "launch27", patterns: [/launch ?27/i, /^final price$/i, /^date of (first|last) booking$/i, /^stripe id$/i] },
 ];
+
+/**
+ * The cleaning booking tools' own column names, export by export, as their help pages give them and keyed by
+ * normHeader's spelling: read for what the tool says each column is before any spelling above is tried. A column the
+ * tool means something else by is never read (null). A column a page doesn't list falls to the spellings above, and so
+ * does a file of a kind the tool doesn't export.
+ */
+export const VENDOR_COLUMNS: Partial<Record<SourceSystem, Partial<Record<RecordKind, Record<string, Field | null>>>>> = {
+  // ZenMaid, read 2026-10-01: appointment statuses (Active, Completed, Cancelled, Locked Out) on
+  // https://zenmaid.com/answers/en/articles/9764809-how-to-create-a-cancellation-report.
+  zenmaid: {
+    // The Appointments export (Reports → Data exports → Export data → Appointments), its fields on
+    // https://www.zenmaid.com/answers/en/articles/5085915-how-to-run-exports-from-zenmaid; Customer Full Name and
+    // Recurrence ("weekly", "every 2 weeks", "one time" or blank) on
+    // https://zenmaid.com/answers/en/articles/8688544-how-to-compare-months-for-gained-lost-recurring-customers-using-the-appointment-export,
+    // which counts a blank one as no recurring service, like "one time": with no Subscription ID beside it either, the
+    // booking was made once.
+    visit: {
+      "appointment id": "number",
+      "appointment date": "scheduledOn",
+      "subscription id": "series",
+      "appointment status": "status",
+      price: "total",
+      "team name": "crew",
+      "customer first name": "firstName",
+      "customer last name": "lastName",
+      "customer full name": "name",
+      "customer company name": "company",
+      "customer emails": "email",
+      "address line1": "street",
+      "address line2": "street2",
+      "address city": "city",
+      "address state": "state",
+      "address postal code": "zip",
+      recurrence: "jobType",
+      // when the client's subscription ends, and their latest visit: no visit's own day
+      "subscription end date": null,
+      "latest appointment date": null,
+    },
+    // The Contacts export, its fields on the cancellation-report page above; its Types on
+    // https://zenmaid.com/answers/en/articles/2235216-how-contact-statuses-work-and-how-to-change-them: a Recurring
+    // Customer (plain "Recurring" in the page's list of them) has a recurring service with at least one future
+    // appointment. A One-Time Customer never signed up for one and "has had service in the past or has a service
+    // scheduled in the future", so only a Next Appointment says it's booked. A Former Customer had a recurring service
+    // and has nothing ahead, and a Lead was never cleaned for.
+    client: {
+      "contact id": "clientId",
+      "full name": "name",
+      "first name": "firstName",
+      "last name": "lastName",
+      "primary email": "email",
+      "primary phone number": "phone",
+      "most recent clean": "lastJobOn",
+      "created on": "createdOn",
+      // whether a visit is on the calendar (BOOKED_CLIENT), never how often they come
+      type: "clientType",
+      "next appointment": "nextVisitOn",
+    },
+  },
+  // BookingKoala, read 2026-10-01.
+  bookingkoala: {
+    // The Booking Time Logs export (Bookings → Booking Time Logs → Export), its fields (Clocked in, Clocked out and Time
+    // reported among them) and a sample (Service date 04/04/2022, Service time 09:00 AM, Provider status Active) on
+    // https://help.bookingkoala.com/help/booking-time-logs; frequencies (One Time, Weekly, Every 2 Weeks, Every 4 Weeks)
+    // on https://help.bookingkoala.com/help/reports-overview. A shop has logs only once it turns on clocking in and out.
+    // A log is made when the provider taps On the Way, before any work, and is a visit worked once someone clocks in:
+    // the provider, or the system when it completes a job nobody clocked in to. One with no clock-in (a booking
+    // cancelled at the door) is none. Its Status is the hours' approval (Approved, Pending, Rejected): hours the office
+    // rejected are no clean to count, and the rest leave it to the clock-in. Provider status is the provider's account
+    // (Active, Inactive, Deleted). It has no email. Any other BookingKoala file of bookings (its booking CSV has no
+    // columns on a help page) has no clock, and its Status is the booking's.
+    visit: {
+      "booking id": "number",
+      "service date": "scheduledOn",
+      customer: "name",
+      "phone number": "phone",
+      provider: "crew",
+      service: "title",
+      frequency: "jobType",
+      "booking amount": "total",
+      "zip postal code": "zip",
+      "clocked in": "clockedIn",
+      // the time between clocking in and out, in an export with no clock-in ticked
+      "time reported": "clockedIn",
+      status: "status",
+      "provider status": null,
+    },
+    // The Customers export (Customers → Customers → Export), its fields on
+    // https://help.bookingkoala.com/help/how-to-export-customer-data: the emails, and counts of bookings, never a date.
+    client: {
+      "first name": "firstName",
+      "last name": "lastName",
+      "full name": "name",
+      "company name": "company",
+      "email address": "email",
+      "phone number": "phone",
+      address: "address",
+      "apt no": "street2",
+      city: "city",
+      state: "state",
+      "zip postal code": "zip",
+      "created on": "createdOn",
+    },
+  },
+  // Launch27, read 2026-10-01.
+  launch27: {
+    // The booking export (Bookings → Download CSV): the standard fields its picker shows on
+    // https://intercom.help/Launch27/en/articles/4460462-export-booking-data (Date, Time, First Name, Last Name, Email,
+    // Address, City, State, Postal Code, Phone; the list scrolls on past them), and what Launch27 calls a booking's
+    // service, frequency and price on https://intercom.help/Launch27/en/articles/4256720-zapier-integration-overview;
+    // frequencies (Weekly, Bi-Weekly, Tri-Weekly, Monthly, Every 2 Weeks, One Time) on
+    // https://intercom.help/Launch27/en/articles/4259686-how-recurring-bookings-work and
+    // https://intercom.help/Launch27/en/articles/4259718-active-bookings-page-overview. Only active bookings export, done
+    // and still to come, never cancelled ones: https://intercom.help/Launch27/en/articles/4259709-export-account-data-overview.
+    visit: {
+      date: "scheduledOn",
+      "first name": "firstName",
+      "last name": "lastName",
+      email: "email",
+      address: "address",
+      city: "city",
+      state: "state",
+      "postal code": "zip",
+      phone: "phone",
+      service: "title",
+      frequency: "jobType",
+      "final price": "total",
+    },
+    // The Customers export (Customers → Export customers), its fields and dates (03/25/2024 9:00 AM) on
+    // https://intercom.help/Launch27/en/articles/7061836-new-bookings-report.
+    client: {
+      "first name": "firstName",
+      "last name": "lastName",
+      email: "email",
+      address: "address",
+      city: "city",
+      state: "state",
+      "postal code": "zip",
+      phone: "phone",
+      "date created": "createdOn",
+      "date of last booking": "lastJobOn",
+    },
+  },
+};
 
 /** "Not sent", "never viewed", "un-signed": a negation in front of the word that follows. */
 const NOT = String.raw`\b(?:not(?:\s+yet)?[\s-]+|never[\s-]+|un-?)`;
@@ -387,8 +557,17 @@ export const JOB_STATUS_MAP: [RegExp, import("../model.ts").JobStatus][] = [
   [/(active|in progress|ongoing|open|started|dispatched|en route)/i, "active"],
 ];
 
-/** A visit's status that says it went by undone ("Skipped", "No show", "Lockout"): never work done. */
-export const VISIT_UNDONE = /\b(skip(ped)?|no[- ]?show|missed|lock[- ]?out|locked out|postponed|incomplete|uncompleted|not (complete|completed|done))\b/i;
+/**
+ * A visit's status that says it went by undone ("Skipped", "No show", "Lockout", a time log whose hours were
+ * "Rejected"): never work done.
+ */
+export const VISIT_UNDONE = /\b(skip(ped)?|no[- ]?show|missed|lock[- ]?out|locked out|postponed|incomplete|uncompleted|rejected|not (complete|completed|done))\b/i;
+
+/**
+ * A booking tool's word that a client has a visit on the calendar: ZenMaid's Recurring Customer, or plain "Recurring"
+ * (VENDOR_COLUMNS). Its One-Time Customer may have had their one clean long ago.
+ */
+export const BOOKED_CLIENT = /^recurring( customer)?$/i;
 
 export const INVOICE_STATUS_MAP: [RegExp, import("../model.ts").InvoiceStatus][] = [
   [/(bad debt|written off|write off|uncollect)/i, "bad_debt"],

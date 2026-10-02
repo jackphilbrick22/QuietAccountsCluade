@@ -29,7 +29,7 @@ import {
 import { visitBook } from "../breakage/visits.ts";
 import type { Table } from "./csv.ts";
 import type { Detection } from "./detect.ts";
-import { INVOICE_STATUS_MAP, JOB_STATUS_MAP, QUOTE_STATUS_MAP, REQUEST_STATUS_MAP, SOURCE_QUOTE_STATUS, VISIT_UNDONE, type Field } from "./fields.ts";
+import { BOOKED_CLIENT, INVOICE_STATUS_MAP, JOB_STATUS_MAP, QUOTE_STATUS_MAP, REQUEST_STATUS_MAP, SOURCE_QUOTE_STATUS, VISIT_UNDONE, type Field } from "./fields.ts";
 
 interface Person {
   sourceClientId?: string;
@@ -64,9 +64,10 @@ function truthy(v: string): boolean {
   return /^(y|yes|true|1|x|✓|opted ?in|subscribed)$/i.test(v.trim());
 }
 
-/** Gaps a frequency column names in words, in days. Checked in order: "Bi-weekly" is not weekly. */
+/** Gaps a frequency column names in words, in days. Checked in order: "Bi-weekly" and "Tri-Weekly" are not weekly. */
 const EVERY: [RegExp, number][] = [
   [/\bbi-?weekly\b|\bfortnightly\b/i, 14],
+  [/\btri-?weekly\b/i, 21],
   [/\bsemi-?monthly\b|\btwice a month\b/i, 15],
   [/\bweekly\b/i, 7],
   [/\bmonthly\b/i, 30],
@@ -410,17 +411,23 @@ export function importTable(
       const marked = get("done");
       // Not marked done is no proof of work: a visit still to come, or one that went by undone (or not marked yet,
       // which the scan tells apart), and so is a status no rule reads ("Pending", "Unassigned"). "Skipped", "No show",
-      // "Lockout": it went by undone, whatever else the row says. With no word either way, the date decides when the
-      // scan runs.
-      const undone = VISIT_UNDONE.test(rawStatus);
+      // "Lockout": it went by undone, whatever else the row says. So did a time log nobody clocked in on, and one with a
+      // clock-in is work done, when the Status says nothing of the visit itself (BookingKoala's says only whether the
+      // office approved the hours); a Status that says Completed or Scheduled decides. With no word either way, the
+      // date decides when the scan runs.
+      const said = mapStatus(rawStatus, JOB_STATUS_MAP);
+      const clocked = fields.clockedIn === undefined || said ? undefined : /\d/.test(get("clockedIn"));
+      const undone = VISIT_UNDONE.test(rawStatus) || clocked === false;
       const notDone = on ? "scheduled" : "unscheduled";
       const status =
-        (undone ? notDone : mapStatus(rawStatus, JOB_STATUS_MAP)) ??
+        (undone ? notDone : clocked ? "completed" : said) ??
         (marked ? (truthy(marked) ? "completed" : notDone) : rawStatus ? notDone : parseDate(get("completedOn")) ? "completed" : "unknown");
       const jobType = get("jobType");
       // With no "Job type" column, Jobber's "One-off job ($)" filled in and "Visit based ($)" not says it all the same:
       // the visit is a share of one job's price, however many days it took
       const share = !jobType && fields.perVisit !== undefined && (parseMoney(get("total")) ?? 0) > 0 && !parseMoney(get("perVisit"));
+      // ZenMaid can leave a one-time booking's Recurrence blank: with no series behind it, it was booked once
+      const once = !jobType && fields.series !== undefined && !get("series");
       const visit: Job = {
         id: recId("visit"),
         sourceId: number || undefined,
@@ -436,7 +443,7 @@ export function importTable(
         scheduledOn: on,
         completedOn: status === "completed" ? (parseDate(get("completedOn")) ?? on) : undefined,
         // a visit of a job the export calls one-off is part of that one job, however many days it took
-        ...(jobType ? { recurring: false, ...frequency(jobType) } : share ? { recurring: false } : {}),
+        ...(jobType ? { recurring: false, ...frequency(jobType) } : share || once ? { recurring: false } : {}),
         visit: true,
         undone: undone || undefined,
         jobRef: get("jobNumber") || undefined,
@@ -507,13 +514,19 @@ export function importTable(
       // as a past job, with how often they came when the list says
       const lastJob = parseDate(get("lastJobOn"));
       // A list sent again moves each client's date on: the earlier list's date gives way, so a client cleaned since
-      // reads as on a first list (an older list sent after it never takes the date back)
+      // reads as on a first list (an older list sent after it never takes the date back). A client the tool says has a
+      // visit on the calendar, a recurring client or one with a next visit, is still on the schedule: their last date
+      // is open work, never a past customer's last visit, until a list sent again says otherwise.
       const before = (lastListed.get(customer.id) ?? []).filter((j) => jobs.has(j.id));
       if (lastJob && !before.some((j) => j.completedOn! > lastJob)) {
         const jid = makeId("j", source, "last", customer.id, lastJob);
         for (const j of before) if (j.id !== jid) jobs.delete(j.id);
-        if (!jobs.has(jid) && ![...jobs.values()].some((j) => j.customerId === customer.id && (j.completedOn ?? j.scheduledOn) === lastJob)) {
-          const listed: Job = { id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: "completed", rawStatus: "Last closed job", completedOn: lastJob, createdOn: lastJob, ...frequency(get("jobType")), fromList: true };
+        if (jobs.has(jid) || ![...jobs.values()].some((j) => j.customerId === customer.id && (j.completedOn ?? j.scheduledOn) === lastJob)) {
+          const booked = BOOKED_CLIENT.test(get("clientType")) || !!parseDate(get("nextVisitOn"));
+          const listed: Job = {
+            id: jid, customerId: customer.id, title: get("title") || "Past job", lineItems: [], total: 0, status: booked ? "active" : "completed", rawStatus: booked ? get("clientType") || "Next visit booked" : "Last closed job",
+            completedOn: lastJob, createdOn: lastJob, ...frequency(get("jobType")), fromList: true,
+          };
           jobs.set(jid, listed);
           listedOn.set(`${customer.id}|${lastJob}`, jid);
           lastListed.set(customer.id, [listed]);

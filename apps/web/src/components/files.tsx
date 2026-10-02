@@ -27,6 +27,8 @@ export const SOURCE_LABEL: Record<SourceSystem, string> = {
   service_autopilot: "Service Autopilot",
   workiz: "Workiz",
   zenmaid: "ZenMaid",
+  bookingkoala: "BookingKoala",
+  launch27: "Launch27",
   gorilladesk: "GorillaDesk",
   spreadsheet: "Spreadsheet",
   unknown: "Unknown software",

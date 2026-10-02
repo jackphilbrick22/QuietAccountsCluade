@@ -14,7 +14,7 @@ import type {
   TradeId,
 } from "../model.ts";
 import { cautionReasons, isBadCustomer, MARKETPLACE_SOURCE, medianByService, REFERRAL_SOURCE, type CautionContext } from "./caution.ts";
-import { classifyService, comesBackEachSeason, findService, goneForSeason, growingSeason, jobPhrase, playbook, SEASONAL_TRADES, seasonFit, shopSeasonEnd, tradesOf, type Climate, type Season, type ServiceDef } from "../trades/index.ts";
+import { classifyService, classifyWork, comesBackEachSeason, findService, goneForSeason, growingSeason, jobPhrase, playbook, SEASONAL_TRADES, seasonFit, shopSeasonEnd, tradesOf, type Climate, type Season, type ServiceDef } from "../trades/index.ts";
 import {
   addMonths,
   clamp,
@@ -291,6 +291,8 @@ function softwareName(ctx: Ctx): string {
       service_autopilot: "Service Autopilot",
       workiz: "Workiz",
       zenmaid: "ZenMaid",
+      bookingkoala: "BookingKoala",
+      launch27: "Launch27",
       gorilladesk: "GorillaDesk",
       spreadsheet: "your spreadsheet",
       unknown: "your software",
@@ -479,7 +481,7 @@ function historyOf(ctx: Ctx, c: Customer) {
         .map((i) => ({ date: (i.issuedOn ?? i.paidOn)!, title: i.subject, total: i.total, id: i.id, kind: "invoice" as const, lineItems: [] }))
         .sort((a, b) => (a.date < b.date ? -1 : 1));
   if (!work.length) return undefined;
-  const svcOf = new Map(work.map((w) => [w, classifyService(w.title, w.lineItems, ctx.trades).service]));
+  const svcOf = new Map(work.map((w) => [w, classifyWork(w, ctx.trades).service]));
 
   // The routine they're on, if any: the recurring or maintenance service they've had most. A record standing for a
   // whole run of visits says outright what they were on.

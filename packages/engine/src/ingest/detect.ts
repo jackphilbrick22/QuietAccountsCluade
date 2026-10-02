@@ -1,7 +1,7 @@
 import type { RecordKind, SourceSystem } from "../model.ts";
 import { extractEmails, normalizePhone, parseDate, parseMoney } from "../util.ts";
 import type { Table } from "./csv.ts";
-import { FIELDS, KIND_FIELDS, KIND_SIGNALS, SOURCE_SIGNALS, type Field } from "./fields.ts";
+import { FIELDS, KIND_FIELDS, KIND_SIGNALS, SOURCE_SIGNALS, VENDOR_COLUMNS, type Field } from "./fields.ts";
 
 export interface ColumnMapping {
   /** field -> header index */
@@ -110,12 +110,27 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function mapColumns(table: Table, kind: RecordKind): ColumnMapping {
+export function mapColumns(table: Table, kind: RecordKind, source?: SourceSystem): ColumnMapping {
   const headers = table.headers.map(normHeader);
   const sample = table.rows.slice(0, 200);
   const colValues = headers.map((_, i) => sample.map((r) => r[i] ?? ""));
   const candidates: { field: Field; col: number; score: number }[] = [];
   const allowed = KIND_FIELDS[kind];
+  const fields: Partial<Record<Field, number>> = {};
+  const confidence: Partial<Record<Field, number>> = {};
+  const used = new Set<number>();
+
+  // A booking tool's own columns are what its help pages say they are; the rest are matched by name below.
+  const vendor: Record<string, Field | null> = (source && VENDOR_COLUMNS[source]?.[kind]) || {};
+  for (const [name, field] of Object.entries(vendor)) {
+    const col = headers.indexOf(name);
+    if (col < 0) continue;
+    used.add(col);
+    if (field && fields[field] === undefined) {
+      fields[field] = col;
+      confidence[field] = 1;
+    }
+  }
 
   for (const field of allowed) {
     const spec = FIELDS[field];
@@ -144,9 +159,6 @@ export function mapColumns(table: Table, kind: RecordKind): ColumnMapping {
   }
 
   candidates.sort((a, b) => b.score - a.score);
-  const fields: Partial<Record<Field, number>> = {};
-  const confidence: Partial<Record<Field, number>> = {};
-  const used = new Set<number>();
   for (const c of candidates) {
     if (fields[c.field] !== undefined || used.has(c.col)) continue;
     fields[c.field] = c.col;
@@ -180,7 +192,7 @@ export function mapColumns(table: Table, kind: RecordKind): ColumnMapping {
   return { fields, confidence, unused };
 }
 
-export function detectKind(table: Table, fileName = ""): { kind: RecordKind; confidence: number; scores: Record<RecordKind, number> } {
+export function detectKind(table: Table, fileName = "", source?: SourceSystem): { kind: RecordKind; confidence: number; scores: Record<RecordKind, number> } {
   const headers = table.headers.map(normHeader);
   const joined = headers.join(" | ");
   const fname = fileName.toLowerCase();
@@ -191,21 +203,33 @@ export function detectKind(table: Table, fileName = ""): { kind: RecordKind; con
   const has = (re: RegExp) => headers.some((h) => re.test(h));
   if (has(/approved|converted|changes requested|estimate (outcome|status)|quote status/)) scores.quote += 3;
   if (has(/^(quote|estimate) #$|^(quote|estimate) number$/)) scores.quote += 3;
-  // Jobber's Visits report is one row per visit, with whether it was done and what it billed. Its "Job #" is the job
-  // each visit belongs to, so it never makes the file a jobs file.
-  const visitRows = has(/^visit (title|completed|based)$/);
-  if (has(/^job #$|^job number$|job status/) && !visitRows) scores.job += 3;
-  if (has(/^invoice #$|^invoice number$|balance|amount due|due date/)) scores.invoice += 3;
-  if (has(/^request #$|request status|assessment/)) scores.request += 3;
-  if (has(/^visit|visit date|arrival/)) scores.visit += 2;
-  if (visitRows) scores.visit += 6;
   // A quote's own price or date ("Estimate Amount", "Quote Date") makes the file quotes. A bookings export is visits:
   // one row per booking, never a quote; but in a quote tracker, "Booking Date" is the day a quote booked.
   const quoteCols = has(/^(quote|estimate|bid|proposal) (amount|total|value|price|date|sent|sent date)$|^(quoted|estimated) (amount|price|value)$/);
   if (quoteCols) scores.quote += 3;
   if (has(/^booking (id|#|number|date)$/) && !quoteCols) scores.visit += 3;
-  // only a client list says when each person was last here
-  if (has(/^last (visit|appointment|booking|cleaning|service|job|closed job)\b/)) scores.client += 3;
+  // Jobber's Visits report is one row per visit, with whether it was done and what it billed. Its "Job #" is the job
+  // each visit belongs to, so it never makes the file a jobs file.
+  const visitRows = has(/^visit (title|completed|based)$/);
+  // A booking tool's export says what each row is in its own columns, and ZenMaid's export dialog ticks every other
+  // column beside them by default: the customer's Balance and what was Paid on each appointment, each contact's Balance
+  // and Revenue. An appointment's ID or status is one row per visit, and a ZenMaid contact's ID, Type or most recent
+  // clean one row per client: no balance beside them makes the file invoices.
+  const appointmentRows = has(/^appointment (id|#|number|status)$/) && !quoteCols;
+  const contactRows = source === "zenmaid" && !appointmentRows && has(/^(contact id|type|most recent clean)$/);
+  if (has(/^job #$|^job number$|job status/) && !visitRows) scores.job += 3;
+  if (has(/^invoice #$|^invoice number$|balance|amount due|due date/) && !appointmentRows && !contactRows) scores.invoice += 3;
+  if (has(/^request #$|request status|assessment/)) scores.request += 3;
+  if (has(/^visit|visit date|arrival/)) scores.visit += 2;
+  if (visitRows || appointmentRows) scores.visit += 6;
+  if (contactRows) scores.client += 6;
+  // only a client list says when each person was last here, or counts their bookings
+  const lastDate = has(/^(last|most recent) (visit|appointment|booking|clean|cleaning|service|job|closed job)\b|^date of last (booking|visit|service)$/);
+  if (lastDate) scores.client += 3;
+  if (has(/^number of (active |cancelled )?bookings$/)) scores.client += 3;
+  // A date with the time of day beside how often they come is one row per booking (Launch27's booking export, its
+  // Final Price with them). A plain Date beside a Frequency alone is as often an owner's quote tracker or client list.
+  if (has(/^(frequency|recurrence)$/) && has(/^(date|service date)$/) && has(/^(time|final price)$/) && !lastDate && !quoteCols) scores.visit += 3;
   if (has(/client since|customer since|client created|lead source/) && !has(/total|amount|status/)) scores.client += 3;
   // QuickBooks reports say what each row is in a "Transaction Type" column: Estimate, Invoice, Payment
   const typeCol = headers.findIndex((h) => /^(transaction )?type$/.test(h));
@@ -245,9 +269,10 @@ export function detectSource(table: Table, fileName = ""): { source: SourceSyste
   const text = [...headers, ...table.preamble, fileName].join(" \n ");
   let best: SourceSystem = "spreadsheet";
   let bestScore = 0;
-  for (const { source, patterns } of SOURCE_SIGNALS) {
+  for (const { source, patterns, beside = [] } of SOURCE_SIGNALS) {
     let s = 0;
     for (const re of patterns) if (headers.some((h) => re.test(h)) || re.test(text)) s++;
+    if (s) for (const re of beside) if (headers.some((h) => re.test(h))) s++;
     if (s > bestScore) {
       bestScore = s;
       best = source;
@@ -258,10 +283,10 @@ export function detectSource(table: Table, fileName = ""): { source: SourceSyste
 }
 
 export function detect(table: Table, fileName = "", forceKind?: RecordKind): Detection {
-  const k = detectKind(table, fileName);
-  const kind = forceKind ?? k.kind;
   const s = detectSource(table, fileName);
-  const mapping = mapColumns(table, kind);
+  const k = detectKind(table, fileName, s.source);
+  const kind = forceKind ?? k.kind;
+  const mapping = mapColumns(table, kind, s.source);
   const warnings: string[] = [];
   const f = mapping.fields;
   if (f.email === undefined && f.phone === undefined && f.mobile === undefined) warnings.push("No email or phone column found — we can't reach anyone on this list without one.");

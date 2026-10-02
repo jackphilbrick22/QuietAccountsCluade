@@ -64,6 +64,18 @@ export function classifyService(title: string, lineItems: LineItem[] = [], trade
   return { trade: trades[0] ?? "general", service: PLAYBOOKS.general.services.find((s) => s.id === UNKNOWN_SERVICE_ID)!, matched: false };
 }
 
+/**
+ * Which service a job or visit was. One whose title names none ("Standard Cleaning", the name a booking tool gives
+ * every clean) goes by how often the export says it comes: the trade's regular service when it recurs, its one-time
+ * service when it was booked once (cleaning's "the regular cleaning" and "the cleaning", with the ask to go regular).
+ */
+export function classifyWork(w: { title: string; lineItems?: LineItem[]; recurring?: boolean }, trades: TradeId[] = ["general"]): ReturnType<typeof classifyService> {
+  const named = classifyService(w.title, w.lineItems, trades);
+  if (named.matched || w.recurring === undefined) return named;
+  const byRhythm = classifyService(w.recurring ? "recurring" : "one-time", [], trades);
+  return byRhythm.matched ? byRhythm : named;
+}
+
 export function findService(serviceId: string): { trade: TradeId; service: ServiceDef } | undefined {
   for (const pb of Object.values(PLAYBOOKS)) {
     const s = pb.services.find((x) => x.id === serviceId);

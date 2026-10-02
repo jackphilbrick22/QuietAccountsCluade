@@ -529,6 +529,76 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - Merge notes: built off A7 and merged after B6 and the holiday rule; one import line in runtime/agents.ts needed both sides.
   - Engine 1,636, site 148, server 448 (on its own base).
 
+- **C2. Cleaning software exports (ZenMaid, BookingKoala, Launch27).**
+  - Cleaning shops can send their booking tool's export instead of Jobber's Visits report:
+    - ZenMaid's Appointments export.
+    - BookingKoala's Booking Time Logs export plus its Customers export (the emails are only in the Customers export).
+    - Launch27's booking CSV.
+    - The client lists too: ZenMaid Contacts and Launch27 Customers.
+  - Each tool is recognised by column names only its exports use.
+    - Columns an owner's own sheet has too count only beside one of BookingKoala's own. These are "Provider", "Industry" and the clock: "Clocked in", "Clocked out" and "Time reported".
+    - So a homemade bookings sheet or a crew's timesheet stays a spreadsheet.
+    - Each export is read with a column map taken from the tool's help pages, with the URLs and the date they were read in the code.
+  - A tool's own row columns decide what a file is.
+    - ZenMaid's export dialog ticks every column by default. So its appointments come with the customer's Balance and what was Paid, and its contacts with each one's Balance and Revenue.
+    - An appointment's ID or status still makes the file one row per visit. A ZenMaid contact's ID, Type or most recent clean makes it one row per client.
+    - Both read correctly under any file name, not only ZenMaid's own.
+  - A bookings file's Status is always read, BookingKoala's own booking CSV included.
+    - Completed counts as work done.
+    - Cancelled never counts and never makes a regular look active.
+    - ZenMaid's Locked Out counts as a missed visit.
+  - BookingKoala time logs:
+    - A log is made when the cleaner taps On the Way, before any work. It counts as a clean only once someone clocked in.
+    - A log nobody clocked in on (a booking cancelled at the door), or one whose hours the office rejected, is not a clean.
+    - The clock is read only in a file that BookingKoala's own columns name. It decides only where the Status doesn't say what happened; BookingKoala's Status is only the hours' approval.
+    - An owner's sheet with a clock column is a spreadsheet. A clean the crew didn't clock in on still counts, with a Status or without one.
+  - ZenMaid Appointments: a booking with a blank Recurrence and no Subscription ID is a one-time clean, the same as "one time". So it still gets the note to go regular.
+  - ZenMaid Contacts:
+    - A Recurring Customer (written "Recurring" too), or anyone with a Next Appointment, has a visit booked. They aren't written to, however old their last clean.
+    - A One-Time Customer stays one after their clean. With no Next Appointment, how long since their last clean decides, as on any list.
+    - A list sent again that says Former Customer makes them a past customer again.
+    - Only ZenMaid's own Type and Next Appointment are read this way. An owner's list whose Customer Status says "Recurring customer" or "One-time customer" finds the same people as before.
+  - The frequency column gives each client's rhythm (weekly, every 2 weeks, Bi-Weekly, Tri-Weekly, every 4 weeks or Monthly, One Time).
+  - A plain Date beside a Frequency doesn't make a file a bookings file. It needs the time of day or Launch27's Final Price too, so an owner's quote tracker or client list reads as before.
+  - A booking titled only "Standard Cleaning" counts as the regular cleaning when it recurs, and as a one-time clean when it was booked once.
+    - So lapsed regulars get the "regular cleaning" note.
+    - One-time clients still get "Want it on a regular schedule?".
+  - BookingKoala and Launch27 now have labels in the console.
+  - New fixtures, one per tool, with tests:
+    - Each fixture finds the lapsed regulars and flags no active client.
+    - The one-time-to-regular note is kept, and the plan picks exactly those people.
+    - Detection by headers is tested, and a generic spreadsheet still imports as before.
+    - ZenMaid Appointments:
+      - The fixture has every column ZenMaid ticks by default.
+      - It finds the same people under ZenMaid's file name, export.csv and zenmaid.csv.
+      - With the Recurrence of its one-time bookings left blank, it finds the same people, Linda's one-time-to-regular note included.
+    - A Contacts export with every column, Balance and Revenue included, stays a client list.
+    - A bookings sheet with Provider, Industry or BookingKoala's own columns still reads Cancelled.
+      - A cancelled series doesn't hold off a lapsed regular.
+      - A cancelled one-time booking isn't flagged.
+    - An On the Way log with no clock-in, and a log with rejected hours, are not cleans.
+    - Clock sheets:
+      - An owner's sheet whose crew only started clocking in during August is a spreadsheet, with Completed and Scheduled or with no Status at all. Every clean counts, and it finds the same people.
+      - The same sheet beside BookingKoala's travel time is read as BookingKoala's: the clock is read and Completed still decides.
+    - ZenMaid's booked clients are not flagged, and a past One-Time Customer is found as one-and-done.
+    - An owner's list with a Customer Status column finds who it found without it.
+    - A quote tracker and a client list with Frequency and Date stay quotes and clients.
+  - Left:
+    - BookingKoala time logs exist only for shops that turned on clocking in and out.
+      - A shop without it has to send BookingKoala's "Download booking CSV".
+      - That file has no documented columns, so it goes through the generic matching. Its Status is read, but nothing about it has been checked.
+    - A BookingKoala time log needs one of BookingKoala's own columns to be known: provider status or payment, travel distance or time, estimated job length, total payable amount, pricing parameters or package addons.
+      - "Select All" in its export dialog ticks them all.
+      - Without one, the log is labelled Housecall Pro (because of its "Customer" column) or a spreadsheet. Its clock isn't read, and the dates decide which logs were cleans.
+    - An owner's crew timesheet that also has one of those columns (a "Travel time", say) is read as BookingKoala's. There, a clean with no clock-in counts only if its Status says Completed.
+    - ZenMaid's Appointments dialog scrolls past what its help page screenshot shows.
+      - Apart from Customer Full Name and Recurrence, the columns past that point are unknown.
+      - No help page shows what its money columns hold.
+      - A blank Recurrence on a booking with a Subscription ID says nothing of how often it comes, so the dates decide.
+    - ZenMaid Contacts without a Next Appointment column can't tell a One-Time Customer with a clean booked from one cleaned long ago. Without Type or Next Appointment, it can't tell a booked client from a past one. So the C3 export step should ask for Type and Next Appointment, or for the Appointments export.
+    - The console's onboarding software guides have no cleaning-tool entries. The /cleaning page export step is C3.
+    - Nothing has been checked against a real export file from any of the three tools.
+
 **Live steps for Jack**
 - (Holidays) On Thanksgiving, open one Instantly client's page. Its campaigns that were Active should say Paused in Instantly, and its activity should say "Sending platform paused for this client: Because of Thanksgiving, a holiday".
 - By Saturday those should be Active again, and the follow-ups due over the holiday should go out Monday.

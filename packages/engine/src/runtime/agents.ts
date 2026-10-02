@@ -73,7 +73,7 @@ export interface FileIn {
 const KIND_WORD: Record<RecordKind, string> = { quote: "quotes", job: "jobs", invoice: "invoices", client: "clients", request: "requests", visit: "visits" };
 const SOFTWARE: Record<string, string> = {
   jobber: "Jobber", housecall_pro: "Housecall Pro", servicetitan: "ServiceTitan", quickbooks: "QuickBooks", arborgold: "Arborgold", singleops: "SingleOps",
-  yardbook: "Yardbook", lmn: "LMN", aspire: "Aspire", service_autopilot: "Service Autopilot", workiz: "Workiz", zenmaid: "ZenMaid", gorilladesk: "GorillaDesk",
+  yardbook: "Yardbook", lmn: "LMN", aspire: "Aspire", service_autopilot: "Service Autopilot", workiz: "Workiz", zenmaid: "ZenMaid", bookingkoala: "BookingKoala", launch27: "Launch27", gorilladesk: "GorillaDesk",
   spreadsheet: "a spreadsheet", unknown: "your software",
 };
 
