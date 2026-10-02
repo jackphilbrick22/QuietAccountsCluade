@@ -1,8 +1,8 @@
 import type { AgentEvent, Charge, FoundBooking, ISODate, ISODateTime, MonthCharge, PlanState, SavedCard } from "../model.ts";
 import type { AccountState, ChargeText, OwnerMessage } from "./state.ts";
-import { billableBookings } from "../ledger/billable.ts";
+import { AFTER_CANCEL, billableBookings } from "../ledger/billable.ts";
 import { counted } from "../ledger/attribution.ts";
-import { chargeCapText, chargeHeadsUp, chargeRefundText, chargeRetryText, leadCode, monthLine, paidYearOn, type GuaranteeCheck } from "../reports/owner.ts";
+import { bookingWho, chargeCapText, chargeHeadsUp, chargeRefundText, chargeRetryText, leadCode, monthLine, paidYearOn, type GuaranteeCheck } from "../reports/owner.ts";
 import { billsPass, holdsPlace, isMonth, monthlyPlan, ONE_PASS, startMonthly } from "../plans.ts";
 import { customerById } from "../lookup.ts";
 import { holidayOn } from "../cadence/holidays.ts";
@@ -21,6 +21,8 @@ export interface BillingOpts {
   stripe: boolean;
   /** A charge's /pay link (with Stripe). */
   payLink?: (chargeId: string) => string;
+  /** Whether an owner text was withdrawn before it went (the server knows): a cap text that was is written anew. */
+  withdrawn?: (messageId: string) => boolean;
 }
 
 /** Owner messages point at their charge with this ref (a month's too). */
@@ -71,6 +73,19 @@ const NOT_OURS = "The owner texted NOT OURS";
 const PAID_AFTER = "Paid after it was cancelled";
 /** Why a month isn't charged once the owner cancelled (by text, or in Settings). */
 const CANCELLED = "Cancelled before it was charged";
+/** Why a month isn't charged once, as the replies read now, nobody asked to come back after all. */
+export const FREE_MONTH = "Free: nobody asked to come back";
+
+/** A later month not charged yet turned out free (a reply read again): no charge. Whether it was skipped. */
+export function monthFree(state: AccountState, id: string, now: ISODateTime): boolean {
+  const c = chargeOf(state, id);
+  if (!c || !isMonth(c) || c.first || (c.status !== "heads_up" && c.status !== "approved" && c.status !== "link_sent")) return false;
+  skip(state, c, now, FREE_MONTH);
+  return true;
+}
+
+/** Why a month paid the day the owner cancelled waits for Jack. */
+export const CHARGED_CANCEL_DAY = "Charged the day they cancelled";
 
 /** A charge before money has moved (or might be moving): NOT OURS or a booking gone cancels it outright. */
 const UNCHARGED = new Set<Charge["status"]>(["heads_up", "approved", "link_sent", "failed"]);
@@ -89,9 +104,9 @@ export function textsOf(state: AccountState, c: Pick<Charge, "id">): OwnerMessag
 }
 
 /** Whose booking, or which month: "Karen Whitfield", "the first month", "the month from November 1". */
-function nameOf(state: AccountState, c: Pick<Charge, "customerId"> | MonthCharge): string {
+function nameOf(state: AccountState, c: (Pick<Charge, "customerId"> & { code?: string }) | MonthCharge): string {
   if ("month" in c) return c.first ? "the first month" : `the month from ${monthName(c.month)} ${Number(c.month.slice(8))}`;
-  return customerById(state.dataset, c.customerId)?.name || "A customer";
+  return bookingWho(state, c.customerId, c.code) ?? "A customer";
 }
 
 /** "Karen Whitfield's $250", "the $497 for the first month" ("The", to start a sentence; `which`: "second "). */
@@ -110,11 +125,26 @@ function text(state: AccountState, at: ISODateTime, kind: ChargeText, c: Charge 
   return m;
 }
 
-function skip(state: AccountState, c: Charge | MonthCharge, now: ISODateTime, why: string): void {
+/** No charge. `dropped`: only because its booking dropped out, so it comes back if they book again. */
+function skip(state: AccountState, c: Charge | MonthCharge, now: ISODateTime, why: string, dropped = false): void {
   c.status = "skipped";
   c.reason = why;
   c.ask = undefined;
+  if (!isMonth(c)) c.dropped = dropped || undefined;
   log(state, now, "info", `No charge for ${nameOf(state, c)}`, why, c);
+}
+
+/**
+ * A charge skipped only because its booking dropped out, and the customer booked again: it's back for that booking,
+ * waiting for Jack like a new one. Last in the log (its place and the total are counted from now), and a declined try's
+ * PaymentIntent isn't this charge's.
+ */
+function revive(state: AccountState, c: Charge, now: ISODateTime, over: Partial<Charge>): Charge {
+  const plan = state.dataset.business.plan;
+  const { paymentIntent: _declined, ...stripe } = c.stripe ?? {};
+  Object.assign(c, { status: "heads_up", reason: undefined, dropped: undefined, at: now, approvedAt: undefined, toldAt: undefined, triedAt: undefined, chargeOn: undefined, stripe, ...over } satisfies Partial<Charge>);
+  plan.charges = [...(plan.charges ?? []).filter((x) => x !== c), c];
+  return c;
 }
 
 /** The owner said it wasn't ours: the customer's bookings from the pass come off the ledger too. */
@@ -150,7 +180,7 @@ export function settleCharges(state: AccountState, now: ISODateTime, opts: Billi
     if (back || !holdsPlace(c)) continue;
     const reason = why.get(c.customerId) ?? "Its booking is off the ledger";
     if (UNCHARGED.has(c.status)) {
-      skip(state, c, now, reason);
+      skip(state, c, now, reason, reason !== AFTER_CANCEL);
       skipped.push(c.id);
     } else if (!c.ask && !c.keptAt) {
       c.ask = { kind: "refund", at: now, why: reason };
@@ -158,33 +188,49 @@ export function settleCharges(state: AccountState, now: ISODateTime, opts: Billi
     }
   }
   if (skipped.length) count = billableBookings(state);
-  const cap = plan.capBookings ?? ONE_PASS.capBookings;
-  if ((plan.charges ?? []).filter((c) => c.status === "paid").length >= cap && !state.ownerMessages.some((m) => m.kind === "charge_cap")) text(state, now, "charge_cap", undefined, chargeCapText(plan));
+  // the cap text once, unless the one written was withdrawn before it went (a place freed while it waited for Jack)
+  const capText = state.ownerMessages.findLast((m) => m.kind === "charge_cap");
+  if (capReached(plan) && (!capText || opts.withdrawn?.(capText.id))) text(state, now, "charge_cap", undefined, chargeCapText(plan), capText ? now : "");
   for (const x of count.billable) {
     // one the export asked at the pass's end brought waits for Jack's word first
-    if (plan.charges?.some((c) => c.customerId === x.customerId) || foundWaiting(plan, x.customerId)) continue;
+    const had = plan.charges?.find((c) => c.customerId === x.customerId);
+    if ((had && !had.dropped) || foundWaiting(plan, x.customerId)) continue;
     const card = cardOnFile(plan, opts.stripe);
     // no card yet: the next link waits until the one out is paid (it saves the card), so "your first" is true
     if (!card && plan.charges?.some((c) => holdsPlace(c) && c.status !== "paid" && c.via === "link")) break;
-    const c = newCharge(state, x.customerId, now, { bookingId: x.bookingId, bookedOn: x.on, code: x.code, via: card ? "card" : "link" });
-    text(state, now, card ? "charge_card" : "charge_link", c, chargeHeadsUp(state, c, { link: opts.payLink?.(c.id), on: nextBusinessDay(now.slice(0, 10)) }));
+    const over = { bookingId: x.bookingId, bookedOn: x.on, code: x.code, via: card ? "card" : "link" } satisfies Partial<Charge>;
+    // booked again after the booking its charge was skipped for dropped out: its text anew (text ids go by charge and tag)
+    const c = had ? revive(state, had, now, over) : newCharge(state, x.customerId, now, over);
+    text(state, now, card ? "charge_card" : "charge_link", c, chargeHeadsUp(state, c, { link: opts.payLink?.(c.id), on: nextBusinessDay(now.slice(0, 10)) }), had ? now : "");
     log(state, now, "action", `${nameOf(state, c)} booked: ${fmtMoney(c.amount / 100)} waits for your OK`, card ? "On the saved card, one business day after its text reaches the owner." : "The text carries the link that saves their card.", c);
   }
   return { skipped };
 }
 
 /**
+ * The pass's cap is reached: that many charges paid, none with a refund or NOT OURS waiting on Jack (its place may free).
+ * Only then is the cap text true.
+ */
+export function capReached(plan: PlanState): boolean {
+  const paid = (plan.charges ?? []).filter((c) => c.status === "paid" && c.ask?.kind !== "refund" && c.ask?.kind !== "not_ours");
+  return paid.length >= (plan.capBookings ?? ONE_PASS.capBookings);
+}
+
+/**
  * The owner said yes to the monthly plan (after the free 150, or to a one pass's offer to keep going): the first month
- * and its text for Jack's OK. By the link that saves the card, or on the card he saved already (a one pass's), one
- * business day after the text reaches him; paid, the plan is monthly from that day. Once: a first month asked for and
- * not cancelled stands. Never a plan already paying, cancelled or yearly (the year is collected by hand).
+ * and its text for Jack's OK. By the link that saves the card, or on a card saved already (one Jack pasted), one
+ * business day after the text reaches him; paid, the plan is monthly from that day. A one pass's owner always gets the
+ * link: his card was saved for the bookings. Once: a first month asked for and not cancelled stands. Never a plan
+ * already paying, cancelled or yearly (the year is collected by hand).
  */
 export function askFirstMonth(state: AccountState, now: ISODateTime, opts: BillingOpts): MonthCharge | undefined {
   const plan = state.dataset.business.plan;
   const today = now.slice(0, 10);
   const id = monthChargeId(state, today, true);
   if (plan.stage === "paying" || plan.stage === "cancelled" || plan.billing === "annual" || plan.months?.some((c) => c.first && holdsPlace(c)) || chargeOf(state, id)) return undefined;
-  const card = cardOnFile(plan, opts.stripe);
+  // a one pass's owner saved his card for $250 a booking, and its texts never named $497: his first month goes by the
+  // link, so paying it is his yes to that price
+  const card = cardOnFile(plan, opts.stripe) && !billsPass(plan);
   const c: MonthCharge = { id, month: today, first: true, amount: Math.round((plan.monthlyPrice || monthlyPlan().monthlyPrice) * 100), status: "heads_up", via: card ? "card" : "link", at: now };
   plan.months = [...(plan.months ?? []), c];
   text(state, now, card ? "charge_card" : "charge_link", c, chargeHeadsUp(state, c, { link: opts.payLink?.(c.id), on: nextBusinessDay(today) }));
@@ -214,14 +260,21 @@ export function chargeMonth(state: AccountState, g: GuaranteeCheck, m: OwnerMess
 /**
  * The owner cancelled (by text, or in Settings): a month not charged yet never is, nor is the first month asked for.
  * One going through already is left to settle (paid, the plan stays cancelled), and a later month whose day came before
- * the cancel and didn't go through (its card declined, its link unpaid) stays for Jack. The months skipped (their texts
- * not sent yet are withdrawn by the caller).
+ * the cancel and didn't go through (its card declined, its link unpaid) stays for Jack. One paid the day he cancelled
+ * (charged before his CANCEL reached us) is Jack's to refund or keep. The months skipped (their texts not sent yet are
+ * withdrawn by the caller).
  */
 export function settleMonths(state: AccountState, now: ISODateTime): string[] {
   const plan = state.dataset.business.plan;
   if (plan.stage !== "cancelled") return [];
   const skipped: string[] = [];
+  const cancelDay = state.cancelled?.at.slice(0, 10) ?? plan.cancelledOn;
   for (const c of plan.months ?? []) {
+    if (c.status === "paid" && c.paidAt?.slice(0, 10) === cancelDay && !c.ask && !c.keptAt) {
+      c.ask = { kind: "refund", at: now, why: CHARGED_CANCEL_DAY };
+      log(state, now, "review", `Refund ${moneyOf(state, c)}?`, `${CHARGED_CANCEL_DAY}. Refund it, or keep it.`, c);
+      continue;
+    }
     const due = !c.first && c.month <= now.slice(0, 10) && (c.status === "link_sent" || c.status === "failed");
     if (!UNCHARGED.has(c.status) || due) continue;
     skip(state, c, now, CANCELLED);
@@ -253,6 +306,7 @@ export function moneyTextLive(c: Charge | MonthCharge, kind: OwnerMessage["kind"
  */
 export function approveCharge(state: AccountState, messageId: string, now: ISODateTime, opts: BillingOpts): { text: string } | { refused: string } | undefined {
   const m = state.ownerMessages.find((x) => x.id === messageId);
+  if (m?.kind === "charge_cap") return capReached(state.dataset.business.plan) ? { text: m.text } : { refused: "A place under the cap is open again (a refund, or one waiting on you), so that text isn't true now." };
   const c = chargeOf(state, m?.refs?.find((r) => r.kind === CHARGE_REF)?.id ?? "");
   if (!m || !c) return undefined;
   if ((m.kind === "charge_link" || m.kind === "charge_card" || m.kind === "precharge") && c.status === "heads_up") {
@@ -305,19 +359,21 @@ export function redateCharge(state: AccountState, id: string, now: ISODateTime):
   const on = chargeDay(c, now.slice(0, 10));
   if ((c.chargeOn ?? "") >= on) return undefined;
   c.chargeOn = on;
-  const m = textsOf(state, c).find((x) => x.kind === "charge_card" || x.kind === "precharge");
+  const m = textsOf(state, c).findLast((x) => x.kind === "charge_card" || x.kind === "precharge");
   if (m) m.text = m.kind === "precharge" && isMonth(c) ? precharge(state, m.text, c) : chargeHeadsUp(state, c, { on });
   return m;
 }
 
 /**
  * A link charge's text again for Jack's OK, with its link as it is now: "Replace all links" killed the one in the
- * text, or the owner lost it. In the words it first went with (a booking's, or a declined card's).
+ * text, or the owner lost it. In the words it first went with (a booking's, or a declined card's). One approved by
+ * hand before the Stripe key was set (Jack's own link) is out on its /pay link from now.
  */
 export function linkAgain(state: AccountState, id: string, now: ISODateTime, opts: BillingOpts): OwnerMessage | undefined {
   const c = chargeOf(state, id);
-  if (!c || c.status !== "link_sent" || !opts.payLink) return undefined;
-  const kind = textsOf(state, c).some((m) => m.kind === "charge_retry") ? "charge_retry" : "charge_link";
+  if (!c || !opts.payLink || !(c.status === "link_sent" || (c.status === "approved" && c.via === "link"))) return undefined;
+  c.status = "link_sent";
+  const kind = textsOf(state, c).some((m) => m.kind === "charge_retry" && m.at >= c.at) ? "charge_retry" : "charge_link";
   return text(state, now, kind, c, linkText(state, c, kind, opts.payLink(c.id)), now);
 }
 
@@ -344,10 +400,13 @@ export function chargePaid(state: AccountState, id: string, now: ISODateTime, ho
   const plan = state.dataset.business.plan;
   const starts = isMonth(c) && c.first && c.status !== "skipped" && plan.stage !== "paying" && plan.stage !== "cancelled";
   if (c.status === "skipped") c.ask = { kind: "refund", at: now, why: `${PAID_AFTER} (${c.reason})` };
+  if (!isMonth(c)) c.dropped = undefined;
   if (starts) startMonthly(plan, now.slice(0, 10), c.amount / 100);
   c.status = "paid";
   c.paidAt = now;
   if (how.stripe) c.stripe = { ...c.stripe, ...how.stripe };
+  // paid outside after the saved card was declined: that PaymentIntent never paid, so a refund is by hand
+  if (how.by === "outside" && c.stripe?.paymentIntent) c.stripe = { ...c.stripe, paymentIntent: undefined, declined: c.stripe.paymentIntent };
   if (how.by === "outside") c.reason = "Paid outside the software";
   if (c.via === "link") {
     const s = how.stripe;
@@ -433,7 +492,14 @@ export function notOurs(state: AccountState, code: string, now: ISODateTime): { 
   const plan = state.dataset.business.plan;
   const lead = state.replies.find((r) => r.customerId && r.handedOffAt && leadCode(r.id) === code);
   const c = [...(plan.charges ?? [])].reverse().find((x) => x.code === code) ?? plan.charges?.find((x) => x.customerId === lead?.customerId);
-  if (c && !holdsPlace(c)) return { customerId: c.customerId, charge: c, done: "already" };
+  if (c && !holdsPlace(c)) {
+    // skipped only because its booking dropped out: the owner's word makes it final, whatever they book since
+    if (c.dropped) {
+      Object.assign(c, { reason: NOT_OURS, dropped: undefined } satisfies Partial<Charge>);
+      disputeBookings(state, c.customerId, now);
+    }
+    return { customerId: c.customerId, charge: c, done: "already" };
+  }
   if (c && !UNCHARGED.has(c.status)) {
     c.ask = { kind: "not_ours", at: now, why: NOT_OURS };
     c.keptAt = undefined;
@@ -524,7 +590,7 @@ export function exportBefore(state: AccountState): Set<string> | undefined {
   const plan = state.dataset.business.plan;
   if (!plan.endExport) return undefined;
   const count = billableBookings(state);
-  return new Set([...count.billable, ...count.overCap, ...(plan.charges ?? []), ...(plan.endExport.found ?? [])].map((x) => x.customerId));
+  return new Set([...count.billable, ...count.overCap, ...(plan.charges ?? []).filter((c) => !c.dropped), ...(plan.endExport.found ?? [])].map((x) => x.customerId));
 }
 
 /**
@@ -565,7 +631,11 @@ export function decideFound(state: AccountState, customerId: string, confirm: bo
   if (!f) return undefined;
   Object.assign(f, { confirmed: confirm, decidedAt: now });
   if (confirm) log(state, now, "action", `Confirmed: ${nameOf(state, f)} booked from the pass`, "From the export at its end. Its charge's text comes to you as usual.", f);
-  // a charge made since (paid outside, NOT OURS) is the record already
-  else if (!plan.charges?.some((c) => c.customerId === customerId)) skip(state, newCharge(state, customerId, now, { bookingId: f.bookingId, bookedOn: f.on, code: f.code }), now, NOT_CONFIRMED);
+  // a charge made since (paid outside, NOT OURS) is the record already; one skipped because its booking dropped out is now final
+  else {
+    const had = plan.charges?.find((c) => c.customerId === customerId);
+    if (!had) skip(state, newCharge(state, customerId, now, { bookingId: f.bookingId, bookedOn: f.on, code: f.code }), now, NOT_CONFIRMED);
+    else if (had.dropped) Object.assign(had, { reason: NOT_CONFIRMED, dropped: undefined } satisfies Partial<Charge>);
+  }
   return f;
 }

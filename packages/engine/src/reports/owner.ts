@@ -233,6 +233,15 @@ function chargeMoney(plan: PlanState, c: Charge): { price: string; soFar: string
   return { price: fmtMoney(c.amount / 100), soFar: fmtMoney((n * c.amount) / 100), cap: fmtMoney((plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (plan.capBookings ?? ONE_PASS.capBookings)) };
 }
 
+/**
+ * Who a booking is, for a money text: the customer's name, else (a list row with only an email) the address their reply
+ * to the pass came from, as the check-ins name them.
+ */
+export function bookingWho(state: AccountState, customerId: string, code?: string): string | undefined {
+  const theirs = state.replies.filter((r) => r.customerId === customerId);
+  return customerById(state.dataset, customerId)?.name || (theirs.find((r) => code && leadCode(r.id) === code) ?? theirs.find((r) => r.from))?.from || undefined;
+}
+
 /** "your card ending 4242", or just "your card" when only Jack knows which (his own link saved it). */
 function cardWords(plan: PlanState): string {
   return plan.card?.last4 ? `your card ending ${plan.card.last4}` : "your card";
@@ -260,7 +269,7 @@ export function chargeHeadsUp(state: AccountState, c: Charge | MonthCharge, opts
     const pay = opts.link ? `here's the link for ${what}, ${price}: ${opts.link}.` : `${what} is ${price}. I'll text you the link.`;
     return `${owner}, ${pay} ${c.first ? `It saves your card, and I text before every charge. ${promise}` : "It saves your card for the rest."}`;
   }
-  const name = customerById(state.dataset, c.customerId)?.name ?? "Someone";
+  const name = bookingWho(state, c.customerId, c.code) ?? "Someone";
   const { price, soFar, cap } = chargeMoney(plan, c);
   if (c.via === "card") return `${name} booked (#${c.code}). ${price} goes on ${cardWords(plan)} on ${WEEKDAY[new Date(`${opts.on}T12:00:00Z`).getUTCDay()]}, ${soFar} of your ${cap}. Not ours? Reply NOT OURS #${c.code}.`;
   const first = soFar === price ? `That's your first ${price}.` : `That's ${price}, ${soFar} of your ${cap}.`;
@@ -281,7 +290,7 @@ export function monthLine(state: AccountState, c: MonthCharge, opts: { link?: st
 
 /** A charge on the saved card that didn't go through: the link to pay it instead, once Jack says so. */
 export function chargeRetryText(state: AccountState, c: Charge | MonthCharge, link: string): string {
-  const what = isMonth(c) ? `Your ${fmtMoney(c.amount / 100)} for ${monthWords(c)}` : `The ${fmtMoney(c.amount / 100)} for ${customerById(state.dataset, c.customerId)?.name ?? "someone"} (#${c.code})`;
+  const what = isMonth(c) ? `Your ${fmtMoney(c.amount / 100)} for ${monthWords(c)}` : `The ${fmtMoney(c.amount / 100)} for ${bookingWho(state, c.customerId, c.code) ?? "someone"} (#${c.code})`;
   return `${what} didn't go through on ${cardWords(state.dataset.business.plan)}. Here's the link to pay it: ${link}. It saves your card for the rest.`;
 }
 
@@ -294,7 +303,7 @@ export function chargeCapText(plan: PlanState): string {
 
 /** A charge Jack refunded (its job cancelled before the work, it wasn't ours, or it was paid twice or after a cancel). */
 export function chargeRefundText(state: AccountState, c: Charge | MonthCharge): string {
-  const what = isMonth(c) ? monthWords(c) : `${customerById(state.dataset, c.customerId)?.name ?? "someone"} (#${c.code})`;
+  const what = isMonth(c) ? monthWords(c) : `${bookingWho(state, c.customerId, c.code) ?? "someone"} (#${c.code})`;
   return `Your ${fmtMoney(c.amount / 100)} for ${what} is going back on your card.`;
 }
 
@@ -449,8 +458,8 @@ function minutesBetween(from: string, to: string): number {
   return (Date.parse(`${to.slice(0, 16)}:00Z`) - Date.parse(`${from.slice(0, 16)}:00Z`)) / 60_000;
 }
 
-/** Friday report: what came back leads, then the counts. */
-export function weeklyReport(state: AccountState, monday: ISODate): string {
+/** Friday report: what came back leads, then the counts; what's been paid as of `today` (the day it's written). */
+export function weeklyReport(state: AccountState, monday: ISODate, today: ISODate = monday): string {
   const b = state.dataset.business;
   const w = weekNumbers(state, mondayOf(monday));
   const total = totals(state);
@@ -502,7 +511,7 @@ export function weeklyReport(state: AccountState, monday: ISODate): string {
     (() => {
       // a one pass charges per booking (B4), never the monthly fees of a plan it was made from
       if (isOnePass(b.plan)) return "";
-      const fees = feesPaid(b, monday);
+      const fees = paidSoFar(b, today);
       if (!fees.total) return "";
       return `You've paid us ${fmtMoney(fees.total)}${fees.freeMonths ? ` (${fees.freeMonths} free ${fees.freeMonths === 1 ? "month" : "months"})` : ""}. Traced back: ${fmtMoney(total.bookedValue)}${total.bookedValue > 0 ? ` — ${round2(total.bookedValue / fees.total)}x` : ""}.`;
     })(),
@@ -664,6 +673,20 @@ export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; mon
   const f = grossFees(b, asOf);
   const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => r.early || addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
   return { ...f, total: round2(f.total - refunded) };
+}
+
+/**
+ * What the owner has paid us as of `asOf` (the weekly text): on the monthly plan the software charges (BRIEF B5), the
+ * months actually paid by then (never one declined, refunded, waiting for Jack's OK, or a paused stretch's) and a one
+ * pass's bookings paid before it went monthly, plus fees from an earlier arrangement. A yearly plan, or a monthly one
+ * charged by hand before the software did (no month on its log), by its dates (feesPaid).
+ */
+export function paidSoFar(b: BusinessProfile, asOf: ISODate): { total: Money; freeMonths: number } {
+  const paid = (cs: { status: string; paidAt?: string; amount: number }[]) => sum(cs.filter((c) => c.status === "paid" && (c.paidAt ?? "").slice(0, 10) <= asOf), (c) => c.amount) / 100;
+  if (b.plan.billing === "annual" || !b.plan.months?.length) return feesPaid(b, asOf);
+  const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => r.early || addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
+  const free = b.plan.freeMonths.filter((d) => (!b.plan.paidOn || d > b.plan.paidOn) && d <= asOf).length;
+  return { total: round2(paid(b.plan.months) + paid(b.plan.charges ?? []) + (b.plan.priorFees ?? 0) - refunded), freeMonths: free };
 }
 
 /** Everything charged across billing arrangements, before year-end refunds. */

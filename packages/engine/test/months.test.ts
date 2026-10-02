@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { billableBookings } from "../src/ledger/billable.ts";
 import { approveCharge, askFirstMonth, chargeFailed, chargeOf, chargePaid, chargeStarted, chargeTold, CHARGE_REF, markPaidOutside, monthChargeId, redateCharge, settleMonths, type BillingOpts } from "../src/runtime/charges.ts";
-import { billingCheck, cancelPlan, undoCancel } from "../src/runtime/agents.ts";
+import { billingCheck, cancelPlan, reportWeek, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { chargeHeadsUp, chargeRefundText, chargeRetryText, guaranteeCheck, monthLine } from "../src/reports/owner.ts";
 import { onePassPlan } from "../src/plans.ts";
@@ -84,9 +84,18 @@ describe("the first month", () => {
     for (const plan of [{ stage: "paying" as const }, { stage: "cancelled" as const }, { billing: "annual" as const }]) expect(askFirstMonth(account(plan), `${PAID}T10:00:00`, STRIPE)).toBeUndefined();
   });
 
-  it("on the card a one pass saved, at $497 (a pass has no monthly price), charged a business day after its text reaches him", () => {
-    const st = account();
-    st.dataset.business.plan = onePassPlan({ stage: "done", startedOn: "2026-09-21", doneOn: "2026-10-16", card: CARD });
+  it("a one pass's owner gets its link, at $497 (a pass has no monthly price), never the card saved for the bookings", () => {
+    const pass = account();
+    pass.dataset.business.plan = onePassPlan({ stage: "done", startedOn: "2026-09-21", doneOn: "2026-10-16", card: CARD });
+    const p = askFirstMonth(pass, `${PAID}T10:00:00`, STRIPE)!;
+    expect(p).toMatchObject({ via: "link", amount: 49700 });
+    expect(pass.ownerMessages[0]!.kind).toBe("charge_link");
+    chargePaid(pass, p.id, "2026-10-22T09:01:00", { by: "stripe", stripe: CARD });
+    expect(pass.dataset.business.plan).toMatchObject({ kind: "monthly", stage: "paying", paidOn: "2026-10-22", monthlyPrice: 497, doneOn: "2026-10-16", startedOn: "2026-09-21" });
+  });
+
+  it("on a card saved already (one Jack pasted), charged a business day after its text reaches him", () => {
+    const st = account({ card: CARD });
     const c = askFirstMonth(st, `${PAID}T10:00:00`, STRIPE)!;
     expect(c).toMatchObject({ via: "card", amount: 49700 });
     expect(st.ownerMessages[0]!.kind).toBe("charge_card");
@@ -97,7 +106,7 @@ describe("the first month", () => {
     expect(c.chargeOn).toBe("2026-10-22");
     chargeStarted(st, c.id, "2026-10-22T09:00:00");
     chargePaid(st, c.id, "2026-10-22T09:01:00", { by: "stripe", stripe: { paymentIntent: "pi_1" } });
-    expect(st.dataset.business.plan).toMatchObject({ kind: "monthly", stage: "paying", paidOn: "2026-10-22", monthlyPrice: 497, doneOn: "2026-10-16", startedOn: "2026-09-21" });
+    expect(st.dataset.business.plan).toMatchObject({ stage: "paying", paidOn: "2026-10-22", monthlyPrice: 497 });
   });
 
   it("paid, the trial is paying from that day; never once it pays already, nor when it was paid after it was cancelled", () => {
@@ -122,9 +131,8 @@ describe("the first month", () => {
     chargePaid(gone, g.id, "2026-10-21T12:00:00", { by: "stripe", stripe: CARD });
     expect(g.ask).toMatchObject({ kind: "refund", why: "Paid after it was cancelled (Cancelled before it was charged)" });
     expect(gone.dataset.business.plan.stage).toBe("cancelled");
-    // going through on the card a one pass saved when he cancelled: paid, the plan stays cancelled (Jack looks at it)
-    const late = account();
-    late.dataset.business.plan = onePassPlan({ stage: "done", startedOn: "2026-09-21", card: CARD });
+    // going through on a saved card when he cancelled: paid, the plan stays cancelled (Jack looks at it)
+    const late = account({ card: CARD });
     const l = askFirstMonth(late, `${PAID}T10:00:00`, STRIPE)!;
     approveCharge(late, late.ownerMessages[0]!.id, `${PAID}T10:05:00`, STRIPE);
     chargeTold(late, l.id, `${PAID}T10:06:00`);
@@ -132,7 +140,7 @@ describe("the first month", () => {
     cancelPlan(late, "2026-10-21T09:01:00");
     expect(settleMonths(late, "2026-10-21T09:01:00")).toEqual([]);
     chargePaid(late, l.id, "2026-10-21T09:05:00", { by: "stripe", stripe: { paymentIntent: "pi_9" } });
-    expect(late.dataset.business.plan).toMatchObject({ kind: "one_pass", stage: "cancelled" });
+    expect(late.dataset.business.plan).toMatchObject({ stage: "cancelled" });
   });
 
   it("Done by hand marks it paid by its id, once", () => {
@@ -348,5 +356,39 @@ describe("where the one pass meets the monthly plan", () => {
     expect(plain.dataset.business.plan.cancelledOn).toBe("2026-11-03");
     undoCancel(plain, "2026-11-03T11:00:00");
     expect(plain.dataset.business.plan.cancelledOn).toBeUndefined();
+  });
+});
+
+describe("the weekly text's 'You've paid us'", () => {
+  /** Paying from Tuesday Oct 20 (its first month paid by link), with something sent so there's a week to tell. */
+  function weekly(): AccountState {
+    const st = paying({ months: [month(PAID, { id: "m-first", first: true, via: "link", status: "paid", paidAt: `${PAID}T11:00:00` })] });
+    st.touches.push(note("t-karen", "c-karen", "2026-11-17"));
+    return st;
+  }
+  const paidLine = (st: AccountState, now: string) => reportWeek(st, now).text.split("\n").find((l) => l.startsWith("You've paid us")) ?? "";
+
+  it("counts a month charged earlier in the report's week", () => {
+    const st = weekly();
+    st.dataset.business.plan.months!.push(month(NEXT, { status: "paid", paidAt: `${NEXT}T00:01:00` }));
+    // Friday Nov 20 at 4:30pm: the month charged that morning is in it
+    expect(paidLine(st, `${NEXT}T16:30:00`)).toMatch(/^You've paid us \$994\./);
+  });
+
+  it("counts only what was collected: never a declined month, one waiting for Jack's OK, or a paused stretch", () => {
+    const st = weekly();
+    st.dataset.business.plan.months!.push(month(NEXT, { status: "failed", reason: "Your card was declined." }));
+    expect(paidLine(st, "2026-11-27T16:30:00")).toMatch(/^You've paid us \$497\./);
+    st.dataset.business.plan.months![1]!.status = "approved";
+    expect(paidLine(st, "2026-11-27T16:30:00")).toMatch(/^You've paid us \$497\./);
+    // paused through December 20: no month was charged then
+    st.dataset.business.plan.months!.pop();
+    expect(paidLine(st, "2026-12-25T16:30:00")).toMatch(/^You've paid us \$497\./);
+  });
+
+  it("a pass gone monthly counts its $250 bookings too", () => {
+    const st = weekly();
+    st.dataset.business.plan.charges = [{ id: "chg-1", customerId: "c-karen", code: "K7Q", amount: 25000, status: "paid", via: "link", at: "2026-10-10T09:00:00", paidAt: "2026-10-12T09:00:00" }];
+    expect(paidLine(st, "2026-11-13T16:30:00")).toMatch(/^You've paid us \$747\./);
   });
 });

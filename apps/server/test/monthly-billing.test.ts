@@ -335,7 +335,11 @@ describe("each month after", () => {
     expect(months(h)[1]).toMatchObject({ status: "approved", chargeOn: NEXT, toldAt: expect.any(String) });
     expect(textOf(h, pre.messageId)).toBe(pre.text);
     expect(made(fake)).toEqual([]);
+    // texts by hand: on its day from midday, after the morning's pasted replies
     h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(made(fake)).toEqual([]);
+    h.setNow(`${NEXT}T17:00:00Z`);
     await tick(h.d);
     expect(months(h)[1]!.status).toBe("paid");
     expect(made(fake)).toHaveLength(1);
@@ -360,7 +364,7 @@ describe("each month after", () => {
     await tick(h.d);
     expect(months(h)[1]).toMatchObject({ status: "approved", chargeOn: "2026-11-24", toldAt: expect.any(String) });
     expect(made(fake)).toEqual([]);
-    h.setNow(at10("2026-11-24"));
+    h.setNow("2026-11-24T17:00:00Z");
     await tick(h.d);
     expect(months(h)[1]!.status).toBe("paid");
     expect(made(fake)).toHaveLength(1);
@@ -565,19 +569,21 @@ describe("a one pass's owner going monthly", () => {
     await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "done" } });
   }
 
-  it("his yes with the card saved: the first month goes on it the B4 way, and paid, the plan is monthly from that day", async () => {
+  it("his yes with the card saved for the bookings: the first month goes by its link (paying it is his yes to $497), and paid, the plan is monthly from that day", async () => {
     const { h, fake } = make();
     await donePass(h, fake);
     expect(await h.sms("Monthly")).toBe("Great. Jack will text you how it works.");
     const [m] = await waiting(h);
-    expect(m).toMatchObject({ messageKind: "charge_card" });
-    expect(months(h)[0]).toMatchObject({ first: true, via: "card", amount: 49700 });
+    expect(m).toMatchObject({ messageKind: "charge_link" });
+    expect(months(h)[0]).toMatchObject({ first: true, via: "link", amount: 49700 });
     await approve(h, m!.messageId);
-    expect(textOf(h, m!.messageId)).toBe("Dave, your first month, $497, goes on your card ending 4242 on Wednesday. I text before every charge. Any month nobody asks to come back, you don't pay.");
+    expect(textOf(h, m!.messageId)).toMatch(/^Dave, here's the link for your first month, \$497: https:\/\/qa\.test\/pay\/[\w-]+\.[\w-]+\. It saves your card, and I text before every charge\. Any month nobody asks to come back, you don't pay\.$/);
     await tick(h.d);
-    expect(made(fake)).toEqual([]);
     h.setNow(at10("2026-10-21"));
     await tick(h.d);
+    expect(made(fake)).toEqual([]);
+    expect(months(h)[0]!.status).toBe("link_sent");
+    await payByLink(h, fake, textOf(h, m!.messageId));
     expect(months(h)[0]!.status).toBe("paid");
     expect(plan(h)).toMatchObject({ kind: "monthly", stage: "paying", paidOn: "2026-10-21", monthlyPrice: 497, doneOn: PAID, startedOn: "2026-10-05" });
   });
@@ -592,9 +598,10 @@ describe("a one pass's owner going monthly", () => {
     await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("4242").customer });
     expect(plan(h).doneOn).toBeUndefined();
     expect(await h.sms("Monthly")).toBe("Great. Jack will text you how it works.");
-    await approve(h, (await waiting(h))[0]!.messageId);
+    const first = (await waiting(h))[0]!.messageId;
+    await approve(h, first);
     h.setNow(at10("2026-10-21"));
-    await tick(h.d);
+    await payByLink(h, fake, textOf(h, first));
     expect(plan(h)).toMatchObject({ kind: "monthly", stage: "paying", paidOn: "2026-10-21", doneOn: "2026-10-21" });
     // Ann, written to by the monthly plan on Oct 27, asks to come back, and books Nov 2
     h.setNow(at10("2026-11-03"));
@@ -683,5 +690,113 @@ describe("a one pass's owner going monthly", () => {
     await back.sms("CANCEL");
     await back.api("PATCH", "/api/businesses/ridge", { plan: { stage: "running" } });
     expect(back.d.accounts.peek("ridge")!.state.dataset.business.plan.cancelledOn).toBeUndefined();
+  });
+});
+
+describe("CANCEL on the day a month was charged", () => {
+  it("the reply never says 'no more charges', and Jack is asked to refund it or keep it", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(months(h)[1]!.status).toBe("paid");
+    h.setNow(`${NEXT}T20:00:00Z`);
+    const reply = await h.sms("CANCEL");
+    expect(reply).toMatch(/^Done — cancelled\. No more notes\. The \$497 for the month from Nov 20 went through today, so Jack will look at it\. So far/);
+    expect(reply).not.toMatch(/no more charges/);
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "cancel", needs_person: 1 });
+    const ask = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect(ask).toMatchObject({ chargeId: months(h)[1]!.id, ask: "refund", refundBy: "stripe" });
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(ask.chargeId)}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "refunded", by: "stripe" });
+    expect(months(h)[1]!.status).toBe("refunded");
+    // a month paid the day before stays as it was
+    await tick(h.d);
+    expect((await review(h)).filter((x) => x.kind === "charge_ask")).toEqual([]);
+  });
+
+  it("texts by hand: the CANCEL Jack pastes on the charge day's morning comes before the card", async () => {
+    const { h, fake } = make({ notifier: new ManualNotifier() });
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    const pre = await twoDaysBefore(h);
+    await approve(h, pre.messageId);
+    await markSent(h, pre.messageId);
+    // midnight passes; the owner's CANCEL from last night is pasted at 10am
+    h.setNow(`${NEXT}T05:30:00Z`);
+    await tick(h.d);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(made(fake)).toEqual([]);
+    expect(await h.sms("CANCEL")).toMatch(/^Done — cancelled\. No more notes, no more charges\./);
+    h.setNow(`${NEXT}T19:00:00Z`);
+    await tick(h.d);
+    expect(made(fake)).toEqual([]);
+    expect(months(h)[1]).toMatchObject({ status: "skipped" });
+  });
+});
+
+describe("a month judged again before it's charged", () => {
+  const relabel = (h: Harness, rid: string, intent: Reply["intent"]) => h.api("POST", `/api/businesses/ridge/replies/${rid}/intent`, { intent });
+
+  it("Jack relabels the only reply that asked before approving the pre-charge text: no charge, and the free-month text waits instead", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    const pre = await twoDaysBefore(h);
+    expect(pre.text).toContain("Karen Whitfield");
+    expect((await relabel(h, "r-karen", "already_done")).status).toBe(200);
+    expect((await approve(h, pre.messageId)).status).toBe(409);
+    expect(months(h)[1]).toMatchObject({ status: "skipped", reason: "Free: nobody asked to come back" });
+    expect(plan(h).freeMonths).toEqual([NEXT]);
+    const [free] = await waiting(h);
+    expect(free).toMatchObject({ messageKind: "free_month" });
+    expect(free!.text).toContain("You won't be charged on November 20.");
+    for (const day of [NEXT, "2026-11-23"]) {
+      h.setNow(at10(day));
+      await tick(h.d);
+    }
+    expect(made(fake)).toEqual([]);
+    expect((await waiting(h)).map((x) => x.messageKind)).toEqual(["free_month"]);
+  });
+
+  it("relabelled after the pre-charge text went: the worker skips the month before its day and the free-month text waits", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10("2026-11-19"));
+    expect((await relabel(h, "r-karen", "stop")).status).toBe(200);
+    await tick(h.d);
+    expect(months(h)[1]).toMatchObject({ status: "skipped", reason: "Free: nobody asked to come back" });
+    expect(plan(h).freeMonths).toEqual([NEXT]);
+    expect((await waiting(h)).map((x) => x.messageKind)).toEqual(["free_month"]);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(made(fake)).toEqual([]);
+  });
+
+  it("still not free: the pre-charge text's 'who came back' is written from the replies as they are now", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.dataset.customers.push(person("c-mike", "Mike Sanderson"));
+      s.touches.push({ id: "t-mike", opportunityId: "o-mike", customerId: "c-mike", channel: "email", step: 1, angle: "check_in", dueAt: "2026-10-28T08:00", sentAt: "2026-10-28T08:00:00", status: "sent", body: "", flags: [] });
+      s.replies.push({ id: "r-mike", customerId: "c-mike", touchId: "t-mike", channel: "email", receivedAt: "2026-10-28T10:00:00", from: "c-mike@example.org", text: "How much for the spring cleanup?", intent: "wants_price", confidence: 0.95, extracted: {}, status: "done", handedOffAt: "2026-10-28T10:01:00", ownerContactedAt: "2026-10-28T12:00:00" });
+    });
+    const pre = await twoDaysBefore(h);
+    expect(pre.text).toContain("Karen Whitfield");
+    expect(pre.text).toContain("Mike Sanderson");
+    await relabel(h, "r-karen", "already_done");
+    expect((await approve(h, pre.messageId)).json.ok).toBe(true);
+    const sent = textOf(h, pre.messageId);
+    expect(sent).not.toContain("Karen Whitfield");
+    expect(sent).toContain("Mike Sanderson");
+    expect(sent.split("\n").at(-1)).toBe("Your next month starts November 20: $497 goes on your card ending 4242 that day.");
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(months(h)[1]!.status).toBe("paid");
   });
 });

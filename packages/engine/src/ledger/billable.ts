@@ -4,7 +4,7 @@ import { soldMonthly } from "../breakage/assumptions.ts";
 import { jobDate, rhythmOf } from "../breakage/visits.ts";
 import { billsPass, holdsPlace, ONE_PASS } from "../plans.ts";
 import { leadCode, passTouches } from "../reports/owner.ts";
-import { daysBetween } from "../util.ts";
+import { daysBetween, makeId } from "../util.ts";
 import { bookingNames, bookingSpan, counted, jobOn } from "./attribution.ts";
 
 /** Replies that never make anyone billable: they aren't a real answer to the notes (BRIEF §2, rule 1). */
@@ -13,6 +13,8 @@ const OUT = new Set(["sent", "delivered", "bounced"]);
 /** The rest of a lawn list: a season, or one job over this. */
 const LAWN_JOB_OVER = 500;
 const day = (at: string) => at.slice(0, 10);
+/** Why a booking made on or after the cancel day isn't billable. */
+export const AFTER_CANCEL = "Booked after the owner cancelled";
 
 export interface Billable {
   customerId: string;
@@ -51,8 +53,8 @@ export interface BillableCount {
  * cancel. A job cancelled before the work isn't a booking, nor one the owner texted that their records show only
  * cancelled. On the rest of a lawn or cleaning list, a cleaning customer must be back on a regular schedule, and a lawn
  * one booked a season or a job over $500. On a `freeFirst` pass, the first people written to are free. A customer with
- * a charge is billable by it: a charge refunded or skipped is that customer done. A pass gone monthly still bills its
- * own bookings (billsPass).
+ * a charge is billable by it: a charge refunded or skipped is that customer done, unless it was skipped only because its
+ * booking dropped out (that booking never was one). A pass gone monthly still bills its own bookings (billsPass).
  */
 export function billableBookings(state: AccountState): BillableCount {
   const out: BillableCount = { billable: [], overCap: [], not: [] };
@@ -84,11 +86,26 @@ export function billableBookings(state: AccountState): BillableCount {
   // quote chased, which it dates by the day it became a job) or as the job made from it. A quote approved before the
   // pass wrote to them (approved, never scheduled) isn't that booking: the job made from it is.
   const quotes = new Map(ds.quotes.map((q) => [q.id, q]));
+  const invoices = new Map(ds.invoices.map((i) => [i.id, i]));
   const madeOn = (r: Recovery) => {
     const first = day(wroteOn.get(r.customerId) ?? "");
     const ids = [r.record, r.from?.record].flatMap((x) => (x?.kind === "quote" ? [x.id] : [])).concat(jobsFor(r).flatMap((j) => j.quoteId ?? []));
     const approved = ids.map((id) => quotes.get(id)?.approvedOn).filter((on): on is ISODate => !!on && on >= first);
-    return approved.sort()[0] ?? r.cameBackOn;
+    const record = recordOn(r, first);
+    return approved.sort()[0] ?? (record && record < r.cameBackOn ? record : r.cameBackOn);
+  };
+  // A booking the owner texted keeps his day on the ledger, even once a record of theirs took its place. Its record
+  // dates it when it's earlier (the job's created day first): the job that took its place; or, with none, a job of
+  // theirs the ledger can't take (made before the pass wrote to them) from the month before they wrote back on, unless
+  // its work was done before the pass wrote to them (an old job, not this one).
+  const recordOn = (r: Recovery, first: string): ISODate | undefined => {
+    const told = r.match === "owner_reported" ? r.record.id : r.from?.match === "owner_reported" ? r.from.record.id : undefined;
+    if (!told) return undefined;
+    if (r.record.kind === "invoice") return invoices.get(r.record.id)?.issuedOn ?? invoices.get(r.record.id)?.paidOn;
+    const reply = state.replies.find((x) => x.id === told);
+    const from = r.match === "owner_reported" ? (reply ? bookingSpan(reply, r.cameBackOn)[0] : r.cameBackOn) : first;
+    const jobs = r.match === "owner_reported" ? ds.jobs.filter((j) => j.customerId === r.customerId && !j.fromList && !(j.completedOn && j.completedOn < first)) : jobsFor(r);
+    return jobs.filter((j) => j.status !== "cancelled").map(jobOn).filter((on): on is ISODate => !!on && on >= from).sort()[0];
   };
   // the jobs a booking the owner texted could be: theirs made after the first note, over the span the ledger matches
   // it on (a job only cancelled never takes its place there)
@@ -109,7 +126,7 @@ export function billableBookings(state: AccountState): BillableCount {
   /** Why this booking isn't billable, or the lead it's billed against. */
   const judge = (r: Recovery): { why: string } | { lead: Reply } => {
     const on = madeOn(r);
-    if (plan.cancelledOn && on >= plan.cancelledOn) return { why: "Booked after the owner cancelled" };
+    if (plan.cancelledOn && on >= plan.cancelledOn) return { why: AFTER_CANCEL };
     const jobs = jobsFor(r);
     if (cancelled(jobs) || cancelled(toldJobs(r))) return { why: "The job was cancelled before the work" };
     const theirs = replies.get(r.customerId) ?? [];
@@ -127,7 +144,8 @@ export function billableBookings(state: AccountState): BillableCount {
   };
 
   const bookings = new Map<string, Recovery[]>();
-  for (const r of [...counted(state.recoveries)].sort((a, b) => madeOn(a).localeCompare(madeOn(b)) || (a.id < b.id ? -1 : 1)))
+  const ledger = counted(state.recoveries);
+  for (const r of [...ledger, ...unpriced(state, ledger)].sort((a, b) => madeOn(a).localeCompare(madeOn(b)) || (a.id < b.id ? -1 : 1)))
     (bookings.get(r.customerId) ?? bookings.set(r.customerId, []).get(r.customerId)!).push(r);
   const found: Billable[] = [];
   for (const [customerId, rs] of bookings) {
@@ -151,8 +169,9 @@ export function billableBookings(state: AccountState): BillableCount {
   let held = (plan.charges ?? []).filter(holdsPlace).length;
   for (const x of found) {
     const c = charges.get(x.customerId);
-    if (c && !holdsPlace(c)) out.not.push({ customerId: x.customerId, bookingId: x.bookingId, on: x.on, why: c.reason ?? (c.status === "refunded" ? "Refunded" : "Skipped") });
-    else if (c) out.billable.push(x);
+    // a charge skipped only because its booking dropped out is no charge: this booking is their first
+    if (c && !holdsPlace(c) && !c.dropped) out.not.push({ customerId: x.customerId, bookingId: x.bookingId, on: x.on, why: c.reason ?? (c.status === "refunded" ? "Refunded" : "Skipped") });
+    else if (c && holdsPlace(c)) out.billable.push(x);
     else if (free.has(x.customerId)) out.not.push({ customerId: x.customerId, bookingId: x.bookingId, on: x.on, why: `One of the first ${plan.freeFirst} people: no charge, as promised` });
     else if (held < cap) {
       out.billable.push(x);
@@ -160,6 +179,22 @@ export function billableBookings(state: AccountState): BillableCount {
     } else out.overCap.push(x);
   }
   return out;
+}
+
+/**
+ * Bookings the owner reported with no amount (BOOKED #code, or a console entry with no value): the ledger takes none
+ * without a figure, but a one pass bills a booking whatever it's worth (only the rest of a lawn list needs one), dated by
+ * the day he said so. One already on the ledger for them from the month before they wrote back to the month after is
+ * that booking.
+ */
+function unpriced(state: AccountState, ledger: Recovery[]): Recovery[] {
+  return state.replies
+    .filter((r) => r.customerId && r.outcome === "booked" && !((r.outcomeValue ?? 0) > 0) && !r.opportunityId?.startsWith("req:"))
+    .filter((r) => {
+      const [from, to] = bookingSpan(r);
+      return !ledger.some((x) => x.customerId === r.customerId && ((x.cameBackOn >= from && x.cameBackOn <= to) || x.record.id === r.id || x.from?.record.id === r.id));
+    })
+    .map((r) => ({ id: makeId("rec", r.customerId!, "reply", r.id), customerId: r.customerId!, opportunityId: r.opportunityId, record: { kind: "job", id: r.id }, value: 0, cameBackOn: day(r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt), match: "owner_reported", confidence: 0.75, tier: "traced" }));
 }
 
 /**

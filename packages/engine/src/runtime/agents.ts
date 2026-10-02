@@ -19,7 +19,7 @@ import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, mak
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 import { settledCheck, supersededOn } from "./settled.ts";
-import { chargeMonth, exportBefore, exportRead, type BillingOpts } from "./charges.ts";
+import { chargeMonth, exportBefore, exportRead, monthFree, textsOf, type BillingOpts } from "./charges.ts";
 import { passAnswered } from "../ledger/billable.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
@@ -1201,7 +1201,7 @@ export function ledgerPass(state: AccountState, now: ISODateTime, features: Feat
 }
 
 export function reportWeek(state: AccountState, now: ISODateTime): OwnerMessage {
-  const text = weeklyReport(state, mondayOf(now.slice(0, 10)));
+  const text = weeklyReport(state, mondayOf(now.slice(0, 10)), now.slice(0, 10));
   event(state, now, "reporter", "action", "Sent your weekly report", text.split("\n")[0]);
   return ownerMsg(state, now, "weekly", text);
 }
@@ -1337,6 +1337,37 @@ export function billingCheck(state: AccountState, now: ISODateTime, opts: Billin
   const m = ownerMsg(state, now, g.free ? "free_month" : "precharge", g.text, [{ kind: "charge", id: g.chargeOn }]);
   if (!g.free) chargeMonth(state, g, m, now, opts);
   return m;
+}
+
+/**
+ * A later month not charged yet (its pre-charge text waiting for Jack, approved, or its link out), judged again on the
+ * replies as they read now: Jack may have read one again since its text was written. Free now: no charge, the month is
+ * free and the free-month text waits for his OK. Still not: its pre-charge text, until he approves it, says who came
+ * back as things stand. The months skipped, and the pre-charge texts written again.
+ */
+export function recheckMonths(state: AccountState, now: ISODateTime): { skipped: string[]; rewritten: OwnerMessage[] } {
+  const out = { skipped: [] as string[], rewritten: [] as OwnerMessage[] };
+  const b = state.dataset.business;
+  if (isOnePass(b.plan)) return out;
+  for (const c of b.plan.months ?? []) {
+    if (c.first || (c.status !== "heads_up" && c.status !== "approved" && c.status !== "link_sent")) continue;
+    const g = guaranteeCheck(state, c.month);
+    if (!g || g.chargeOn !== c.month) continue;
+    const pre = textsOf(state, c).findLast((m) => m.kind === "precharge");
+    if (g.free && monthFree(state, c.id, now)) {
+      out.skipped.push(c.id);
+      if (!b.plan.freeMonths.includes(g.chargeOn)) b.plan.freeMonths.push(g.chargeOn);
+      event(state, now, "guard", "action", "Guarantee: this month is free after all", `As the replies read now, nobody ${wantedWords(b.plan).past} this period, so you won't be charged.`);
+      ownerMsg(state, now, "free_month", g.text, [{ kind: "charge", id: g.chargeOn }]);
+    } else if (!g.free && pre && c.status === "heads_up") {
+      const text = [...g.text.split("\n").slice(0, -1), pre.text.split("\n").at(-1)!].join("\n");
+      if (text !== pre.text) {
+        pre.text = text;
+        out.rewritten.push(pre);
+      }
+    }
+  }
+  return out;
 }
 
 /**

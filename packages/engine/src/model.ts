@@ -486,8 +486,11 @@ interface ChargeBase {
   ask?: { kind: "refund" | "not_ours" | "paid_twice"; at: ISODateTime; why: string; paymentIntent?: string };
   /** Jack kept the money when asked: it isn't asked again. */
   keptAt?: ISODateTime;
-  /** `again`: payments made after it was paid (an older Checkout from its link), each Jack's until he refunds or keeps it. */
-  stripe?: { customer?: string; sessions?: string[]; paymentIntent?: string; paymentMethod?: string; brand?: string; last4?: string; refund?: string; again?: string[] };
+  /**
+   * `again`: payments made after it was paid (an older Checkout from its link), each Jack's until he refunds or keeps it.
+   * `declined`: the saved card's PaymentIntent that didn't go through, once the charge was paid another way.
+   */
+  stripe?: { customer?: string; sessions?: string[]; paymentIntent?: string; paymentMethod?: string; brand?: string; last4?: string; refund?: string; again?: string[]; declined?: string };
 }
 
 /** One booking's charge. Its id is from the pass (its business and first send day) and the customer (chargeId), never a booking's. */
@@ -498,6 +501,11 @@ export interface Charge extends ChargeBase {
   bookedOn?: ISODate;
   /** The lead's code from its hand-off text: on every money text, and what NOT OURS names. */
   code: string;
+  /**
+   * Skipped only because its booking dropped out before the charge (cancelled, taken back, gone from the ledger): it
+   * comes back if the customer books again, since that booking never was one. NOT OURS, Jack's word or a cancel is final.
+   */
+  dropped?: boolean;
 }
 
 /** One month's charge. Its id is from the business and the month (monthChargeId), so a month is charged once. */

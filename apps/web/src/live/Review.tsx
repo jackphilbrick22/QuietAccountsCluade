@@ -408,10 +408,16 @@ function Item({ it }: { it: ReviewItem }) {
             {it.via === "link" ? `Text the owner your Stripe payment link for ${fmtMoney(it.amount)} (one that saves his card), and press Done once it's paid.` : `Charge ${fmtMoney(it.amount)} in Stripe on the card ${it.last4 ? `ending ${it.last4}` : "his link saved"}, then press Done.`}
             {it.month?.first ? " Paid, he's on the monthly plan from that day: paste his Stripe customer on the client's page so later months go on that card." : ""}
           </p>
+          {it.why && <p className="text-[12.5px] text-ink-3">{it.why}</p>}
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/paid`, { chargeId: it.chargeId }), "Marked paid")}>
               Done: it's paid
             </Btn>
+            {it.relink && (
+              <Btn variant="ghost" disabled={!!busy} onClick={() => void run("link", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/link`), "The text with its link waits for your OK")}>
+                Send its /pay link
+              </Btn>
+            )}
           </div>
         </>
       )}

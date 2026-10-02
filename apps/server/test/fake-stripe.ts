@@ -5,8 +5,8 @@ import type { StripeEvent } from "../src/providers/stripe.ts";
  * A fake Stripe for tests, behind the real client's fetch: it reads the form-encoded bodies and the Idempotency-Key
  * header, and keeps customers, saved cards, Checkout Sessions, PaymentIntents and refunds. A key used again returns
  * what it returned the first time (as Stripe does for 24 hours, `forgetKeys` after), whatever happened since. Cards by
- * their last four: 4242 pays, 0002 is declined, 0077 sits processing until `settle`. A PaymentIntent for a customer
- * Stripe doesn't have (deleted since) is refused outright, as Stripe does.
+ * their last four: 4242 pays, 0002 is declined, 0077 sits processing until `settle`. A PaymentIntent or a Checkout
+ * Session for a customer Stripe doesn't have (deleted since) is refused outright, as Stripe does.
  */
 
 export interface FakeCall {
@@ -78,11 +78,13 @@ export function fakeStripe() {
       return respond(200, { object: "list", data: [...methods.values()].filter((x) => x.customer === m![1]).reverse() });
     }
     if (route === "POST /v1/checkout/sessions") {
+      if (body.customer && !customers.has(body.customer)) return respond(400, { error: { type: "invalid_request_error", code: "resource_missing", param: "customer", message: `No such customer: '${body.customer}'` } });
       const s = { id: next("cs"), object: "checkout.session", status: "open", payment_status: "unpaid", payment_intent: null, ...body, url: "" };
       s.url = `https://checkout.stripe.test/c/pay/${s.id}`;
       sessions.set(s.id, s);
       return respond(200, s);
     }
+    if ((m = route.match(/^GET \/v1\/checkout\/sessions\/([^/]+)$/))) return sessions.has(m[1]!) ? respond(200, sessions.get(m[1]!)) : missing("checkout.session");
     if ((m = route.match(/^POST \/v1\/checkout\/sessions\/([^/]+)\/expire$/))) {
       const s = sessions.get(m[1]!);
       if (!s) return missing("checkout.session");

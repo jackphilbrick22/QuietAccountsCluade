@@ -52,6 +52,8 @@ import {
   refillRate,
   stageFits,
   billableBookings,
+  cardOnFile,
+  holdsPlace,
   CHARGE_TEXTS,
   isMonth,
   type PlanState,
@@ -70,7 +72,7 @@ import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import { setupHealth } from "../core/health.ts";
-import { approveChargeText, decideChargeOp, decideFoundOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
+import { approveChargeText, approvePassEnd, decideChargeOp, decideFoundOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
 import { verifyStripeSignature, type StripeEvent } from "../providers/stripe.ts";
 import {
   answerInThread,
@@ -249,11 +251,17 @@ function notStarted(b: BusinessProfile): boolean {
   return b.plan.stage === "trial" || (isOnePass(b.plan) && b.plan.stage === "running");
 }
 
-/** A one pass's billable bookings within the cap and past it, and the names of the people its charges are for. */
+/**
+ * A one pass's places held under the cap (its charges that hold one, a booking that dropped out since included while
+ * Jack decides or once he kept it, and the billable bookings not charged yet), those past it, and the names of the
+ * people its charges are for.
+ */
 function billing(state: AccountState) {
   const count = billableBookings(state);
-  const names = Object.fromEntries((state.dataset.business.plan.charges ?? []).map((c) => [c.customerId, state.dataset.customers.find((x) => x.id === c.customerId)?.name ?? ""]));
-  return { billable: count.billable.length, overCap: count.overCap.length, names };
+  const charges = state.dataset.business.plan.charges ?? [];
+  const held = charges.filter(holdsPlace);
+  const names = Object.fromEntries(charges.map((c) => [c.customerId, state.dataset.customers.find((x) => x.id === c.customerId)?.name ?? ""]));
+  return { billable: held.length + count.billable.filter((x) => !held.some((c) => c.customerId === x.customerId)).length, overCap: count.overCap.length, names };
 }
 
 /** Compact business overview for dashboards (never the whole dataset). `features`: what this server sells beyond the two offers. */
@@ -786,6 +794,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
       const r = await approveChargeText(d, c.req.param("id"), c.req.param("mid"));
       if (r.refused) return c.json({ ok: false, error: r.refused }, 409);
     }
+    // a one pass's end text says what he paid as things are now, and waits while a card charge is on its way
+    if (m?.kind === "pass_end" && (m.delivery === "review" || m.delivery === "failed")) {
+      const r = await approvePassEnd(d, c.req.param("id"), c.req.param("mid"));
+      if (r.refused) return c.json({ ok: false, error: r.refused }, 409);
+    }
     const moved = d.accounts.repo.db.run("UPDATE owner_messages SET delivery = 'pending' WHERE business_id = ? AND id = ? AND delivery IN ('review','failed')", c.req.param("id"), c.req.param("mid"));
     // nothing to send (already sent, or withdrawn): say so instead of reporting a send that didn't happen
     if (!Number(moved.changes)) return c.json({ ok: false, error: "That text isn't waiting to be sent any more (it was sent or withdrawn)." }, 409);
@@ -952,19 +965,29 @@ export function createApp(d: HttpDeps): Hono<Env> {
         items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
       // charges waiting on a person (a one pass's, a month's): a refund, a NOT OURS or a second payment to decide; by hand
       // (no Stripe key), each one approved is his to collect (the card's from its day, once its text reached the
-      // owner), then Done
+      // owner), then Done. With a key, so is one approved by hand before it was set (a link only Jack sent; a card Stripe
+      // can't charge, its customer pasted with no key): never dropped, never a decline.
       const plan = s.dataset.business.plan;
+      const chargeable = cardOnFile(plan, true);
       for (const ch of [...(plan.charges ?? []), ...(plan.months ?? [])]) {
         const charge = isMonth(ch)
           ? { chargeId: ch.id, month: { on: ch.month, first: !!ch.first }, amount: ch.amount / 100 }
           : { chargeId: ch.id, customerId: ch.customerId, name: people.get(ch.customerId)?.name ?? "", code: ch.code, amount: ch.amount / 100 };
         if (ch.ask) items.push({ kind: "charge_ask", ...biz, at: ch.ask.at, ...charge, ask: ch.ask.kind, why: ch.ask.why, status: ch.status, refundBy: d.stripe && (ch.ask.paymentIntent ?? ch.stripe?.paymentIntent) ? "stripe" : "hand" });
-        else if (!d.stripe && ch.status === "approved" && (ch.via === "link" || (ch.toldAt && (ch.chargeOn ?? "") <= nowLocal.slice(0, 10))))
-          items.push({ kind: "charge_due", ...biz, at: ch.approvedAt ?? ch.at, ...charge, via: ch.via, last4: plan.card?.last4 ?? null });
+        else if (ch.status === "approved" && (ch.via === "link" || (ch.toldAt && (ch.chargeOn ?? "") <= nowLocal.slice(0, 10) && (!d.stripe || !chargeable))))
+          items.push({
+            kind: "charge_due",
+            ...biz,
+            at: ch.approvedAt ?? ch.at,
+            ...charge,
+            via: ch.via,
+            last4: plan.card?.last4 ?? null,
+            ...(d.stripe ? { why: ch.via === "link" ? "Approved before the Stripe key was set: send your own link, or its /pay link for your OK." : "Stripe has no card it can charge for him (pasted without a key, or gone from Stripe): charge it in Stripe, or paste his customer again.", relink: ch.via === "link" } : {}),
+          });
       }
       // the bookings the fresh export at a one pass's end brought, each waiting for his word before any money text
       // (while it's still billable within the cap, with no charge yet: one past the cap waits until a place frees)
-      const found = (plan.endExport?.found ?? []).filter((f) => f.confirmed === undefined && !plan.charges?.some((ch) => ch.customerId === f.customerId));
+      const found = (plan.endExport?.found ?? []).filter((f) => f.confirmed === undefined && !plan.charges?.some((ch) => ch.customerId === f.customerId && !ch.dropped));
       const billable = found.length ? billableBookings(s).billable : [];
       for (const f of found) {
         const x = billable.find((y) => y.customerId === f.customerId);

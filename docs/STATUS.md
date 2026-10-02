@@ -610,6 +610,25 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - Left: Lighthouse not run (not on this machine).
   - With C1, C2 and C3 on top of B6 and the holiday rule: engine 1,781, site 178, server 565.
 
+- **Billing review (B4, B5, B6 and the holiday rule together).** Four reviewers (the one pass, the monthly plan,
+  Stripe and safety, texts and console) ran real scenarios through the merged code; two skeptics checked each finding;
+  25 reported, 17 confirmed and fixed, each with a test. The ones that mattered most:
+  - Reopening /pay after a Checkout payment the server hadn't recorded yet opened a second Checkout (a second $250 or
+    $497). It now asks Stripe about the last session first.
+  - An owner's "Ok thanks" to a money text while the one pass's monthly offer was open read as a yes to monthly. It now
+    goes to Jack.
+  - A booking that dropped out before its charge left that customer unbillable forever, so a real rebooking was never
+    billed; a BOOKED with no amount was never billed at all.
+  - A month that became free after its pre-charge text (Jack relabelled its only "asked" reply) was still charged; months
+    not yet charged are judged again before Jack's OK and at charging.
+  - The cap text wasn't withdrawn when a refund freed a place; the end text's "You paid" was frozen at the pass's end;
+    the weekly "You've paid us" counted months never charged.
+  - With texts by hand, saved cards were charged at 00:01 on their day, before Jack could paste the text; now from noon.
+  - Adding a Stripe key after billing by hand stranded approved charges; a customer deleted in Stripe made /pay fail; a
+    refund after a declined card marked paid outside went to the declined payment; texts for a nameless customer read
+    " booked (#HQ4)".
+  - Engine 1,793, server 586, site 178.
+
 **Live steps for Jack**
 Before launch, in order (details for each in the list below): DNS; deploy the server (A8) with every setting from
 .env.example; Stripe test mode end to end (B4, B5), then live with STRIPE_ALLOW_LIVE=true; each client's own inboxes and

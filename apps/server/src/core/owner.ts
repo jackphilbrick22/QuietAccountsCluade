@@ -1,4 +1,4 @@
-import { addDays, billableBookings, billsPass, cancelPlan, CHECK_IN_DAYS, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, QUESTION_OPEN_DAYS, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, billableBookings, billsPass, bookingWho, CHARGE_TEXTS, CHARGED_CANCEL_DAY, cancelPlan, CHECK_IN_DAYS, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, QUESTION_OPEN_DAYS, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
@@ -525,7 +525,7 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     // day came and didn't go through stays: Jack looks at both
     const monthsOf = () => d.accounts.peek(one.id)!.state.dataset.business.plan.months ?? [];
     if (monthsOf().length) await settleBilling(d, one.id);
-    const open = monthsOf().filter((c) => c.status === "charging" || c.status === "failed" || c.status === "link_sent");
+    const open = monthsOf().filter((c) => c.status === "charging" || c.status === "failed" || c.status === "link_sent" || (c.status === "paid" && c.ask?.why === CHARGED_CANCEL_DAY));
     d.accounts.repo.audit(one.id, "owner-sms", "cancel", { stopped: r.stopped, refund: r.refund });
     // a yearly refund text goes straight to the operator's queue: they issue it, then send it
     if (r.refund) await deliverOwnerMessages(d, one.id);
@@ -535,8 +535,10 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const price = fmtMoney(one.profile.plan.pricePerBooking ?? ONE_PASS.pricePerBooking);
     const charges = owed
       ? `No more notes, and nothing that books from today on is charged. ${owed === 1 ? `The job booked before today is still ${price}` : `The ${owed} jobs booked before today are still ${price} each`}, and I text before every charge.`
-      : "No more notes, no more charges.";
-    const left = open.map((c) => `the ${fmtMoney(c.amount / 100)} for ${c.first ? "your first month" : `the month from ${fmtDay(c.month)}`} ${c.status === "charging" ? "was already going through" : "is still unpaid"}`);
+      : open.some((c) => c.status === "paid")
+        ? "No more notes."
+        : "No more notes, no more charges.";
+    const left = open.map((c) => `the ${fmtMoney(c.amount / 100)} for ${c.first ? "your first month" : `the month from ${fmtDay(c.month)}`} ${c.status === "paid" ? "went through today" : c.status === "charging" ? "was already going through" : "is still unpaid"}`);
     const still = left.length ? ` ${joinOr(left, "and").replace(/^t/, "T")}, so Jack will look at ${left.length === 1 ? "it" : "them"}.` : "";
     return {
       businessId: one.id,
@@ -712,6 +714,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const ending = pool.filter((b) => outstanding(d, b.id, "pass_end"));
     const exporting = pool.filter((b) => outstanding(d, b.id, "export_ask"));
     if (closing.length + renewing.length + ending.length + exporting.length > 1) return askWhich();
+    // a money text (a booking's, the cap, a refund) reached him since the end text: his "Ok" may be to that, so Jack
+    // reads it and no first month is asked for
+    if (ending[0] && moneySince(d, ending[0].id)) return { businessId: ending[0].id, reply: `${tag(ending[0])}Got it — Jack will read this and get back to you.`, handled: "pass_end_unclear", needsPerson: true };
     if (ending[0]) return keepGoing(ending[0], "monthly");
     const b = closing[0] ?? renewing[0];
     // the free 150's yes: the first month's text, with the link that saves the card, waits for Jack's OK; paid, the
@@ -758,7 +763,7 @@ async function notOursCommand(d: Deps, pool: Biz[], code: string, tag: (b: Biz) 
   let name = "";
   await d.accounts.withAccount(b.id, (state) => {
     r = notOurs(state, code, nowLocal(d, state));
-    name = state.dataset.customers.find((c) => c.id === r?.customerId)?.name ?? "that one";
+    name = (r && bookingWho(state, r.customerId, code)) ?? "that one";
   });
   withdrawStaleTexts(d, b.id);
   const res = r!;
@@ -954,6 +959,14 @@ function outstanding(d: Deps, bid: string, kind: "close" | "renewal" | "pass_end
     return (kind === "export_ask" || !!m.refs?.some((r) => r.kind === "monthly_offer")) && (["sent", "manual"].includes(delivery) || (coming && !["skipped", "cancelled"].includes(delivery)));
   };
   return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "renewal" ? 45 : QUESTION_OPEN_DAYS) && !answered(m) && offered(m));
+}
+
+/** A money text (a booking's, the cap's, a refund's) went to the owner after the one pass's end text did. */
+function moneySince(d: Deps, bid: string): boolean {
+  const all = d.accounts.repo.ownerMessages(bid, { limit: 300 });
+  const went = (m: (typeof all)[number]) => (m.delivery === "sent" || m.delivery === "manual") && !!m.delivered_at;
+  const end = all.find((m) => m.kind === "pass_end" && went(m));
+  return !!end && all.some((m) => (CHARGE_TEXTS as readonly string[]).includes(m.kind) && went(m) && m.delivered_at! > end.delivered_at!);
 }
 
 /** The client whose lead was texted to this owner most recently. */

@@ -1,6 +1,9 @@
 import {
   approveCharge,
   askFirstMonth,
+  bookingWho,
+  capReached,
+  cardOnFile,
   CHARGE_REF,
   CHARGE_TEXTS,
   chargeFailed,
@@ -20,7 +23,9 @@ import {
   monthName,
   ONE_PASS,
   paidTwice,
+  passEndText,
   pasteCard,
+  recheckMonths,
   redateCharge,
   settleCharges,
   settleMonths,
@@ -34,7 +39,7 @@ import {
 import { NotFound } from "./accounts.ts";
 import { localIso } from "./clock.ts";
 import { deliverOwnerMessages, linkToken, readLinkToken, verifySigned, type Deps } from "./ops.ts";
-import { StripeError, type StripeEvent, type StripePaymentIntent, type StripePaymentMethod } from "../providers/stripe.ts";
+import { StripeError, type StripeCheckoutSession, type StripeEvent, type StripePaymentIntent, type StripePaymentMethod } from "../providers/stripe.ts";
 
 /**
  * Billing on the server: a one pass's (BRIEF B4) and the monthly plan's (B5). The charge log kept up with the ledger,
@@ -47,11 +52,14 @@ import { StripeError, type StripeEvent, type StripePaymentIntent, type StripePay
 const MONEY_TEXTS = new Set<string>(CHARGE_TEXTS);
 /** How long a charge may sit "charging" before it's read back from Stripe (a restart mid-charge, a webhook that never came). */
 export const READ_BACK_MS = 10 * 60_000;
+/** With owner texts by hand, a saved card is charged on its day from this local hour, after the morning's pasted replies. */
+export const CHARGE_FROM_HOUR = 12;
 
 const nowOf = (d: Deps, state: AccountState) => localIso(d.clock(), state.dataset.business.timezone);
 
 export function billingOpts(d: Deps, bid: string): BillingOpts {
-  return d.stripe ? { stripe: true, payLink: (id) => payLink(d, bid, id) } : { stripe: false };
+  const withdrawn = (id: string) => d.accounts.repo.ownerMessageDelivery(bid, id)?.delivery === "cancelled";
+  return d.stripe ? { stripe: true, payLink: (id) => payLink(d, bid, id), withdrawn } : { stripe: false, withdrawn };
 }
 
 /** The owner's stable link for one charge: a fresh Checkout each time it's opened unpaid. Rotating links kills it. */
@@ -67,16 +75,19 @@ export function readPayToken(d: Deps, token: string): { bid: string; chargeId: s
   return bid && chargeId ? { bid, chargeId } : undefined;
 }
 
-/** The business's Stripe customer: the saved card's, else the one an earlier Checkout made (a booking's or a month's). */
-function stripeCustomer(plan: PlanState): string | undefined {
-  return plan.card?.customer ?? [...(plan.charges ?? []), ...(plan.months ?? [])].find((c) => c.stripe?.customer)?.stripe?.customer;
+/**
+ * The business's Stripe customer for a charge's Checkout: the saved card's, else the one this charge's own Checkout
+ * made, else one an earlier Checkout made (a booking's or a month's).
+ */
+function stripeCustomer(plan: PlanState, c: Charge | MonthCharge): string | undefined {
+  return plan.card?.customer ?? c.stripe?.customer ?? [...(plan.charges ?? []), ...(plan.months ?? [])].find((x) => x.stripe?.customer)?.stripe?.customer;
 }
 
 /** "Booked job: Karen W. (Dow's Tree Service)", "First month (Dow's Tree Service)", "Month from November 1 (...)" */
 function lineName(state: AccountState, c: Charge | MonthCharge): string {
   if (isMonth(c)) return `${c.first ? "First month" : `Month from ${monthName(c.month)} ${Number(c.month.slice(8))}`} (${state.dataset.business.name})`;
   const who = customerById(state.dataset, c.customerId);
-  const short = who?.firstName ? `${who.firstName}${who.lastName ? ` ${who.lastName[0]}.` : ""}` : (who?.name ?? "a customer");
+  const short = who?.firstName ? `${who.firstName}${who.lastName ? ` ${who.lastName[0]}.` : ""}` : (bookingWho(state, c.customerId, c.code) ?? "a customer");
   return `Booked job: ${short} (${state.dataset.business.name})`;
 }
 
@@ -97,6 +108,11 @@ export function withdrawStaleTexts(d: Deps, bid: string): void {
   if (!s) return;
   for (const m of s.ownerMessages) {
     if (!MONEY_TEXTS.has(m.kind) && m.kind !== "precharge") continue;
+    // the cap text, once a place is open again (a refund, or one waiting on Jack): written anew when the cap fills
+    if (m.kind === "charge_cap") {
+      if (!capReached(s.dataset.business.plan)) d.accounts.repo.withdrawOwnerMessage(bid, m.id, "Not true now: a place under the cap is open again");
+      continue;
+    }
     const c = chargeOf(s, m.refs?.find((r) => r.kind === CHARGE_REF)?.id ?? "");
     if (!c || moneyTextLive(c, m.kind)) continue;
     const delivery = d.accounts.repo.ownerMessageDelivery(bid, m.id)?.delivery ?? "";
@@ -112,20 +128,35 @@ export function withdrawStaleTexts(d: Deps, bid: string): void {
  * booking's day moves on with today (a later month's, once its own day came), on Texts to send too.
  */
 export async function settleBilling(d: Deps, bid: string): Promise<void> {
+  let free: MonthCharge[] = [];
   await d.accounts.withAccount(bid, (state) => {
     const now = nowOf(d, state);
     const plan = state.dataset.business.plan;
+    free = recheck(d, bid, state, now).free;
     settleCharges(state, now, billingOpts(d, bid));
     settleMonths(state, now);
     for (const c of [...(plan.charges ?? []), ...(plan.months ?? [])]) {
       if (c.via !== "card" || c.status !== "approved" || c.toldAt) continue;
-      const m = textsOf(state, c).find((x) => x.kind === "charge_card" || x.kind === "precharge");
+      const m = textsOf(state, c).findLast((x) => x.kind === "charge_card" || x.kind === "precharge");
       const went = m && d.accounts.repo.ownerMessageDelivery(bid, m.id);
       if (went?.delivery === "sent" && went.delivered_at) chargeTold(state, c.id, localIso(new Date(went.delivered_at), state.dataset.business.timezone));
       else if (redateCharge(state, c.id, now) && m) d.accounts.repo.setOwnerMessageText(bid, m.id, m.text);
     }
   });
   withdrawStaleTexts(d, bid);
+  for (const c of free) await expireCheckout(d, bid, c);
+}
+
+/**
+ * The months not charged yet, judged again on the replies as they read now (recheckMonths): one free after all is
+ * skipped, its free-month text made; a pre-charge text waiting for Jack is written again. The months skipped, and
+ * those of them whose link was out (their Checkout is expired by the caller).
+ */
+function recheck(d: Deps, bid: string, state: AccountState, now: string): { free: MonthCharge[]; skipped: string[] } {
+  const out = state.dataset.business.plan.months?.filter((c) => c.status === "link_sent").map((c) => structuredClone(c)) ?? [];
+  const r = recheckMonths(state, now);
+  for (const m of r.rewritten) d.accounts.repo.setOwnerMessageText(bid, m.id, m.text);
+  return { free: out.filter((c) => r.skipped.includes(c.id)), skipped: r.skipped };
 }
 
 /**
@@ -137,10 +168,17 @@ export async function runBilling(d: Deps, bid: string): Promise<void> {
   if (!d.stripe) return;
   const s = d.accounts.peek(bid)!.state;
   const tz = s.dataset.business.timezone;
-  const today = localIso(d.clock(), tz).slice(0, 10);
+  const local = localIso(d.clock(), tz);
+  const today = local.slice(0, 10);
+  // owner texts by hand (SMS_PROVIDER=manual): on its day from midday, so the owner's CANCEL or NOT OURS from the
+  // evening before, which reaches the server only when Jack pastes it in the morning, comes first
+  const from = d.notifier.name === "manual" ? CHARGE_FROM_HOUR : 0;
+  const due = (on: string) => on < today || (on === today && Number(local.slice(11, 13)) >= from);
   const stale = localIso(new Date(d.clock().getTime() - READ_BACK_MS), tz);
+  // a card Stripe can't charge (a customer pasted with no key, paid outside) waits for Jack in Needs a person
+  const card = cardOnFile(s.dataset.business.plan, true);
   for (const c of [...(s.dataset.business.plan.charges ?? []), ...(s.dataset.business.plan.months ?? [])])
-    if (c.via === "card" && ((c.status === "approved" && c.toldAt && (c.chargeOn ?? today) <= today) || (c.status === "charging" && (c.triedAt ?? "") <= stale))) await chargeCard(d, bid, c.id);
+    if (c.via === "card" && ((card && c.status === "approved" && c.toldAt && due(c.chargeOn ?? today)) || (c.status === "charging" && (c.triedAt ?? "") <= stale))) await chargeCard(d, bid, c.id);
 }
 
 /**
@@ -154,14 +192,17 @@ async function chargeCard(d: Deps, bid: string, id: string): Promise<void> {
   let card: PlanState["card"];
   let name = "";
   await d.accounts.withAccount(bid, (state) => {
+    card = state.dataset.business.plan.card;
+    // nothing to charge it on, and nothing made yet: Jack's to collect, never a decline
+    if (!chargeOf(state, id)?.stripe?.paymentIntent && !cardOnFile(state.dataset.business.plan, true)) return;
     const claimed = chargeStarted(state, id, nowOf(d, state));
     c = claimed && structuredClone(claimed);
-    card = state.dataset.business.plan.card;
     if (claimed) name = lineName(state, claimed);
   });
   if (!c) return;
   let pi: StripePaymentIntent | undefined;
   let refused: string | undefined;
+  let gone = false;
   try {
     if (c.stripe?.paymentIntent) pi = await stripe.retrievePaymentIntent(c.stripe.paymentIntent);
     else if (card?.customer && card.paymentMethod) {
@@ -185,14 +226,21 @@ async function chargeCard(d: Deps, bid: string, id: string): Promise<void> {
     }
     pi = e.paymentIntent;
     if (!pi) refused = e.message;
+    // the customer or its card is gone from Stripe: never tried again, and the link makes a new customer
+    gone = !pi && e.code === "resource_missing";
   }
-  await settleIntent(d, bid, id, pi, refused);
+  await settleIntent(d, bid, id, pi, refused, gone ? card : undefined);
 }
 
-/** What Stripe says of a saved card's PaymentIntent (or that it refused it), on the charge. Processing waits for the webhook. */
-async function settleIntent(d: Deps, bid: string, id: string, pi: StripePaymentIntent | undefined, refused?: string): Promise<void> {
+/**
+ * What Stripe says of a saved card's PaymentIntent (or that it refused it), on the charge. Processing waits for the
+ * webhook. A card Stripe no longer has (`gone`) is no saved card any more: later charges go by the link.
+ */
+async function settleIntent(d: Deps, bid: string, id: string, pi: StripePaymentIntent | undefined, refused?: string, gone?: PlanState["card"]): Promise<void> {
   await d.accounts.withAccount(bid, (state) => {
     const now = nowOf(d, state);
+    const plan = state.dataset.business.plan;
+    if (gone?.customer && plan.card?.customer === gone.customer && plan.card.paymentMethod === gone.paymentMethod) plan.card = { ...plan.card, customer: undefined, paymentMethod: undefined };
     if (refused || !pi) chargeFailed(state, id, now, refused ?? "No saved card to charge", billingOpts(d, bid));
     else if (pi.status === "succeeded") chargePaid(state, id, now, { by: "stripe", stripe: { paymentIntent: pi.id, ...cardOf(pi) } });
     else if (pi.status !== "processing" && pi.status !== "requires_confirmation") chargeFailed(state, id, now, pi.last_payment_error?.message ?? `Stripe says it ${pi.status.replace(/_/g, " ")}`, billingOpts(d, bid));
@@ -217,9 +265,17 @@ export async function firstMonth(d: Deps, bid: string): Promise<void> {
  */
 export async function approveChargeText(d: Deps, bid: string, messageId: string): Promise<{ refused?: string }> {
   let r: ReturnType<typeof approveCharge>;
+  let re: ReturnType<typeof recheck> = { free: [], skipped: [] };
+  // a month is judged again first: one free after all is never charged, and its free-month text waits instead
   await d.accounts.withAccount(bid, (state) => {
+    re = recheck(d, bid, state, nowOf(d, state));
     r = approveCharge(state, messageId, nowOf(d, state), billingOpts(d, bid));
   });
+  if (re.skipped.length) {
+    withdrawStaleTexts(d, bid);
+    for (const c of re.free) await expireCheckout(d, bid, c);
+    await deliverOwnerMessages(d, bid);
+  }
   if (!r!) return {};
   if ("refused" in r!) {
     d.accounts.repo.withdrawOwnerMessage(bid, messageId, r.refused);
@@ -227,6 +283,24 @@ export async function approveChargeText(d: Deps, bid: string, messageId: string)
   }
   d.accounts.repo.setOwnerMessageText(bid, messageId, r!.text);
   return {};
+}
+
+/**
+ * Jack approves a one pass's end text: its tally ("You paid $X") is written again from the charges as they are now.
+ * Held while a saved card's charge is on its way (approved, or going through): a day later its total would be wrong.
+ */
+export async function approvePassEnd(d: Deps, bid: string, messageId: string): Promise<{ refused?: string }> {
+  let refused: string | undefined;
+  let text: string | undefined;
+  await d.accounts.withAccount(bid, (state) => {
+    const m = state.ownerMessages.find((x) => x.id === messageId && x.kind === "pass_end");
+    if (!m) return;
+    if ((state.dataset.business.plan.charges ?? []).some((c) => c.status === "charging" || (c.status === "approved" && c.via === "card")))
+      refused = "A charge is on its way to his card: approve this once it's paid, so what it says he paid is right.";
+    else text = m.text = [passEndText(state, m.at.slice(0, 10)).split("\n\n")[0], ...m.text.split("\n\n").slice(1)].join("\n\n");
+  });
+  if (text) d.accounts.repo.setOwnerMessageText(bid, messageId, text);
+  return refused ? { refused } : {};
 }
 
 export type PayPage = { redirect: string } | { page: "paid" | "nothing" | "gone" };
@@ -250,30 +324,58 @@ export async function openPay(d: Deps, token: string): Promise<PayPage> {
   if (c.status === "paid") return { page: "paid" };
   if (c.status !== "link_sent" || !d.stripe) return { page: "nothing" };
   const b = s.dataset.business;
-  let customer = stripeCustomer(b.plan);
-  if (!customer) customer = (await d.stripe.createCustomer({ name: b.name, email: b.ownerEmail, phone: b.ownerPhone, metadata: { business_id: b.id } }, `${c.id}:customer`)).id;
   const n = c.stripe?.sessions?.length ?? 0;
+  const newCustomer = async (key: string) => (await d.stripe!.createCustomer({ name: b.name, email: b.ownerEmail, phone: b.ownerPhone, metadata: { business_id: b.id } }, key)).id;
+  let customer = stripeCustomer(b.plan, c) ?? (await newCustomer(`${c.id}:customer`));
   const price = b.plan.pricePerBooking ?? ONE_PASS.pricePerBooking;
   const terms = isMonth(c)
     ? `${fmtMoney(c.amount / 100)} a month. Each charge comes after a text, and any month nobody asks to come back, you don't pay.`
     : `${fmtMoney(price)} per booked job, up to ${fmtMoney(price * (b.plan.capBookings ?? ONE_PASS.capBookings))}. Each later charge comes after a text.`;
   const base = d.cfg.PUBLIC_URL.replace(/\/$/, "");
   const metadata = { business_id: b.id, charge_id: c.id };
-  await expireCheckout(d, t.bid, c);
-  const session = await d.stripe.createCheckoutSession(
-    {
-      mode: "payment",
-      payment_method_types: ["card"],
-      customer,
-      line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: c.amount, product_data: { name: lineName(s, c) } } }],
-      payment_intent_data: { setup_future_usage: "off_session", metadata },
-      custom_text: { submit: { message: terms } },
-      metadata,
-      success_url: `${base}/pay/thanks`,
-      cancel_url: `${base}/pay/${token}`,
-    },
-    `${c.id}:checkout:${n}`,
-  );
+  // The last Checkout may be paid already, its event not here yet (a restart, a delivery Stripe retries later): Stripe's
+  // word on it settles the charge as the webhook would, and no second Checkout is made. One it says is open is expired
+  // first, so only the new one can be paid; one paid in between is the same.
+  const last = c.stripe?.sessions?.at(-1);
+  const stripe = d.stripe;
+  const paidThere = async (id: string): Promise<boolean> => {
+    const cs = await stripe.retrieveCheckoutSession(id);
+    if (cs.status !== "complete") return false;
+    if (cs.payment_status === "paid") await settleCheckout(d, t.bid, c.id, cs);
+    return true;
+  };
+  let done = !!last && (await paidThere(last));
+  if (last && !done)
+    await stripe.expireCheckoutSession(last, `${last}:expire`).catch(async (e: Error) => {
+      d.log(`[billing] ${t.bid} session ${last}: ${e.message}`);
+      done = await paidThere(last);
+    });
+  if (done) return { page: chargeOf(d.accounts.peek(t.bid)!.state, c.id)?.status === "paid" ? "paid" : "nothing" };
+  const checkout = (key: string) =>
+    stripe.createCheckoutSession(
+      {
+        mode: "payment",
+        payment_method_types: ["card"],
+        customer,
+        line_items: [{ quantity: 1, price_data: { currency: "usd", unit_amount: c.amount, product_data: { name: lineName(s, c) } } }],
+        payment_intent_data: { setup_future_usage: "off_session", metadata },
+        custom_text: { submit: { message: terms } },
+        metadata,
+        success_url: `${base}/pay/thanks`,
+        cancel_url: `${base}/pay/${token}`,
+      },
+      key,
+    );
+  let session: StripeCheckoutSession;
+  try {
+    session = await checkout(`${c.id}:checkout:${n}`);
+  } catch (e) {
+    // the customer is gone from Stripe (deleted since, or a test-mode one): a new one, once
+    if (!(e instanceof StripeError) || e.code !== "resource_missing" || !/customer/i.test(e.message)) throw e;
+    d.log(`[billing] ${t.bid} charge ${c.id}: ${e.message}; a new Stripe customer`);
+    customer = await newCustomer(`${c.id}:customer:${n + 1}`);
+    session = await checkout(`${c.id}:checkout:${n}:${customer}`);
+  }
   await d.accounts.withAccount(t.bid, (state) => {
     const x = chargeOf(state, c.id);
     if (x) x.stripe = { ...x.stripe, customer, sessions: [...new Set([...(x.stripe?.sessions ?? []), session.id])] };
@@ -305,10 +407,9 @@ export async function stripeEvent(d: Deps, ev: StripeEvent): Promise<{ businessI
     return { businessId: bid, note: changed ? undefined : "nothing to change" };
   };
   if (ev.type === "checkout.session.completed") {
-    const session = ev.data.object as { payment_status?: string; payment_intent?: string | null; customer?: string | null };
+    const session = ev.data.object as Pick<StripeCheckoutSession, "payment_status" | "payment_intent" | "customer">;
     if (session.payment_status !== "paid" || c.via !== "link") return { businessId: bid, note: "not paid" };
-    const pi = session.payment_intent ? await d.stripe!.retrievePaymentIntent(session.payment_intent) : undefined;
-    return settle((state, now) => chargePaid(state, id, now, { by: "stripe", stripe: { customer: session.customer ?? undefined, paymentIntent: pi?.id, ...cardOf(pi) } }) || (!!pi && paidTwice(state, id, now, pi.id)));
+    return { businessId: bid, note: (await settleCheckout(d, bid, id, session)) ? undefined : "nothing to change" };
   }
   // a saved card's own PaymentIntent, never one a link's Checkout made
   const ours = c.via === "card" && c.stripe?.paymentIntent === o.id;
@@ -316,6 +417,24 @@ export async function stripeEvent(d: Deps, ev: StripeEvent): Promise<{ businessI
   if (ev.type === "payment_intent.succeeded" && ours) return settle((state, now) => chargePaid(state, id, now, { by: "stripe", stripe: { paymentIntent: pi.id, ...cardOf(pi) } }));
   if (ev.type === "payment_intent.payment_failed" && ours) return settle((state, now) => chargeFailed(state, id, now, pi.last_payment_error?.message ?? "The card was declined", billingOpts(d, bid)));
   return { businessId: bid, note: "nothing to do" };
+}
+
+/**
+ * A link's Checkout Stripe says was paid (its webhook, or the /pay link opened again before that came): the charge is
+ * paid, the card saved; one paid already by another payment asks Jack to refund that one. Once a payment.
+ */
+async function settleCheckout(d: Deps, bid: string, id: string, session: Pick<StripeCheckoutSession, "payment_intent" | "customer">): Promise<boolean> {
+  const pi = session.payment_intent ? await d.stripe!.retrievePaymentIntent(session.payment_intent) : undefined;
+  let changed = false;
+  await d.accounts.withAccount(bid, (state) => {
+    const now = nowOf(d, state);
+    changed = chargePaid(state, id, now, { by: "stripe", stripe: { customer: session.customer ?? undefined, paymentIntent: pi?.id, ...cardOf(pi) } }) || (!!pi && paidTwice(state, id, now, pi.id));
+  });
+  if (changed) {
+    withdrawStaleTexts(d, bid);
+    await deliverOwnerMessages(d, bid);
+  }
+  return changed;
 }
 
 /**

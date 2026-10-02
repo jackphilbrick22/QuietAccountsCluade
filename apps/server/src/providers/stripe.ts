@@ -73,6 +73,8 @@ export interface StripeClient {
   /** The customer's saved cards, newest first. */
   listCards(customer: string): Promise<StripePaymentMethod[]>;
   createCheckoutSession(p: Params, key: string): Promise<StripeCheckoutSession>;
+  /** Where a Checkout stands: open, complete (paid, with its payment_status) or expired. */
+  retrieveCheckoutSession(id: string): Promise<StripeCheckoutSession>;
   /** An open session can't be paid any more (refused when it's complete or expired already). */
   expireCheckoutSession(id: string, key: string): Promise<StripeCheckoutSession>;
   createPaymentIntent(p: Params, key: string): Promise<StripePaymentIntent>;
@@ -119,6 +121,7 @@ export function createStripeClient(opts: { key: string; fetch?: Fetch; base?: st
     retrieveCustomer: (id) => call("GET", `/v1/customers/${encodeURIComponent(id)}`),
     listCards: async (customer) => (await call<{ data: StripePaymentMethod[] }>("GET", `/v1/customers/${encodeURIComponent(customer)}/payment_methods`, { type: "card" })).data,
     createCheckoutSession: (p, key) => call("POST", "/v1/checkout/sessions", p, key),
+    retrieveCheckoutSession: (id) => call("GET", `/v1/checkout/sessions/${encodeURIComponent(id)}`),
     expireCheckoutSession: (id, key) => call("POST", `/v1/checkout/sessions/${encodeURIComponent(id)}/expire`, {}, key),
     createPaymentIntent: (p, key) => call("POST", "/v1/payment_intents", p, key),
     confirmPaymentIntent: (id, p, key) => call("POST", `/v1/payment_intents/${encodeURIComponent(id)}/confirm`, p, key),

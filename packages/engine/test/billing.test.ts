@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { billableBookings } from "../src/ledger/billable.ts";
 import { approveCharge, cardOnFile, chargeId, chargePaid, chargeFailed, chargeRefunded, chargeStarted, chargeTold, CHARGE_REF, decideCharge, linkAgain, markPaidOutside, nextBusinessDay, notOurs, paidTwice, redateCharge, settleCharges, type BillingOpts } from "../src/runtime/charges.ts";
-import { cancelPlan, ledgerPass, receiveReply, undoCancel } from "../src/runtime/agents.ts";
+import { cancelPlan, ledgerPass, markContacted, receiveReply, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { leadCode, passEndText, passTouches } from "../src/reports/owner.ts";
 import { onePassPlan } from "../src/plans.ts";
@@ -734,5 +734,172 @@ describe("the charge log", () => {
     expect(why(late, "c0")).toBe("Never wrote back to the pass's notes");
     // and Jack can still mark one paid outside the software
     expect(markPaidOutside(st, { customerId: "c1" }, "2026-11-12T10:00:00")).toMatchObject({ charge: { status: "paid" } });
+  });
+});
+
+describe("a booking that drops out before its charge, then books for real", () => {
+  it("BOOKED, NO, BOOKED again: the skipped charge comes back for the new booking, with a text of its own", () => {
+    const st = pass(2);
+    const r = wrote(st, "c0", "2026-10-08");
+    markContacted(st, r.id, "2026-10-20T10:00:00", "booked", 2400);
+    settleCharges(st, "2026-10-20T10:01:00", STRIPE);
+    const id = chargeId(st, "c0");
+    expect(charge(st, "c0").status).toBe("heads_up");
+    // she backs out: no charge
+    markContacted(st, r.id, "2026-10-21T10:00:00", "lost");
+    expect(settleCharges(st, "2026-10-21T10:01:00", STRIPE).skipped).toEqual([id]);
+    expect(charge(st, "c0")).toMatchObject({ status: "skipped", reason: "Its booking is off the ledger" });
+    // she really books: that's her first billable booking
+    markContacted(st, r.id, "2026-10-23T10:00:00", "booked", 2400);
+    settleCharges(st, "2026-10-23T10:01:00", STRIPE);
+    expect(billableBookings(st).billable).toMatchObject([{ customerId: "c0", on: "2026-10-23" }]);
+    expect(st.dataset.business.plan.charges).toHaveLength(1);
+    expect(charge(st, "c0")).toMatchObject({ id, status: "heads_up", bookedOn: "2026-10-23", via: "link" });
+    expect(charge(st, "c0").reason).toBeUndefined();
+    const texts = textOf(st, "c0");
+    expect(texts).toHaveLength(2);
+    expect(texts[1]!.id).not.toBe(texts[0]!.id);
+    expect(texts[1]!.text).toMatch(/^Person 0 booked \(#\w{3}\)\. That's your first \$250\. Here's the link: /);
+    // approved, it goes as any other
+    expect(approveCharge(st, texts[1]!.id, "2026-10-23T11:00:00", STRIPE)).toMatchObject({ text: expect.stringContaining("/pay/") });
+    expect(charge(st, "c0").status).toBe("link_sent");
+  });
+
+  it("a job cancelled after its link went, then booked again on a later import: charged for the new job", () => {
+    const st = pass(1);
+    st.outreach = [{ customerId: "c0", opportunityId: "o-c0", firstTouchOn: START, lastTouchOn: START }];
+    wrote(st, "c0", "2026-10-08");
+    const newExport = (now: string, ...jobs: Job[]) => {
+      st.dataset.jobs = jobs;
+      ledgerPass(st, now);
+      return settleCharges(st, now, STRIPE);
+    };
+    const j1 = job("j1", "c0", { status: "scheduled", createdOn: "2026-10-20", completedOn: undefined });
+    newExport("2026-10-21T09:00:00", j1);
+    const id = chargeId(st, "c0");
+    approveCharge(st, textOf(st, "c0")[0]!.id, "2026-10-21T10:00:00", STRIPE);
+    expect(charge(st, "c0").status).toBe("link_sent");
+    expect(newExport("2026-10-24T09:00:00", { ...j1, status: "cancelled" }).skipped).toEqual([id]);
+    expect(charge(st, "c0")).toMatchObject({ status: "skipped", reason: "The job was cancelled before the work" });
+    const j2 = job("j2", "c0", { status: "scheduled", createdOn: "2026-10-27", completedOn: undefined });
+    newExport("2026-10-28T09:00:00", { ...j1, status: "cancelled" }, j2);
+    expect(charge(st, "c0")).toMatchObject({ status: "heads_up", bookedOn: "2026-10-27", via: "link" });
+    expect(textOf(st, "c0")).toHaveLength(2);
+    // and paid by the link (her declined tries and old Checkouts aside), it's the one charge
+    approveCharge(st, textOf(st, "c0")[1]!.id, "2026-10-28T10:00:00", STRIPE);
+    expect(chargePaid(st, id, "2026-10-29T10:00:00", { by: "stripe", stripe: checkout })).toBe(true);
+    expect(st.dataset.business.plan.charges).toHaveLength(1);
+  });
+
+  it("comes back after the charges made meanwhile, so its place and total are right; NOT OURS or Jack's word stays final", () => {
+    const st = pass(3);
+    bookings(st, 2);
+    st.dataset.business.plan.card = { customer: "cus_1", paymentMethod: "pm_1", brand: "visa", last4: "4242", at: "2026-10-01T09:00:00", from: "pasted" };
+    settleCharges(st, "2026-10-22T09:00:00", STRIPE);
+    // c0's booking drops out before the charge; c1's is charged
+    st.recoveries[0]!.disputed = { at: "2026-10-22T10:00:00", reason: "taken back", by: "owner" };
+    settleCharges(st, "2026-10-22T10:00:00", STRIPE);
+    markPaidOutside(st, { customerId: "c1" }, "2026-10-23T09:00:00");
+    // c0 books again: second, on the card
+    booked(st, "c0", "2026-10-26", { id: "rec-c0-again" });
+    settleCharges(st, "2026-10-26T09:00:00", STRIPE);
+    expect(st.dataset.business.plan.charges!.map((c) => [c.customerId, c.status])).toEqual([
+      ["c1", "paid"],
+      ["c0", "heads_up"],
+    ]);
+    expect(textOf(st, "c0").at(-1)!.text).toMatch(/^Person 0 booked \(#\w{3}\)\. \$250 goes on your card ending 4242 on Tuesday, \$500 of your \$1,000\./);
+    // NOT OURS on a dropped one makes it final: a later booking never brings it back
+    const fin = pass(1);
+    bookings(fin, 1);
+    settleCharges(fin, "2026-10-21T09:00:00", STRIPE);
+    fin.recoveries[0]!.disputed = { at: "2026-10-22T10:00:00", reason: "taken back", by: "owner" };
+    settleCharges(fin, "2026-10-22T10:00:00", STRIPE);
+    expect(notOurs(fin, charge(fin, "c0").code, "2026-10-22T11:00:00")).toMatchObject({ done: "already" });
+    booked(fin, "c0", "2026-10-26", { id: "rec-c0-again" });
+    settleCharges(fin, "2026-10-26T09:00:00", STRIPE);
+    expect(charge(fin, "c0")).toMatchObject({ status: "skipped", reason: "The owner texted NOT OURS" });
+    expect(why(fin, "c0")).toBe("The owner texted NOT OURS");
+    // a booking after the cancel stays out
+    const late = pass(1);
+    bookings(late, 1);
+    settleCharges(late, "2026-10-21T09:00:00", STRIPE);
+    cancelPlan(late, "2026-10-20T09:00:00");
+    settleCharges(late, "2026-10-21T10:00:00", STRIPE);
+    expect(charge(late, "c0")).toMatchObject({ status: "skipped", reason: "Booked after the owner cancelled" });
+    expect(charge(late, "c0").dropped).toBeUndefined();
+  });
+});
+
+describe("a booking the owner texted is dated by the record of it in their export", () => {
+  /** Karen (c0) wrote back Oct 8 to the note of Oct 5; her export has `jobs`; the owner texts BOOKED on Oct 20 unless `told` is false. */
+  function told(jobs: Job[], opts: { told?: boolean } = {}): AccountState {
+    const st = pass(1);
+    st.outreach = [{ customerId: "c0", opportunityId: "o-c0", firstTouchOn: START, lastTouchOn: START }];
+    const r = wrote(st, "c0", "2026-10-08");
+    if (opts.told !== false) markContacted(st, r.id, "2026-10-20T10:00:00", "booked", 2400);
+    st.dataset.jobs = jobs;
+    ledgerPass(st, "2026-10-21T09:00:00");
+    return st;
+  }
+  const made = (on: string) => job("j-karen", "c0", { status: "scheduled", createdOn: on, completedOn: undefined, total: 2400 });
+
+  it("a job made before the pass wrote to her isn't billable, BOOKED or not", () => {
+    expect(billableBookings(told([made("2026-09-20")])).billable).toEqual([]);
+    expect(why(told([made("2026-09-20")]), "c0")).toBe("Booked before they wrote back");
+    expect(billableBookings(told([made("2026-09-20")], { told: false }))).toEqual({ billable: [], overCap: [], not: [] });
+  });
+
+  it("a job made after the note but before her reply isn't billable, BOOKED or not", () => {
+    expect(billableBookings(told([made("2026-10-06")])).billable).toEqual([]);
+    expect(why(told([made("2026-10-06")]), "c0")).toBe("Booked before they wrote back");
+    expect(why(told([made("2026-10-06")], { told: false }), "c0")).toBe("Booked before they wrote back");
+  });
+
+  it("a job made after her reply goes by its own day; one made after the BOOKED text, by the text's", () => {
+    expect(billableBookings(told([made("2026-10-12")])).billable).toMatchObject([{ customerId: "c0", on: "2026-10-12" }]);
+    expect(billableBookings(told([made("2026-10-25")])).billable).toMatchObject([{ customerId: "c0", on: "2026-10-20" }]);
+    // no record of it yet: the BOOKED text's day; an old job of theirs, done before the pass wrote, isn't this one
+    expect(billableBookings(told([])).billable).toMatchObject([{ customerId: "c0", on: "2026-10-20" }]);
+    const old = job("j-old", "c0", { status: "completed", createdOn: "2026-09-12", completedOn: "2026-09-19", total: 600 });
+    expect(billableBookings(told([old])).billable).toMatchObject([{ customerId: "c0", on: "2026-10-20" }]);
+  });
+});
+
+describe("a booking reported with no amount", () => {
+  it("BOOKED #code with no amount (or Jack's console entry with none) bills on the day it was said; its job in a later export is the same booking", () => {
+    const st = pass(2);
+    st.outreach = ["c0", "c1"].map((cid) => ({ customerId: cid, opportunityId: `o-${cid}`, firstTouchOn: START, lastTouchOn: START }));
+    const r = wrote(st, "c0", "2026-10-08");
+    markContacted(st, r.id, "2026-10-20T10:00:00", "booked");
+    expect(billableBookings(st).billable).toMatchObject([{ customerId: "c0", on: "2026-10-20", replyId: r.id, code: leadCode(r.id) }]);
+    settleCharges(st, "2026-10-20T10:01:00", STRIPE);
+    expect(charge(st, "c0")).toMatchObject({ status: "heads_up", bookedOn: "2026-10-20", code: leadCode(r.id) });
+    // the ledger's own figures don't change: it has no amount
+    expect(st.recoveries).toEqual([]);
+    // the export shows the job: one booking, one charge
+    st.dataset.jobs = [job("j-karen", "c0", { status: "scheduled", createdOn: "2026-10-19", completedOn: undefined, total: 2400 })];
+    ledgerPass(st, "2026-10-22T09:00:00");
+    expect(billableBookings(st).billable).toMatchObject([{ customerId: "c0", on: "2026-10-19" }]);
+    settleCharges(st, "2026-10-22T09:01:00", STRIPE);
+    expect(st.dataset.business.plan.charges).toHaveLength(1);
+    expect(charge(st, "c0").status).toBe("heads_up");
+    // taken back (NO #code): no charge
+    const r1 = wrote(st, "c1", "2026-10-08");
+    markContacted(st, r1.id, "2026-10-23T10:00:00", "booked");
+    settleCharges(st, "2026-10-23T10:01:00", STRIPE);
+    expect(charge(st, "c1")).toBeUndefined();
+    markPaidOutside(st, { customerId: "c0" }, "2026-10-23T11:00:00");
+    settleCharges(st, "2026-10-23T11:01:00", STRIPE);
+    expect(charge(st, "c1").status).toBe("heads_up");
+    markContacted(st, r1.id, "2026-10-24T10:00:00", "lost");
+    settleCharges(st, "2026-10-24T10:01:00", STRIPE);
+    expect(charge(st, "c1")).toMatchObject({ status: "skipped", reason: "Its booking is off the ledger" });
+  });
+
+  it("the rest of a lawn list still needs the amount: a season, or a job over $500", () => {
+    const st = pass(1, {}, { trade: "lawn" });
+    const r = wrote(st, "c0", "2026-10-08");
+    markContacted(st, r.id, "2026-10-20T10:00:00", "booked");
+    expect(why(st, "c0")).toBe("Not a season or a job over $500");
   });
 });

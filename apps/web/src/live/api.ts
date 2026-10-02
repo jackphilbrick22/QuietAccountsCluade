@@ -282,7 +282,7 @@ export type ReviewItem =
   /** A charge for Jack to decide: a refund (its job cancelled before the work, or paid after it was cancelled), the owner's NOT OURS after it was charged, or a second payment for it. */
   | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice"; why: string; status: string; refundBy: "stripe" | "hand" })
   /** By hand (no Stripe key): an approved charge for Jack to collect, then Done. */
-  | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null })
+  | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null; why?: string; relink?: boolean })
   /** A billable booking the fresh export at a one pass's end brought: Jack confirms it before any money text, or not. */
   | (ReviewBase & { kind: "booking_found"; customerId: string; name: string; code: string; on: string; value: number })
   /** The sending platform itself (businessId is ""). */
