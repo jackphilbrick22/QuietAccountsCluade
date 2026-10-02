@@ -57,9 +57,11 @@ export interface OwnerMessage {
   /**
    * "reply": our answer to a text the owner sent the operator's phone, to text back by hand (SMS_PROVIDER=manual).
    * "pass_end": a one pass's last text (the tally and the refill check), which waits for the operator.
+   * "export_ask": a one pass's ask for a fresh export once it's done, which waits for the operator too.
+   * "check_in": "Did it book?" about the leads still waiting on an answer, one text a day at most.
    * "charge_*": the money texts (CHARGE_TEXTS), each waiting for the operator.
    */
-  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply" | "pass_end" | ChargeText;
+  kind: "handoff" | "sla_nudge" | "weekly" | "close" | "precharge" | "free_month" | "info" | "kickoff" | "renewal" | "refund" | "reply" | "pass_end" | "export_ask" | "check_in" | ChargeText;
   text: string;
   refs?: { kind: string; id: string }[];
 }

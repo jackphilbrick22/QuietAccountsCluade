@@ -20,6 +20,8 @@ const MSG_KIND: Record<OwnerMessage["kind"], string> = {
   refund: "Yearly refund",
   reply: "Reply to your text",
   pass_end: "End of the pass",
+  export_ask: "A fresh export",
+  check_in: "Did it book?",
   charge_link: "A charge",
   charge_card: "A charge",
   charge_retry: "A charge that didn't go through",
@@ -54,11 +56,11 @@ export function Results() {
   const l = d.lift;
   const msgs = [...a.ownerMessages]
     .filter((m) =>
-      msgFilter === "all" ? true : msgFilter === "handoff" ? m.kind === "handoff" || m.kind === "sla_nudge" : msgFilter === "weekly" ? m.kind === "weekly" || m.kind === "close" : msgFilter === "billing" ? m.kind === "precharge" || m.kind === "free_month" || m.kind.startsWith("charge_") : m.kind === "info",
+      msgFilter === "all" ? true : msgFilter === "handoff" ? m.kind === "handoff" || m.kind === "sla_nudge" || m.kind === "check_in" : msgFilter === "weekly" ? m.kind === "weekly" || m.kind === "close" : msgFilter === "billing" ? m.kind === "precharge" || m.kind === "free_month" || m.kind.startsWith("charge_") : m.kind === "info",
     )
     .sort((x, y) => (x.at < y.at ? 1 : -1));
   const count = (f: MsgFilter) =>
-    a.ownerMessages.filter((m) => (f === "handoff" ? m.kind === "handoff" || m.kind === "sla_nudge" : f === "weekly" ? m.kind === "weekly" || m.kind === "close" : f === "billing" ? m.kind === "precharge" || m.kind === "free_month" || m.kind.startsWith("charge_") : f === "other" ? m.kind === "info" : true)).length;
+    a.ownerMessages.filter((m) => (f === "handoff" ? m.kind === "handoff" || m.kind === "sla_nudge" || m.kind === "check_in" : f === "weekly" ? m.kind === "weekly" || m.kind === "close" : f === "billing" ? m.kind === "precharge" || m.kind === "free_month" || m.kind.startsWith("charge_") : f === "other" ? m.kind === "info" : true)).length;
   const lags = ledger.map((x) => x.r.lagDays).filter((n): n is number => typeof n === "number");
   const avgLag = lags.length ? Math.round(lags.reduce((n, x) => n + x, 0) / lags.length) : undefined;
   const confTone = l.confidence === "solid" ? "ok" : l.confidence === "fair" ? "info" : "neutral";

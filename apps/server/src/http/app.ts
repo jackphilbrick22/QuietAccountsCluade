@@ -66,7 +66,7 @@ import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import { setupHealth } from "../core/health.ts";
-import { approveChargeText, decideChargeOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
+import { approveChargeText, decideChargeOp, decideFoundOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
 import { verifyStripeSignature, type StripeEvent } from "../providers/stripe.ts";
 import {
   answerInThread,
@@ -819,6 +819,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
     repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.decide", { charge: c.req.param("cid"), ...r });
     return c.json({ ok: true, ...r });
   });
+  // a booking the fresh export at a one pass's end brought (BRIEF B6): Jack confirms it before any money text, or not
+  op.post("/businesses/:id/found/:customerId", async (c) => {
+    const { confirm } = z.object({ confirm: z.boolean() }).parse(await c.req.json());
+    const r = await decideFoundOp(d, c.req.param("id"), c.req.param("customerId"), confirm);
+    if ("refused" in r) return c.json({ error: r.refused }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", confirm ? "found.confirm" : "found.reject", { customerId: c.req.param("customerId") });
+    return c.json({ ok: true });
+  });
   op.post("/businesses/:id/charges/:cid/link", async (c) => {
     if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
     const [made] = await sendLinkAgain(d, c.req.param("id"), c.req.param("cid"));
@@ -949,6 +957,14 @@ export function createApp(d: HttpDeps): Hono<Env> {
         if (ch.ask) items.push({ kind: "charge_ask", ...biz, at: ch.ask.at, ...charge, ask: ch.ask.kind, why: ch.ask.why, status: ch.status, refundBy: d.stripe && (ch.ask.paymentIntent ?? ch.stripe?.paymentIntent) ? "stripe" : "hand" });
         else if (!d.stripe && ch.status === "approved" && (ch.via === "link" || (ch.toldAt && (ch.chargeOn ?? "") <= nowLocal.slice(0, 10))))
           items.push({ kind: "charge_due", ...biz, at: ch.approvedAt ?? ch.at, ...charge, via: ch.via, last4: plan.card?.last4 ?? null });
+      }
+      // the bookings the fresh export at a one pass's end brought, each waiting for his word before any money text
+      // (while it's still billable within the cap, with no charge yet: one past the cap waits until a place frees)
+      const found = (plan.endExport?.found ?? []).filter((f) => f.confirmed === undefined && !plan.charges?.some((ch) => ch.customerId === f.customerId));
+      const billable = found.length ? billableBookings(s).billable : [];
+      for (const f of found) {
+        const x = billable.find((y) => y.customerId === f.customerId);
+        if (x) items.push({ kind: "booking_found", ...biz, at: f.at, customerId: f.customerId, name: people.get(f.customerId)?.name ?? "", code: x.code, on: x.on, value: x.value });
       }
       // the Guard's brake is holding every note until a person looks
       const health = sendHealth(s);

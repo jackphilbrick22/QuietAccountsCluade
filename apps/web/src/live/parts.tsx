@@ -338,6 +338,8 @@ export const MSG_KIND: Record<string, string> = {
   renewal: "Year renewal",
   refund: "Yearly refund (issue it, then send)",
   pass_end: "End of the pass",
+  export_ask: "Ask for a fresh export",
+  check_in: "Did it book?",
   charge_link: "A charge, by the link (a booking or a month)",
   charge_card: "A charge, on the saved card (a booking or the first month)",
   charge_retry: "A charge that didn't go through",

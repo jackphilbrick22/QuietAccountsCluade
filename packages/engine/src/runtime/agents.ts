@@ -9,7 +9,7 @@ import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
 import { attribute, bookedThrough, bookingNames, bookingSpan, HOLDOUT_DAYS, lift, noAmount, ownerReported, type LiftReport } from "../ledger/attribution.ts";
 import type { AgentEvent, AgentId, Customer, Dataset, Features, ISODate, ISODateTime, Opportunity, RecordKind, Recovery, Reply, Touch } from "../model.ts";
-import { ackFor, annualPrice, annualRefund, closeMessage, earlyLeaveRefund, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
+import { ackFor, annualPrice, annualRefund, checkInLine, closeMessage, earlyLeaveRefund, exportAskText, feesPaid, grossFees, guaranteeCheck, handoffText, kickoffText, leadCode, paidYearOn, passEndText, passTouches, renewalNotice, slaNudge, wantedWords, weeklyReport, yearFloor } from "../reports/owner.ts";
 import { isOnePass, ONE_PASS } from "../plans.ts";
 import { answerTime, promiseTonight, renderRequestAck } from "../copy/render.ts";
 import { detectTrade, growingSeason, playbook, SEASONAL_TRADES, sellingFrom, sellingSeason } from "../trades/index.ts";
@@ -18,7 +18,8 @@ import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, mak
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 import { settledCheck, supersededOn } from "./settled.ts";
-import { chargeMonth, type BillingOpts } from "./charges.ts";
+import { chargeMonth, exportBefore, exportRead, type BillingOpts } from "./charges.ts";
+import { passAnswered } from "../ledger/billable.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
 
@@ -986,14 +987,74 @@ export function chase(state: AccountState, now: ISODateTime, afterHours = 4): Ow
   return out;
 }
 
+/** "Did it book?" (BRIEF B6): the days after a hand-off its check-ins are due, while nobody knows whether it booked. */
+export const CHECK_IN_DAYS = [2, 14] as const;
+/**
+ * A check-in the owner couldn't get on its day (a weekend, paused, texts off) still goes within this many days of it,
+ * or of the last day a question a yes or no answers held it up, however long that was out (checkIn).
+ */
+const CHECK_IN_GRACE_DAYS = 7;
+
+/**
+ * "Did Karen Whitfield book?" (BRIEF B6): two days after each hand-off and again at 14, on a weekday, while nobody knows
+ * whether it booked: the owner hasn't said BOOKED or NO about it (DONE, QUOTED and NO ANSWER don't say), and nothing in
+ * the records shows it booked. Never about someone who said stop or the owner took off the list, and nothing at all to
+ * a cancelled or paused client or an owner who texted STOP. The day's check-ins go in one text, a line each with its
+ * code; each goes once (the count is kept on the reply, so a restart never sends one again). None while a question a
+ * bare yes or no answers is out to the owner (`yesNoOut`: the close, the renewal, a one pass's offer to keep going
+ * monthly), since his yes or no would answer that: one that came due meanwhile goes the first weekday it isn't.
+ */
+export function checkIn(state: AccountState, now: ISODateTime, opts: { paused?: boolean; yesNoOut?: boolean } = {}): OwnerMessage | undefined {
+  const b = state.dataset.business;
+  const today = now.slice(0, 10);
+  const id = makeId("om", "check_in", today);
+  if (opts.paused || b.plan.stage === "paused" || b.plan.stage === "cancelled" || b.ownerTextsOff || [0, 6].includes(weekday(today)) || state.ownerMessages.some((m) => m.id === id)) return undefined;
+  const saidStop = (e: string) => ["unsubscribed", "complained"].includes(state.suppressions[e.toLowerCase()] ?? "");
+  // a lead handed to the owner, waiting on his call or reached, quoted or not answering (a reply a person marked
+  // something else since is no lead)
+  const lead = (r: Reply): r is Reply & { handedOffAt: ISODateTime } => !!r.handedOffAt && (r.status === "handed_off" || !!r.ownerContactedAt);
+  const due: Reply[] = [];
+  for (const r of state.replies) {
+    if (!lead(r) || r.outcome === "booked" || r.outcome === "lost") continue;
+    // they wrote again after his call and were handed over anew: that lead's check-ins ask about them
+    if (r.customerId && state.replies.some((x) => x.customerId === r.customerId && lead(x) && x.handedOffAt > r.handedOffAt)) continue;
+    const c = customerById(state.dataset, r.customerId);
+    if (c?.doNotContact || [r.from, ...(c?.emails ?? [])].some(saidStop)) continue;
+    // their records show it booked (or the owner said NOT OURS, which takes it off them): the answer is in
+    const [from] = bookingSpan(r);
+    if (r.customerId && (state.recoveries.some((x) => x.customerId === r.customerId && x.cameBackOn >= from) || b.plan.charges?.some((x) => x.customerId === r.customerId))) continue;
+    // the latest whose day has come, unless it went already or its grace is up (one on a weekend goes on the Monday):
+    // the days a question a yes or no answers held it up don't count, so its week runs from the last of them
+    const handed = r.handedOffAt.slice(0, 10);
+    const k = CHECK_IN_DAYS.findLastIndex((n) => addDays(handed, n) <= today);
+    if (k < (r.checkIns ?? 0)) continue;
+    const on = addDays(handed, CHECK_IN_DAYS[k]!);
+    if (daysBetween(r.checkInHeldOn && r.checkInHeldOn > on ? r.checkInHeldOn : on, today) > CHECK_IN_GRACE_DAYS) continue;
+    if (opts.yesNoOut) r.checkInHeldOn = today;
+    else {
+      r.checkIns = k + 1;
+      due.push(r);
+    }
+  }
+  if (opts.yesNoOut || !due.length) return undefined;
+  const m: OwnerMessage = { id, at: now, kind: "check_in", text: due.map((r) => checkInLine(state, r)).join("\n"), refs: due.map((r) => ({ kind: "reply", id: r.id })) };
+  state.ownerMessages.push(m);
+  const names = due.map((r) => customerById(state.dataset, r.customerId)?.name || r.from);
+  event(state, now, "dispatcher", "action", `Asked you whether ${due.length === 1 ? names[0] : plural(due.length, "lead")} booked`, due.length === 1 ? undefined : names.join(", "));
+  return m;
+}
+
 /* ------------------------------------------------------------------ */
 /* Ledger + Reporter                                                   */
 /* ------------------------------------------------------------------ */
 
-/** Fold in a fresh export and find who came back. */
+/** Fold in a fresh export and find who came back (the one asked at a one pass's end: what it shows booked waits for Jack). */
 export function reconcile(state: AccountState, files: FileIn[], now: ISODateTime): { newRecoveries: number; lift: LiftReport } {
+  const before = exportBefore(state);
   readFiles(state, files, now);
-  return ledgerPass(state, now);
+  const out = ledgerPass(state, now);
+  exportRead(state, before, now);
+  return out;
 }
 
 /** Match new jobs/invoices/approvals in the current data to the people we contacted. Then re-scan. */
@@ -1191,7 +1252,8 @@ export function passEndIfDue(state: AccountState, now: ISODateTime): OwnerMessag
 
 /**
  * The one pass is done (its list ran out, or a person marked it done): nothing more goes out, and the end text (the
- * tally, then the refill check) waits for the operator. The text is written once.
+ * tally, then the refill check) waits for the operator, the ask for a fresh export with it or after it (exportAskIfDue).
+ * The text is written once.
  */
 export function endPass(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
   const plan = state.dataset.business.plan;
@@ -1211,7 +1273,29 @@ export function endPass(state: AccountState, now: ISODateTime): OwnerMessage | u
   const text = passEndText(state, today);
   event(state, now, "reporter", "action", "The pass is done — the last text waits for your OK", `${text.split("\n")[0]}${stopped ? ` ${plural(stopped, "queued note")} stopped.` : ""}`);
   // offering to keep it going monthly is a question the owner's yes or no answers (the owner texts)
-  return ownerMsg(state, now, "pass_end", text, state.scan && refillRate(state.scan, today).monthly ? [{ kind: "monthly_offer", id: today }] : undefined);
+  const m = ownerMsg(state, now, "pass_end", text, state.scan && refillRate(state.scan, today).monthly ? [{ kind: "monthly_offer", id: today }] : undefined);
+  exportAskIfDue(state, now);
+  return m;
+}
+
+/** How long the close or a one pass's offer to keep going monthly stays open: a bare yes or no then answers it. */
+export const QUESTION_OPEN_DAYS = 21;
+
+/**
+ * A done one pass asks its owner, once, for a fresh export when anyone gave its notes a real answer (BRIEF B6): its
+ * import is matched against everyone who wrote back, and what it shows booked waits for Jack (exportRead). With the end
+ * text, or, when that offers to keep going monthly, once the offer has closed (QUESTION_OPEN_DAYS): his "Sure" to the
+ * ask would read as a yes to it. It waits for Jack's OK, like the end text.
+ */
+export function exportAskIfDue(state: AccountState, now: ISODateTime): OwnerMessage | undefined {
+  const plan = state.dataset.business.plan;
+  const end = state.ownerMessages.find((m) => m.kind === "pass_end");
+  if (!isOnePass(plan) || plan.stage !== "done" || plan.endExport || !end) return undefined;
+  const offerOpen = !!end.refs?.some((r) => r.kind === "monthly_offer") && daysBetween(end.at.slice(0, 10), now.slice(0, 10)) <= QUESTION_OPEN_DAYS;
+  if (offerOpen || !passAnswered(state)) return undefined;
+  plan.endExport = { askedAt: now };
+  event(state, now, "reporter", "action", "The ask for a fresh export waits for your OK", "Its import is matched against everyone who wrote back: a booking it shows waits for you before any money text.");
+  return ownerMsg(state, now, "export_ask", exportAskText(state.dataset.business));
 }
 
 /**

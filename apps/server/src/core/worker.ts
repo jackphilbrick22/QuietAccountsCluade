@@ -1,8 +1,9 @@
-import { billingCheck, billsPass, chase, closeIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
+import { billingCheck, billsPass, chase, checkIn, closeIfDue, exportAskIfDue, find, isOnePass, isoWeekKey, passEndIfDue, renewalIfDue, reportWeek, type BusinessProfile } from "@qa/engine";
 import { checkWebhooks, pollReplies } from "./backstop.ts";
 import { backupIfDue } from "./backup.ts";
 import { billingOpts, runBilling } from "./billing.ts";
 import { localIso } from "./clock.ts";
+import { yesNoOut } from "./owner.ts";
 import { noInbox } from "./senders.ts";
 import { features } from "../config.ts";
 import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sendAck, sendDue, staleRecords, syncFsm, writeFsmNote, type AckTask, type Deps } from "./ops.ts";
@@ -10,10 +11,12 @@ import { deliverOwnerMessages, handleInbound, holdReason, holdSending, plan, sen
 /**
  * The heartbeat. Every minute, for every business, in its own local time:
  *  - Sender: send what's due (or hand the week's people to the sequencer)
- *  - Dispatcher: nudge the owner about hot leads nobody has called
+ *  - Dispatcher: nudge the owner about hot leads nobody has called; on weekdays, ask whether a lead booked two days
+ *    after its hand-off and again at 14, while nobody knows (one text a day at most to an owner, and none while a
+ *    question a yes or no answers is out to him)
  *  - Reporter: Friday afternoon report; the close after the free round; the pre-charge text (with its month's charge);
  *    with the yearly plan sold (FEATURE_YEARLY), the renewal ask and settling a year; a one pass's end once its list is
- *    done
+ *    done, and its ask for a fresh export
  *  - Ledger: a one pass's charges (its billable bookings, their money texts) and the months', saved cards charged on
  *    their day
  *  - Finder: nightly re-scan (ages, seasons and suppressions change daily)
@@ -178,15 +181,20 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
       // The daily checks run once a day from 9am local, marked done in the database: a restart or a slow tick
       // at 9:00 can't skip them for the day.
       const daily = hour >= 9 && d.accounts.repo.mark(bid, "daily") !== today;
-      await d.accounts.withAccount(bid, (state) => {
+      const asks = daily && !checkedInElsewhere(d, biz, today);
+      await d.accounts.withAccount(bid, (state, ctx) => {
         chase(state, local, d.cfg.SLA_FIRST_NUDGE_HOURS);
         if (daily) {
           const f = features(d.cfg);
           closeIfDue(state, local, f);
           billingCheck(state, local, billingOpts(d, bid));
           ended = !!passEndIfDue(state, local);
+          exportAskIfDue(state, local);
           // A yearly plan never renews by itself: ask a month out, pause at the end if nobody said yes.
           if (f.yearly && renewalIfDue(state, local)?.refs?.some((r) => r.kind === "year_end") && state.dataset.business.plan.stage === "paused") lapsed = true;
+          // after the close, the end text and the renewal ask: one written today holds today's "Did it book?" too, and
+          // one held goes once it's no longer out
+          if (asks) checkIn(state, local, { paused: ctx.paused, yesNoOut: yesNoOut(d, biz.profile.ownerPhone) });
         }
         // Friday from 4pm local: the week in plain English (once per ISO week)
         if (day === 5 && hour >= 16) {
@@ -233,6 +241,19 @@ async function businessTurn(d: Deps, biz: Biz, now: Date, report: TickReport): P
       const r = await syncFsm(d, bid, "jobber");
       if (r) report.synced += r.records;
     });
+}
+
+/**
+ * One owner, two businesses on one cell: a "Did it book?" text already went to him today about the other one. This
+ * one's wait for a day without one (each still goes within its grace).
+ */
+function checkedInElsewhere(d: Deps, biz: Biz, today: string): boolean {
+  const cell = (p?: string) => (p ?? "").replace(/\D/g, "").slice(-10);
+  const mine = cell(biz.profile.ownerPhone);
+  if (mine.length < 10) return false;
+  return d.accounts.repo
+    .listBusinesses()
+    .some((o) => o.id !== biz.id && cell(o.profile.ownerPhone) === mine && !!d.accounts.peek(o.id)?.state.ownerMessages.some((m) => m.kind === "check_in" && m.at.startsWith(today)));
 }
 
 /** Background tasks: deferred webhook work and retries. A task waits while its business's turn is still running. */

@@ -19,6 +19,7 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
   owner_message: { label: "Text waiting for you", tone: "accent" },
   charge_ask: { label: "Charge to decide", tone: "bad" },
   charge_due: { label: "Charge to collect", tone: "accent" },
+  booking_found: { label: "Booking to confirm", tone: "accent" },
   unclear: { label: "Unclear reply", tone: "warn" },
   draft: { label: "Answer drafted", tone: "info" },
   ready: { label: "Ready to start", tone: "info" },
@@ -29,7 +30,7 @@ const KIND: Record<Kind, { label: string; tone: "bad" | "warn" | "info" | "accen
   not_taken: { label: "Platform refused", tone: "warn" },
   platform: { label: "Sending platform", tone: "bad" },
 };
-const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "charge_ask", "owner_text", "owner_message", "charge_due", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
+const ORDER: Kind[] = ["platform", "unmatched_reply", "brake", "late_lead", "alert", "charge_ask", "owner_text", "owner_message", "booking_found", "charge_due", "unsure_send", "unclear", "draft", "ready", "flagged_note", "not_taken"];
 
 /** Which month a charge is for: "the first month", "the month from Nov 1". */
 function monthFor(m: { on: string; first: boolean }): string {
@@ -40,7 +41,7 @@ function monthFor(m: { on: string; first: boolean }): string {
 const RESTORE = ["undo_refund", "undo_platform", "undo_inbox"];
 
 const itemKey = (it: ReviewItem) =>
-  `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "chargeId" in it ? it.chargeId : "seq" in it ? it.seq : "id" in it ? it.id : ""}`;
+  `${it.kind}-${it.businessId}-${"replyId" in it ? it.replyId : "touchId" in it ? it.touchId : "messageId" in it ? it.messageId : "chargeId" in it ? it.chargeId : "seq" in it ? it.seq : "id" in it ? it.id : "customerId" in it ? it.customerId : ""}`;
 
 /** What we did with an owner's text, in the operator's words. */
 const HANDLED: Record<string, string> = {
@@ -58,6 +59,8 @@ const HANDLED: Record<string, string> = {
   pass_monthly: "wants to keep going after the one pass: the first month's text waits for your OK, and paid, they're on the monthly plan from that day",
   pass_year: "wants a year after the one pass: no first month's text was made. Set up the plan in Settings and text them how it works",
   pass_end_no: "answered the end of their one pass with a no (or it's about a lead: it was left alone)",
+  export_yes: "answered the ask for a fresh export with a yes (or it's about a lead: it was left alone)",
+  export_no: "answered the ask for a fresh export with a no: nothing is matched at the pass's end without it (or it's about a lead: it was left alone)",
   not_ours: "texted NOT OURS for a lead with no charge yet: its bookings are off the ledger, so it's never charged",
   not_ours_unknown: "texted NOT OURS with a code we can't find",
   not_ours_which: "texted NOT OURS with a code more than one of their businesses has",
@@ -408,6 +411,24 @@ function Item({ it }: { it: ReviewItem }) {
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/paid`, { chargeId: it.chargeId }), "Marked paid")}>
               Done: it's paid
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "booking_found" && (
+        <>
+          <div className="text-[14px]">
+            <b>{it.name || "A customer"}</b> (#{it.code}) booked {when(it.on)}
+            {it.value ? `, ${fmtMoney(it.value)}` : ""}: their fresh export shows it
+          </div>
+          <p className="text-[12.5px] text-ink-3">It's billable under the pass's rules, matched against everyone who wrote back. Confirm it and its charge's text comes to you as usual. If it isn't a booking from the pass, it never bills.</p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("confirm", () => api("POST", `/businesses/${encodeURIComponent(bid)}/found/${encodeURIComponent(it.customerId)}`, { confirm: true }), "Confirmed. Its charge's text waits for your OK")}>
+              Confirm it
+            </Btn>
+            <Btn disabled={!!busy} onClick={() => void run("reject", () => api("POST", `/businesses/${encodeURIComponent(bid)}/found/${encodeURIComponent(it.customerId)}`, { confirm: false }), "It won't bill")}>
+              Not from the pass
             </Btn>
           </div>
         </>

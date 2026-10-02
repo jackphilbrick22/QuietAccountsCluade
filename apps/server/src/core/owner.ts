@@ -1,4 +1,4 @@
-import { addDays, billableBookings, billsPass, cancelPlan, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { addDays, billableBookings, billsPass, cancelPlan, CHECK_IN_DAYS, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, QUESTION_OPEN_DAYS, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
 import { firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
@@ -327,8 +327,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const directEmail = d.email.kind === "direct";
   const yearly = d.cfg.FEATURE_YEARLY === "on";
   const planWord = (w: string) => (yearly ? PLAN_WORD : MONTHLY_WORD).test(w);
-  // a question we asked that a yes or a no answers: the close, the renewal, or the end of a one pass offering monthly
-  const asked = (b: Biz) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal") || outstanding(d, b.id, "pass_end");
+  // a question we asked that a yes or a no answers: the close, the renewal, the end of a one pass offering monthly, or
+  // its ask for a fresh export
+  const asked = (b: Biz) => outstanding(d, b.id, "close") || outstanding(d, b.id, "renewal") || outstanding(d, b.id, "pass_end") || outstanding(d, b.id, "export_ask");
   // A one-pass owner who wants to keep going (MONTHLY, or a yes to the end text's offer): nothing changes on a text
   // alone. Monthly, the first month's text waits for Jack's OK (on the card the pass saved, or its link), and paid, the
   // plan is monthly from that day; the year is Jack's to set up.
@@ -671,26 +672,28 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
   const plainBooking = lead?.outcome === "booked" && PLAIN_BOOKING.test(plainText) && plainAmount(plainText);
   if ((mentionsCompetitor(text) && (lead || hasCode)) || (lead?.outcome === "booked" && !plainBooking)) lead = await readLeadTextWithClaude(d.llm, text);
   // it says both ways ("Booked 2400, she won't sign up for the plan"): a person marks it, never a guess. The lead it's
-  // about stops getting "still waiting" nudges meanwhile: the owner just told us something happened.
+  // about stops getting "still waiting" nudges and "Did it book?" check-ins meanwhile: the owner just told us something
+  // happened. With its #code, that's the lead even when he answered it before (DONE, QUOTED).
   if (lead?.unclear) {
     const code = text.match(CODE)?.[1]?.toUpperCase();
     const pool = hasCode ? all : named ? [named] : all;
-    const hits = pool.flatMap((b) => (d.accounts.peek(b.id)?.state.replies ?? []).filter((r) => r.status === "handed_off" && !r.ownerContactedAt && (!code || leadCode(r.id) === code)).map((r) => ({ b, r })));
+    const hits = pool.flatMap((b) => (d.accounts.peek(b.id)?.state.replies ?? []).filter((r) => (code ? !!r.handedOffAt && leadCode(r.id) === code : r.status === "handed_off" && !r.ownerContactedAt)).map((r) => ({ b, r })));
     // only when the #code names it: without one, the only lead still waiting may not be the one the text is about
     if (hits.length === 1 && code) {
       const { b, r } = hits[0]!;
       await d.accounts.withAccount(b.id, (state) => {
         const live = state.replies.find((x) => x.id === r.id);
-        if (live) live.nudges = Math.max(live.nudges ?? 0, 2);
+        if (live) Object.assign(live, { nudges: Math.max(live.nudges ?? 0, 2), checkIns: CHECK_IN_DAYS.length });
       });
     }
     return { businessId: hits[0]?.b.id ?? fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
   }
-  // A bare "No" / "Not interested" with the close, the renewal or a one pass's offer out answers that, not a lead: it
-  // never marks one lost. A person reads it (it could still be about a lead, so the reply says how to name one).
+  // A bare "No" / "Not interested" with the close, the renewal, a one pass's offer or its ask for a fresh export out
+  // answers that, not a lead: it never marks one lost. A person reads it (it could still be about a lead, so the reply
+  // says how to name one).
   if (lead?.outcome === "lost" && !hasCode && BARE_NO.test(bare)) {
     const b = (one ? [one] : all).find(asked);
-    if (b) return { businessId: b.id, reply: `${tag(b)}Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.`, handled: outstanding(d, b.id, "close") ? "close_no" : outstanding(d, b.id, "renewal") ? "renewal_no" : "pass_end_no", needsPerson: true };
+    if (b) return { businessId: b.id, reply: `${tag(b)}Got it — Jack will read this and get back to you. About a lead? Text NO and the #code.`, handled: outstanding(d, b.id, "close") ? "close_no" : outstanding(d, b.id, "renewal") ? "renewal_no" : outstanding(d, b.id, "pass_end") ? "pass_end_no" : "export_no", needsPerson: true };
   }
   if (lead) {
     // a #code names the lead on its own; a business name mentioned in passing never overrides it
@@ -706,7 +709,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const closing = pool.filter((b) => outstanding(d, b.id, "close"));
     const renewing = pool.filter((b) => outstanding(d, b.id, "renewal"));
     const ending = pool.filter((b) => outstanding(d, b.id, "pass_end"));
-    if (closing.length + renewing.length + ending.length > 1) return askWhich();
+    const exporting = pool.filter((b) => outstanding(d, b.id, "export_ask"));
+    if (closing.length + renewing.length + ending.length + exporting.length > 1) return askWhich();
     if (ending[0]) return keepGoing(ending[0], "monthly");
     const b = closing[0] ?? renewing[0];
     // the free 150's yes: the first month's text, with the link that saves the card, waits for Jack's OK; paid, the
@@ -722,9 +726,12 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     // a paused owner's "Go ahead" may mean RESUME as much as the renewal: a person reads it too
     const goPaused = !!b?.paused && /^go\b/.test(bare);
     if (b) return { businessId: b.id, reply: `${tag(b)}Great — which one: RENEW for another year, or MONTHLY to go month to month?${goPaused ? " Your notes are still paused: text RESUME to restart them." : ""}`, handled: "ask_renewal", ...(goPaused ? { needsPerson: true } : {}) };
+    // a yes to the ask for a fresh export changes nothing (the file is the answer), and it may be about a lead: Jack reads it
+    if (exporting[0] && WHOLE_YES.test(bare)) return { businessId: exporting[0].id, reply: `${tag(exporting[0])}Got it — Jack will read this and get back to you. About a lead? Text BOOKED + amount + the #code.`, handled: "export_yes", needsPerson: true };
     // nothing open to answer: a yes and nothing more is just a yes; more after it ("Ok resume", "Ok, also skip the
-    // Hendersons") goes to a person below, never swallowed by "Got it"
-    if (WHOLE_YES.test(bare)) return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack" };
+    // Hendersons") goes to a person below, never swallowed by "Got it". After "Did Karen Whitfield book?" it may say she
+    // did, with no code or amount: a person reads it too.
+    if (WHOLE_YES.test(bare)) return { businessId: fallback().id, reply: "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO.", handled: "ack", ...(pool.some((b) => checkInOpen(d, b.id)) ? { needsPerson: true } : {}) };
   }
 
   // While the first note waits for their OK, anything else is a change they want made to it (one with a #code is
@@ -763,15 +770,32 @@ async function notOursCommand(d: Deps, pool: Biz[], code: string, tag: (b: Biz) 
 /** How long a lead the owner already told us about stays one a text without a #code could be about. */
 const REPORTED_DAYS = 14;
 
+/** When the owner was last asked "Did … book?" about this lead (BRIEF B6), if he was. */
+function checkedInAt(s: AccountState, r: Reply): string | undefined {
+  return r.checkIns ? s.ownerMessages.findLast((m) => m.kind === "check_in" && !!m.refs?.some((x) => x.kind === "reply" && x.id === r.id))?.at : undefined;
+}
+
+/** The owner was asked "Did … book?" lately about a lead he hasn't said BOOKED or NO to since. */
+function checkInOpen(d: Deps, bid: string): boolean {
+  const s = d.accounts.peek(bid)?.state;
+  if (!s) return false;
+  const today = nowLocal(d, s).slice(0, 10);
+  return s.replies.some((r) => {
+    const at = r.outcome !== "booked" && r.outcome !== "lost" && checkedInAt(s, r);
+    return !!at && daysBetween(at.slice(0, 10), today) <= REPORTED_DAYS;
+  });
+}
+
 async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outcome"]; amount: number }, pool: Biz[], multi: boolean, tags: Map<string, string>, named?: Biz): Promise<OwnerCommandResult> {
   const code = text.match(CODE)?.[1]?.toUpperCase();
   const { outcome, amount } = lead;
   const waiting = (r: Reply) => r.status === "handed_off" && !r.ownerContactedAt;
   // Without a code, a lead the owner told us about lately can still be what the text is about: the amount after "What's
-  // the job worth?", "She booked us for 2400" days after QUOTED, "No wait, it was 2400 not 240" after a booking. It
-  // counts next to the leads still waiting, so one that happens to be waiting never gets it by default.
-  const reported = (r: Reply, today: string) => {
-    const last = [r.ownerContactedAt, r.bookedAt].filter((x): x is string => !!x).sort().at(-1);
+  // the job worth?", "She booked us for 2400" days after QUOTED, "No wait, it was 2400 not 240" after a booking, "No"
+  // after "Did Karen Whitfield book?". It counts next to the leads still waiting, so one that happens to be waiting
+  // never gets it by default.
+  const reported = (s: AccountState, r: Reply, today: string) => {
+    const last = [r.ownerContactedAt, r.bookedAt, checkedInAt(s, r)].filter((x): x is string => !!x).sort().at(-1);
     if (r.status !== "done" || !last || r.outcome === "lost" || daysBetween(last.slice(0, 10), today) > REPORTED_DAYS) return false;
     if (outcome === "booked") return r.outcome !== "booked" || (amount > 0 && !r.outcomeValue);
     if (outcome === "quoted") return !r.outcome || r.outcome === "no_answer";
@@ -783,7 +807,7 @@ async function leadCommand(d: Deps, text: string, lead: { outcome?: Reply["outco
     if (!s) continue;
     const today = nowLocal(d, s).slice(0, 10);
     for (const r of s.replies)
-      if (code ? leadCode(r.id) === code : waiting(r) || reported(r, today)) hits.push({ biz: b, reply: r, waiting: waiting(r), name: s.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from });
+      if (code ? leadCode(r.id) === code : waiting(r) || reported(s, r, today)) hits.push({ biz: b, reply: r, waiting: waiting(r), name: s.dataset.customers.find((c) => c.id === r.customerId)?.name ?? r.from });
   }
   const live = hits.filter((h) => h.waiting);
   const newest = (xs: typeof hits) => xs.sort((a, b) => ((a.reply.handedOffAt ?? a.reply.receivedAt) < (b.reply.handedOffAt ?? b.reply.receivedAt) ? 1 : -1));
@@ -895,22 +919,40 @@ function hasWaitingLead(d: Deps, bid: string, fresh = false): boolean {
 }
 
 /**
- * A question for the owner, not yet answered: the close (the free round's results) or a one pass's end text offering
- * to keep going monthly, written in the last three weeks, or the renewal in the last 45 days. The one pass's asks only
- * once Jack let it go to the owner (it always waits for him).
+ * A question a bare yes or no answers is out to this cell, on any business it runs, or on its way (waiting for Jack's
+ * OK): the close, the renewal, or a one pass's offer to keep going monthly. "Did it book?" waits meanwhile (BRIEF B6):
+ * the owner's yes or no to it would be read as the answer to that. Not for the ask for a fresh export: a bare yes or no
+ * while that's out goes to Jack and acts on nothing.
  */
-function outstanding(d: Deps, bid: string, kind: "close" | "renewal" | "pass_end"): boolean {
+export function yesNoOut(d: Deps, phone: string | undefined): boolean {
+  const digits = digitsOf(phone);
+  return digits.length === 10 && d.accounts.repo.listBusinesses().some((b) => digitsOf(b.profile.ownerPhone) === digits && (["close", "renewal", "pass_end"] as const).some((k) => outstanding(d, b.id, k, true)));
+}
+
+/**
+ * A question for the owner, not yet answered: the close (the free round's results), a one pass's end text offering to
+ * keep going monthly or its ask for a fresh export (until an import since it is read), written in the last three weeks,
+ * or the renewal in the last 45 days. A one pass's two count only once Jack let them go to the owner (they always wait
+ * for him), or, `coming`, while they wait for him too.
+ */
+function outstanding(d: Deps, bid: string, kind: "close" | "renewal" | "pass_end" | "export_ask", coming = false): boolean {
   const s = d.accounts.peek(bid)?.state;
   if (!s) return false;
   const b = s.dataset.business;
   if (kind === "close" && b.plan.stage !== "trial") return false;
   if (kind === "renewal" && (b.plan.stage !== "paying" || b.plan.billing !== "annual")) return false;
   if (kind === "pass_end" && !(isOnePass(b.plan) && b.plan.stage === "done")) return false;
+  if (kind === "export_ask" && (!b.plan.endExport || b.plan.endExport.readAt)) return false;
   const today = nowLocal(d, s).slice(0, 10);
   // a renewal already answered (a year from its end is on the books) is never asked again; MONTHLY ends it above
   const answered = (m: (typeof s.ownerMessages)[number]) => kind === "renewal" && !!m.refs?.some((r) => r.kind === "year_end" && (b.plan.yearsPaidOn ?? []).some((y) => y >= r.id));
-  const offered = (m: (typeof s.ownerMessages)[number]) => kind !== "pass_end" || (!!m.refs?.some((r) => r.kind === "monthly_offer") && ["sent", "manual"].includes(d.accounts.repo.ownerMessageDelivery(bid, m.id)?.delivery ?? ""));
-  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "renewal" ? 45 : 21) && !answered(m) && offered(m));
+  const offered = (m: (typeof s.ownerMessages)[number]) => {
+    if (kind !== "pass_end" && kind !== "export_ask") return true;
+    // (one written this minute isn't in the delivery queue yet)
+    const delivery = d.accounts.repo.ownerMessageDelivery(bid, m.id)?.delivery ?? "";
+    return (kind === "export_ask" || !!m.refs?.some((r) => r.kind === "monthly_offer")) && (["sent", "manual"].includes(delivery) || (coming && !["skipped", "cancelled"].includes(delivery)));
+  };
+  return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "renewal" ? 45 : QUESTION_OPEN_DAYS) && !answered(m) && offered(m));
 }
 
 /** The client whose lead was texted to this owner most recently. */

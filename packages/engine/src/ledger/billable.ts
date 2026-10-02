@@ -1,4 +1,4 @@
-import type { ISODate, Job, Money, Recovery, Reply } from "../model.ts";
+import type { ISODate, Job, Money, Recovery, Reply, Touch } from "../model.ts";
 import type { AccountState } from "../runtime/state.ts";
 import { soldMonthly } from "../breakage/assumptions.ts";
 import { jobDate, rhythmOf } from "../breakage/visits.ts";
@@ -12,6 +12,7 @@ const NOT_A_REPLY = new Set<Reply["intent"]>(["stop", "not_interested", "wrong_p
 const OUT = new Set(["sent", "delivered", "bounced"]);
 /** The rest of a lawn list: a season, or one job over this. */
 const LAWN_JOB_OVER = 500;
+const day = (at: string) => at.slice(0, 10);
 
 export interface Billable {
   customerId: string;
@@ -60,22 +61,7 @@ export function billableBookings(state: AccountState): BillableCount {
   if (!billsPass(plan)) return out;
   const windowDays = plan.windowDays ?? ONE_PASS.windowDays;
   const cap = plan.capBookings ?? ONE_PASS.capBookings;
-  const day = (at: string) => at.slice(0, 10);
-
-  // the pass's own notes that went (marked so, or answered: a reply read before its note's sent event stops that note
-  // first), and the day each person was first written to
-  const answered = new Set(state.replies.map((r) => r.touchId));
-  const notes = passTouches(state).filter((t) => t.track !== "new_request" && (OUT.has(t.status) || answered.has(t.id)));
-  const ours = new Set(notes.map((t) => t.id));
-  const wroteOn = new Map<string, string>();
-  for (const t of notes) {
-    const at = t.sentAt ?? t.dueAt;
-    if (!wroteOn.has(t.customerId) || at < wroteOn.get(t.customerId)!) wroteOn.set(t.customerId, at);
-  }
-  const fromRequest = (r: Reply) => !!r.opportunityId?.startsWith("req:") || !!r.followUpOf?.startsWith("req:");
-  const toPass = (r: Reply) => !!r.customerId && !fromRequest(r) && (r.touchId ? ours.has(r.touchId) : wroteOn.has(r.customerId) && day(wroteOn.get(r.customerId)!) <= day(r.receivedAt));
-  const replies = new Map<string, Reply[]>();
-  for (const r of [...state.replies].sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : 1))) if (toPass(r)) (replies.get(r.customerId!) ?? replies.set(r.customerId!, []).get(r.customerId!)!).push(r);
+  const { notes, wroteOn, replies } = passReplies(state);
 
   // the free people: the first written to, by when their first note went
   const free = new Set<string>();
@@ -174,4 +160,30 @@ export function billableBookings(state: AccountState): BillableCount {
     } else out.overCap.push(x);
   }
   return out;
+}
+
+/**
+ * A one pass's own notes that went (marked so, or answered: a reply read before its note's sent event stops that note
+ * first), the day each person was first written to, and the replies to those notes by customer, oldest first (never an
+ * answer to a new request).
+ */
+function passReplies(state: AccountState): { notes: Touch[]; wroteOn: Map<string, string>; replies: Map<string, Reply[]> } {
+  const answered = new Set(state.replies.map((r) => r.touchId));
+  const notes = passTouches(state).filter((t) => t.track !== "new_request" && (OUT.has(t.status) || answered.has(t.id)));
+  const ours = new Set(notes.map((t) => t.id));
+  const wroteOn = new Map<string, string>();
+  for (const t of notes) {
+    const at = t.sentAt ?? t.dueAt;
+    if (!wroteOn.has(t.customerId) || at < wroteOn.get(t.customerId)!) wroteOn.set(t.customerId, at);
+  }
+  const fromRequest = (r: Reply) => !!r.opportunityId?.startsWith("req:") || !!r.followUpOf?.startsWith("req:");
+  const toPass = (r: Reply) => !!r.customerId && !fromRequest(r) && (r.touchId ? ours.has(r.touchId) : wroteOn.has(r.customerId) && day(wroteOn.get(r.customerId)!) <= day(r.receivedAt));
+  const replies = new Map<string, Reply[]>();
+  for (const r of [...state.replies].sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : 1))) if (toPass(r)) (replies.get(r.customerId!) ?? replies.set(r.customerId!, []).get(r.customerId!)!).push(r);
+  return { notes, wroteOn, replies };
+}
+
+/** Whether anyone gave the pass's notes a real answer (rule 1): nobody else can book a billable job. */
+export function passAnswered(state: AccountState): boolean {
+  return [...passReplies(state).replies.values()].some((rs) => rs.some((r) => !NOT_A_REPLY.has(r.intent)));
 }

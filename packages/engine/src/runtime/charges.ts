@@ -1,4 +1,4 @@
-import type { AgentEvent, Charge, ISODate, ISODateTime, MonthCharge, PlanState, SavedCard } from "../model.ts";
+import type { AgentEvent, Charge, FoundBooking, ISODate, ISODateTime, MonthCharge, PlanState, SavedCard } from "../model.ts";
 import type { AccountState, ChargeText, OwnerMessage } from "./state.ts";
 import { billableBookings } from "../ledger/billable.ts";
 import { counted } from "../ledger/attribution.ts";
@@ -86,9 +86,9 @@ export function textsOf(state: AccountState, c: Pick<Charge, "id">): OwnerMessag
 }
 
 /** Whose booking, or which month: "Karen Whitfield", "the first month", "the month from November 1". */
-function nameOf(state: AccountState, c: Charge | MonthCharge): string {
-  if (isMonth(c)) return c.first ? "the first month" : `the month from ${monthName(c.month)} ${Number(c.month.slice(8))}`;
-  return customerById(state.dataset, c.customerId)?.name ?? "A customer";
+function nameOf(state: AccountState, c: Pick<Charge, "customerId"> | MonthCharge): string {
+  if ("month" in c) return c.first ? "the first month" : `the month from ${monthName(c.month)} ${Number(c.month.slice(8))}`;
+  return customerById(state.dataset, c.customerId)?.name || "A customer";
 }
 
 /** "Karen Whitfield's $250", "the $497 for the first month" ("The", to start a sentence; `which`: "second "). */
@@ -97,8 +97,8 @@ function moneyOf(state: AccountState, c: Charge | MonthCharge, opts: { which?: s
   return isMonth(c) ? `${opts.start ? "The" : "the"} ${amount} for ${nameOf(state, c)}` : `${nameOf(state, c)}'s ${amount}`;
 }
 
-function log(state: AccountState, at: ISODateTime, kind: AgentEvent["kind"], title: string, detail: string | undefined, c: Charge | MonthCharge): void {
-  state.events.push({ id: makeId("ev", "ledger", at, title, state.events.length), at, agent: "ledger", kind, title, detail, ...(isMonth(c) ? {} : { refs: [{ kind: "customer", id: c.customerId }] }) });
+function log(state: AccountState, at: ISODateTime, kind: AgentEvent["kind"], title: string, detail: string | undefined, c: Pick<Charge, "customerId"> | MonthCharge): void {
+  state.events.push({ id: makeId("ev", "ledger", at, title, state.events.length), at, agent: "ledger", kind, title, detail, ...("month" in c ? {} : { refs: [{ kind: "customer", id: c.customerId }] }) });
 }
 
 function text(state: AccountState, at: ISODateTime, kind: ChargeText, c: Charge | MonthCharge | undefined, body: string, tag = ""): OwnerMessage {
@@ -158,7 +158,8 @@ export function settleCharges(state: AccountState, now: ISODateTime, opts: Billi
   const cap = plan.capBookings ?? ONE_PASS.capBookings;
   if ((plan.charges ?? []).filter((c) => c.status === "paid").length >= cap && !state.ownerMessages.some((m) => m.kind === "charge_cap")) text(state, now, "charge_cap", undefined, chargeCapText(plan));
   for (const x of count.billable) {
-    if (plan.charges?.some((c) => c.customerId === x.customerId)) continue;
+    // one the export asked at the pass's end brought waits for Jack's word first
+    if (plan.charges?.some((c) => c.customerId === x.customerId) || foundWaiting(plan, x.customerId)) continue;
     const card = cardOnFile(plan, opts.stripe);
     // no card yet: the next link waits until the one out is paid (it saves the card), so "your first" is true
     if (!card && plan.charges?.some((c) => holdsPlace(c) && c.status !== "paid" && c.via === "link")) break;
@@ -501,4 +502,67 @@ export function markPaidOutside(state: AccountState, who: { customerId: string }
 export function pasteCard(state: AccountState, card: Omit<SavedCard, "at" | "from">, now: ISODateTime): void {
   state.dataset.business.plan.card = { ...card, at: now, from: "pasted" };
   state.events.push({ id: makeId("ev", "ledger", now, "card", state.events.length), at: now, agent: "ledger", kind: "action", title: "Saved card set", detail: `${card.customer ?? "A Stripe customer"}${card.last4 ? `, card ending ${card.last4}` : ""}: later charges go on it.` });
+}
+
+/** Why a booking the end-of-pass export brought, and Jack didn't confirm, never bills. */
+const NOT_CONFIRMED = "Not confirmed from the export at the pass's end";
+
+/** A booking the export asked at the pass's end brought, still waiting for Jack's word (BRIEF B6). */
+export function foundWaiting(plan: PlanState, customerId: string): FoundBooking | undefined {
+  return plan.endExport?.found?.find((f) => f.customerId === customerId && f.confirmed === undefined);
+}
+
+/**
+ * Before an import, once the owner's been asked for a fresh export at the pass's end: who the pass bills already
+ * (billable, past the cap, charged, or found by an import since the ask), so exportRead can tell what the import
+ * brought. Nothing otherwise.
+ */
+export function exportBefore(state: AccountState): Set<string> | undefined {
+  const plan = state.dataset.business.plan;
+  if (!plan.endExport) return undefined;
+  const count = billableBookings(state);
+  return new Set([...count.billable, ...count.overCap, ...(plan.charges ?? []), ...(plan.endExport.found ?? [])].map((x) => x.customerId));
+}
+
+/**
+ * An import since the ask for a fresh export at the pass's end, matched against everyone who wrote back: the billable
+ * bookings it brought (`before`, from exportBefore: who was billed already) wait for Jack's word before any money text,
+ * those past the cap too, in case a refund frees a place. Every import since the ask, not just the first: the export
+ * can come as several files (Jobber's Quotes and Visits reports are two emails), in any order, and only a booking within
+ * the pass's window of a reply ever bills.
+ */
+export function exportRead(state: AccountState, before: Set<string> | undefined, now: ISODateTime): void {
+  const exp = state.dataset.business.plan.endExport;
+  if (!before || !exp) return;
+  const count = billableBookings(state);
+  const found = [...count.billable, ...count.overCap].filter((x) => !before.has(x.customerId)).map((x) => ({ customerId: x.customerId, bookingId: x.bookingId, on: x.on, code: x.code, at: now }));
+  // a later file with nothing new from the pass needn't say so again
+  if (!found.length && exp.readAt) return;
+  exp.readAt ??= now;
+  exp.found = [...(exp.found ?? []), ...found];
+  const names = found.map((f) => nameOf(state, f)).join(", ");
+  state.events.push({
+    id: makeId("ev", "ledger", now, "export", state.events.length),
+    at: now,
+    agent: "ledger",
+    kind: found.length ? "review" : "info",
+    title: found.length ? `The fresh export shows ${found.length === 1 ? "a booking" : `${found.length} bookings`} from the pass: confirm before any charge` : "The fresh export is in: nothing new booked from the pass",
+    detail: found.length ? `${names}. Each waits in Needs a person: confirmed, its text goes to you as usual; not, it never bills.` : "Matched against everyone who wrote back.",
+  });
+}
+
+/**
+ * Jack's word on a booking the end-of-pass export brought: confirmed, its charge comes the usual way (settleCharges);
+ * not, it never bills (its customer gets a cancelled charge for the pass, as NOT OURS gives one). Undefined when it isn't
+ * waiting for him.
+ */
+export function decideFound(state: AccountState, customerId: string, confirm: boolean, now: ISODateTime): FoundBooking | undefined {
+  const plan = state.dataset.business.plan;
+  const f = foundWaiting(plan, customerId);
+  if (!f) return undefined;
+  Object.assign(f, { confirmed: confirm, decidedAt: now });
+  if (confirm) log(state, now, "action", `Confirmed: ${nameOf(state, f)} booked from the pass`, "From the export at its end. Its charge's text comes to you as usual.", f);
+  // a charge made since (paid outside, NOT OURS) is the record already
+  else if (!plan.charges?.some((c) => c.customerId === customerId)) skip(state, newCharge(state, customerId, now, { bookingId: f.bookingId, bookedOn: f.on, code: f.code }), now, NOT_CONFIRMED);
+  return f;
 }

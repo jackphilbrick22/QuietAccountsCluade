@@ -423,6 +423,25 @@ export interface PlanState {
   months?: MonthCharge[];
   /** The card the owner saved (the first link's Checkout, a Stripe customer Jack pasted): later charges go on it. */
   card?: SavedCard;
+  /**
+   * One pass: the fresh export asked of the owner once it was done (BRIEF B6), when the first import after it was read,
+   * and the billable bookings the imports since brought (every one: the export can come as several files), each
+   * waiting for Jack's word before any money text.
+   */
+  endExport?: { askedAt: ISODateTime; readAt?: ISODateTime; found?: FoundBooking[] };
+}
+
+/** A billable booking the end-of-pass export brought: Jack confirms it (it's billed the usual way) or not (it never is). */
+export interface FoundBooking {
+  customerId: string;
+  /** The ledger's booking, the day it was made, and the code of the lead it's billed against. */
+  bookingId: string;
+  on: ISODate;
+  code: string;
+  /** When the import that brought it was read. */
+  at: ISODateTime;
+  confirmed?: boolean;
+  decidedAt?: ISODateTime;
 }
 
 /**
@@ -701,6 +720,16 @@ export interface Reply {
   /** SLA reminders the owner has had about this lead (kept on the reply so a restart never re-sends them). */
   nudges?: number;
   lastNudgeAt?: ISODateTime;
+  /**
+   * "Did it book?" check-ins the owner has had about this lead (CHECK_IN_DAYS), kept on the reply like `nudges`; all of
+   * them once his answer about it went to a person.
+   */
+  checkIns?: number;
+  /**
+   * The last day a check-in about this lead was due but held up while a question a bare yes or no answers was out to
+   * the owner (the close, the renewal, a one pass's offer to keep going monthly): its grace runs from then.
+   */
+  checkInHeldOn?: ISODate;
   /**
    * More words from someone already handed to the owner: it joins that lead instead of starting another. The lead's
    * reply id, or `req:<request id>` when they wrote back to our answer to their new request.

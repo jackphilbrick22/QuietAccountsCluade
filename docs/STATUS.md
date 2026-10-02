@@ -424,6 +424,52 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     - The fee totals (feesPaid) still count months from the first paid day and the free months, not from what was actually charged.
   - Engine 1,679, server 514, site 108.
 
+- **B6. "Did it book?" check-ins.**
+  - After each hand-off the owner gets "Did Karen Whitfield book? Reply BOOKED $amount #K7Q, or NO #K7Q." two days later and again at 14 days (engine `checkIn`, in the worker's daily checks from 9am local).
+    - Weekdays only: one due on a weekend goes on the Monday.
+    - It keeps asking until we know whether the lead booked. DONE, QUOTED and NO ANSWER don't say, so the check-ins go on after them. It stops on BOOKED or NO, on a text with the lead's code that went to Jack as one that could go either way, on a booking in the records for them from a month before they wrote back, or on a charge for them.
+    - Someone who writes again after the owner's call and is handed over anew is asked about on the new lead's days, not both.
+    - Never about someone who said stop (unsubscribed or complained), someone the owner took off the list (SKIP), or a lead marked lost.
+    - A customer with no name on file is named by the address they wrote from.
+  - One text a day at most: the day's check-ins go in one, a line and a code each.
+    - An owner with two businesses on one cell gets one a day: the second's go the next weekday.
+  - None while a question a bare yes or no answers is out to that owner's phone, on any of his businesses: the close, the renewal, or a one pass's offer to keep going monthly, even while that waits for Jack's OK. Otherwise his yes or no would be read as the answer to it.
+    - One that comes due meanwhile is delayed, not dropped: its week runs from the last day the question held it, so it goes on the first weekday the question is no longer out, as long as nobody knows yet whether the lead booked. That holds however long the question was out, for example a close left at trial for three weeks after the owner's Yes while he takes his time paying.
+    - If both of a lead's days passed during the hold, he is asked once.
+    - The ask for a fresh export doesn't hold them: a bare yes or no while it's out acts on nothing and goes to Jack (below).
+  - Answers without a code: a lead he was asked about counts as one he told us about lately (14 days). After DONE, a bare NO gets "Is that about Karen Whitfield? To mark that lead not a fit, text NO #K7Q. Jack will read this too." A bare yes after a check-in gets the usual "Got it. About a lead? Text BOOKED + amount + the #code, DONE, or NO." and goes to Jack too.
+  - Nothing to a cancelled or paused client (PAUSE, or Paused in Settings), or an owner who texted STOP.
+    - One still on Texts to send when he texts STOP is dropped, never emailed or passed to Jack.
+    - One held up by a pause goes within a week of its day (or of the last day a question held it), or not at all.
+  - It's an ordinary owner text: on Texts to send by hand, to the owner with Twilio.
+    - Each goes once: the count is kept on the lead and each day's text has one id, so neither a second worker run nor a restart sends it again. The day a question last held it is kept on the lead too, so a restart keeps the hold.
+  - The end of a one pass: once it's done (by the worker or in Settings), and if anyone gave its notes a real answer, the owner is asked once for a fresh export ("Dave, one last thing: can you send me a fresh export of your jobs and quotes, the way you sent the first one? I'll check it against everyone who wrote back."). It always waits for Jack's OK, like the end text.
+    - It goes with the end text. When the end text offers to keep going monthly, it goes once that offer has closed (three weeks after the end text was written), so his "Sure" to the ask is never read as a yes to monthly. If someone writes back with a real answer after the pass is done, it's asked then.
+    - Once Jack has let it go (sent, or on Texts to send), it's a question a bare yes or no answers, for three weeks from when it was written or until an import after it is read. A bare "No" gets "Got it — Jack will read this and get back to you. About a lead? Text NO and the #code." and a bare yes gets "Got it — Jack will read this and get back to you. About a lead? Text BOOKED + amount + the #code." Both go to Jack (Needs a person: "answered the ask for a fresh export with a no / a yes"), and neither marks a lead, however many are waiting. A yes while the close, the renewal or the monthly offer is out on his other business asks which business he means.
+  - Every file import after the ask (the console, the owner's import address) is matched against everyone who wrote back, by B4's rules. The export can come as several files in any order (Jobber's Quotes and Visits reports are two emails).
+    - The billable bookings each import brought wait in Needs a person as "Booking to confirm", with "Confirm it" and "Not from the pass". No money text goes for them until Jack answers.
+    - Confirmed: B4's path (its text for his OK, then the link or the card).
+    - Not from the pass: its customer gets a cancelled charge for the pass, so it never bills, whatever a later export or a BOOKED text brings.
+    - One past the cap waits too. It isn't listed while the cap is full, and shows once a refund frees a place. One leaves the list once its customer has a charge (paid outside, or NOT OURS).
+    - A booking already past the cap from a BOOKED text before the import isn't the import's: once a place frees, it takes B4's path without waiting for Jack.
+    - Jack hears about each file that brought a booking, and once if the first brought none.
+    - Bookings found any other way keep B4's path: BOOKED texts, console entries, a Jobber sync.
+  - Console: "Booking to confirm" in Needs a person; texts labelled "Did it book?" and "Ask for a fresh export"; the owner view lists check-ins with hand-offs.
+  - Brief notes:
+    - The "queue item (in manual mode)" is the Texts to send list, as for every owner text.
+    - The export isn't asked for when nobody gave the pass's notes a real answer: nothing could bill, and the end text has just said "0 wrote back".
+    - A Jobber sync isn't an export, so it keeps B4's path.
+    - No new owner-text commands. Three routing changes: a lead he was asked about counts as one he told us about lately; a bare yes after a check-in goes to Jack too; and a bare yes or no while the export ask is out goes to Jack, never to a lead.
+  - Left:
+    - A Jobber-connected pass is asked for an export too, and its hourly sync isn't held.
+    - Check-ins don't skip holidays.
+    - A free-text reply with the code that we can't read ("#K7Q she's away till November") goes to Jack but doesn't stop the day-14 check-in.
+    - Jack can't withdraw the export ask, only approve it.
+    - When the end text offers monthly, the ask waits the full three weeks even if the owner answered the offer sooner, or Jack never sent the end text. The same goes for a check-in held by that offer or by a close left at trial after the owner's Yes: it waits for the question's three weeks, or for Jack to change the stage.
+    - While the export ask is out, a bare NO meant for a check-in goes to Jack instead of marking the lead: the owner needs NO and the #code, as the check-in text asks. A sent ask with no file stays open for its full three weeks, even after the owner says no.
+  - Merge notes: built beside B5. The check-ins and the export ask sit with B5's first month and pre-charge texts (both still wait for Jack); a check-in is held while the close, the renewal or a one pass's monthly offer is out.
+  - Engine 1,701, server 549, site 108.
+
 **Live steps for Jack**
 - (B5) In Stripe test mode, with the B4 key and webhook set up:
   1. Text "Yes" from a test owner's phone to a client whose free 150 is closed, and approve the first month's text. Pay its /pay link with 4242 4242 4242 4242. The client should say Paying from today, with the card ending 4242 on file.

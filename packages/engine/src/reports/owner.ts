@@ -380,6 +380,17 @@ export function slaNudge(state: AccountState, r: Reply, hours: number): string {
   return `${state.dataset.business.ownerFirstName}, ${c?.name ?? r.from} is still waiting — they asked ${Math.round(hours)} hours ago. Leads called the same day book far more often. Reply DONE once you've reached them.`;
 }
 
+/** "Did it book?" about one lead (BRIEF B6): a line of its own, with the lead's code, in the day's check-in text. */
+export function checkInLine(state: AccountState, r: Reply): string {
+  const code = leadCode(r.id);
+  return `Did ${customerById(state.dataset, r.customerId)?.name || r.from} book? Reply BOOKED $amount #${code}, or NO #${code}.`;
+}
+
+/** A one pass is done: its owner is asked for fresh records, matched against everyone who wrote back (BRIEF B6). */
+export function exportAskText(b: BusinessProfile): string {
+  return `${b.ownerFirstName}, one last thing: can you send me a fresh export of your jobs and quotes, the way you sent the first one? I'll check it against everyone who wrote back.`;
+}
+
 export interface WeekNumbers {
   week: string;
   sent: number;

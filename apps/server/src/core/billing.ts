@@ -11,6 +11,7 @@ import {
   chargeTold,
   customerById,
   decideCharge,
+  decideFound,
   fmtMoney,
   isMonth,
   linkAgain,
@@ -345,6 +346,22 @@ export async function decideChargeOp(d: Deps, bid: string, id: string, refund: b
   });
   await deliverOwnerMessages(d, bid);
   return { done: "refunded", by: viaStripe ? "stripe" : "hand" };
+}
+
+/**
+ * Jack's word on a booking the export asked at a one pass's end brought (BRIEF B6): confirmed, its money text comes to
+ * him now, the usual way; not, it never bills. Refused when it isn't waiting for him.
+ */
+export async function decideFoundOp(d: Deps, bid: string, customerId: string, confirm: boolean): Promise<{ ok: true } | { refused: string }> {
+  if (!d.accounts.repo.exists(bid)) throw new NotFound("No such business");
+  let found = false;
+  await d.accounts.withAccount(bid, (state) => {
+    found = !!decideFound(state, customerId, confirm, nowOf(d, state));
+  });
+  if (!found) return { refused: "That booking isn't waiting for you." };
+  await settleBilling(d, bid);
+  await deliverOwnerMessages(d, bid);
+  return { ok: true };
 }
 
 /**

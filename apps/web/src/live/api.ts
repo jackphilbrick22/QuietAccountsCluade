@@ -283,6 +283,8 @@ export type ReviewItem =
   | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice"; why: string; status: string; refundBy: "stripe" | "hand" })
   /** By hand (no Stripe key): an approved charge for Jack to collect, then Done. */
   | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null })
+  /** A billable booking the fresh export at a one pass's end brought: Jack confirms it before any money text, or not. */
+  | (ReviewBase & { kind: "booking_found"; customerId: string; name: string; code: string; on: string; value: number })
   /** The sending platform itself (businessId is ""). */
   | (ReviewBase & { kind: "platform"; title: string; detail: string });
 

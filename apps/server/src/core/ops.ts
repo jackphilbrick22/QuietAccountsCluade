@@ -33,6 +33,8 @@ import {
   daysBetween,
   detect,
   dueTouches,
+  exportBefore,
+  exportRead,
   find,
   growingSeason,
   importTable,
@@ -242,6 +244,8 @@ export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promis
   );
   await d.accounts.withAccount(bid, (state) => {
     const at = nowLocal(d, state);
+    // the fresh export asked at a one pass's end: what it shows booked waits for Jack (BRIEF B6)
+    const before = exportBefore(state);
     for (const p of prepared) {
       const { dataset, record } = importTable(state.dataset, p.table, p.detection, { fileName: p.f.name, importedAt: at });
       state.dataset = dataset;
@@ -259,6 +263,7 @@ export async function importFiles(d: Deps, bid: string, files: FileIn[]): Promis
     state.dataset.asOf = at.slice(0, 10);
     adoptTrade(state, at);
     ledgerPass(state, at, features(d.cfg));
+    exportRead(state, before, at);
   });
   d.accounts.repo.markScanned(bid, d.clock().toISOString());
   return out;
@@ -1410,13 +1415,13 @@ async function stopEverywhere(d: Deps, bid: string, email: string, reason: "repl
 
 /** Money texts: a one pass's bookings' (BRIEF B4) and the monthly plan's first month and declined months (B5). */
 const MONEY_TEXTS = new Set<string>(CHARGE_TEXTS);
-const BILLING_KINDS = new Set<string>(["close", "precharge", "free_month", "refund", "pass_end", ...MONEY_TEXTS]);
+const BILLING_KINDS = new Set<string>(["close", "precharge", "free_month", "refund", "pass_end", "export_ask", ...MONEY_TEXTS]);
 /**
- * Billing texts a person always sends: a refund to issue first, a one pass's last text (BRIEF B3: Jack approves it),
- * the money texts (his OK sets the charge's day, or sends its link), and the pre-charge text (B5: his OK lets its month
- * be charged).
+ * Billing texts a person always sends: a refund to issue first, a one pass's last text (BRIEF B3: Jack approves it) and
+ * its ask for a fresh export (B6: like the last text), the money texts (his OK sets the charge's day, or sends its
+ * link), and the pre-charge text (B5: his OK lets its month be charged).
  */
-const ALWAYS_REVIEWED = new Set<string>(["refund", "pass_end", "precharge", ...MONEY_TEXTS]);
+const ALWAYS_REVIEWED = new Set<string>(["refund", "pass_end", "export_ask", "precharge", ...MONEY_TEXTS]);
 
 /** Why a text to a cancelled client didn't go: they get nothing more, except a refund we owe them and the money texts. */
 const CANCELLED_OWNER = "Cancelled: nothing more goes to the owner.";
@@ -1454,6 +1459,12 @@ export async function deliverOwnerMessages(d: Deps, bid?: string, opts: { approv
       continue;
     }
     let why = !b.ownerPhone ? "No cell on file" : b.ownerTextsOff ? (b.ownerTextsOff.by === "owner" ? "The owner texted STOP" : "Their carrier says they opted out of texts") : "";
+    // "Did it book?" never goes to an owner who texted STOP (BRIEF B6): one still waiting when they did isn't emailed or
+    // passed to Jack
+    if (m.kind === "check_in" && b.ownerTextsOff) {
+      done("skipped", { error: `${why}: no check-ins.` });
+      continue;
+    }
     if (!why) {
       try {
         const res = await d.notifier.notify({ phone: b.ownerPhone, email: b.ownerEmail }, m.text);
