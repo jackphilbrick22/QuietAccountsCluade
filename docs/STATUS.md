@@ -244,8 +244,8 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     states use the north's selling months; in March, last fall's clean-up customers get a clean-up due-again note
     (the playbook treats spring and fall clean-up as one service).
   - Merge notes: A2's tests that plan in August now plan from September 1; the January-window tests pin Tue-Thu sends.
-    With A6's Monday-to-Friday sends, a lawn shop's January round can start on January 1. Nothing in the engine skips
-    holidays (New Year's, Memorial Day, July 4, Labor Day, Thanksgiving); worth a rule if Jack wants one.
+    With A6's Monday-to-Friday sends, a lawn shop's January round could start on January 1 (fixed by the holiday
+    rule below, Jack's Oct 1 yes).
   - Engine 1,534, server 405, site 108.
 
 - **B3. One-pass mode.**
@@ -375,7 +375,7 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
     - A link the owner leaves unpaid isn't flagged by itself: it shows as "Link sent", and the bookings after it wait for it.
     - charge.refunded and card disputes (chargebacks) aren't handled: refunds are marked when Stripe's refund call answers, and chargebacks are Jack's.
     - The cap text isn't sent again if a refund frees a place and the cap fills again.
-    - "One business day" doesn't skip holidays.
+    - "One business day" didn't skip holidays (it does now: see Holidays below).
     - HELP doesn't list NOT OURS (no owner-text wording changes beyond the brief).
     - A late reply to a pass's note after it went monthly also counts as "asked to come back" that month. So one booking can bill $250 and also make that month paid. That's Jack's call.
     - A cancelled pass taken straight to monthly loses its cancel day, as any plan back from cancelled does, so its bookings after the cancel bill again.
@@ -470,7 +470,47 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - Merge notes: built beside B5. The check-ins and the export ask sit with B5's first month and pre-charge texts (both still wait for Jack); a check-in is held while the close, the renewal or a one pass's monthly offer is out.
   - Engine 1,701, server 549, site 108.
 
+- **Holidays. No notes on US holidays.** This is your Oct 1 answer to B2's merge note.
+  - **The holidays.** The engine works them out for each year (`holidayOn`), with no table to maintain:
+    - New Year's Day, Memorial Day (the last Monday of May), July 4, Labor Day (the first Monday of September), Thanksgiving (the fourth Thursday of November) and the Friday after, Christmas Eve and Christmas Day.
+    - When New Year's, July 4 or Christmas falls on a Saturday, the Friday before is held too; on a Sunday, the Monday after.
+    - Days are the client's own local days.
+  - **Planning skips them.** These all move with it:
+    - monthly rounds and their follow-ups;
+    - a one pass's pace. Across Thanksgiving week it sends nothing Thursday or Friday and still meets its date, or names the date it can meet;
+    - the free round's dates and the welcome text's days;
+    - a late OK;
+    - BUSY's day. The BUSY reply now names the real first send day, never a weekend or a holiday.
+    - A lawn shop's January round in 2027 starts Monday January 4, not New Year's Day.
+  - **Sent from the server.** A note planned for a holiday before this change waits for the next send day ("A holiday: Thanksgiving"). An answer to a new request waits too (that feature is off). Owner texts still go.
+  - **Instantly.** Its campaign schedule only takes days of the week plus a start and end date. It can't leave out a date (https://developer.instantly.ai/api-reference/campaign/create-campaign), so the worker does it instead:
+    - On the client's local holiday it reads the state of each of that client's own campaigns in Instantly and pauses only the ones sending (Active or Running Subsequences). It hands the client nothing new that day. The next day it turns back on only the ones it paused. Each tick re-checks.
+    - A campaign Instantly stopped itself (Bounce Protect, Accounts Unhealthy) or you paused by hand is left as it was, before and after the holiday.
+    - If Instantly won't give a campaign's state that day, the campaign is paused with the others and turned back on with them.
+    - A restart that hadn't gone through when the holiday came (the worker is still retrying it) is turned back on after the holiday with the others.
+    - It never touches your cold campaigns.
+    - It never turns a campaign back on while the owner's PAUSE, the bounce brake or any other hold is on. A RESUME or a cleared brake on a holiday waits until the next day.
+    - A client with no campaign yet gets none made that day.
+    - When the server works out the day the platform will really send a lawn follow-up, it skips holidays too. A note 2 whose day lands on Thanksgiving is judged by the next send day after it. If that's past the season, the note is cancelled ("Out of season") and not handed over.
+  - **Billing.** A business day is never a holiday: a card booking texted the Wednesday before Thanksgiving is charged Monday. A month whose date is a holiday is charged the next business day, and its pre-charge text names that day ("...on Monday, November 30"). This closes B4's "One business day doesn't skip holidays".
+  - **Wording.** Settings (console and owner) and the owner's schedule say "Never on a US holiday: ...". The schedule marks each holiday.
+  - **Merge notes.**
+    - B2's tests that started the January round on January 1, 2027 now start it Monday January 4.
+    - A senders test that resumed on the day after Thanksgiving now resumes on the Monday after.
+    - The sending platform has one new call, `campaignRunning`.
+  - **Left:**
+    - Clients in Canadian time zones get the US holidays; there are no other countries.
+    - With Instantly, an answer to a new request held over a holiday is dropped (and the owner told) the day after, not that day. That feature is off.
+    - The site pages' "The first notes go out the next weekday morning" isn't true the day before a holiday. That's for the site work.
+    - Not checked against live Instantly.
+  - Merge notes: B6's check-ins are owner texts, so they still go on a holiday (on weekdays).
+  - Engine 1,715, server 562, site 108.
+
 **Live steps for Jack**
+- (Holidays) On Thanksgiving, open one Instantly client's page. Its campaigns that were Active should say Paused in Instantly, and its activity should say "Sending platform paused for this client: Because of Thanksgiving, a holiday".
+- By Saturday those should be Active again, and the follow-ups due over the holiday should go out Monday.
+- If one of that client's campaigns was already paused before the holiday (by you, or by Instantly's bounce protection), it should still be in that state on Saturday.
+- Reading a campaign's state, and pausing and resuming through Instantly's API over a holiday, have never run against live Instantly.
 - (B5) In Stripe test mode, with the B4 key and webhook set up:
   1. Text "Yes" from a test owner's phone to a client whose free 150 is closed, and approve the first month's text. Pay its /pay link with 4242 4242 4242 4242. The client should say Paying from today, with the card ending 4242 on file.
   2. Make a test reply to a monthly note in that month. On the day two days before the charge date, approve the pre-charge text and send it. Nothing should be charged the day before; on the charge date the month should say Paid.

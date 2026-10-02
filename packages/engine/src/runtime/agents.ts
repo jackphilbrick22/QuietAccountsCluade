@@ -4,6 +4,7 @@ import { quietRateOf } from "../breakage/quiet.ts";
 import { refillRate } from "../breakage/refill.ts";
 import { BREAKAGE_LABEL } from "../breakage/assumptions.ts";
 import { allowedDay, bookedOutStart, goesOutOn, HOLD_WHEN_BOOKED, nextAllowed, planOutreach, type Plan } from "../cadence/plan.ts";
+import { holidayOn } from "../cadence/holidays.ts";
 import { INBOX_DAILY, NOTES_SPAN_DAYS, paceOnePass, type Pace } from "../cadence/pace.ts";
 import { readReply, type RequestEmail } from "../inbox/index.ts";
 import { ingestFile } from "../ingest/index.ts";
@@ -499,6 +500,9 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
   const replied = repliedCheck(state);
   const health = sendHealth(state);
   const settled = settledCheck(state);
+  // nothing goes out on a holiday: a note planned for one before they were held goes the next send day, and an answer
+  // to a request waits too (dropped if that's too late, as when paused)
+  const holiday = holidayOn(day);
   // each sequence's note 1 (a sent one wins if an opportunity was ever planned twice)
   const firsts = new Map<string, Touch>();
   for (const t of state.touches) if (t.step === 1 && (!firsts.has(t.opportunityId) || t.status === "sent" || t.status === "delivered")) firsts.set(t.opportunityId, t);
@@ -570,11 +574,19 @@ export function dueTouches(state: AccountState, now: ISODateTime): { due: DueTou
         held.push({ touch: t, why: health.reason ?? "Paused" });
         continue;
       }
+      if (holiday) {
+        held.push({ touch: t, why: `A holiday: ${holiday}` });
+        continue;
+      }
       due.push({ touch: t, to, customerName: c.name });
       continue;
     }
     if (!b.sendDays.includes(weekday(day))) {
       held.push({ touch: t, why: "Not a send day" });
+      continue;
+    }
+    if (holiday) {
+      held.push({ touch: t, why: `A holiday: ${holiday}` });
       continue;
     }
     const hour = Number(now.slice(11, 13));

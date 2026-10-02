@@ -359,8 +359,11 @@ export interface BusinessProfile {
   createdOn: ISODate;
   /** The Guard's counts when a person last cleared its send brake; the brake reads only what came after. */
   healthBaseline?: { at: ISODateTime; sent: number; bounces: number; complaints: number; confused: number; by: string };
-  /** The sending platform's campaigns are paused by us (pause, cancel, the brake) until the hold lifts. */
-  platformPaused?: { at: ISODateTime; why: string };
+  /**
+   * The sending platform's campaigns are paused by us (pause, cancel, the brake, a holiday) until the hold lifts.
+   * `campaigns`, for a holiday: the ones it paused, which were sending; only those go back on after it.
+   */
+  platformPaused?: { at: ISODateTime; why: string; campaigns?: string[] };
 }
 
 export interface PlanState {

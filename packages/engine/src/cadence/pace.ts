@@ -29,7 +29,7 @@ export interface PaceInput {
   inboxes: number;
   /** Notes already on the calendar, by day: they keep their room. */
   busy?: Map<ISODate, number>;
-  /** Whether notes may go out on a day (the send days, less blackout weeks). */
+  /** Whether notes may go out on a day (the send days, less blackout weeks and holidays). */
   sendsOn: (d: ISODate) => boolean;
 }
 

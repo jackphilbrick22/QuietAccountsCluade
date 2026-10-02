@@ -3,7 +3,7 @@ import { firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
-import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, paceAlert, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
+import { approve, deliverOwnerMessages, finishCancelWithdrawals, fsmNote, holdSending, nextSendDay, paceAlert, raiseAlert, parseBusyUntil, queueFsmNote, setBusinessPaused, setOwnerTexts, withdrawMoved, type Deps, type FsmNote } from "./ops.ts";
 
 /**
  * The owner never opens the dashboard: they answer our texts.
@@ -602,7 +602,8 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
       const until = parseBusyUntil(t, today);
       const r = setBookedOut(state, until, nowLocal(d, state));
       pulled = r.withdrawn;
-      reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(addDays(until, -21))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
+      // three weeks before, on the first send day from then (never a weekend or a holiday)
+      reply = `Got it — new work waits until you have room. We'll start writing to those folks around ${fmtDay(nextSendDay(state, addDays(until, -22)))} so replies land when you can take them.${r.moved ? ` Moved ${r.moved} ${r.moved === 1 ? "person" : "people"} already queued.` : ""} Text OPEN when things free up.`;
     });
     await withdrawMoved(d, one.id, pulled);
     // a one pass is paced again: Jack's alert says whether it still meets its end date

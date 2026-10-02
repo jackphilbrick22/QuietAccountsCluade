@@ -37,6 +37,7 @@ import {
   exportRead,
   find,
   growingSeason,
+  holidayOn,
   importTable,
   isOnePass,
   kickoff,
@@ -421,11 +422,12 @@ function startedPeople(state: AccountState): number {
   return new Set(state.touches.filter((t) => t.step === 1 && t.status !== "cancelled").map((t) => t.customerId)).size;
 }
 
+/** The first send day after `from` that isn't a holiday. */
 export function nextSendDay(state: AccountState, from: string): string {
   const days = state.dataset.business.sendDays;
   for (let i = 1; i <= 14; i++) {
-    const d = new Date(Date.parse(`${from}T12:00:00Z`) + i * 86400000);
-    if (days.includes(d.getUTCDay())) return d.toISOString().slice(0, 10);
+    const d = addDays(from, i);
+    if (days.includes(weekday(d)) && !holidayOn(d)) return d;
   }
   return from;
 }
@@ -683,10 +685,14 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   const ready = await readyToSend(d, bid, seq);
   let loaded = d.accounts.peek(bid)!;
   // Whatever holds the business (a pause, a cancel, the Guard's brake, its inboxes) holds its campaigns: notes already
-  // pushed would otherwise keep going on the platform's schedule. The hold lifts here too once nothing holds it.
+  // pushed would otherwise keep going on the platform's schedule. So does a holiday where it is, its whole local day (the
+  // campaigns sending then): Instantly's schedule can't leave out a date (only days of the week), and nothing new is
+  // handed over on it (a client with no campaign yet has nothing to pause). The hold lifts here too once nothing holds
+  // it, the day after a holiday.
   const hold = holdReason(loaded);
-  if (hold) {
-    if (!loaded.state.dataset.business.platformPaused) await holdPlatform(d, bid, hold);
+  const holiday = hold ? undefined : holidayOn(nowLocal(d, loaded.state).slice(0, 10));
+  if (hold || holiday) {
+    if (!loaded.state.dataset.business.platformPaused && (hold || campaignsOf(d, bid).length)) await holdPlatform(d, bid, hold ?? `${holiday}, a holiday`, !hold);
     const h = sendHealth(loaded.state);
     if (h.paused) await noteBrake(d, bid, h.reason);
     return { sent: 0, failed: 0, held: 0 };
@@ -704,7 +710,7 @@ export async function syncSequencer(d: Deps, bid: string, seq: SequencerProvider
   // A week ahead, so the platform has them in time. A one pass's people go on their first note's day, so neither of its
   // campaigns (one for each number of notes) can start anyone ahead of the pace: together they start the day's people.
   const horizon = isOnePass(b.plan) ? today : new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
-  const onSendDay = (day: string) => (b.sendDays.includes(weekday(day)) ? day : nextSendDay(state, day));
+  const onSendDay = (day: string) => (b.sendDays.includes(weekday(day)) && !holidayOn(day) ? day : nextSendDay(state, day));
   const byLead = new Map<string, Touch[]>();
   for (const t of state.touches) {
     if (t.status !== "approved" || t.providerId) continue;
@@ -866,22 +872,42 @@ async function setCampaign(d: Deps, bid: string, b: BusinessProfile, campaignId:
   }
 }
 
-export async function holdPlatform(d: Deps, bid: string, why: string): Promise<void> {
+/**
+ * Pause the business's campaigns. A holiday pauses only the ones sending, and only those go back on after it: one the
+ * platform stopped itself (bounce protection, unhealthy inboxes) or Jack paused by hand stays as it was. One whose state
+ * can't be read is paused with them (the holiday wins) and goes back on with them.
+ */
+export async function holdPlatform(d: Deps, bid: string, why: string, holiday = false): Promise<void> {
   if (d.email.kind !== "sequencer") return;
   const state = d.accounts.peek(bid)?.state;
   if (!state) return;
-  for (const cid of campaignsOf(d, bid)) await setCampaign(d, bid, state.dataset.business, cid, true);
+  const b = state.dataset.business;
+  let campaigns = campaignsOf(d, bid);
+  if (holiday) {
+    const running: string[] = [];
+    for (const cid of campaigns) {
+      const on = await d.email.campaignRunning(b, cid).catch((e: unknown) => {
+        d.log(`[sequencer] reading ${cid} for ${bid} failed: ${(e as Error).message}`);
+        return true;
+      });
+      if (on) running.push(cid);
+    }
+    campaigns = running;
+  }
+  for (const cid of campaigns) await setCampaign(d, bid, b, cid, true);
   await d.accounts.withAccount(bid, (s) => {
     const at = nowLocal(d, s);
-    s.dataset.business.platformPaused = { at, why };
+    s.dataset.business.platformPaused = { at, why, ...(holiday ? { campaigns } : {}) };
     s.events.push({ id: `ev_hold_${at}`, at, agent: "guard", kind: "action", title: "Sending platform paused for this client", detail: `Because of ${why}. Nothing already handed over goes out until it lifts.` });
   });
 }
 
 async function releasePlatform(d: Deps, bid: string): Promise<void> {
   if (d.email.kind !== "sequencer") return;
-  // turned back on only as its inboxes and settings are now (else the worker tries again next minute)
-  if (!(await readyToSend(d, bid, d.email))) return;
+  // never on a holiday where it is (a resume or a cleared brake on one waits for the day after), and turned back on
+  // only as its inboxes and settings are now (else the worker tries again next minute)
+  const l = d.accounts.peek(bid);
+  if (!l || holidayOn(nowLocal(d, l.state).slice(0, 10)) || !(await readyToSend(d, bid, d.email))) return;
   // answers to requests that sat in a paused campaign are pulled before it restarts: they'd go days late; so are notes
   // whose season ended while it was paused
   const stale = await d.accounts.withAccount(bid, (s) => {
@@ -902,7 +928,9 @@ async function releasePlatform(d: Deps, bid: string): Promise<void> {
   await withdrawLeads(d, bid, stale, { inline: 25 });
   const state = d.accounts.peek(bid)?.state;
   if (!state) return;
-  for (const cid of campaignsOf(d, bid)) await setCampaign(d, bid, state.dataset.business, cid, false);
+  // after a holiday, only the ones it paused
+  const b = state.dataset.business;
+  for (const cid of b.platformPaused?.campaigns ?? campaignsOf(d, bid)) await setCampaign(d, bid, b, cid, false);
   await d.accounts.withAccount(bid, (s) => {
     s.dataset.business.platformPaused = undefined;
     const at = nowLocal(d, s);

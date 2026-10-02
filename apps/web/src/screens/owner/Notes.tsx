@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowRight, Pause, Play } from "lucide-react";
-import { addDays, BREAKAGE_LABEL, fmtMoney, fmtPhone, planOutreach, plural, SEQUENCES, type BreakageType, type Touch } from "@qa/engine";
+import { addDays, BREAKAGE_LABEL, fmtMoney, fmtPhone, holidayOn, HOLIDAYS_LINE, planOutreach, plural, SEQUENCES, type BreakageType, type Touch } from "@qa/engine";
 import { nextSendDay, useApp, useAccount } from "../../store/app";
 import { derive, niceDate } from "../../lib/derive";
 import { cx, Pill } from "../../components/ui";
@@ -225,7 +225,7 @@ export function Notes() {
         </Section>
       )}
 
-      <Section title="Next 14 days" sub={`Notes go out ${b.sendDays.map((x) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x]).join(", ")} between ${b.sendWindow[0]}:00 and ${b.sendWindow[1]}:00.`}>
+      <Section title="Next 14 days" sub={`Notes go out ${b.sendDays.map((x) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][x]).join(", ")} between ${b.sendWindow[0]}:00 and ${b.sendWindow[1]}:00. ${HOLIDAYS_LINE}`}>
         <Table minWidth={460} label="Schedule">
           <thead>
             <tr>
@@ -238,13 +238,14 @@ export function Notes() {
           <tbody>
             {days.map((day) => {
               const x = byDay.get(day);
-              const sendDay = b.sendDays.includes(new Date(`${day}T12:00:00Z`).getUTCDay());
+              const holiday = holidayOn(day);
+              const sendDay = b.sendDays.includes(new Date(`${day}T12:00:00Z`).getUTCDay()) && !holiday;
               return (
                 <Tr key={day}>
                   <Td className={cx(!sendDay && "text-ink-3")}>
                     {niceDate(day)}
                     {day === a.dataset.asOf && <span className="ml-2 text-[12px] font-semibold text-accent-ink">today</span>}
-                    {!sendDay && <span className="ml-2 text-[12px]">no sends</span>}
+                    {!sendDay && <span className="ml-2 text-[12px]">{holiday ? `${holiday}, no sends` : "no sends"}</span>}
                   </Td>
                   <Td right>{x?.notes || "—"}</Td>
                   <Td right>{x?.people || "—"}</Td>

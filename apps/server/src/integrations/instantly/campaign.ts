@@ -26,6 +26,9 @@
  *    `<div>line</div>`, with `<div><br /></div>` for a blank line. We do the same.
  *  - days: "0" = Sunday, the JS getDay() order. Instantly's CLI default "Mon-Fri" schedule is
  *    {0:false,1..5:true,6:false}.
+ *  - campaign_schedule is { start_date, end_date, schedules[{ name, timing, days, timezone }] }, on create and PATCH
+ *    alike: days of the week and a date range, with no date to leave out. So a client's holidays (the engine's
+ *    holidayOn) can't go in its schedule; the worker pauses its campaigns for the day instead (syncSequencer).
  *  - daily_max_leads = "The daily maximum new leads to contact". If it is at or above the campaign's daily limit,
  *    only step 1 goes out and follow-ups starve.
  *    https://help.instantly.ai/en/articles/6759494-how-to-prioritize-new-leads-over-follow-ups

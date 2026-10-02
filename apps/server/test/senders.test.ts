@@ -93,15 +93,15 @@ async function client(s: Pick<Setup, "h">, bid: string, over: Record<string, unk
   await queue(s, bid, people);
 }
 
-/** Two notes each for more people, approved, the first due tomorrow. */
-async function queue(s: Pick<Setup, "h">, bid: string, people: string[]): Promise<void> {
+/** Two notes (or `steps`) each for more people, approved, the first due tomorrow. */
+async function queue(s: Pick<Setup, "h">, bid: string, people: string[], steps = 2): Promise<void> {
   await s.h.d.accounts.withAccount(bid, (st) => {
     const n = st.dataset.customers.length;
     const customers: Customer[] = people.map((email, i) => ({ id: `${bid}-c${n + i}`, sourceIds: [`${bid}-c${n + i}`], name: "Pat Lee", firstName: "Pat", lastName: "Lee", emails: [email], phones: [], properties: [], tags: [] }));
     st.dataset.customers = [...st.dataset.customers, ...customers];
     for (const c of customers)
-      for (const step of [1, 2])
-        st.touches.push({ id: `${c.id}-${step}`, opportunityId: `${c.id}-o`, customerId: c.id, channel: "email", step, angle: "check_in", dueAt: step === 1 ? "2026-09-30T09:15" : "2026-10-04T09:15", status: "approved", subject: step === 1 ? "the hedges" : "", body: `Note ${step} about the hedges.`, flags: [] });
+      for (let step = 1; step <= steps; step++)
+        st.touches.push({ id: `${c.id}-${step}`, opportunityId: `${c.id}-o`, customerId: c.id, channel: "email", step, angle: "check_in", dueAt: step === 1 ? "2026-09-30T09:15" : `${addDays("2026-10-04", 4 * (step - 2))}T09:15`, status: "approved", subject: step === 1 ? "the hedges" : "", body: `Note ${step} about the hedges.`, flags: [] });
   });
 }
 
@@ -975,11 +975,32 @@ describe("a lawn shop's seasons on the sending platform", () => {
     expect(await lawnShop(s, "PA", "2026-11-17T15:00:00Z")).toMatchObject({ people: 1, notes: 2 });
     await h.sms("OK");
     await h.sms("PAUSE");
-    // back on Friday the 27th: note 1 goes now, so the platform would send note 2 on December 1st
-    h.setNow("2026-11-27T15:00:00Z");
+    // back on Monday the 30th (the Friday before is the day after Thanksgiving): note 1 goes now, so the platform would
+    // send note 2 on December 4th
+    h.setNow("2026-11-30T15:00:00Z");
     await h.sms("RESUME");
     await sync(s, "cap");
     expect(leads(s).map((l) => l.custom_variables.b2)).toEqual([undefined]);
+    expect(touches(s).map((t) => [t.step, t.status, t.lastError])).toEqual([
+      [1, "approved", undefined],
+      [2, "cancelled", OFF_SEASON],
+    ]);
+  });
+
+  it("a follow-up the platform's count puts on a holiday is judged by the send day after it: Thanksgiving's goes past the season", async () => {
+    const s = setup();
+    const { h } = s;
+    expect(await lawnShop(s, "PA", "2026-11-17T15:00:00Z")).toMatchObject({ people: 1, notes: 2 });
+    await h.sms("OK");
+    await h.sms("PAUSE");
+    // back on Sunday the 22nd: note 1 is handed over now, so four days on is Thanksgiving, a Thursday it sends on. Held
+    // over it, note 2 would go on Tuesday, December 1st, once Pennsylvania's fall selling has closed (on Thanksgiving
+    // itself it would still be in season)
+    h.setNow("2026-11-22T15:00:00Z");
+    await h.sms("RESUME");
+    await sync(s, "cap");
+    expect(leads(s).map((l) => [l.email, l.custom_variables.b1 !== undefined, l.custom_variables.b2])).toEqual([[PAT, true, undefined]]);
+    expect(s.api.callsTo("POST", "/campaigns").map((c) => c.body.sequences[0].steps.length)).toEqual([1]);
     expect(touches(s).map((t) => [t.step, t.status, t.lastError])).toEqual([
       [1, "approved", undefined],
       [2, "cancelled", OFF_SEASON],
@@ -1082,5 +1103,172 @@ describe("a lawn shop's seasons on the sending platform", () => {
     h.setNow("2027-01-05T13:00:00Z");
     expect((await h.api("POST", "/api/businesses/cap/plan", {})).json).toMatchObject({ people: 0, notes: 0 });
     expect(touches(s)).toHaveLength(2);
+  });
+});
+
+describe("holidays on the sending platform", () => {
+  // Instantly's campaign schedule takes days of the week and a start and end date, never a date to leave out
+  // (https://developer.instantly.ai/api-reference/campaign/create-campaign), so the worker holds them
+  const campOf = (s: Setup, bid: string) => [...s.campaigns].find(([, c]) => c.name.includes(` · ${bid} · `))![0];
+  const status = (s: Setup) => Object.fromEntries([...s.campaigns].map(([id, c]) => [id, c.status]));
+  /** The worker's tick at `iso`. */
+  const at = async (s: Setup, iso: string) => {
+    s.h.setNow(iso);
+    expect((await tick(s.h.d)).errors).toEqual([]);
+  };
+
+  it("a client's own campaigns sit out its holiday, by its own local day, and go back on the day after; Jack's cold campaign never moves", async () => {
+    const s = setup();
+    s.campaigns.set("cold-oct", { name: "Oct cold: lawn owners", steps: 3, status: 1 });
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await client(s, "coast", { name: "Coast Lawn Care", timezone: "America/Los_Angeles", ownerPhone: ED_CELL, fromEmails: [OFFICE] }, [KIM]);
+    await at(s, "2026-09-29T14:00:00Z");
+    const [capital, coast] = [campOf(s, "capital"), campOf(s, "coast")];
+    expect(status(s)).toEqual({ "cold-oct": 1, [capital]: 1, [coast]: 1 });
+    // someone new, whose notes would be handed over at once on any other day
+    await queue(s, "capital", [LEE]);
+    const handed = pushes(s);
+    // Thanksgiving: 1am in New Hampshire, still Wednesday evening in California
+    await at(s, "2026-11-26T06:00:00Z");
+    expect(status(s)).toEqual({ "cold-oct": 1, [capital]: 2, [coast]: 1 });
+    expect(profile(s.h, "capital").platformPaused?.why).toBe("Thanksgiving, a holiday");
+    expect(pushes(s)).toBe(handed);
+    // the Friday after, in both
+    await at(s, "2026-11-27T15:00:00Z");
+    expect(status(s)).toEqual({ "cold-oct": 1, [capital]: 2, [coast]: 2 });
+    expect(profile(s.h, "coast").platformPaused?.why).toBe("the day after Thanksgiving, a holiday");
+    // Saturday in New Hampshire (its schedule sends nothing on one anyway): back on, and Lee handed over; still Friday in California
+    await at(s, "2026-11-28T06:00:00Z");
+    expect(status(s)).toEqual({ "cold-oct": 1, [capital]: 1, [coast]: 2 });
+    expect(pushes(s)).toBe(handed + 1);
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(status(s)).toEqual({ "cold-oct": 1, [capital]: 1, [coast]: 1 });
+    expect([profile(s.h, "capital").platformPaused, profile(s.h, "coast").platformPaused]).toEqual([undefined, undefined]);
+    // each paused once; nothing else touched
+    const moves = s.api.calls.filter((c) => c.method === "POST" && /\/(pause|activate)$/.test(c.path)).map((c) => c.path);
+    expect(moves.filter((p) => p.endsWith("/pause"))).toEqual([`/campaigns/${capital}/pause`, `/campaigns/${coast}/pause`]);
+    expect(moves.some((p) => p.includes("cold-oct"))).toBe(false);
+  });
+
+  it("only the campaigns sending sit it out: one Instantly's bounce protection stopped, or Jack paused by hand, is as it was after it", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await queue(s, "capital", [KIM], 1);
+    await queue(s, "capital", [LEE], 3);
+    await at(s, "2026-11-24T15:00:00Z");
+    const steps = (n: number) => [...s.campaigns].find(([, c]) => c.name.endsWith(` · capital · ${n}-step`))![0];
+    const [one, two, three] = [steps(1), steps(2), steps(3)];
+    expect(status(s)).toEqual({ [one]: 1, [two]: 1, [three]: 1 });
+    const before = s.api.calls.length;
+    // Wednesday: Instantly's bounce protection stops one, and Jack pauses another in Instantly
+    s.campaigns.get(one)!.status = -2;
+    s.campaigns.get(three)!.status = 2;
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(status(s)).toEqual({ [one]: -2, [two]: 2, [three]: 2 });
+    expect(profile(s.h, "capital").platformPaused).toMatchObject({ why: "Thanksgiving, a holiday", campaigns: [two] });
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(status(s)).toEqual({ [one]: -2, [two]: 1, [three]: 2 });
+    expect(profile(s.h, "capital").platformPaused).toBeUndefined();
+    const moves = s.api.calls.slice(before).filter((c) => c.method === "POST" && /\/(pause|activate)$/.test(c.path)).map((c) => c.path);
+    expect(moves).toEqual([`/campaigns/${two}/pause`, `/campaigns/${two}/activate`]);
+  });
+
+  it("a campaign Instantly can't say the state of sits it out with the rest, and goes back on with them", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await at(s, "2026-11-25T15:00:00Z");
+    const camp = campOf(s, "capital");
+    const read = s.email.campaignRunning;
+    s.email.campaignRunning = async () => {
+      throw new Error("Instantly is down");
+    };
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    expect(profile(s.h, "capital").platformPaused?.campaigns).toEqual([camp]);
+    expect(s.logs).toContain(`[sequencer] reading ${camp} for capital failed: Instantly is down`);
+    s.email.campaignRunning = read;
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(1);
+  });
+
+  it("a restart that hadn't gone through when the holiday came goes back on after it with the rest", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await at(s, "2026-11-24T15:00:00Z");
+    const camp = campOf(s, "capital");
+    s.h.setNow("2026-11-25T15:00:00Z");
+    await s.h.sms("PAUSE");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    // the owner's RESUME on Wednesday evening can't reach Instantly; the worker tries again on Thanksgiving, after the
+    // holiday found the campaign stopped
+    const pause = s.email.pauseCampaign;
+    s.email.pauseCampaign = async () => {
+      s.email.pauseCampaign = pause;
+      throw new Error("Instantly is down");
+    };
+    s.h.setNow("2026-11-26T02:00:00Z");
+    await s.h.sms("RESUME");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    expect(profile(s.h, "capital").platformPaused).toBeUndefined();
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    expect(profile(s.h, "capital").platformPaused?.campaigns).toEqual([camp]);
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(1);
+  });
+
+  it("the owner's PAUSE keeps them paused past the holiday, and a RESUME on one waits for the day after", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await at(s, "2026-11-25T15:00:00Z");
+    const camp = campOf(s, "capital");
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    await s.h.sms("PAUSE");
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    // back on Christmas Eve: not before the 26th
+    s.h.setNow("2026-12-24T15:00:00Z");
+    await s.h.sms("RESUME");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    await at(s, "2026-12-24T16:00:00Z");
+    await at(s, "2026-12-25T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    await at(s, "2026-12-26T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(1);
+    expect(profile(s.h, "capital").platformPaused).toBeUndefined();
+  });
+
+  it("the bounce brake tripped on the holiday keeps them paused after it, until Jack clears it", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await at(s, "2026-11-25T15:00:00Z");
+    const camp = campOf(s, "capital");
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    // 40 notes from before bounce on Thanksgiving
+    await s.h.d.accounts.withAccount("capital", (st) => {
+      for (let i = 0; i < 40; i++) st.touches.push({ id: `b${i}`, opportunityId: `ob${i}`, customerId: "capital-c0", channel: "email", step: 1, angle: "check_in", dueAt: "2026-11-20T09:00", status: "bounced", body: "", flags: [] });
+    });
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    expect(profile(s.h, "capital").platformPaused?.why).toBe("Thanksgiving, a holiday");
+    expect(s.h.d.accounts.peek("capital")!.state.events.some((e) => e.title === "Send brake on — nothing more goes out until someone looks")).toBe(true);
+    await at(s, "2026-11-30T15:00:00Z");
+    expect(s.campaigns.get(camp)!.status).toBe(2);
+    expect((await s.h.api("POST", "/api/businesses/capital/health/clear")).status).toBe(200);
+    expect(s.campaigns.get(camp)!.status).toBe(1);
+  });
+
+  it("a client with no campaign yet has nothing to pause, and none is made on the holiday", async () => {
+    const s = setup();
+    await client(s, "capital", { fromEmails: [SARAH] });
+    await at(s, "2026-11-26T15:00:00Z");
+    expect(s.api.callsTo("POST", "/campaigns")).toEqual([]);
+    expect(pushes(s)).toBe(0);
+    expect(profile(s.h, "capital").platformPaused).toBeUndefined();
+    await at(s, "2026-11-28T15:00:00Z");
+    expect(s.api.callsTo("POST", "/campaigns")).toHaveLength(1);
+    expect(pushes(s)).toBe(1);
   });
 });

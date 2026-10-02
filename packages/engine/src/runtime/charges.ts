@@ -5,6 +5,7 @@ import { counted } from "../ledger/attribution.ts";
 import { chargeCapText, chargeHeadsUp, chargeRefundText, chargeRetryText, leadCode, monthLine, paidYearOn, type GuaranteeCheck } from "../reports/owner.ts";
 import { billsPass, holdsPlace, isMonth, monthlyPlan, ONE_PASS, startMonthly } from "../plans.ts";
 import { customerById } from "../lookup.ts";
+import { holidayOn } from "../cadence/holidays.ts";
 import { addDays, fmtMoney, makeId, monthName, weekday } from "../util.ts";
 
 /**
@@ -42,19 +43,21 @@ export function chargeOf(state: AccountState, id: string): Charge | MonthCharge 
   return plan.charges?.find((c) => c.id === id) ?? plan.months?.find((c) => c.id === id);
 }
 
-/** The next business day (Monday to Friday) after `day`. */
+/** The next business day (Monday to Friday, not a holiday) after `day`. */
 export function nextBusinessDay(day: ISODate): ISODate {
   let d = addDays(day, 1);
-  while (weekday(d) === 0 || weekday(d) === 6) d = addDays(d, 1);
+  while (weekday(d) === 0 || weekday(d) === 6 || holidayOn(d)) d = addDays(d, 1);
   return d;
 }
 
 /**
  * The day a saved card is charged when its text reaches the owner on `day`: one business day after. A later month's
- * is charged on its own day when its text reaches him before then, so its text two days before keeps that day.
+ * is charged on its own day when its text reaches him before then, so its text two days before keeps that day; a month
+ * whose day is a holiday, the business day after it, and its text names that day.
  */
 function chargeDay(c: Charge | MonthCharge, day: ISODate): ISODate {
-  return isMonth(c) && !c.first && day < c.month ? c.month : nextBusinessDay(day);
+  if (isMonth(c) && !c.first && day < c.month) return holidayOn(c.month) ? nextBusinessDay(c.month) : c.month;
+  return nextBusinessDay(day);
 }
 
 /** Whether the next charge goes on a saved card: one Stripe can charge, or, by hand, any card the owner saved. */

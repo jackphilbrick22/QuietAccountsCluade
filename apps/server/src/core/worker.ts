@@ -284,6 +284,9 @@ export async function runTasks(d: Deps, report?: TickReport): Promise<void> {
           const l = d.accounts.peek(w.bid);
           const paused = !l || !!holdReason(l) || !!l.state.dataset.business.platformPaused;
           await d.email.pauseCampaign(l?.state.dataset.business ?? (w.profile as BusinessProfile), w.campaignId, paused);
+          // one a holiday found stopped (this restart hadn't gone through yet) goes back on with the ones it paused
+          const held = l?.state.dataset.business.platformPaused?.campaigns;
+          if (held && !held.includes(w.campaignId)) await d.accounts.withAccount(w.bid, (s) => void s.dataset.business.platformPaused?.campaigns?.push(w.campaignId));
         }
         d.accounts.repo.finishTask(t.seq, true);
       } catch (e) {

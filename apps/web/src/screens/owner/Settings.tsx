@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Plus, X } from "lucide-react";
-import { fmtMoney, mondayOf, playbook, type BusinessProfile } from "@qa/engine";
+import { fmtMoney, HOLIDAYS_LINE, mondayOf, playbook, type BusinessProfile } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { cx, Toggle } from "../../components/ui";
 import { Box, Btn, ConfirmBtn, EmptyRow, PageHead, selectCls, shortDate, smallInputCls, Table, Td, Th, Tr } from "../../components/table";
@@ -126,6 +126,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
               );
             })}
           </div>
+          <span className="text-[12.5px] text-ink-3">{HOLIDAYS_LINE}</span>
           {!v.sendDays.length && <span className="text-[12.5px] text-bad">Pick at least one day, or nothing will go out.</span>}
         </fieldset>
         <Grid>

@@ -693,13 +693,14 @@ describe("the free 150 for a shop that starts late in a selling window", () => {
     const days = firstDays(st);
     expect(days).toHaveLength(150);
     expect(days.filter((d) => d < "2027")).toEqual(Array(75).fill(expect.stringMatching(/^2026-11-(09|1[0-3])$/)));
-    expect(days.filter((d) => d > "2027")[0]).toBe("2027-01-01");
+    // never New Year's Day (a Friday): the first send day after it
+    expect(days.filter((d) => d > "2027")[0]).toBe("2027-01-04");
     expect(st.touches.filter((t) => t.dueAt.slice(0, 10) > "2026-11-15" && t.dueAt < "2027")).toEqual([]);
     const spring = st.touches.filter((t) => t.dueAt > "2027");
     expect(spring.map((t) => t.season)).toEqual(spring.map(() => "2027-spring"));
     expect(spring.filter((t) => t.step === 2).map((t) => t.body.split("\n\n")[0])).toEqual(Array(75).fill(expect.stringMatching(SPRING_LINE)));
     // the welcome text says the whole 150, and when the last of them go
-    expect(st.ownerMessages.find((m) => m.kind === "kickoff")!.text).toContain("then the rest of your 150 over the next few weeks (the last 75 from Friday, January 1)");
+    expect(st.ownerMessages.find((m) => m.kind === "kickoff")!.text).toContain("then the rest of your 150 over the next few weeks (the last 75 from Monday, January 4)");
     expect(ownerApproves(st, "2026-11-09T06:00:00")).toMatchObject({ firstDay: "2026-11-09" });
     sendThrough(st, "2026-11-15");
     expect(closeIfDue(st, "2026-11-20T09:00:00")).toBeUndefined();
@@ -750,6 +751,6 @@ describe("the free 150 for a shop that starts late in a selling window", () => {
     ownerApproves(st, "2026-10-26T06:00:00");
     sendThrough(st, "2026-11-15");
     const close = closeIfDue(st, "2026-11-20T09:00:00")!.text;
-    expect(close).toContain("Say yes by Friday 27 and the next batch goes out Friday, January 1.");
+    expect(close).toContain("Say yes by Friday 27 and the next batch goes out Monday, January 4.");
   });
 });

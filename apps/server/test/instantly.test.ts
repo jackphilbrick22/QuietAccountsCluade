@@ -734,6 +734,16 @@ describe("stopLead", () => {
     expect(api.calls.map((c) => c.path)).toEqual(["/campaigns/camp-2/pause", "/campaigns/camp-2/activate"]);
     expect(api.calls.every((c) => c.body === undefined && c.headers["Content-Type"] === undefined)).toBe(true);
   });
+
+  it("reads a campaign as sending only when it's Active or running subsequences", async () => {
+    const statuses = [1, 4, 2, -2, -1, 0, 3, -99];
+    const api = fakeInstantly({ "GET /campaigns/:id": statuses.map((status) => () => ({ body: campaignWithSteps("camp-2", 2, status) })) });
+    const p = createInstantlyProvider({ apiKey: "k", fetch: api.fetch });
+    const running: boolean[] = [];
+    for (const _ of statuses) running.push(await p.campaignRunning(business(), "camp-2"));
+    expect(running).toEqual([true, true, false, false, false, false, false, false]);
+    expect(api.calls.map((c) => `${c.method} ${c.path}`)).toEqual(statuses.map(() => "GET /campaigns/camp-2"));
+  });
 });
 
 /* ------------------------------------------------------------------ */

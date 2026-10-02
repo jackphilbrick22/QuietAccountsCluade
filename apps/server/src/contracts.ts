@@ -80,6 +80,8 @@ export interface SequencerProvider {
    */
   stopLead(business: BusinessProfile, campaignId: string, email: string, reason: "replied" | "unsubscribed" | "bounced" | "complained" | "withdrawn"): Promise<void>;
   pauseCampaign(business: BusinessProfile, campaignId: string, paused: boolean): Promise<void>;
+  /** Whether a campaign is sending now: not paused (by us or by hand), and not stopped by the platform itself. */
+  campaignRunning(business: BusinessProfile, campaignId: string): Promise<boolean>;
   /** Bring a campaign made earlier up to the business's send days, window, timezone and inboxes. */
   updateCampaign(business: BusinessProfile, campaignId: string, opts: { instant?: boolean }): Promise<void>;
   /** Set the name a sending inbox sends under and, with `dailyLimit`, the most it sends a day (one write). */

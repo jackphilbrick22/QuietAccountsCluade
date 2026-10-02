@@ -290,6 +290,26 @@ describe("planning a one pass", () => {
     expect(st.touches.find((t) => t.id === first.id)!.body).toBe("Changed by hand.");
   });
 
+  it("across Thanksgiving week: nothing on Thursday or Friday, on five inboxes it meets its date, on three it names the one it can", { timeout: 120_000 }, () => {
+    const start = "2026-11-16";
+    const end = addDays(start, 30);
+    const onTime = shop(600);
+    expect(planBatch(onTime, `${ASOF}T12:00:00`, { startOn: start }).people).toHaveLength(600);
+    expect(onTime.dataset.business.plan.pace).toMatchObject({ endOn: end });
+    expect(onTime.dataset.business.plan.pace!.late).toBeUndefined();
+    expect(lastFirst(onTime) <= addDays(end, -NOTES_SPAN_DAYS)).toBe(true);
+    const late = shop(600, onePassPlan(), 3);
+    planBatch(late, `${ASOF}T12:00:00`, { startOn: start });
+    expect(late.dataset.business.plan.pace!.late).toEqual({ canMeet: "2026-12-21", moreInboxes: 1 });
+    expect(late.events.some((e) => e.detail?.includes(`3 inboxes can't finish by ${end}: it ends about 2026-12-21.`))).toBe(true);
+    for (const st of [onTime, late]) {
+      expect(perDay(st)["2026-11-25"]).toBeGreaterThan(0);
+      expect(perDay(st)["2026-11-26"]).toBeUndefined();
+      expect(perDay(st)["2026-11-27"]).toBeUndefined();
+      expect(perDay(st)["2026-11-30"]).toBeGreaterThan(0);
+    }
+  });
+
   it("past the free round's 150, with no 40% share for any kind of leak", () => {
     const st = shop(200);
     planBatch(st, `${ASOF}T12:00:00`, { startOn: START });

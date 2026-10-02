@@ -3,6 +3,7 @@ import { pickWorked, type ScanResult } from "../breakage/detect.ts";
 import { renderNote } from "../copy/render.ts";
 import { FRESH_SEQUENCE, sequenceFor } from "../copy/templates.ts";
 import { alwaysOnFor } from "../breakage/assumptions.ts";
+import { holidayOn } from "./holidays.ts";
 import { paceOnePass, type Pace } from "./pace.ts";
 import { climateOf, comesBackEachSeason, findService, growingSeason, SEASONAL_TRADES, seasonFit, sellingFrom, sellingSeason, sellingWindow, stateOf } from "../trades/index.ts";
 import { addDays, hash, makeId, mondayOf, monthOf, weekday } from "../util.ts";
@@ -86,12 +87,12 @@ export function inHoldout(customerId: string, pct: number): boolean {
   return (parseInt(hash(`holdout|${customerId}`), 36) % 1000) / 1000 < pct;
 }
 
-/** Whether notes may go out on a day: one of the send days, outside the blackout weeks. */
+/** Whether notes may go out on a day: one of the send days, outside the blackout weeks, and not a holiday. */
 export function allowedDay(ds: Dataset, d: ISODate): boolean {
   const b = ds.business;
   if (!b.sendDays.includes(weekday(d))) return false;
   if (b.blackoutWeeks.includes(mondayOf(d))) return false;
-  return true;
+  return !holidayOn(d);
 }
 
 export function nextAllowed(ds: Dataset, d: ISODate): ISODate {

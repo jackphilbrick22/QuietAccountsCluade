@@ -7,7 +7,7 @@
  *    `search` is "Search by campaign name". Campaign.status: 0 Draft, 1 Active, 2 Paused, 3 Completed,
  *    4 Running Subsequences, -1 Accounts Unhealthy, -2 Bounce Protect, -99 Account Suspended.
  *    https://developer.instantly.ai/api-reference/campaign/list-campaign
- *  - POST /api/v2/campaigns → Campaign (id, status). GET /api/v2/campaigns/{id} → Campaign incl. sequences.
+ *  - POST /api/v2/campaigns → Campaign (id, status). GET /api/v2/campaigns/{id} → Campaign incl. sequences and status.
  *  - POST /api/v2/campaigns/{id}/activate and /pause (no body) → Campaign.
  *    https://developer.instantly.ai/api-reference/campaign/activatestart-or-resume-a-campaign ,
  *    https://developer.instantly.ai/api-reference/campaign/stopor-pause-a-campaign
@@ -436,6 +436,12 @@ export function createInstantlyProvider(opts: InstantlyProviderOptions): Instant
 
     async pauseCampaign(_business, campaignId, paused) {
       await client.post(`${campaignPath(campaignId)}/${paused ? "pause" : "activate"}`, undefined, { idempotent: true });
+    },
+
+    async campaignRunning(_business, campaignId) {
+      // 1 Active, 4 Running Subsequences; the rest send nothing (Paused, Bounce Protect, Accounts Unhealthy, ...)
+      const { status } = await getCampaign(campaignId);
+      return status === 1 || status === 4;
     },
 
     async updateCampaign(business, campaignId, { instant }) {

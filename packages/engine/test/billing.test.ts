@@ -400,6 +400,29 @@ describe("the charge log", () => {
     expect(nextBusinessDay("2026-10-21")).toBe("2026-10-22");
   });
 
+  it("a card charge whose next business day is a holiday moves to the business day after it, and its text names that day", () => {
+    expect(nextBusinessDay("2026-11-25")).toBe("2026-11-30");
+    expect(nextBusinessDay("2026-07-02")).toBe("2026-07-06");
+    expect(nextBusinessDay("2027-07-02")).toBe("2027-07-06");
+    expect(nextBusinessDay("2027-12-23")).toBe("2027-12-27");
+    expect(nextBusinessDay("2027-12-30")).toBe("2028-01-03");
+    const st = pass(3);
+    bookings(st, 2);
+    st.dataset.business.plan.card = { customer: "cus_1", paymentMethod: "pm_1", brand: "visa", last4: "4242", at: "2026-10-01T09:00:00", from: "pasted" };
+    // the Wednesday before Thanksgiving: not Thursday or Friday, Monday
+    settleCharges(st, "2026-11-25T09:00:00", STRIPE);
+    const m = textOf(st, "c0")[0]!;
+    expect(m.text).toContain("on Monday, $250 of your $1,000.");
+    approveCharge(st, m.id, "2026-11-25T10:00:00", STRIPE);
+    expect(charge(st, "c0")).toMatchObject({ status: "approved", chargeOn: "2026-11-30" });
+    chargeTold(st, chargeId(st, "c0"), "2026-11-25T10:05:00");
+    expect(charge(st, "c0").chargeOn).toBe("2026-11-30");
+    // one that reaches him on Thanksgiving itself: Monday too
+    approveCharge(st, textOf(st, "c1")[0]!.id, "2026-11-26T08:00:00", STRIPE);
+    chargeTold(st, chargeId(st, "c1"), "2026-11-26T08:05:00");
+    expect(charge(st, "c1").chargeOn).toBe("2026-11-30");
+  });
+
   it("charged, failed and paid once: a webhook told three times, or a restart mid-charge, changes nothing more", () => {
     const st = pass(2);
     bookings(st, 1);

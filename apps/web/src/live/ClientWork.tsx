@@ -1,6 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { addMonths, AGENTS, annualPrice, fmtMoney, isOnePass, monthlyPlan, onePassPlan, PLAN_STAGES, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
+import { addMonths, AGENTS, annualPrice, fmtMoney, HOLIDAYS_LINE, isOnePass, monthlyPlan, onePassPlan, PLAN_STAGES, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
 import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
@@ -615,6 +615,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               );
             })}
           </div>
+          <span className="text-[12.5px] text-ink-3">{HOLIDAYS_LINE}</span>
         </fieldset>
         <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
           <Field id="ls-w0" label="Send window starts">

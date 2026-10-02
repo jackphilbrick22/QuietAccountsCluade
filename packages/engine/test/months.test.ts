@@ -6,6 +6,7 @@ import { emptyState, type AccountState } from "../src/runtime/state.ts";
 import { chargeHeadsUp, chargeRefundText, chargeRetryText, guaranteeCheck, monthLine } from "../src/reports/owner.ts";
 import { onePassPlan } from "../src/plans.ts";
 import type { MonthCharge, PlanState, Reply, Touch } from "../src/model.ts";
+import { addDays } from "../src/util.ts";
 import { customer, dataset } from "./fixtures.ts";
 
 /**
@@ -208,6 +209,24 @@ describe("each month after", () => {
     approveCharge(raced, billingCheck(raced, "2026-11-18T09:00:00", STRIPE)!.id, "2026-11-18T11:00:00", STRIPE);
     chargeTold(raced, months(raced)[0]!.id, `${NEXT}T08:00:00`);
     expect(months(raced)[0]!.chargeOn).toBe("2026-11-23");
+  });
+
+  it("a month whose day is a holiday is charged the business day after, and its pre-charge text names that day", () => {
+    for (const [paid, day, on, words] of [
+      ["2026-10-26", "2026-11-26", "2026-11-30", "November 26: $497 goes on your card ending 4242 on Monday, November 30."],
+      ["2026-11-25", "2026-12-25", "2026-12-28", "December 25: $497 goes on your card ending 4242 on Monday, December 28."],
+    ] as const) {
+      const st = paying({ paidOn: paid });
+      st.touches.push(note("t-karen", "c-karen", addDays(paid, 1)));
+      asked(st, "c-karen", addDays(paid, 1), "t-karen");
+      const m = billingCheck(st, `${addDays(day, -2)}T09:00:00`, STRIPE)!;
+      expect(months(st)[0], day).toMatchObject({ month: day, chargeOn: on });
+      expect(m.text.split("\n").at(-1), day).toBe(`Your next month starts ${words}`);
+      approveCharge(st, m.id, `${addDays(day, -2)}T10:00:00`, STRIPE);
+      chargeTold(st, months(st)[0]!.id, `${addDays(day, -2)}T10:05:00`);
+      expect(months(st)[0]!.chargeOn, day).toBe(on);
+      expect(m.text.split("\n").at(-1), day).toBe(`Your next month starts ${words}`);
+    }
   });
 
   it("its text made after its day (the worker was down) names a business day after, not the day gone", () => {
