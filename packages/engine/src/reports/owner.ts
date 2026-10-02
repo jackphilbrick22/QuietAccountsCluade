@@ -5,8 +5,8 @@ import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/ass
 import { pickWorked } from "../breakage/detect.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
 import { refillRate } from "../breakage/refill.ts";
-import { holdsPlace, isMonth, isOnePass, ONE_PASS, passPaid } from "../plans.ts";
-import { counted } from "../ledger/attribution.ts";
+import { billsPass, holdsPlace, isMonth, isOnePass, NOT_OURS_WHY, ONE_PASS, passPaid } from "../plans.ts";
+import { counted, unpricedBookings } from "../ledger/attribution.ts";
 import { answerTime, promiseTonight } from "../copy/render.ts";
 import { customerById, quoteById } from "../lookup.ts";
 
@@ -226,10 +226,15 @@ export function passPromise(plan: Pick<PlanState, "pricePerBooking" | "capBookin
 
 const COUNT = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
 
-/** A charge's money: its own, the running total with it, and the pass's cap. */
+/**
+ * A charge's money: its own, the running total with it, and the pass's cap. The total is the charges holding a place
+ * whose texts Jack let go by the time he approved this one's (or that were paid outside), then this one: never one whose
+ * text still waits for him, so a text approved out of order, or one held back, never counts $250 the owner wasn't told
+ * about.
+ */
 function chargeMoney(plan: PlanState, c: Charge): { price: string; soFar: string; cap: string } {
-  const live = (plan.charges ?? []).filter(holdsPlace);
-  const n = live.findIndex((x) => x.id === c.id) + 1 || live.length + 1;
+  const before = (x: Charge) => !c.approvedAt || !x.approvedAt || x.approvedAt <= c.approvedAt;
+  const n = (plan.charges ?? []).filter((x) => x.id !== c.id && holdsPlace(x) && x.status !== "heads_up" && before(x)).length + 1;
   return { price: fmtMoney(c.amount / 100), soFar: fmtMoney((n * c.amount) / 100), cap: fmtMoney((plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (plan.capBookings ?? ONE_PASS.capBookings)) };
 }
 
@@ -343,7 +348,7 @@ export function passEndText(state: AccountState, asOf: ISODate): string {
   const people = (rs: Reply[]) => new Set(rs.filter((r) => r.customerId && asked.has(r.customerId)).map((r) => r.customerId)).size;
   const wrote = people(state.replies.filter((r) => !["auto_reply", "bounce"].includes(r.intent)));
   const wanted = people(state.replies.filter((r) => WANTS.has(r.intent)));
-  const booked = counted(state.recoveries).filter((r) => asked.has(r.customerId)).length;
+  const booked = bookedCount(state, asked);
   const refill = state.scan && refillRate(state.scan, asOf);
   const paid = passPaid(b.plan);
   const cap = (b.plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (b.plan.capBookings ?? ONE_PASS.capBookings);
@@ -536,6 +541,22 @@ export function lossReasons(state: AccountState): { reason: string; count: numbe
   return [...tally.entries()].map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count);
 }
 
+/**
+ * How many booked, for the owner's tallies: the ledger's bookings (`who`: only these people's). On a one pass (one gone
+ * monthly too), also those he reported with no amount, which it bills all the same (BRIEF B4) unless he said they weren't
+ * ours, and a charge holding its place with no booking the software saw (paid outside, or kept after its job went): a
+ * tally never says fewer booked than the bookings he's charged for.
+ */
+function bookedCount(state: AccountState, who?: Set<string>): number {
+  const plan = state.dataset.business.plan;
+  const ledger = counted(state.recoveries);
+  const theirs = (r: Recovery) => !who || who.has(r.customerId);
+  if (!billsPass(plan)) return ledger.filter(theirs).length;
+  const notOurs = new Set((plan.charges ?? []).filter((c) => c.reason === NOT_OURS_WHY).map((c) => c.customerId));
+  const bookings = [...ledger, ...unpricedBookings(state.replies, ledger).filter((r) => !notOurs.has(r.customerId))].filter(theirs);
+  return bookings.length + (plan.charges ?? []).filter((c) => holdsPlace(c) && !bookings.some((r) => r.customerId === c.customerId)).length;
+}
+
 export function totals(state: AccountState): { booked: number; bookedValue: Money; afterNote: number; afterNoteValue: Money; contacted: number; replied: number; wants: number; remaining: number } {
   const contacted = new Set(state.touches.filter((t) => t.status === "sent" || t.status === "delivered").map((t) => t.customerId));
   // still to work: who a plan could write to, the same pick as every plan (only the leaks the trade's offer works)
@@ -543,7 +564,7 @@ export function totals(state: AccountState): { booked: number; bookedValue: Mone
   for (const id of contacted) workable.delete(id);
   for (const o of state.outreach) if (o.holdout) workable.delete(o.customerId);
   return {
-    booked: counted(state.recoveries).length,
+    booked: bookedCount(state),
     bookedValue: round2(sum(counted(state.recoveries), (r) => r.value)),
     afterNote: state.recoveries.filter((r) => !r.disputed && r.tier === "after_note").length,
     afterNoteValue: round2(sum(state.recoveries.filter((r) => !r.disputed && r.tier === "after_note"), (r) => r.value)),
@@ -679,14 +700,18 @@ export function feesPaid(b: BusinessProfile, asOf: ISODate): { total: Money; mon
  * What the owner has paid us as of `asOf` (the weekly text): on the monthly plan the software charges (BRIEF B5), the
  * months actually paid by then (never one declined, refunded, waiting for Jack's OK, or a paused stretch's) and a one
  * pass's bookings paid before it went monthly, plus fees from an earlier arrangement. A yearly plan, or a monthly one
- * charged by hand before the software did (no month on its log), by its dates (feesPaid).
+ * charged by hand before the software did (no month on its log), by its dates (feesPaid); one set paying by hand (its
+ * first month on Jack's own link) has the months before its log began counted by their dates too.
  */
 export function paidSoFar(b: BusinessProfile, asOf: ISODate): { total: Money; freeMonths: number } {
   const paid = (cs: { status: string; paidAt?: string; amount: number }[]) => sum(cs.filter((c) => c.status === "paid" && (c.paidAt ?? "").slice(0, 10) <= asOf), (c) => c.amount) / 100;
   if (b.plan.billing === "annual" || !b.plan.months?.length) return feesPaid(b, asOf);
   const refunded = sum((b.plan.yearRefunds ?? []).filter((r) => r.early || addMonths(r.yearStart, 12) <= asOf), (r) => r.amount);
   const free = b.plan.freeMonths.filter((d) => (!b.plan.paidOn || d > b.plan.paidOn) && d <= asOf).length;
-  return { total: round2(paid(b.plan.months) + paid(b.plan.charges ?? []) + (b.plan.priorFees ?? 0) - refunded), freeMonths: free };
+  // no first month on the log (or only one cancelled): the months by their dates up to the day before its first month
+  const logStart = b.plan.months.filter((c) => !c.first).map((c) => c.month).sort()[0];
+  const byHand = b.plan.months.some((c) => c.first && c.status !== "skipped") ? 0 : feesThisArrangement(b, logStart && logStart <= asOf ? addDays(logStart, -1) : asOf).total;
+  return { total: round2(byHand + paid(b.plan.months) + paid(b.plan.charges ?? []) + (b.plan.priorFees ?? 0) - refunded), freeMonths: free };
 }
 
 /** Everything charged across billing arrangements, before year-end refunds. */

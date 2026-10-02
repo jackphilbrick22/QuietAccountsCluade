@@ -29,6 +29,7 @@ import {
   redateCharge,
   settleCharges,
   settleMonths,
+  stripeKey,
   textsOf,
   type AccountState,
   type BillingOpts,
@@ -129,12 +130,15 @@ export function withdrawStaleTexts(d: Deps, bid: string): void {
  */
 export async function settleBilling(d: Deps, bid: string): Promise<void> {
   let free: MonthCharge[] = [];
+  let dropped: Charge[] = [];
   await d.accounts.withAccount(bid, (state) => {
     const now = nowOf(d, state);
     const plan = state.dataset.business.plan;
     free = recheck(d, bid, state, now).free;
-    settleCharges(state, now, billingOpts(d, bid));
-    settleMonths(state, now);
+    // a charge cancelled can't be paid on a Checkout its link made (one paid anyway still settles it, for Jack)
+    const { skipped } = settleCharges(state, now, billingOpts(d, bid));
+    dropped = (plan.charges ?? []).filter((c) => skipped.includes(c.id)).map((c) => structuredClone(c));
+    settleMonths(state, now, billingOpts(d, bid));
     for (const c of [...(plan.charges ?? []), ...(plan.months ?? [])]) {
       if (c.via !== "card" || c.status !== "approved" || c.toldAt) continue;
       const m = textsOf(state, c).findLast((x) => x.kind === "charge_card" || x.kind === "precharge");
@@ -144,7 +148,7 @@ export async function settleBilling(d: Deps, bid: string): Promise<void> {
     }
   });
   withdrawStaleTexts(d, bid);
-  for (const c of free) await expireCheckout(d, bid, c);
+  for (const c of [...free, ...dropped]) await expireCheckout(d, bid, c);
 }
 
 /**
@@ -154,7 +158,7 @@ export async function settleBilling(d: Deps, bid: string): Promise<void> {
  */
 function recheck(d: Deps, bid: string, state: AccountState, now: string): { free: MonthCharge[]; skipped: string[] } {
   const out = state.dataset.business.plan.months?.filter((c) => c.status === "link_sent").map((c) => structuredClone(c)) ?? [];
-  const r = recheckMonths(state, now);
+  const r = recheckMonths(state, now, billingOpts(d, bid));
   for (const m of r.rewritten) d.accounts.repo.setOwnerMessageText(bid, m.id, m.text);
   return { free: out.filter((c) => r.skipped.includes(c.id)), skipped: r.skipped };
 }
@@ -175,10 +179,11 @@ export async function runBilling(d: Deps, bid: string): Promise<void> {
   const from = d.notifier.name === "manual" ? CHARGE_FROM_HOUR : 0;
   const due = (on: string) => on < today || (on === today && Number(local.slice(11, 13)) >= from);
   const stale = localIso(new Date(d.clock().getTime() - READ_BACK_MS), tz);
-  // a card Stripe can't charge (a customer pasted with no key, paid outside) waits for Jack in Needs a person
+  // a card Stripe can't charge (a customer pasted with no key, paid outside) waits for Jack in Needs a person, and so
+  // does one waiting on his word (he may have charged it by hand before the key was set, or the owner said no to it)
   const card = cardOnFile(s.dataset.business.plan, true);
   for (const c of [...(s.dataset.business.plan.charges ?? []), ...(s.dataset.business.plan.months ?? [])])
-    if (c.via === "card" && ((card && c.status === "approved" && c.toldAt && due(c.chargeOn ?? today)) || (c.status === "charging" && (c.triedAt ?? "") <= stale))) await chargeCard(d, bid, c.id);
+    if (c.via === "card" && ((card && c.status === "approved" && !c.ask && c.toldAt && due(c.chargeOn ?? today)) || (c.status === "charging" && (c.triedAt ?? "") <= stale))) await chargeCard(d, bid, c.id);
 }
 
 /**
@@ -208,15 +213,23 @@ async function chargeCard(d: Deps, bid: string, id: string): Promise<void> {
     else if (card?.customer && card.paymentMethod) {
       pi = await stripe.createPaymentIntent(
         { amount: c.amount, currency: "usd", customer: card.customer, payment_method: card.paymentMethod, payment_method_types: ["card"], description: name, metadata: { business_id: bid, charge_id: id } },
-        `${id}:pi`,
+        stripeKey(c, "pi"),
       );
       const made = pi.id;
+      let still = false;
       await d.accounts.withAccount(bid, (state) => {
         const x = chargeOf(state, id);
-        if (x) x.stripe = { ...x.stripe, customer: card!.customer, paymentIntent: made, paymentMethod: card!.paymentMethod, brand: card!.brand, last4: card!.last4 };
+        // still this one's to charge: nothing paid it meanwhile, and no other PaymentIntent is its own
+        still = x?.status === "charging" && (!x.stripe?.paymentIntent || x.stripe.paymentIntent === made);
+        if (still) x!.stripe = { ...x!.stripe, customer: card!.customer, paymentIntent: made, paymentMethod: card!.paymentMethod, brand: card!.brand, last4: card!.last4 };
       });
+      // never confirmed, so no money moves
+      if (!still) {
+        d.log(`[billing] ${bid} charge ${id}: not being charged any more; ${made} left unconfirmed`);
+        return;
+      }
     }
-    if (pi?.status === "requires_confirmation") pi = await stripe.confirmPaymentIntent(pi.id, { off_session: true }, `${id}:confirm`);
+    if (pi?.status === "requires_confirmation") pi = await stripe.confirmPaymentIntent(pi.id, { off_session: true }, stripeKey(c, "confirm"));
   } catch (e) {
     // a decline answers with the PaymentIntent as it now stands, and Stripe refusing it outright (the customer or its
     // card gone) fails it, so the link takes over; a lost answer or Stripe's own error leaves it charging, read back later
@@ -250,13 +263,15 @@ async function settleIntent(d: Deps, bid: string, id: string, pi: StripePaymentI
 
 /**
  * The owner said yes to the monthly plan (BRIEF B5): the first month's text, with the /pay link that saves the card (or
- * on the card a one pass saved), waits for Jack's OK. Nothing when a first month stands already.
+ * on the card a one pass saved), waits for Jack's OK. Nothing when a first month stands already. Whether one was made.
  */
-export async function firstMonth(d: Deps, bid: string): Promise<void> {
+export async function firstMonth(d: Deps, bid: string): Promise<boolean> {
+  let made = false;
   await d.accounts.withAccount(bid, (state) => {
-    askFirstMonth(state, nowOf(d, state), billingOpts(d, bid));
+    made = !!askFirstMonth(state, nowOf(d, state), billingOpts(d, bid));
   });
   await deliverOwnerMessages(d, bid);
+  return made;
 }
 
 /**
@@ -368,13 +383,13 @@ export async function openPay(d: Deps, token: string): Promise<PayPage> {
     );
   let session: StripeCheckoutSession;
   try {
-    session = await checkout(`${c.id}:checkout:${n}`);
+    session = await checkout(`${stripeKey(c, "checkout")}:${n}`);
   } catch (e) {
     // the customer is gone from Stripe (deleted since, or a test-mode one): a new one, once
     if (!(e instanceof StripeError) || e.code !== "resource_missing" || !/customer/i.test(e.message)) throw e;
     d.log(`[billing] ${t.bid} charge ${c.id}: ${e.message}; a new Stripe customer`);
     customer = await newCustomer(`${c.id}:customer:${n + 1}`);
-    session = await checkout(`${c.id}:checkout:${n}:${customer}`);
+    session = await checkout(`${stripeKey(c, "checkout")}:${n}:${customer}`);
   }
   await d.accounts.withAccount(t.bid, (state) => {
     const x = chargeOf(state, c.id);
@@ -386,8 +401,10 @@ export async function openPay(d: Deps, token: string): Promise<PayPage> {
 /**
  * One of Stripe's events, once its signature checked out. A link's charge is paid only by its Checkout completing paid
  * (a declined try inside Checkout fires payment_intent.payment_failed while the owner can still retry); one already
- * paid by another payment asks Jack to refund that one. A saved card's settles on its PaymentIntent. Each change is
- * guarded by the charge's status, so a replay changes nothing.
+ * paid by another payment asks Jack to refund that one. A paid Checkout of the charge's is never dropped, whatever the
+ * charge waits for since (its saved card, once it came back for a new booking): while that card is being charged,
+ * Stripe is asked to send it again. A saved card's settles on its PaymentIntent. Each change is guarded by the charge's
+ * status, so a replay changes nothing.
  */
 export async function stripeEvent(d: Deps, ev: StripeEvent): Promise<{ businessId?: string; note?: string }> {
   const o = ev.data.object as { id: string; metadata?: Record<string, string> };
@@ -408,7 +425,8 @@ export async function stripeEvent(d: Deps, ev: StripeEvent): Promise<{ businessI
   };
   if (ev.type === "checkout.session.completed") {
     const session = ev.data.object as Pick<StripeCheckoutSession, "payment_status" | "payment_intent" | "customer">;
-    if (session.payment_status !== "paid" || c.via !== "link") return { businessId: bid, note: "not paid" };
+    if (session.payment_status !== "paid") return { businessId: bid, note: "not paid" };
+    if (c.status === "charging") throw new Error("Its saved card is being charged right now: settled when Stripe sends this again");
     return { businessId: bid, note: (await settleCheckout(d, bid, id, session)) ? undefined : "nothing to change" };
   }
   // a saved card's own PaymentIntent, never one a link's Checkout made
@@ -421,15 +439,24 @@ export async function stripeEvent(d: Deps, ev: StripeEvent): Promise<{ businessI
 
 /**
  * A link's Checkout Stripe says was paid (its webhook, or the /pay link opened again before that came): the charge is
- * paid, the card saved; one paid already by another payment asks Jack to refund that one. Once a payment.
+ * paid by its link, the card saved; one paid already by another payment asks Jack to refund that one. Once a payment.
  */
 async function settleCheckout(d: Deps, bid: string, id: string, session: Pick<StripeCheckoutSession, "payment_intent" | "customer">): Promise<boolean> {
   const pi = session.payment_intent ? await d.stripe!.retrievePaymentIntent(session.payment_intent) : undefined;
   let changed = false;
+  let charging = false;
   await d.accounts.withAccount(bid, (state) => {
     const now = nowOf(d, state);
+    const c = chargeOf(state, id);
+    // its saved card is being charged right now (claimed while this was on its way): never marked paid by this
+    // payment, which is a second one once the card's settles. Stripe sends it again.
+    charging = c?.status === "charging";
+    if (charging) return;
+    // a Checkout its link made before it came back on the saved card: paid there, it's paid by its link
+    if (c && c.status !== "paid" && c.status !== "refunded") c.via = "link";
     changed = chargePaid(state, id, now, { by: "stripe", stripe: { customer: session.customer ?? undefined, paymentIntent: pi?.id, ...cardOf(pi) } }) || (!!pi && paidTwice(state, id, now, pi.id));
   });
+  if (charging) throw new Error("Its saved card is being charged right now: settled when Stripe sends this again");
   if (changed) {
     withdrawStaleTexts(d, bid);
     await deliverOwnerMessages(d, bid);
@@ -440,18 +467,22 @@ async function settleCheckout(d: Deps, bid: string, id: string, session: Pick<St
 /**
  * Jack's answer to a charge waiting on him: refund it (through Stripe when Stripe charged it, else he already did it
  * himself), or keep it. A refund frees its place under the cap and its text to the owner waits for his OK. A second
- * payment is that payment refunded, the charge as it was.
+ * payment is that payment refunded, the charge as it was. One he collects by hand that may be collected already: kept,
+ * he collected it (paid); `charged` with a refund, he collected it and gave it back (paid, then refunded); a refund
+ * alone, he never collected it (cancelled).
  */
-export async function decideChargeOp(d: Deps, bid: string, id: string, refund: boolean): Promise<{ done: "refunded" | "skipped" | "kept"; by?: "stripe" | "hand" } | { refused: string }> {
+export async function decideChargeOp(d: Deps, bid: string, id: string, refund: boolean, charged = false): Promise<{ done: "refunded" | "skipped" | "kept"; by?: "stripe" | "hand" } | { refused: string }> {
   if (!d.accounts.repo.exists(bid)) throw new NotFound("No such business");
   let r: ReturnType<typeof decideCharge>;
   let pi: string | undefined;
   let again = false;
+  let key = `${id}:refund`;
   await d.accounts.withAccount(bid, (state) => {
-    r = decideCharge(state, id, refund, nowOf(d, state));
+    r = decideCharge(state, id, refund, nowOf(d, state), charged);
     const c = chargeOf(state, id);
     again = c?.ask?.kind === "paid_twice";
     pi = again ? c!.ask!.paymentIntent : c?.stripe?.paymentIntent;
+    if (c) key = again ? `${id}:refund:${pi}` : stripeKey(c, "refund");
   });
   if (!r!) return { refused: "That charge isn't waiting for you (or it's being charged right now)." };
   if (r! !== "refund") {
@@ -459,7 +490,7 @@ export async function decideChargeOp(d: Deps, bid: string, id: string, refund: b
     return { done: r! };
   }
   const viaStripe = !!d.stripe && !!pi;
-  const refundId = viaStripe ? (await d.stripe!.createRefund({ payment_intent: pi! }, again ? `${id}:refund:${pi}` : `${id}:refund`)).id : undefined;
+  const refundId = viaStripe ? (await d.stripe!.createRefund({ payment_intent: pi! }, key)).id : undefined;
   await d.accounts.withAccount(bid, (state) => {
     chargeRefunded(state, id, nowOf(d, state), refundId);
   });
@@ -500,7 +531,8 @@ export async function markPaid(d: Deps, bid: string, who: Parameters<typeof mark
 
 /**
  * A link charge's text again for Jack's OK, with its link as it is now: one charge (the owner lost the text), or each
- * one out after "Replace all links". Its texts not sent yet carry the old link, so they never go. The texts made.
+ * one out after "Replace all links". Its texts not sent yet carry the old link (a month's pre-charge text too), so they
+ * never go. The texts made.
  */
 export async function sendLinkAgain(d: Deps, bid: string, chargeId?: string): Promise<string[]> {
   const made: string[] = [];
@@ -508,7 +540,7 @@ export async function sendLinkAgain(d: Deps, bid: string, chargeId?: string): Pr
   await d.accounts.withAccount(bid, (state) => {
     for (const c of [...(state.dataset.business.plan.charges ?? []), ...(state.dataset.business.plan.months ?? [])]) {
       if (chargeId && c.id !== chargeId) continue;
-      const before = textsOf(state, c).filter((m) => m.kind === "charge_link" || m.kind === "charge_retry");
+      const before = textsOf(state, c).filter((m) => m.kind === "charge_link" || m.kind === "charge_retry" || m.kind === "precharge");
       const m = linkAgain(state, c.id, nowOf(d, state), billingOpts(d, bid));
       if (!m) continue;
       made.push(m.id);

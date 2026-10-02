@@ -32,9 +32,9 @@ afterEach(() => {
 });
 
 /** A server with a Stripe test key and the fake behind it (or, `stripe: false`, billing by hand), Tuesday Oct 20, 10am in New Hampshire. */
-function make(opts: { stripe?: boolean; notifier?: OwnerNotifier } = {}): { h: Harness; fake: FakeStripe } {
+function make(opts: { stripe?: boolean; notifier?: OwnerNotifier; wrap?: (f: typeof fetch) => typeof fetch } = {}): { h: Harness; fake: FakeStripe } {
   const fake = fakeStripe();
-  const withKey = opts.stripe !== false ? { stripe: createStripeClient({ key: SK, fetch: fake.fetch }), env: { STRIPE_SECRET_KEY: SK, STRIPE_WEBHOOK_SECRET: WHSEC } } : {};
+  const withKey = opts.stripe !== false ? { stripe: createStripeClient({ key: SK, fetch: opts.wrap?.(fake.fetch) ?? fake.fetch }), env: { STRIPE_SECRET_KEY: SK, STRIPE_WEBHOOK_SECRET: WHSEC } } : {};
   const h = harness({ now: "2026-10-20T14:00:00Z", notifier: opts.notifier, ...withKey });
   open.push(h);
   return { h, fake };
@@ -864,6 +864,118 @@ describe("by hand (no Stripe key)", () => {
     expect((await h.app.request("/webhooks/stripe", { method: "POST", body: "{}" })).status).toBe(404);
   });
 
+  it("NOT OURS after a saved card's day: Jack may have charged it already, so he's asked, never cancelled outright", async () => {
+    const { h } = make({ stripe: false });
+    await pass(h);
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: "cus_PQ8x2LmN0aB1cD" });
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "card", customerId: "c0" });
+    // nothing says it was charged: Jack may not have charged it yet
+    expect(await h.sms(`NOT OURS #${code}`)).toBe(`Got it. Jack will check whether the $250 for Karen Whitfield (#${code}) was charged, and text you.`);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", ask: { kind: "not_ours" } });
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ customerId: "c0", ask: "not_ours", status: "approved" });
+  });
+
+  /** Karen (c0) booked on the card Jack pasted, her text approved and sent Tue Oct 20; Wed Oct 21, 1pm: "Charge his saved card". Her code. */
+  async function cardDue(h: Harness): Promise<string> {
+    await pass(h);
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: "cus_PQ8x2LmN0aB1cD" });
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    expect(await approveAll(h)).toEqual([`Karen Whitfield booked (#${code}). $250 goes on your card on Wednesday, $250 of your $1,000. Not ours? Reply NOT OURS #${code}.`]);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "card", customerId: "c0" });
+    return code;
+  }
+  const decide = (h: Harness, body: { refund: boolean; charged?: boolean }) => h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(chargeOf(h, "c0")!.id)}/decide`, body);
+
+  it("NOT OURS after a saved card's day, then Jack's answer: he hadn't charged it, he charged it and keeps it, or he charged and refunded it", async () => {
+    // he hadn't: cancelled, and never back on his list
+    const { h: none } = make({ stripe: false });
+    await none.sms(`NOT OURS #${await cardDue(none)}`);
+    expect((await decide(none, { refund: true })).json).toMatchObject({ ok: true, done: "skipped" });
+    await tick(none.d);
+    expect(chargeOf(none, "c0")).toMatchObject({ status: "skipped", reason: "The owner texted NOT OURS" });
+    expect((await review(none)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+    // he had, and keeps it: paid, and "Charge his saved card" never comes back
+    const { h: kept } = make({ stripe: false });
+    await kept.sms(`NOT OURS #${await cardDue(kept)}`);
+    expect((await decide(kept, { refund: false })).json).toMatchObject({ ok: true, done: "kept" });
+    await tick(kept.d);
+    expect(chargeOf(kept, "c0")).toMatchObject({ status: "paid", reason: "Paid outside the software" });
+    expect((await review(kept)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+    // he had, and refunded it in Stripe: refunded, its place free, and the owner's refund text waits for his OK
+    const { h: back } = make({ stripe: false });
+    const code = await cardDue(back);
+    await back.sms(`NOT OURS #${code}`);
+    expect((await decide(back, { refund: true, charged: true })).json).toMatchObject({ ok: true, done: "refunded", by: "hand" });
+    expect(chargeOf(back, "c0")).toMatchObject({ status: "refunded", reason: "The owner texted NOT OURS" });
+    expect((await moneyTexts(back)).map((x) => x.text)).toEqual([`Your $250 for Karen Whitfield (#${code}) is going back on your card.`]);
+    expect((await review(back)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+  });
+
+  it("a card booking that drops out after its day (NO #code): Jack may have charged it, so he's asked; booked again, the same charge stands, never a second", async () => {
+    const { h } = make({ stripe: false });
+    const code = await cardDue(h);
+    expect(await h.sms(`NO #${code}`)).toMatch(/^Got it — Karen Whitfield marked not a fit\./);
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", ask: { kind: "refund", why: "Its booking is off the ledger, when you may have charged it by hand" } });
+    const items = await review(h);
+    expect(items.filter((x) => x.kind === "charge_due")).toEqual([]);
+    expect(items.find((x) => x.kind === "charge_ask")).toMatchObject({ customerId: "c0", ask: "refund", status: "approved", refundBy: "hand" });
+    // she books again Thursday: the charge stands for that booking, with no second text and no second charge
+    h.setNow("2026-10-22T14:00:00Z");
+    await booked(h, code);
+    await tick(h.d);
+    expect(charges(h)).toHaveLength(1);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", bookedOn: "2026-10-22" });
+    expect(chargeOf(h, "c0")!.ask).toBeUndefined();
+    expect(chargeOf(h, "c0")!.revived).toBeUndefined();
+    expect(await moneyTexts(h)).toEqual([]);
+    expect((await review(h)).filter((x) => x.kind === "charge_due")).toMatchObject([{ customerId: "c0", via: "card" }]);
+  });
+
+  it("a card booking whose job an import shows cancelled after its day: Jack is asked; he hadn't charged it, so it's cancelled, and a real booking bills anew", async () => {
+    const { h } = make({ stripe: false });
+    await cardDue(h);
+    await exported(h, "c0", "2026-10-20", "cancelled");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", ask: { kind: "refund", why: "The job was cancelled before the work, when you may have charged it by hand" } });
+    expect((await review(h)).filter((x) => x.kind === "charge_due")).toEqual([]);
+    expect((await decide(h, { refund: true })).json).toMatchObject({ ok: true, done: "skipped" });
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "skipped", dropped: true });
+    // the job is back on: billed with a text of its own for Jack's OK
+    h.setNow("2026-10-23T14:00:00Z");
+    await exported(h, "c0", "2026-10-23", "scheduled", "job-c0-b");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "heads_up", revived: 1 });
+    expect(await moneyTexts(h)).toHaveLength(1);
+  });
+
+  it("the $250 link Jack was told to send, whose booking drops out before Done: he's asked; he collected and refunded it, so it's recorded and the owner hears", async () => {
+    const { h } = make({ stripe: false });
+    await pass(h);
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "link", customerId: "c0" });
+    await exported(h, "c0", "2026-10-20", "cancelled");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", ask: { kind: "refund", why: "The job was cancelled before the work, when you may have collected it by hand" } });
+    expect((await review(h)).filter((x) => x.kind === "charge_due")).toEqual([]);
+    expect((await decide(h, { refund: true, charged: true })).json).toMatchObject({ ok: true, done: "refunded", by: "hand" });
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "refunded", dropped: true, reason: "The job was cancelled before the work, when you may have collected it by hand" });
+    expect((await moneyTexts(h)).map((x) => x.text)).toEqual([`Your $250 for Karen Whitfield (#${code}) is going back on your card.`]);
+  });
+
   it("a refund by hand: Jack refunds it himself, then says so", async () => {
     const { h } = make({ stripe: false });
     await pass(h);
@@ -894,6 +1006,16 @@ describe("a cancelled one pass", () => {
     expect(texts[0]).toMatch(/^Karen Whitfield booked/);
     expect(h.d.accounts.repo.ownerMessages("ridge").find((m) => m.kind === "charge_link")!.delivery).toBe("sent");
     expect(charges(h).map((c) => c.customerId)).toEqual(["c0"]);
+  });
+
+  it("a booking texted with no amount is one of the bookings it counts, and the console's too", async () => {
+    const { h } = make({ stripe: false });
+    await pass(h);
+    h.setNow("2026-10-19T14:00:00Z");
+    expect(await h.sms(`BOOKED #${await wrote(h, "c0", "2026-10-08")}`)).toMatch(/^Booked: Karen Whitfield\. What's the job worth\?/);
+    expect((await h.api("GET", "/api/businesses/ridge")).json).toMatchObject({ totals: { booked: 1 }, billing: { billable: 1 } });
+    h.setNow("2026-10-20T14:00:00Z");
+    expect(await h.sms("CANCEL")).toMatch(/^Done — cancelled\. No more notes, and nothing that books from today on is charged\. The job booked before today is still \$250, and I text before every charge\. So far: 1 booked, \$0 on your ledger/);
   });
 
   it("with nothing owed, it's no more charges", async () => {
@@ -1038,6 +1160,284 @@ describe("a booking that drops out before its charge, then books for real", () =
     await tick(h.d);
     expect(chargeOf(h, "c0")!.status).toBe("paid");
     expect(fake.kept()).toHaveLength(1);
+  });
+});
+
+describe("a Checkout still open when its charge came back on the saved card", () => {
+  /** Karen's link text approved and opened (its Checkout left open), then NO: the charge is skipped. The session. */
+  async function openedThenNo(h: Harness, fake: FakeStripe, opts: { expireLost?: boolean } = {}): Promise<{ code: string; sid: string }> {
+    await pass(h);
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    const [text] = await approveAll(h);
+    const sid = (await openPay(h, payToken(text!))).location!.split("/").pop()!;
+    await h.sms(`NO #${code}`);
+    if (opts.expireLost) fake.dropNext("/expire", "before");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "skipped", dropped: true });
+    return { code, sid };
+  }
+
+  it("its Checkout is expired when the charge is skipped, so only the card's charge for the new booking goes through", async () => {
+    const { h, fake } = make();
+    const { code, sid } = await openedThenNo(h, fake);
+    expect(fake.sessions.get(sid)!.status).toBe("expired");
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("4242").customer });
+    h.setNow("2026-10-20T20:00:00Z");
+    await booked(h, code);
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "heads_up", via: "card" });
+    await approveAll(h);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")!.status).toBe("paid");
+    expect(fake.kept()).toHaveLength(1);
+  });
+
+  it("one paid anyway (its expiry never reached Stripe) pays the charge: its card text is withdrawn and the card never charged", async () => {
+    const { h, fake } = make();
+    const { code, sid } = await openedThenNo(h, fake, { expireLost: true });
+    expect(fake.sessions.get(sid)!.status).toBe("open");
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("4242").customer });
+    h.setNow("2026-10-20T20:00:00Z");
+    await booked(h, code);
+    await tick(h.d);
+    const [card] = await moneyTexts(h);
+    expect(card).toMatchObject({ messageKind: "charge_card" });
+    // he pays the page he still has open
+    for (const ev of fake.pay(sid)) expect((await hook(h, ev)).status).toBe(200);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "paid", via: "link" });
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", card!.messageId)!.delivery).toBe("cancelled");
+    expect(await moneyTexts(h)).toEqual([]);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect(made(fake)).toEqual([]);
+    expect(fake.kept()).toHaveLength(1);
+  });
+
+  it("a declined card's retry link opened, NO, then BOOKED: that page paid settles the charge, never a second try on the card", async () => {
+    const { h, fake } = make();
+    await pass(h);
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("0002").customer });
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T13:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")!.status).toBe("failed");
+    const [retry] = await approveAll(h);
+    const sid = (await openPay(h, payToken(retry!))).location!.split("/").pop()!;
+    await h.sms(`NO #${code}`);
+    fake.dropNext("/expire", "before");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "skipped", dropped: true });
+    h.setNow("2026-10-21T20:00:00Z");
+    await booked(h, code);
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "heads_up", via: "card" });
+    for (const ev of fake.pay(sid)) expect((await hook(h, ev)).status).toBe(200);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "paid", via: "link" });
+    expect(await moneyTexts(h)).toEqual([]);
+    h.setNow("2026-10-23T13:00:00Z");
+    await tick(h.d);
+    expect(made(fake)).toHaveLength(1);
+    expect(fake.kept()).toHaveLength(1);
+  });
+
+  it("paid while the saved card is being charged: Stripe is asked to send it again, and then it's a second payment for Jack", async () => {
+    const { h, fake } = make();
+    const { code, sid } = await openedThenNo(h, fake, { expireLost: true });
+    const { customer } = fake.customerWithCard("0077");
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer });
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")!.status).toBe("charging");
+    const events = fake.pay(sid);
+    const completed = events.find((e) => e.type === "checkout.session.completed")!;
+    expect((await hook(h, completed)).status).toBe(500);
+    expect(chargeOf(h, "c0")!.status).toBe("charging");
+    // the card goes through, then Stripe sends the Checkout's event again
+    expect((await hook(h, fake.settle(chargeOf(h, "c0")!.stripe!.paymentIntent!, true))).status).toBe(200);
+    expect(chargeOf(h, "c0")!.status).toBe("paid");
+    expect((await hook(h, completed)).status).toBe(200);
+    const ask = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect(ask).toMatchObject({ customerId: "c0", ask: "paid_twice" });
+  });
+});
+
+describe("an old Checkout paid just as the worker starts its saved card", () => {
+  it("the webhook looks at the charge as it is then: never marked paid by the Checkout while the card is being charged, so the second payment goes to Jack", async () => {
+    // Stripe's calls can be held: the webhook's look at the Checkout's PaymentIntent, and the worker making the card's
+    let hold: { get?: string; onGet?: () => Promise<void>; onCreate?: () => Promise<void> } = {};
+    const { h, fake } = make({
+      wrap: (f) => async (input, init) => {
+        const url = new URL(String(input));
+        const method = init?.method ?? "GET";
+        if (method === "GET" && url.pathname === `/v1/payment_intents/${hold.get}` && hold.onGet) {
+          const go = hold.onGet;
+          hold.onGet = undefined;
+          await go();
+        }
+        if (method === "POST" && url.pathname === "/v1/payment_intents" && hold.onCreate) {
+          const go = hold.onCreate;
+          hold.onCreate = undefined;
+          await go();
+        }
+        return f(input, init);
+      },
+    });
+    // Karen's link opened (its Checkout left open: the expiry never reached Stripe), then NO; she books again on the card
+    await pass(h);
+    const code = await wrote(h, "c0", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    const [text] = await approveAll(h);
+    const sid = (await openPay(h, payToken(text!))).location!.split("/").pop()!;
+    await h.sms(`NO #${code}`);
+    fake.dropNext("/expire", "before");
+    await tick(h.d);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "skipped", dropped: true });
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("4242").customer });
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "approved", via: "card" });
+    // Wednesday: the owner pays the old page as the worker starts the card. The webhook read the charge before the worker
+    // claimed it; the worker's PaymentIntent is held until the webhook is done.
+    h.setNow("2026-10-21T17:00:00Z");
+    const completed = fake.pay(sid).find((e) => e.type === "checkout.session.completed")!;
+    const checkoutPi = (completed.data.object as { payment_intent: string }).payment_intent;
+    let arrived!: () => void;
+    const creating = new Promise<void>((r) => (arrived = r));
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let worker: Promise<unknown> | undefined;
+    hold = {
+      get: checkoutPi,
+      onGet: async () => {
+        worker = tick(h.d);
+        await creating;
+      },
+      onCreate: async () => {
+        arrived();
+        await released;
+      },
+    };
+    expect((await hook(h, completed)).status).toBe(500);
+    release();
+    await worker;
+    const cardPi = chargeOf(h, "c0")!.stripe!.paymentIntent!;
+    expect(cardPi).not.toBe(checkoutPi);
+    expect(chargeOf(h, "c0")).toMatchObject({ status: "paid", via: "card" });
+    // Stripe sends the Checkout's event again: it's a second payment, for Jack to refund or keep
+    expect((await hook(h, completed)).status).toBe(200);
+    expect(chargeOf(h, "c0")!.stripe).toMatchObject({ paymentIntent: cardPi, again: [checkoutPi] });
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ customerId: "c0", ask: "paid_twice" });
+  });
+});
+
+describe("a declined card's charge that came back for a new booking", () => {
+  it("is tried on the card on file now, never answered with the old decline", async () => {
+    const { h, fake } = make();
+    await pass(h);
+    const { customer } = fake.customerWithCard("0002");
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer });
+    const code = await wrote(h, "c1", "2026-10-08");
+    await booked(h, code);
+    await exported(h, "c1", "2026-10-19", "scheduled");
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T13:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")).toMatchObject({ status: "failed" });
+    // Jack pastes the owner's other card; the job moves: cancelled, and made again the same day
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: fake.customerWithCard("4242").customer });
+    await exported(h, "c1", "2026-10-19", "cancelled");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")).toMatchObject({ status: "skipped", dropped: true });
+    await exported(h, "c1", "2026-10-21", "scheduled", "job-c1-new");
+    await tick(h.d);
+    const texts = (await moneyTexts(h)).filter((x) => x.messageKind === "charge_card");
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.text).toMatch(/goes on your card ending 4242 on Thursday/);
+    await approve(h, texts[0]!.messageId);
+    h.setNow("2026-10-22T13:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")).toMatchObject({ status: "paid", stripe: { last4: "4242" } });
+    expect(made(fake).map((c) => c.key)).toEqual([`${chargeOf(h, "c1")!.id}:pi`, `${chargeOf(h, "c1")!.id}:pi:1`]);
+    expect(fake.kept()).toHaveLength(1);
+  });
+});
+
+describe("a charge refunded because its job was cancelled, then booked again", () => {
+  it("comes back for the new booking: its text for Jack, a PaymentIntent of its own, and a refund of its own if it goes again", async () => {
+    const { h, fake } = make();
+    await pass(h);
+    await firstPaid(h, fake);
+    const code = await wrote(h, "c1", "2026-10-08");
+    await booked(h, code);
+    await exported(h, "c1", "2026-10-19", "scheduled");
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")!.status).toBe("paid");
+    // his job is cancelled before the work: Jack refunds it
+    h.setNow("2026-10-26T14:00:00Z");
+    await exported(h, "c1", "2026-10-19", "cancelled");
+    await tick(h.d);
+    const ask = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect(ask).toMatchObject({ customerId: "c1", ask: "refund", why: "The job was cancelled before the work" });
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${ask.chargeId}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "refunded", by: "stripe" });
+    expect(fake.kept()).toHaveLength(1);
+    await approveAll(h);
+    // rescheduled: the job is made again, and the owner says so
+    h.setNow("2026-11-02T15:00:00Z");
+    await exported(h, "c1", "2026-11-02", "scheduled", "job-c1-new");
+    await h.sms(`BOOKED 2400 #${code}`);
+    await tick(h.d);
+    expect(chargeOf(h, "c1")).toMatchObject({ status: "heads_up", bookedOn: "2026-11-02", via: "card" });
+    expect((await h.api("GET", "/api/businesses/ridge")).json.billing).toMatchObject({ billable: 2 });
+    const [m] = await moneyTexts(h);
+    expect(m!.text).toBe(`Mike Sanderson booked (#${code}). $250 goes on your card ending 4242 on Tuesday, $500 of your $1,000. Not ours? Reply NOT OURS #${code}.`);
+    await approve(h, m!.messageId);
+    h.setNow("2026-11-03T15:00:00Z");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")!.status).toBe("paid");
+    expect(fake.kept()).toHaveLength(2);
+    // cancelled again: refunded again, for real
+    h.setNow("2026-11-05T15:00:00Z");
+    await exported(h, "c1", "2026-11-02", "cancelled", "job-c1-new");
+    await tick(h.d);
+    const again = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${again.chargeId}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "refunded", by: "stripe" });
+    expect(fake.kept()).toHaveLength(1);
+  });
+
+  it("not when it was refunded for anything but its booking dropping out (NOT OURS)", async () => {
+    const { h, fake } = make();
+    await pass(h);
+    await firstPaid(h, fake);
+    const code = await wrote(h, "c1", "2026-10-08");
+    await booked(h, code);
+    await tick(h.d);
+    await approveAll(h);
+    h.setNow("2026-10-21T17:00:00Z");
+    await tick(h.d);
+    await h.sms(`NOT OURS #${code}`);
+    const ask = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${ask.chargeId}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "refunded" });
+    await approveAll(h);
+    h.setNow("2026-11-02T15:00:00Z");
+    await exported(h, "c1", "2026-11-02", "scheduled", "job-c1-new");
+    await tick(h.d);
+    expect(chargeOf(h, "c1")).toMatchObject({ status: "refunded", reason: "The owner texted NOT OURS" });
+    expect(await moneyTexts(h)).toEqual([]);
   });
 });
 
@@ -1358,6 +1758,181 @@ describe("the monthly offer at a one pass's end", () => {
     const [m] = (await moneyTexts(h)).filter((x) => x.text.includes("$497"));
     expect(m!.messageKind).toBe("charge_link");
     expect(m!.text).toMatch(/^Dave, here's the link for your first month, \$497: https:\/\/qa\.test\/pay\//);
+  });
+});
+
+describe("a bare 'Ok' once another text reached the owner after the question", () => {
+  /** The owner's lawn business on the same cell, its free 150's close sent to him (approved by Jack) at `at`. */
+  async function lawnClose(h: Harness, at: string): Promise<void> {
+    await h.business("lawn", { name: "Ridgeline Lawn Care", trade: "lawn" });
+    await h.d.accounts.withAccount("lawn", (s) => {
+      s.trialCompletedOn = "2026-10-16";
+      s.ownerMessages.push({ id: "om-close", at: "2026-10-19T09:00:00", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday and the next batch goes out next week." });
+    });
+    h.setNow(at);
+    await tick(h.d);
+    expect((await h.api("POST", "/api/businesses/lawn/owner-messages/om-close/send")).json.ok).toBe(true);
+  }
+  const lawnMonths = (h: Harness) => h.d.accounts.peek("lawn")!.state.dataset.business.plan.months ?? [];
+
+  it("a money text from his other business since the close: Jack reads it, and no first month is asked for", async () => {
+    const { h, fake } = make();
+    const mid = await cardPass(h, fake);
+    await lawnClose(h, "2026-10-20T14:00:00Z");
+    h.setNow("2026-10-20T16:00:00Z");
+    expect((await approve(h, mid)).json.ok).toBe(true);
+    expect(await h.sms("Ok thanks")).toBe("Ridgeline Lawn Care: Got it — Jack will read this and get back to you.");
+    expect(h.d.accounts.repo.ownerTexts("lawn")[0]).toMatchObject({ handled: "close_unclear", needs_person: 1 });
+    expect(lawnMonths(h)).toEqual([]);
+  });
+
+  it("a pre-charge text from his other business since a one pass's end text: Jack reads it, and no first month is asked for", async () => {
+    const { h, fake } = make();
+    await cardPass(h, fake);
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.dataset.business.plan.stage = "done";
+      s.ownerMessages.push({ id: "om-end", at: "2026-10-20T09:00:00", kind: "pass_end", text: "Dave, your list is done.\n\nThat's enough to keep this going monthly: reply here and Jack will text you how it works.", refs: [{ kind: "monthly_offer", id: "2026-10-20" }] });
+    });
+    await tick(h.d);
+    expect((await approve(h, "om-end")).json.ok).toBe(true);
+    await h.business("lawn", { name: "Ridgeline Lawn Care", trade: "lawn" });
+    await h.d.accounts.withAccount("lawn", (s) => {
+      s.ownerMessages.push({ id: "om-pre", at: "2026-10-21T09:00:00", kind: "precharge", text: "Dave, here's who came back since October 20:\nYour next month starts October 23: $497 goes on your card ending 4242 that day." });
+    });
+    h.setNow("2026-10-21T14:00:00Z");
+    await tick(h.d);
+    expect((await h.api("POST", "/api/businesses/lawn/owner-messages/om-pre/send")).json.ok).toBe(true);
+    expect(await h.sms("Ok")).toBe("Ridgeline Tree Co.: Got it — Jack will read this and get back to you.");
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "pass_end_unclear", needs_person: 1 });
+    expect(state(h).dataset.business.plan.months ?? []).toEqual([]);
+  });
+
+  it("a hand-off since the close, on one business: Jack reads it; with nothing since, a yes is still the yes", async () => {
+    const { h } = make();
+    await h.business("ridge");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.trialCompletedOn = "2026-10-16";
+      s.ownerMessages.push({ id: "om-close", at: "2026-10-19T09:00:00", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday and the next batch goes out next week." });
+    });
+    await tick(h.d);
+    expect((await approve(h, "om-close")).json.ok).toBe(true);
+    // a late reply, handed to him the next day
+    h.setNow("2026-10-21T14:00:00Z");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-hand", at: "2026-10-21T10:00:00", kind: "handoff", text: "Karen Whitfield wants the work (#K7Q). Call her: (603) 555-0142." });
+    });
+    await tick(h.d);
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", "om-hand")!.delivery).toBe("sent");
+    expect(await h.sms("Ok thanks, will call her")).toBe("Got it — Jack will read this and get back to you.");
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "close_unclear", needs_person: 1 });
+    expect(state(h).dataset.business.plan.months ?? []).toEqual([]);
+    // MONTHLY says it plainly
+    expect(await h.sms("MONTHLY")).toBe("Great — month to month it is. Jack will text you the payment link.");
+    expect(state(h).dataset.business.plan.months).toMatchObject([{ first: true }]);
+  });
+});
+
+describe("a yes to the close that says so plainly, whatever reached his phone since", () => {
+  /** Ridgeline's free 150 is done, and its close went to him (Jack approved it) Tuesday Oct 20. */
+  async function closed(h: Harness): Promise<void> {
+    await h.business("ridge");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.trialCompletedOn = "2026-10-16";
+      s.ownerMessages.push({ id: "om-close", at: "2026-10-19T09:00:00", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday and the next batch goes out next week." });
+    });
+    await tick(h.d);
+    expect((await approve(h, "om-close")).json.ok).toBe(true);
+  }
+  const months = (h: Harness) => state(h).dataset.business.plan.months ?? [];
+  const YES = "Great — Jack will text you the payment link, and the next batch goes out next week.";
+
+  it("after Friday's weekly report: his 'Yes, let's keep going' asks for the first month", async () => {
+    const { h } = make();
+    await closed(h);
+    h.setNow("2026-10-23T20:00:00Z");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-week", at: "2026-10-23T16:00:00", kind: "weekly", text: "Dave, your week: 40 notes out, 3 wrote back." });
+    });
+    await tick(h.d);
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", "om-week")!.delivery).toBe("sent");
+    h.setNow("2026-10-23T21:00:00Z");
+    expect(await h.sms("Yes, let's keep going")).toBe(YES);
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "accepted_close" });
+    expect(months(h)).toMatchObject([{ first: true, status: "heads_up" }]);
+  });
+
+  it("after a hand-off: 'Sure, sign me up' is the yes; 'Ok thanks' is Jack's to read", async () => {
+    const { h } = make();
+    await closed(h);
+    h.setNow("2026-10-21T14:00:00Z");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-hand", at: "2026-10-21T10:00:00", kind: "handoff", text: "Karen Whitfield wants the work (#K7Q). Call her: (603) 555-0142." });
+    });
+    await tick(h.d);
+    expect(await h.sms("Ok thanks")).toBe("Got it — Jack will read this and get back to you.");
+    expect(months(h)).toEqual([]);
+    expect(await h.sms("Sure, sign me up")).toBe(YES);
+    expect(months(h)).toMatchObject([{ first: true }]);
+  });
+
+  it("texts by hand: our answer to his question, texted and marked sent, isn't something his 'Yes' answers", async () => {
+    const { h } = make({ notifier: new ManualNotifier() });
+    await h.business("ridge");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.trialCompletedOn = "2026-10-16";
+      s.ownerMessages.push({ id: "om-close", at: "2026-10-19T09:00:00", kind: "close", text: "Dave, the free 150 is done. Say yes by Friday and the next batch goes out next week." });
+    });
+    await tick(h.d);
+    expect((await approve(h, "om-close")).json.delivery).toBe("manual");
+    expect((await h.api("POST", "/api/businesses/ridge/owner-messages/om-close/sent")).json.ok).toBe(true);
+    h.setNow("2026-10-20T15:00:00Z");
+    expect((await h.api("POST", "/api/businesses/ridge/owner-texts", { text: "How does the billing work?" })).json).toMatchObject({ handled: "unrecognized", queued: true });
+    const answer = h.d.accounts.repo.ownerMessages("ridge").find((m) => m.kind === "reply")!;
+    h.setNow("2026-10-20T15:05:00Z");
+    expect((await h.api("POST", `/api/businesses/ridge/owner-messages/${encodeURIComponent(answer.id)}/sent`)).json.ok).toBe(true);
+    h.setNow("2026-10-20T16:00:00Z");
+    expect((await h.api("POST", "/api/businesses/ridge/owner-texts", { text: "Yes" })).json).toMatchObject({ handled: "accepted_close", reply: YES });
+    expect(months(h)).toMatchObject([{ first: true }]);
+  });
+
+  it("an 'Ok' Jack reads himself: Needs a person can ask for the first month, once", async () => {
+    const { h } = make();
+    await closed(h);
+    h.setNow("2026-10-21T14:00:00Z");
+    await h.d.accounts.withAccount("ridge", (s) => {
+      s.ownerMessages.push({ id: "om-hand", at: "2026-10-21T10:00:00", kind: "handoff", text: "Karen Whitfield wants the work (#K7Q). Call her: (603) 555-0142." });
+    });
+    await tick(h.d);
+    await h.sms("Ok");
+    expect((await review(h)).find((x) => x.kind === "owner_text")).toMatchObject({ handled: "close_unclear", text: "Ok" });
+    expect(months(h)).toEqual([]);
+    expect((await h.api("POST", "/api/businesses/ridge/first-month")).json).toEqual({ ok: true });
+    expect(months(h)).toMatchObject([{ first: true, status: "heads_up", via: "link" }]);
+    expect((await moneyTexts(h)).map((x) => x.messageKind)).toEqual(["charge_link"]);
+    expect((await h.api("POST", "/api/businesses/ridge/first-month")).status).toBe(409);
+    expect(months(h)).toHaveLength(1);
+  });
+});
+
+describe("money texts made at once", () => {
+  it("come in the charge log's order, and each names the running total as of Jack's OK: one approved out of order never counts one the owner wasn't told about", async () => {
+    const { h, fake } = make();
+    await pass(h);
+    await firstPaid(h, fake);
+    // Mike, Ann and Bob booked by text before the worker's next turn: three texts, made at once
+    for (const cid of ["c1", "c2", "c3"]) await booked(h, await wrote(h, cid, "2026-10-08"));
+    await tick(h.d);
+    const texts = await moneyTexts(h);
+    expect(new Set(texts.map((x) => x.at)).size).toBe(1);
+    expect(texts.map((x) => x.text.split(" booked")[0])).toEqual(charges(h).slice(1).map((c) => NAMES[Number(c.customerId.slice(1))]));
+    const [first, second, third] = texts.map((x) => ({ mid: x.messageId as string, code: charges(h).find((c) => x.text.includes(`#${c.code}`))!.code }));
+    // Jack approves the last first: it's the second $250 the owner hears of
+    expect((await approve(h, third!.mid)).json.ok).toBe(true);
+    expect(textNow(h, third!.mid)).toMatch(new RegExp(`^\\w+ \\w+ booked \\(#${third!.code}\\)\\. \\$250 goes on your card ending 4242 on Wednesday, \\$500 of your \\$1,000\\.`));
+    expect((await approve(h, first!.mid)).json.ok).toBe(true);
+    expect(textNow(h, first!.mid)).toMatch(/, \$750 of your \$1,000\./);
+    expect((await approve(h, second!.mid)).json.ok).toBe(true);
+    expect(textNow(h, second!.mid)).toMatch(/, \$1,000 of your \$1,000\./);
   });
 });
 

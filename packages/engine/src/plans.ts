@@ -67,6 +67,9 @@ export function isMonth(c: Charge | MonthCharge): c is MonthCharge {
   return "month" in c;
 }
 
+/** Why a charge or a booking the owner disputed isn't one: his NOT OURS (the reason on it once settled). */
+export const NOT_OURS_WHY = "The owner texted NOT OURS";
+
 /** A charge that holds its place under the cap: every one not refunded or skipped (one the owner disputes too, until Jack decides). */
 export function holdsPlace(c: Pick<Charge, "status">): boolean {
   return c.status !== "refunded" && c.status !== "skipped";

@@ -627,7 +627,16 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - Adding a Stripe key after billing by hand stranded approved charges; a customer deleted in Stripe made /pay fail; a
     refund after a declined card marked paid outside went to the declined payment; texts for a nameless customer read
     " booked (#HQ4)".
-  - Engine 1,793, server 586, site 178.
+  - Rounds 2 and 3 checked those fixes and the code around them: 14 and 9 more confirmed and fixed, each with a test.
+    Among them: a Checkout paid for a booking whose charge had gone back on the saved card no longer leaves the card
+    charged as well; a month paid early by its link and then cancelled or found free goes to Jack; a plain "Ok" to an
+    unrelated text is never a yes to $497; a bare "No" to a pre-charge text reaches Jack; by hand (no key), a charge
+    Jack was told to collect isn't dropped silently when its booking drops out, and NOT OURS and CANCEL don't claim a
+    charge happened before he made it. Round 2 made a yes to the close go to Jack too often; round 3 fixed that.
+  - Left: the review didn't reach a round with nothing new (25, then 14, then 9), and round 3's fixes weren't reviewed
+    again. What it was still finding was edge cases (by-hand mode, re-cancels, totals in texts), not the main paths, and
+    every money text still waits for Jack's OK. Run the Stripe test-mode steps below before the first real charge.
+  - Engine 1,795, server 629, site 178.
 
 **Live steps for Jack**
 Before launch, in order (details for each in the list below): DNS; deploy the server (A8) with every setting from

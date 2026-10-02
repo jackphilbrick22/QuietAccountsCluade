@@ -526,6 +526,22 @@ describe("each month after", () => {
 });
 
 describe("by hand (no Stripe key)", () => {
+  it("CANCEL while the first month's link is Jack's to send: he may have collected it, so he's asked, never cancelled outright", async () => {
+    const { h } = make({ stripe: false });
+    const m = await saidYes(h);
+    await approve(h, m.messageId);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "link", month: { first: true } });
+    // the owner paid Jack's own link, then cancelled before Jack pressed Done
+    const reply = await h.sms("CANCEL");
+    expect(reply).toMatch(/^Done — cancelled\. No more notes\. The \$497 for your first month may have gone through, so Jack will look at it\. So far/);
+    expect(months(h)[0]).toMatchObject({ status: "approved", ask: { kind: "refund", why: "Cancelled when you may have collected it by hand" } });
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: months(h)[0]!.id, ask: "refund", status: "approved" });
+    // it was paid: kept, it's paid, and the plan stays cancelled
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(months(h)[0]!.id)}/decide`, { refund: false })).json).toMatchObject({ ok: true, done: "kept" });
+    expect(months(h)[0]).toMatchObject({ status: "paid" });
+    expect(plan(h).stage).toBe("cancelled");
+  });
+
   it("the first month's link and each month's card wait in Needs a person, and Done marks them paid", async () => {
     const { h } = make({ stripe: false });
     const m = await saidYes(h);
@@ -737,6 +753,107 @@ describe("CANCEL on the day a month was charged", () => {
   });
 });
 
+describe("a no to the pre-charge text", () => {
+  /** Mike Sanderson asked back, was handed to the owner Nov 17, and hasn't been called. */
+  const mikeWaiting = (h: Harness) =>
+    h.d.accounts.withAccount("ridge", (s) => {
+      s.dataset.customers.push(person("c-mike", "Mike Sanderson"));
+      s.touches.push({ id: "t-mike", opportunityId: "o-mike", customerId: "c-mike", channel: "email", step: 1, angle: "check_in", dueAt: "2026-11-10T08:00", sentAt: "2026-11-10T08:00:00", status: "sent", body: "", flags: [] });
+      s.replies.push({ id: "r-mike", customerId: "c-mike", touchId: "t-mike", channel: "email", receivedAt: "2026-11-17T10:00:00", from: "c-mike@example.org", text: "Can you come back in the spring?", intent: "wants_it", confidence: 0.95, extracted: {}, status: "handed_off", handedOffAt: "2026-11-17T10:01:00" });
+    });
+  const NO = "Got it — Jack will read this before anything is charged. To cancel the service, text CANCEL. About a lead? Text NO and the #code.";
+
+  for (const said of ["No, cancel", "No", "Nope", "No don't", "No not this month"])
+    it(`"${said}": no lead is marked, Jack reads it, and the month waits for his word`, async () => {
+      const { h, fake } = make();
+      await firstMonthPaid(h, fake);
+      await asked(h);
+      await mikeWaiting(h);
+      await approve(h, (await twoDaysBefore(h)).messageId);
+      h.setNow("2026-11-18T22:00:00Z");
+      expect(await h.sms(said)).toBe(NO);
+      expect(state(h).replies.find((r) => r.id === "r-mike")).toMatchObject({ status: "handed_off" });
+      expect(state(h).replies.find((r) => r.id === "r-mike")!.outcome).toBeUndefined();
+      expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "money_no", needs_person: 1 });
+      expect(months(h)[1]).toMatchObject({ status: "approved", ask: { kind: "hold" } });
+      expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: months(h)[1]!.id, ask: "hold" });
+      // its day comes: nothing goes on the card
+      h.setNow(at10(NEXT));
+      await tick(h.d);
+      expect(made(fake)).toEqual([]);
+    });
+
+  it("with nobody waiting on a call: Jack reads it; he cancels the month, and it's never charged", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow("2026-11-18T22:00:00Z");
+    expect(await h.sms("No, cancel")).toBe(NO);
+    const id = months(h)[1]!.id;
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(id)}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "skipped" });
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(months(h)[1]).toMatchObject({ status: "skipped" });
+    expect(made(fake)).toEqual([]);
+  });
+
+  it("about something else: Jack lets it go on as planned, and the card is charged on its day", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow("2026-11-18T22:00:00Z");
+    expect(await h.sms("No")).toBe(NO);
+    const id = months(h)[1]!.id;
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(id)}/decide`, { refund: false })).json).toMatchObject({ ok: true, done: "kept" });
+    expect(months(h)[1]!.ask).toBeUndefined();
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(months(h)[1]).toMatchObject({ status: "paid" });
+    expect(made(fake)).toHaveLength(1);
+  });
+});
+
+describe("a pass gone monthly, with the pass's own cancel day kept", () => {
+  /** As a one pass cancelled Oct 5, then taken to monthly: its old cancel day stays, for its bookings only. */
+  const passBefore = (h: Harness) => h.d.accounts.withAccount("ridge", (s) => void Object.assign(s.dataset.business.plan, { startedOn: "2026-09-21", doneOn: PAID, cancelledOn: "2026-10-05" }));
+
+  it("CANCEL on the day a month was charged is judged on its own day: Jack is asked to refund it or keep it", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await passBefore(h);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect(months(h)[1]!.status).toBe("paid");
+    h.setNow(`${NEXT}T20:00:00Z`);
+    expect(await h.sms("CANCEL")).toMatch(/^Done — cancelled\. No more notes\. The \$497 for the month from Nov 20 went through today, so Jack will look at it\. So far/);
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: months(h)[1]!.id, ask: "refund", why: "Charged the day they cancelled" });
+    // the pass's bookings still go by its own day
+    expect(plan(h).cancelledOn).toBe("2026-10-05");
+  });
+
+  it("by hand, cancelled in Settings after a card month's day came: the month he may have charged stays for Jack", async () => {
+    const { h } = make({ stripe: false });
+    const m = await saidYes(h);
+    await approve(h, m.messageId);
+    await h.api("POST", "/api/businesses/ridge/charges/paid", { chargeId: months(h)[0]!.id });
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: "cus_PQ8x2LmN0aB1cD" });
+    await passBefore(h);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "card", month: { on: NEXT } });
+    h.setNow(`${NEXT}T21:00:00Z`);
+    expect((await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "cancelled" } })).status).toBe(200);
+    expect(months(h)[1]).toMatchObject({ status: "approved", ask: { kind: "refund" } });
+    expect(plan(h).cancelledOn).toBe("2026-10-05");
+  });
+});
+
 describe("a month judged again before it's charged", () => {
   const relabel = (h: Harness, rid: string, intent: Reply["intent"]) => h.api("POST", `/api/businesses/ridge/replies/${rid}/intent`, { intent });
 
@@ -798,5 +915,202 @@ describe("a month judged again before it's charged", () => {
     h.setNow(at10(NEXT));
     await tick(h.d);
     expect(months(h)[1]!.status).toBe("paid");
+  });
+});
+
+/** The first month marked paid outside (Jack's own link) with a key set: no card Stripe can charge, so later months go by their link. */
+async function paidOutside(h: Harness): Promise<void> {
+  const m = await saidYes(h);
+  await approve(h, m.messageId);
+  expect((await h.api("POST", "/api/businesses/ridge/charges/paid", { chargeId: months(h)[0]!.id })).json.ok).toBe(true);
+  expect(plan(h)).toMatchObject({ stage: "paying", paidOn: PAID, card: { from: "paid_outside" } });
+}
+
+describe("Replace all links with a month's link out", () => {
+  it("withdraws its pre-charge text not sent yet (it carries the old link), and the new link's text waits for Jack", async () => {
+    const { h } = make({ notifier: new ManualNotifier() });
+    await paidOutside(h);
+    await asked(h);
+    const pre = await twoDaysBefore(h);
+    expect(pre.text.split("\n").at(-1)).toMatch(/^Your next month starts November 20: \$497\. Here's the link to pay it: https:\/\/qa\.test\/pay\//);
+    await approve(h, pre.messageId);
+    expect(months(h)[1]).toMatchObject({ status: "link_sent", via: "link" });
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", pre.messageId)!.delivery).toBe("manual");
+    const old = payToken(textOf(h, pre.messageId));
+    await h.api("POST", "/api/businesses/ridge/links/rotate");
+    expect(h.d.accounts.repo.ownerMessageDelivery("ridge", pre.messageId)).toMatchObject({ delivery: "cancelled", error: "Sent again with the link as it is now" });
+    const [again] = await waiting(h);
+    expect(again).toMatchObject({ messageKind: "charge_link" });
+    expect(payToken(again!.text)).not.toBe(old);
+    expect((await openPay(h, old)).status).toBe(404);
+  });
+});
+
+describe("First paid day corrected in Settings while a month is on its way", () => {
+  it("makes no second month for the same period: one pre-charge text, one charge", async () => {
+    const { h, fake } = make();
+    await firstMonthPaid(h, fake);
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    // the owner really paid three days earlier: Jack corrects the day, and the charge date it gives was the day before yesterday
+    h.setNow(at10("2026-11-19"));
+    expect((await h.api("PATCH", "/api/businesses/ridge", { plan: { paidOn: "2026-10-17" } })).status).toBe(200);
+    await tick(h.d);
+    expect(months(h)).toHaveLength(2);
+    expect(await waiting(h)).toEqual([]);
+    for (const day of [NEXT, "2026-11-23", "2026-11-24"]) {
+      h.setNow(at10(day));
+      await tick(h.d);
+    }
+    expect(months(h).map((c) => c.status)).toEqual(["paid", "paid"]);
+    expect(made(fake)).toHaveLength(1);
+    // moved forward after the month was paid: no charge five days later either
+    expect((await h.api("PATCH", "/api/businesses/ridge", { plan: { paidOn: "2026-10-25" } })).status).toBe(200);
+    for (const day of ["2026-11-25", "2026-11-26"]) {
+      h.setNow(at10(day));
+      await tick(h.d);
+    }
+    expect(months(h)).toHaveLength(2);
+    expect(await waiting(h)).toEqual([]);
+    expect(made(fake)).toHaveLength(1);
+  });
+});
+
+describe("a month paid by its link before its day", () => {
+  /** Paying from Oct 20 (its first month paid outside, so no card Stripe can charge); Karen asked; Nov 20's link paid Nov 18. */
+  async function paidEarly(h: Harness, fake: FakeStripe): Promise<void> {
+    await paidOutside(h);
+    await asked(h);
+    const pre = await twoDaysBefore(h);
+    await approve(h, pre.messageId);
+    await payByLink(h, fake, textOf(h, pre.messageId));
+    expect(months(h)[1]).toMatchObject({ status: "paid", paidAt: expect.stringMatching(/^2026-11-18/) });
+  }
+
+  it("then CANCEL the day before it: the reply says it went through, and Jack is asked to refund it or keep it", async () => {
+    const { h, fake } = make();
+    await paidEarly(h, fake);
+    h.setNow(at10("2026-11-19"));
+    const reply = await h.sms("CANCEL");
+    expect(reply).toMatch(/^Done — cancelled\. No more notes\. The \$497 for the month from Nov 20 went through, so Jack will look at it\. So far/);
+    expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "cancel", needs_person: 1 });
+    const ask = (await review(h)).find((x) => x.kind === "charge_ask")!;
+    expect(ask).toMatchObject({ chargeId: months(h)[1]!.id, ask: "refund", refundBy: "stripe" });
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(ask.chargeId)}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "refunded", by: "stripe" });
+    expect(fake.kept()).toEqual([]);
+  });
+
+  it("then found free (a reply read again before its day): Jack is asked to refund it, and the free-month text waits", async () => {
+    const { h, fake } = make();
+    await paidEarly(h, fake);
+    h.setNow(at10("2026-11-19"));
+    expect((await h.api("POST", "/api/businesses/ridge/replies/r-karen/intent", { intent: "already_done" })).status).toBe(200);
+    await tick(h.d);
+    expect(months(h)[1]).toMatchObject({ status: "paid", ask: { kind: "refund" } });
+    expect(plan(h).freeMonths).toEqual([NEXT]);
+    expect((await waiting(h)).map((x) => x.messageKind)).toEqual(["free_month"]);
+    expect((await review(h)).filter((x) => x.kind === "charge_ask")).toMatchObject([{ chargeId: months(h)[1]!.id, ask: "refund" }]);
+    // asked once
+    await tick(h.d);
+    expect((await waiting(h)).map((x) => x.messageKind)).toEqual(["free_month"]);
+  });
+
+  it("by hand (no Stripe key): Done before its day, then CANCEL the day before: Jack is asked too", async () => {
+    const { h } = make({ stripe: false });
+    // set paying by hand (Jack's own link), no card on file
+    await h.business("ridge");
+    expect((await h.api("PATCH", "/api/businesses/ridge", { plan: { stage: "paying", paidOn: PAID } })).status).toBe(200);
+    await asked(h);
+    const pre = await twoDaysBefore(h);
+    expect(pre.text.split("\n").at(-1)).toBe("Your next month starts November 20: $497. I'll text you the link.");
+    await approve(h, pre.messageId);
+    expect((await review(h)).find((x) => x.kind === "charge_due")).toMatchObject({ via: "link", chargeId: months(h)[0]!.id });
+    expect((await h.api("POST", "/api/businesses/ridge/charges/paid", { chargeId: months(h)[0]!.id })).json.ok).toBe(true);
+    h.setNow(at10("2026-11-19"));
+    expect(await h.sms("CANCEL")).toMatch(/^Done — cancelled\. No more notes\. The \$497 for the month from Nov 20 went through, so Jack will look at it\./);
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: months(h)[0]!.id, ask: "refund", refundBy: "hand" });
+  });
+});
+
+describe("by hand (no Stripe key), a card month whose day has come", () => {
+  /** Paying from Oct 20 (Done, and the cus_ id pasted); Karen asked; Nov 18's pre-charge text sent. Nov 20: "Charge his saved card". */
+  async function due(h: Harness): Promise<string> {
+    const m = await saidYes(h);
+    await approve(h, m.messageId);
+    await h.api("POST", "/api/businesses/ridge/charges/paid", { chargeId: months(h)[0]!.id });
+    await h.api("POST", "/api/businesses/ridge/stripe-customer", { customer: "cus_PQ8x2LmN0aB1cD" });
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10(NEXT));
+    await tick(h.d);
+    const [card] = (await review(h)).filter((x) => x.kind === "charge_due");
+    expect(card).toMatchObject({ via: "card", month: { on: NEXT, first: false } });
+    return card!.chargeId;
+  }
+
+  for (const [when, at] of [
+    ["that afternoon", `${NEXT}T21:00:00Z`],
+    ["the next morning", at10("2026-11-21")],
+  ] as const)
+    it(`CANCEL ${when}: the month he may have charged already stays for Jack, and the reply never says "no more charges"`, async () => {
+      const { h } = make({ stripe: false });
+      const id = await due(h);
+      h.setNow(at);
+      const reply = await h.sms("CANCEL");
+      // never "was already going through": Jack may not have charged it yet
+      expect(reply).toMatch(/^Done — cancelled\. No more notes\. The \$497 for the month from Nov 20 may have gone through, so Jack will look at it\. So far/);
+      expect(h.d.accounts.repo.ownerTexts("ridge")[0]).toMatchObject({ handled: "cancel", needs_person: 1 });
+      expect(months(h)[1]).toMatchObject({ status: "approved", ask: { kind: "refund" } });
+      expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: id, ask: "refund", refundBy: "hand", status: "approved" });
+      // he had charged it, and keeps it: it's paid, and "Charge his saved card" never comes back
+      expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(id)}/decide`, { refund: false })).json).toMatchObject({ ok: true, done: "kept" });
+      expect(months(h)[1]).toMatchObject({ status: "paid", reason: "Paid outside the software" });
+      await tick(h.d);
+      expect((await review(h)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+    });
+
+  it("CANCEL after its day: he had charged it and refunded it in Stripe, so it's refunded and the owner's refund text waits for his OK", async () => {
+    const { h } = make({ stripe: false });
+    const id = await due(h);
+    h.setNow(`${NEXT}T21:00:00Z`);
+    await h.sms("CANCEL");
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(id)}/decide`, { refund: true, charged: true })).json).toMatchObject({ ok: true, done: "refunded", by: "hand" });
+    expect(months(h)[1]).toMatchObject({ status: "refunded" });
+    expect((await review(h)).filter((x) => x.kind === "owner_message" && x.messageKind === "charge_refund").map((x) => x.text)).toEqual(["Your $497 for the month from November 20 is going back on your card."]);
+    expect((await review(h)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+  });
+
+  it("he hadn't charged it: his answer cancels it, and nothing is left to collect", async () => {
+    const { h } = make({ stripe: false });
+    const id = await due(h);
+    h.setNow(`${NEXT}T21:00:00Z`);
+    await h.sms("CANCEL");
+    expect((await h.api("POST", `/api/businesses/ridge/charges/${encodeURIComponent(id)}/decide`, { refund: true })).json).toMatchObject({ ok: true, done: "skipped" });
+    await tick(h.d);
+    expect(months(h)[1]!.status).toBe("skipped");
+    expect((await review(h)).filter((x) => x.kind === "charge_due" || x.kind === "charge_ask")).toEqual([]);
+  });
+
+  it("a reply read again after its day: Jack is asked, and the month isn't dropped", async () => {
+    const { h } = make({ stripe: false });
+    const id = await due(h);
+    h.setNow(at10("2026-11-21"));
+    expect((await h.api("POST", "/api/businesses/ridge/replies/r-karen/intent", { intent: "already_done" })).status).toBe(200);
+    await tick(h.d);
+    expect(months(h)[1]).toMatchObject({ status: "approved", ask: { kind: "refund" } });
+    expect((await review(h)).find((x) => x.kind === "charge_ask")).toMatchObject({ chargeId: id, ask: "refund" });
+    expect((await waiting(h)).map((x) => x.messageKind)).toEqual(["free_month"]);
+  });
+
+  it("CANCEL the day before its day still charges nothing", async () => {
+    const { h } = make({ stripe: false });
+    const m = await saidYes(h);
+    await approve(h, m.messageId);
+    await h.api("POST", "/api/businesses/ridge/charges/paid", { chargeId: months(h)[0]!.id });
+    await asked(h);
+    await approve(h, (await twoDaysBefore(h)).messageId);
+    h.setNow(at10("2026-11-19"));
+    expect(await h.sms("CANCEL")).toMatch(/^Done — cancelled\. No more notes, no more charges\./);
+    expect(months(h)[1]).toMatchObject({ status: "skipped" });
   });
 });

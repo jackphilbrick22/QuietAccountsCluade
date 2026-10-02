@@ -3,7 +3,7 @@ import { billableBookings } from "../src/ledger/billable.ts";
 import { approveCharge, cardOnFile, chargeId, chargePaid, chargeFailed, chargeRefunded, chargeStarted, chargeTold, CHARGE_REF, decideCharge, linkAgain, markPaidOutside, nextBusinessDay, notOurs, paidTwice, redateCharge, settleCharges, type BillingOpts } from "../src/runtime/charges.ts";
 import { cancelPlan, ledgerPass, markContacted, receiveReply, undoCancel } from "../src/runtime/agents.ts";
 import { emptyState, type AccountState } from "../src/runtime/state.ts";
-import { leadCode, passEndText, passTouches } from "../src/reports/owner.ts";
+import { leadCode, passEndText, passTouches, totals } from "../src/reports/owner.ts";
 import { onePassPlan } from "../src/plans.ts";
 import type { Job, PlanState, Quote, Recovery, Reply, Touch, TradeId } from "../src/model.ts";
 import { addDays } from "../src/util.ts";
@@ -894,6 +894,23 @@ describe("a booking reported with no amount", () => {
     markContacted(st, r1.id, "2026-10-24T10:00:00", "lost");
     settleCharges(st, "2026-10-24T10:01:00", STRIPE);
     expect(charge(st, "c1")).toMatchObject({ status: "skipped", reason: "Its booking is off the ledger" });
+  });
+
+  it("counts in the end text's 'booked' and the tallies, so they never say fewer than the bookings charged", () => {
+    const st = pass(4);
+    const told = ["c0", "c1", "c2"].map((cid) => wrote(st, cid, "2026-10-08"));
+    for (const r of told) markContacted(st, r.id, "2026-10-19T10:00:00", "booked");
+    for (const cid of ["c0", "c1"]) markPaidOutside(st, { customerId: cid }, "2026-10-21T09:00:00");
+    settleCharges(st, "2026-10-21T10:00:00", BY_HAND);
+    // the owner says the third wasn't ours before its charge: no booking
+    notOurs(st, charge(st, "c2").code, "2026-10-21T11:00:00");
+    expect(st.recoveries).toEqual([]);
+    expect(totals(st).booked).toBe(2);
+    expect(passEndText(st, "2026-11-05").split("\n")[0]).toBe("Dave, your list is done. Asked 4, 3 wrote back, 3 wanted the work, 2 booked. You paid $500.");
+    // one Jack marked paid outside with no booking the software saw is a booking he paid for too
+    markPaidOutside(st, { customerId: "c3" }, "2026-10-22T09:00:00");
+    expect(totals(st).booked).toBe(3);
+    expect(passEndText(st, "2026-11-05").split("\n")[0]).toMatch(/, 3 booked\. You paid \$750\.$/);
   });
 
   it("the rest of a lawn list still needs the amount: a season, or a job over $500", () => {

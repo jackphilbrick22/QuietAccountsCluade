@@ -441,7 +441,7 @@ function MonthsBox({ o }: { o: Overview }) {
                       Send the link again
                     </Btn>
                   )}
-                  {!["paid", "refunded", "skipped", "charging"].includes(c.status) && (
+                  {!["paid", "refunded", "charging"].includes(c.status) && (
                     <Btn variant="ghost" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${bid}/charges/paid`, { chargeId: c.id }), "Marked paid")}>
                       Paid outside
                     </Btn>
@@ -461,8 +461,9 @@ function MonthsBox({ o }: { o: Overview }) {
 const CHARGE_STATUS: Record<ChargeStatus, string> = { heads_up: "Text waiting for you", approved: "Approved", link_sent: "Link sent", charging: "Going through", paid: "Paid", failed: "Didn't go through", refunded: "Refunded", skipped: "No charge" };
 
 /**
- * The pass's charge log: who, which lead, where each stands; one not paid yet can be marked paid outside the software,
- * and one out on its /pay link can have its text sent again (for your OK) with the link as it is now.
+ * The pass's charge log: who, which lead, where each stands; one not paid yet can be marked paid outside the software
+ * (one cancelled too: money that came anyway is yours to refund or keep), and one out on its /pay link can have its text
+ * sent again (for your OK) with the link as it is now.
  */
 function ChargesTable({ o }: { o: Overview }) {
   const { busy, run } = useAction();
@@ -501,7 +502,7 @@ function ChargesTable({ o }: { o: Overview }) {
                   Send the link again
                 </Btn>
               )}
-              {!["paid", "refunded", "skipped", "charging"].includes(c.status) && (
+              {!["paid", "refunded", "charging"].includes(c.status) && (
                 <Btn variant="ghost" disabled={!!busy} onClick={() => void run("paid", () => api("POST", `/businesses/${bid}/charges/paid`, { customerId: c.customerId }), "Marked paid")}>
                   Paid outside
                 </Btn>

@@ -386,6 +386,20 @@ describe("the weekly text's 'You've paid us'", () => {
     expect(paidLine(st, "2026-12-25T16:30:00")).toMatch(/^You've paid us \$497\./);
   });
 
+  it("a plan set paying by hand (its first month on Jack's own link) counts the months before the log by their dates", () => {
+    // paying from Sep 20, set by hand; the software's first month on the log is Oct 20's
+    const st = paying({ paidOn: "2026-09-20", months: [month(PAID, { status: "approved", toldAt: "2026-10-18T10:00:00" })] });
+    st.touches.push(note("t-karen", "c-karen", "2026-10-13"));
+    expect(paidLine(st, "2026-10-16T16:30:00")).toMatch(/^You've paid us \$497\./);
+    st.dataset.business.plan.months![0]!.status = "paid";
+    st.dataset.business.plan.months![0]!.paidAt = `${PAID}T00:01:00`;
+    expect(paidLine(st, "2026-10-23T16:30:00")).toMatch(/^You've paid us \$994\./);
+    // a free month before the log is still free
+    const free = paying({ paidOn: "2026-08-20", freeMonths: ["2026-09-20"], months: [month(PAID, { status: "paid", paidAt: `${PAID}T00:01:00` })] });
+    free.touches.push(note("t-karen", "c-karen", "2026-10-13"));
+    expect(paidLine(free, "2026-10-23T16:30:00")).toMatch(/^You've paid us \$994 \(1 free month\)\./);
+  });
+
   it("a pass gone monthly counts its $250 bookings too", () => {
     const st = weekly();
     st.dataset.business.plan.charges = [{ id: "chg-1", customerId: "c-karen", code: "K7Q", amount: 25000, status: "paid", via: "link", at: "2026-10-10T09:00:00", paidAt: "2026-10-12T09:00:00" }];

@@ -19,7 +19,7 @@ import { addDays, addMonths, daysBetween, extractEmails, fmtMoney, fmtPhone, mak
 import type { AccountState, OwnerMessage } from "./state.ts";
 import { customerByEmail, customerById, oppById } from "../lookup.ts";
 import { settledCheck, supersededOn } from "./settled.ts";
-import { chargeMonth, exportBefore, exportRead, monthFree, textsOf, type BillingOpts } from "./charges.ts";
+import { chargeMonth, exportBefore, exportRead, maybeCharged, monthFree, monthPaidFree, paidEarly, textsOf, type BillingOpts } from "./charges.ts";
 import { passAnswered } from "../ledger/billable.ts";
 
 export { ANSWER_HOURS, answerTime } from "../copy/render.ts";
@@ -1310,6 +1310,9 @@ export function exportAskIfDue(state: AccountState, now: ISODateTime): OwnerMess
   return ownerMsg(state, now, "export_ask", exportAskText(state.dataset.business));
 }
 
+/** Charge dates nearer than half a month are one period's (months are 28 days apart or more). */
+const SAME_PERIOD_DAYS = 15;
+
 /**
  * Two days before each monthly charge date: the month that ends then was free (nobody asked to come back), and the
  * owner hears it, or it's charged (BRIEF B5), and the pre-charge text that waits for Jack says what goes on the card.
@@ -1322,7 +1325,8 @@ export function billingCheck(state: AccountState, now: ISODateTime, opts: Billin
   if (!g) return undefined;
   const until = daysBetween(now.slice(0, 10), g.chargeOn);
   if (until > 2 || until < -3) return undefined;
-  if (state.ownerMessages.some((m) => (m.kind === "precharge" || m.kind === "free_month") && m.refs?.some((r) => r.id === g.chargeOn))) return undefined;
+  // a month once: one already judged for a date near this one (First paid day moved in Settings since) was this period's
+  if (state.ownerMessages.some((m) => (m.kind === "precharge" || m.kind === "free_month") && m.refs?.some((r) => r.id === g.chargeOn || (r.kind === "charge" && Math.abs(daysBetween(r.id, g.chargeOn)) < SAME_PERIOD_DAYS)))) return undefined;
   if (g.free) {
     const b = state.dataset.business;
     const fm = b.plan.freeMonths;
@@ -1343,19 +1347,24 @@ export function billingCheck(state: AccountState, now: ISODateTime, opts: Billin
  * A later month not charged yet (its pre-charge text waiting for Jack, approved, or its link out), judged again on the
  * replies as they read now: Jack may have read one again since its text was written. Free now: no charge, the month is
  * free and the free-month text waits for his OK. Still not: its pre-charge text, until he approves it, says who came
- * back as things stand. The months skipped, and the pre-charge texts written again.
+ * back as things stand. One paid by its link before its day, free now before that day (on the card it would never have
+ * been charged), or one Jack collects by hand whose day came (he may have charged it), is his to refund or keep, and its
+ * free-month text waits too. The months skipped, and the pre-charge texts written again.
  */
-export function recheckMonths(state: AccountState, now: ISODateTime): { skipped: string[]; rewritten: OwnerMessage[] } {
+export function recheckMonths(state: AccountState, now: ISODateTime, opts: Pick<BillingOpts, "stripe"> = { stripe: true }): { skipped: string[]; rewritten: OwnerMessage[] } {
   const out = { skipped: [] as string[], rewritten: [] as OwnerMessage[] };
   const b = state.dataset.business;
   if (isOnePass(b.plan)) return out;
   for (const c of b.plan.months ?? []) {
-    if (c.first || (c.status !== "heads_up" && c.status !== "approved" && c.status !== "link_sent")) continue;
+    // paid already, or maybe (by hand, its day come): asked about, never skipped
+    const paid = (paidEarly(c) && now.slice(0, 10) < c.month) || maybeCharged(b.plan, c, now.slice(0, 10), opts);
+    if (c.first || (c.status !== "heads_up" && c.status !== "approved" && c.status !== "link_sent" && !paid) || (paid && (c.ask || c.keptAt))) continue;
     const g = guaranteeCheck(state, c.month);
     if (!g || g.chargeOn !== c.month) continue;
     const pre = textsOf(state, c).findLast((m) => m.kind === "precharge");
-    if (g.free && monthFree(state, c.id, now)) {
-      out.skipped.push(c.id);
+    const free = g.free && (paid ? monthPaidFree(state, c.id, now) : monthFree(state, c.id, now));
+    if (free) {
+      if (!paid) out.skipped.push(c.id);
       if (!b.plan.freeMonths.includes(g.chargeOn)) b.plan.freeMonths.push(g.chargeOn);
       event(state, now, "guard", "action", "Guarantee: this month is free after all", `As the replies read now, nobody ${wantedWords(b.plan).past} this period, so you won't be charged.`);
       ownerMsg(state, now, "free_month", g.text, [{ kind: "charge", id: g.chargeOn }]);
@@ -1535,6 +1544,7 @@ export function cancelPlan(state: AccountState, now: ISODateTime, opts: { paused
   plan.stage = "cancelled";
   // a one pass gone monthly may have been cancelled before: its bookings are billed up to that day, never a later one
   plan.cancelledOn ??= today;
+  plan.lastCancelOn = today;
   if (opts.yearly)
     state.cancelled = {
       at: now,

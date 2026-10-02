@@ -270,7 +270,8 @@ export type ReviewItem =
   | (ReviewBase & Drafted & { kind: "late_lead"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; hours: number; text: string })
   | (ReviewBase & Drafted & { kind: "draft"; replyId: string; customerId?: string; name: string; phone?: string; email?: string; intent: ReplyIntent; text: string })
   | (ReviewBase & { kind: "flagged_note"; touchId: string; customerId: string; name: string; step: number; status: string; subject: string; body: string; flags: string[] })
-  | (ReviewBase & { kind: "owner_message"; messageId: string; messageKind: string; delivery: string; text: string })
+  /** `order`: a money text's place in the charge log, so texts made at once keep its order. */
+  | (ReviewBase & { kind: "owner_message"; messageId: string; messageKind: string; delivery: string; text: string; order?: number })
   | (ReviewBase & { kind: "owner_text"; seq: number; text: string; reply: string; handled: string })
   | (ReviewBase & { kind: "alert"; seq: number; alertKind: string; title: string; detail: string })
   | (ReviewBase & { kind: "ready"; from?: "jobber" | "file"; quotes: number; customers: number; headline: string; needsAddress?: boolean })
@@ -279,8 +280,12 @@ export type ReviewItem =
   | (ReviewBase & { kind: "brake"; reason: string; queued: number })
   | (ReviewBase & { kind: "unsure_send"; touchId: string; customerId: string; name: string; step: number; subject: string; error: string })
   | (ReviewBase & { kind: "not_taken"; touchId: string; customerId: string; name: string; reason: string })
-  /** A charge for Jack to decide: a refund (its job cancelled before the work, or paid after it was cancelled), the owner's NOT OURS after it was charged, or a second payment for it. */
-  | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice"; why: string; status: string; refundBy: "stripe" | "hand" })
+  /**
+   * A charge for Jack to decide: a refund (its job cancelled before the work, or paid after it was cancelled), the owner's
+   * NOT OURS after it was charged, a second payment for it, or (`hold`) whether it goes on the card after the owner's no.
+   * `status` "approved": one he collects by hand that may be collected already.
+   */
+  | (ReviewBase & ChargeRef & { kind: "charge_ask"; ask: "refund" | "not_ours" | "paid_twice" | "hold"; why: string; status: string; refundBy: "stripe" | "hand" })
   /** By hand (no Stripe key): an approved charge for Jack to collect, then Done. */
   | (ReviewBase & ChargeRef & { kind: "charge_due"; via: "link" | "card"; last4: string | null; why?: string; relink?: boolean })
   /** A billable booking the fresh export at a one pass's end brought: Jack confirms it before any money text, or not. */

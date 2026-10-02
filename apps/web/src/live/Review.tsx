@@ -59,6 +59,9 @@ const HANDLED: Record<string, string> = {
   pass_monthly: "wants to keep going after the one pass: the first month's text waits for your OK, and paid, they're on the monthly plan from that day",
   pass_year: "wants a year after the one pass: no first month's text was made. Set up the plan in Settings and text them how it works",
   pass_end_no: "answered the end of their one pass with a no (or it's about a lead: it was left alone)",
+  money_no: "answered a text about money with a no: what was to go on their card waits for you in Needs a person (or it's about a lead: it was left alone)",
+  close_unclear: "may have said yes to the monthly plan, after another text of ours reached them: no first month was asked for. If it's their yes, ask for it",
+  pass_end_unclear: "may have said yes to keep going monthly after the one pass, after another text of ours reached them: no first month was asked for. If it's their yes, ask for it",
   export_yes: "answered the ask for a fresh export with a yes (or it's about a lead: it was left alone)",
   export_no: "answered the ask for a fresh export with a no: nothing is matched at the pass's end without it (or it's about a lead: it was left alone)",
   not_ours: "texted NOT OURS for a lead with no charge yet: its bookings are off the ledger, so it's never charged",
@@ -68,7 +71,9 @@ const HANDLED: Record<string, string> = {
 
 export function LiveReview({ queue }: { queue: Query<ReviewQueue> }) {
   const [filter, setFilter] = useState<Kind | "all">("all");
-  const items = [...(queue.data?.items ?? [])].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind) || (a.at < b.at ? -1 : 1));
+  // same kind and time (money texts made at once): the charge log's order
+  const logged = (x: ReviewItem) => ("order" in x ? (x.order ?? 0) : 0);
+  const items = [...(queue.data?.items ?? [])].sort((a, b) => ORDER.indexOf(a.kind) - ORDER.indexOf(b.kind) || (a.at < b.at ? -1 : a.at > b.at ? 1 : logged(a) - logged(b)));
   const shown = filter === "all" ? items : items.filter((i) => i.kind === filter);
   const count = (k: Kind) => items.filter((i) => i.kind === k).length;
   return (
@@ -281,6 +286,23 @@ function Item({ it }: { it: ReviewItem }) {
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("done", () => api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`), "Marked handled")}>
               Mark handled
             </Btn>
+            {["close_unclear", "pass_end_unclear"].includes(it.handled ?? "") && (
+              <Btn
+                disabled={!!busy}
+                onClick={() =>
+                  void run(
+                    "first",
+                    async () => {
+                      await api("POST", `/businesses/${encodeURIComponent(bid)}/first-month`);
+                      await api("POST", `/businesses/${encodeURIComponent(bid)}/owner-texts/${it.seq}/done`);
+                    },
+                    "The first month's text waits for your OK",
+                  )
+                }
+              >
+                Ask for their first month
+              </Btn>
+            )}
             {["accepted_close", "accepted_by_hand", "renew_year", "renew_year_pay_first", "renew_monthly", "monthly_already", "resume_plan_paused", "pass_monthly", "pass_year"].includes(it.handled ?? "") && <Btn onClick={() => open("settings")}>Open settings</Btn>}
             <Btn variant="ghost" onClick={() => open("texts")}>
               All their texts
@@ -354,7 +376,59 @@ function Item({ it }: { it: ReviewItem }) {
         </>
       )}
 
-      {it.kind === "charge_ask" && (
+      {it.kind === "charge_ask" && it.ask === "hold" && (
+        <>
+          <div className="text-[14px]">
+            The owner said no to a text about {it.month ? <b>the {fmtMoney(it.amount)} for {monthFor(it.month)}</b> : <><b>{it.name}</b>'s {fmtMoney(it.amount)} (#{it.code})</>}: nothing goes on his card until you say
+          </div>
+          <p className="text-[12.5px] text-ink-3">{`${it.why}. If he meant to stop it (or the service), cancel it; if it was about something else, it goes on as planned.`}</p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("cancel", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: true }), "Cancelled: it won't be charged")}>
+              Cancel it
+            </Btn>
+            <Btn disabled={!!busy} onClick={() => void run("keep", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: false }), "It goes on his card as planned")}>
+              Charge it as planned
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "charge_ask" && it.ask !== "hold" && it.status === "approved" && (
+        <>
+          {/* one he collects by hand that may be collected already: what he did decides it, never "keep" alone */}
+          <div className="text-[14px]">
+            {it.month ? (
+              <>
+                Did you collect the {fmtMoney(it.amount)} for <b>{monthFor(it.month)}</b>?
+              </>
+            ) : it.ask === "not_ours" ? (
+              <>
+                The owner says <b>{it.name}</b> (#{it.code}) wasn't ours. Did you collect its {fmtMoney(it.amount)}?
+              </>
+            ) : (
+              <>
+                Did you collect <b>{it.name}</b>'s {fmtMoney(it.amount)} (#{it.code})?
+              </>
+            )}
+          </div>
+          <p className="text-[12.5px] text-ink-3">
+            {`${it.why}. Say what you did in Stripe. Not collected: it's cancelled${it.month ? "" : " and its place opens up"}. Collected and kept: it's marked paid. Collected and refunded: it's marked refunded, and the owner's text waits for your OK.`}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Btn variant="primary" disabled={!!busy} onClick={() => void run("cancel", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: true }), "Cancelled: it was never charged")}>
+              I hadn't collected it: cancel it
+            </Btn>
+            <Btn disabled={!!busy} onClick={() => void run("keep", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: false }), "Marked paid and kept")}>
+              I collected it: keep it
+            </Btn>
+            <Btn disabled={!!busy} onClick={() => void run("refund", () => api("POST", `/businesses/${encodeURIComponent(bid)}/charges/${encodeURIComponent(it.chargeId)}/decide`, { refund: true, charged: true }), "Marked refunded. The text to the owner waits for your OK")}>
+              I collected and refunded it
+            </Btn>
+          </div>
+        </>
+      )}
+
+      {it.kind === "charge_ask" && it.ask !== "hold" && it.status !== "approved" && (
         <>
           <div className="text-[14px]">
             {it.ask === "not_ours" && !it.month ? (

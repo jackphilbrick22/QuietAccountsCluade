@@ -5,6 +5,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import {
   BREAKAGE_LABEL,
+  CHARGE_REF,
   closeMessage,
   guaranteeCheck,
   handoffText,
@@ -72,7 +73,7 @@ import { replyEmailKey, webhookSetup } from "../core/backstop.ts";
 import { coldEvent, holdsInboxes, inboxTaken } from "../core/senders.ts";
 import { localIso } from "../core/clock.ts";
 import { setupHealth } from "../core/health.ts";
-import { approveChargeText, approvePassEnd, decideChargeOp, decideFoundOp, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
+import { approveChargeText, approvePassEnd, decideChargeOp, decideFoundOp, firstMonth, markPaid, openPay, pasteCustomer, sendLinkAgain, settleBilling, stripeEvent } from "../core/billing.ts";
 import { verifyStripeSignature, type StripeEvent } from "../providers/stripe.ts";
 import {
   answerInThread,
@@ -472,8 +473,11 @@ export function createApp(d: HttpDeps): Hono<Env> {
         if (isOnePass(before) && !isOnePass(b.plan) && billsPass(b.plan)) b.plan.doneOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
         // cancelled here as by text: nothing booked from today on is billed (a pass gone monthly keeps an earlier day).
         // Back from it, the day is gone, except on a cancelled pass taken to monthly: its bookings after it never bill.
-        if (b.plan.stage === "cancelled" && stageBefore !== "cancelled") b.plan.cancelledOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
-        else if (b.plan.stage !== "cancelled" && (isOnePass(b.plan) || !billsPass(b.plan))) delete b.plan.cancelledOn;
+        if (b.plan.stage === "cancelled" && stageBefore !== "cancelled") {
+          b.plan.cancelledOn ??= localIso(d.clock(), b.timezone).slice(0, 10);
+          // its months are judged against this cancel's day, whatever the pass's
+          b.plan.lastCancelOn = localIso(d.clock(), b.timezone).slice(0, 10);
+        } else if (b.plan.stage !== "cancelled" && (isOnePass(b.plan) || !billsPass(b.plan))) delete b.plan.cancelledOn;
         // a new end date: whether the notes it has meet it; before the owner's OK, one they don't is paced to at once
         // (never once the pass is over)
         if (isOnePass(b.plan) && b.plan.pace && b.plan.targetEndOn !== before.targetEndOn) {
@@ -830,8 +834,8 @@ export function createApp(d: HttpDeps): Hono<Env> {
     return c.json({ ok: true, charge: r.charge });
   });
   op.post("/businesses/:id/charges/:cid/decide", async (c) => {
-    const { refund } = z.object({ refund: z.boolean() }).parse(await c.req.json());
-    const r = await decideChargeOp(d, c.req.param("id"), c.req.param("cid"), refund);
+    const { refund, charged } = z.object({ refund: z.boolean(), charged: z.boolean().optional() }).parse(await c.req.json());
+    const r = await decideChargeOp(d, c.req.param("id"), c.req.param("cid"), refund, charged);
     if ("refused" in r) return c.json({ error: r.refused }, 409);
     repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.decide", { charge: c.req.param("cid"), ...r });
     return c.json({ ok: true, ...r });
@@ -842,6 +846,13 @@ export function createApp(d: HttpDeps): Hono<Env> {
     const r = await decideFoundOp(d, c.req.param("id"), c.req.param("customerId"), confirm);
     if ("refused" in r) return c.json({ error: r.refused }, 409);
     repo.audit(c.req.param("id"), c.get("actor") ?? "operator", confirm ? "found.confirm" : "found.reject", { customerId: c.req.param("customerId") });
+    return c.json({ ok: true });
+  });
+  // the owner's yes Jack reads himself (an "Ok" after another text of ours): he asks for the first month, its text for his OK
+  op.post("/businesses/:id/first-month", async (c) => {
+    if (!repo.exists(c.req.param("id"))) throw new NotFound("No such business");
+    if (!(await firstMonth(d, c.req.param("id")))) return c.json({ error: "There's no first month to ask for: one was asked for already, or the plan is paying, cancelled or yearly." }, 409);
+    repo.audit(c.req.param("id"), c.get("actor") ?? "operator", "charge.first_month");
     return c.json({ ok: true });
   });
   op.post("/businesses/:id/charges/:cid/link", async (c) => {
@@ -961,8 +972,12 @@ export function createApp(d: HttpDeps): Hono<Env> {
       const flagged = s.touches.filter((t) => t.flags.length && (t.status === "planned" || t.status === "approved")).slice(0, 100);
       for (const t of flagged)
         items.push({ kind: "flagged_note", ...biz, at: t.dueAt, touchId: t.id, customerId: t.customerId, name: people.get(t.customerId)?.name ?? "", step: t.step, status: t.status, subject: t.subject ?? "", body: t.body, flags: t.flags });
+      // money texts made at once (several bookings in one tick) come in the charge log's order, so approving them top to
+      // bottom tells the owner his running total in order
+      const logged = [...(s.dataset.business.plan.charges ?? []), ...(s.dataset.business.plan.months ?? [])].map((ch) => ch.id);
+      const order = new Map(s.ownerMessages.map((m) => [m.id, logged.indexOf(m.refs?.find((r) => r.kind === CHARGE_REF)?.id ?? "")]));
       for (const m of [...repo.ownerMessages(b.id, { delivery: "review" }), ...repo.ownerMessages(b.id, { delivery: "failed" })])
-        items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text });
+        items.push({ kind: "owner_message", ...biz, at: m.at, messageId: m.id, messageKind: m.kind, delivery: m.delivery, text: m.text, ...((order.get(m.id) ?? -1) >= 0 ? { order: order.get(m.id) } : {}) });
       // charges waiting on a person (a one pass's, a month's): a refund, a NOT OURS or a second payment to decide; by hand
       // (no Stripe key), each one approved is his to collect (the card's from its day, once its text reached the
       // owner), then Done. With a key, so is one approved by hand before it was set (a link only Jack sent; a card Stripe
@@ -1017,7 +1032,7 @@ export function createApp(d: HttpDeps): Hono<Env> {
     // the sending platform can't reach us (webhooks never registered)
     const hooks = webhookSetup(d);
     if (hooks && !hooks.ok) items.push({ kind: "platform", businessId: "", businessName: d.email.name === "instantly" ? "Instantly" : d.email.name, at: hooks.at, title: "Webhooks aren't registered — replies, bounces and unsubscribes may not arrive", detail: hooks.error ?? "" });
-    items.sort((x, y) => (String(x.at) < String(y.at) ? -1 : 1));
+    items.sort((x, y) => (String(x.at) < String(y.at) ? -1 : String(x.at) > String(y.at) ? 1 : Number(x.order ?? 0) - Number(y.order ?? 0)));
     return c.json({ now: d.clock().toISOString(), slaHours: sla, items });
   });
 

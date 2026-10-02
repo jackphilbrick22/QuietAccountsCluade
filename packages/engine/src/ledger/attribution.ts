@@ -280,6 +280,22 @@ export function ownerReported(replies: Reply[], existing: Recovery[]): Recovery[
 }
 
 /**
+ * Bookings the owner reported with no amount (BOOKED #code, or a console entry with no value): the ledger takes none
+ * without a figure, but a one pass bills a booking whatever it's worth (only the rest of a lawn list needs one), dated by
+ * the day he said so. One already on the ledger for them (`ledger`, its counted bookings) from the month before they
+ * wrote back to the month after is that booking.
+ */
+export function unpricedBookings(replies: Reply[], ledger: Recovery[]): Recovery[] {
+  return replies
+    .filter((r) => r.customerId && r.outcome === "booked" && !((r.outcomeValue ?? 0) > 0) && !r.opportunityId?.startsWith("req:"))
+    .filter((r) => {
+      const [from, to] = bookingSpan(r);
+      return !ledger.some((x) => x.customerId === r.customerId && ((x.cameBackOn >= from && x.cameBackOn <= to) || x.record.id === r.id || x.from?.record.id === r.id));
+    })
+    .map((r) => ({ id: makeId("rec", r.customerId!, "reply", r.id), customerId: r.customerId!, opportunityId: r.opportunityId, record: { kind: "job", id: r.id }, value: 0, cameBackOn: (r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt).slice(0, 10), match: "owner_reported", confidence: 0.75, tier: "traced" }));
+}
+
+/**
  * Compare people we contacted with people we deliberately didn't.
  * This is what turns "jobs booked after a message" into "revenue the messages caused".
  */

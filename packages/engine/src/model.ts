@@ -417,6 +417,11 @@ export interface PlanState {
   /** The day the plan was cancelled: nothing booked from then on is billable. */
   cancelledOn?: ISODate;
   /**
+   * The day of the latest cancel (by text or in Settings): its months are judged against it. cancelledOn can be older:
+   * a one pass's, kept once the pass went monthly.
+   */
+  lastCancelOn?: ISODate;
+  /**
    * One pass: a charge for each billable booking, one per customer (billableBookings). Once a charge exists it's the
    * record, whatever the ledger says of the booking later. A Settings save never touches it.
    */
@@ -481,9 +486,10 @@ interface ChargeBase {
   reason?: string;
   /**
    * Jack's to decide: a refund once its booking went (cancelled before the work) or once it was paid after it was
-   * cancelled, the owner's NOT OURS after it was charged, or a second payment for it (`paymentIntent`, that payment's).
+   * cancelled, the owner's NOT OURS after it was charged, a second payment for it (`paymentIntent`, that payment's), or
+   * (`hold`) whether it goes on the card at all, once the owner answered its text with a no.
    */
-  ask?: { kind: "refund" | "not_ours" | "paid_twice"; at: ISODateTime; why: string; paymentIntent?: string };
+  ask?: { kind: "refund" | "not_ours" | "paid_twice" | "hold"; at: ISODateTime; why: string; paymentIntent?: string };
   /** Jack kept the money when asked: it isn't asked again. */
   keptAt?: ISODateTime;
   /**
@@ -502,10 +508,13 @@ export interface Charge extends ChargeBase {
   /** The lead's code from its hand-off text: on every money text, and what NOT OURS names. */
   code: string;
   /**
-   * Skipped only because its booking dropped out before the charge (cancelled, taken back, gone from the ledger): it
-   * comes back if the customer books again, since that booking never was one. NOT OURS, Jack's word or a cancel is final.
+   * Skipped only because its booking dropped out before the charge (cancelled, taken back, gone from the ledger), or
+   * refunded on Jack's OK because it dropped out after: it comes back if the customer books again, since that booking
+   * never was one. NOT OURS, Jack's word or a cancel is final.
    */
   dropped?: boolean;
+  /** How many times it came back for a new booking: each time is a charge of its own at Stripe, with its own keys. */
+  revived?: number;
 }
 
 /** One month's charge. Its id is from the business and the month (monthChargeId), so a month is charged once. */

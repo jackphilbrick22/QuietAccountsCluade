@@ -4,8 +4,8 @@ import { soldMonthly } from "../breakage/assumptions.ts";
 import { jobDate, rhythmOf } from "../breakage/visits.ts";
 import { billsPass, holdsPlace, ONE_PASS } from "../plans.ts";
 import { leadCode, passTouches } from "../reports/owner.ts";
-import { daysBetween, makeId } from "../util.ts";
-import { bookingNames, bookingSpan, counted, jobOn } from "./attribution.ts";
+import { daysBetween } from "../util.ts";
+import { bookingNames, bookingSpan, counted, jobOn, unpricedBookings } from "./attribution.ts";
 
 /** Replies that never make anyone billable: they aren't a real answer to the notes (BRIEF §2, rule 1). */
 const NOT_A_REPLY = new Set<Reply["intent"]>(["stop", "not_interested", "wrong_person", "complaint", "auto_reply", "bounce"]);
@@ -145,7 +145,7 @@ export function billableBookings(state: AccountState): BillableCount {
 
   const bookings = new Map<string, Recovery[]>();
   const ledger = counted(state.recoveries);
-  for (const r of [...ledger, ...unpriced(state, ledger)].sort((a, b) => madeOn(a).localeCompare(madeOn(b)) || (a.id < b.id ? -1 : 1)))
+  for (const r of [...ledger, ...unpricedBookings(state.replies, ledger)].sort((a, b) => madeOn(a).localeCompare(madeOn(b)) || (a.id < b.id ? -1 : 1)))
     (bookings.get(r.customerId) ?? bookings.set(r.customerId, []).get(r.customerId)!).push(r);
   const found: Billable[] = [];
   for (const [customerId, rs] of bookings) {
@@ -179,22 +179,6 @@ export function billableBookings(state: AccountState): BillableCount {
     } else out.overCap.push(x);
   }
   return out;
-}
-
-/**
- * Bookings the owner reported with no amount (BOOKED #code, or a console entry with no value): the ledger takes none
- * without a figure, but a one pass bills a booking whatever it's worth (only the rest of a lawn list needs one), dated by
- * the day he said so. One already on the ledger for them from the month before they wrote back to the month after is
- * that booking.
- */
-function unpriced(state: AccountState, ledger: Recovery[]): Recovery[] {
-  return state.replies
-    .filter((r) => r.customerId && r.outcome === "booked" && !((r.outcomeValue ?? 0) > 0) && !r.opportunityId?.startsWith("req:"))
-    .filter((r) => {
-      const [from, to] = bookingSpan(r);
-      return !ledger.some((x) => x.customerId === r.customerId && ((x.cameBackOn >= from && x.cameBackOn <= to) || x.record.id === r.id || x.from?.record.id === r.id));
-    })
-    .map((r) => ({ id: makeId("rec", r.customerId!, "reply", r.id), customerId: r.customerId!, opportunityId: r.opportunityId, record: { kind: "job", id: r.id }, value: 0, cameBackOn: day(r.bookedAt ?? r.ownerContactedAt ?? r.receivedAt), match: "owner_reported", confidence: 0.75, tier: "traced" }));
 }
 
 /**

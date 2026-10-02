@@ -3,7 +3,7 @@ import type { AccountState, ChargeText, OwnerMessage } from "./state.ts";
 import { AFTER_CANCEL, billableBookings } from "../ledger/billable.ts";
 import { counted } from "../ledger/attribution.ts";
 import { bookingWho, chargeCapText, chargeHeadsUp, chargeRefundText, chargeRetryText, leadCode, monthLine, paidYearOn, type GuaranteeCheck } from "../reports/owner.ts";
-import { billsPass, holdsPlace, isMonth, monthlyPlan, ONE_PASS, startMonthly } from "../plans.ts";
+import { billsPass, holdsPlace, isMonth, monthlyPlan, NOT_OURS_WHY, ONE_PASS, startMonthly } from "../plans.ts";
 import { customerById } from "../lookup.ts";
 import { holidayOn } from "../cadence/holidays.ts";
 import { addDays, fmtMoney, makeId, monthName, weekday } from "../util.ts";
@@ -68,7 +68,7 @@ export function cardOnFile(plan: PlanState, stripe: boolean): boolean {
 }
 
 /** The reason on the charges and bookings the owner said weren't ours. */
-const NOT_OURS = "The owner texted NOT OURS";
+const NOT_OURS = NOT_OURS_WHY;
 /** Why money paid for a charge already cancelled waits for Jack: his to refund, whatever the customer books since. */
 const PAID_AFTER = "Paid after it was cancelled";
 /** Why a month isn't charged once the owner cancelled (by text, or in Settings). */
@@ -86,6 +86,54 @@ export function monthFree(state: AccountState, id: string, now: ISODateTime): bo
 
 /** Why a month paid the day the owner cancelled waits for Jack. */
 export const CHARGED_CANCEL_DAY = "Charged the day they cancelled";
+/** Why a later month paid by its link before its day, which hadn't come when the owner cancelled, waits for Jack. */
+export const PAID_EARLY = "Paid before its day, then cancelled before that day";
+
+/** A later month paid (by its link) before its own day came. */
+export function paidEarly(c: MonthCharge): boolean {
+  return !c.first && c.status === "paid" && (c.paidAt ?? "").slice(0, 10) < c.month;
+}
+
+/** Why a saved card's month Jack collects by hand, whose day came by the owner's cancel, waits for him. */
+const CHARGED_BY_HAND = "Cancelled on or after its day, when you may have charged it by hand";
+/** Why a month out on Jack's own link (by hand, or approved before the Stripe key) waits for him once the owner cancels. */
+const COLLECTED_BY_HAND = "Cancelled when you may have collected it by hand";
+
+/**
+ * A saved card's charge Jack collects by hand (no Stripe key, or a card Stripe can't charge) whose text reached the
+ * owner and whose day had come by `day`: he may have charged it already, so nothing cancels it without his word.
+ */
+export function maybeCharged(plan: PlanState, c: Charge | MonthCharge, day: ISODate, opts: Pick<BillingOpts, "stripe">): boolean {
+  return c.via === "card" && c.status === "approved" && !!c.toldAt && (c.chargeOn ?? "") <= day && (!opts.stripe || !cardOnFile(plan, true));
+}
+
+/**
+ * A charge Jack collects by hand that may be collected already: a saved card's whose day came (maybeCharged), or one out
+ * on his own link (approved by hand, or before the Stripe key was set: the owner may have paid it). Nothing cancels it
+ * without his word.
+ */
+function maybeCollected(plan: PlanState, c: Charge | MonthCharge, day: ISODate, opts: Pick<BillingOpts, "stripe">): boolean {
+  return maybeCharged(plan, c, day, opts) || (c.via === "link" && c.status === "approved");
+}
+
+/** A booking's refund asked only because its booking dropped out (not paid after a cancel, nor booked after it): it comes back if they book again. */
+function droppedOut(c: Charge | MonthCharge): boolean {
+  return !isMonth(c) && c.ask?.kind === "refund" && !c.ask.why.startsWith(PAID_AFTER) && !c.ask.why.startsWith(AFTER_CANCEL);
+}
+
+/**
+ * A later month that may be paid already (by its link before its day, which hasn't come; or by Jack's hand on its day)
+ * turned out free (a reply read again): it's never charged on a free month, so it's Jack's to refund (or keep, or, never
+ * charged, cancel). Whether he's asked now.
+ */
+export function monthPaidFree(state: AccountState, id: string, now: ISODateTime): boolean {
+  const c = chargeOf(state, id);
+  if (!c || !isMonth(c) || (!paidEarly(c) && c.status !== "approved") || c.ask || c.keptAt) return false;
+  const why = `${FREE_MONTH}, but ${c.status === "paid" ? "it was paid before its day" : "you may have charged it by hand"}`;
+  c.ask = { kind: "refund", at: now, why };
+  log(state, now, "review", `Refund ${moneyOf(state, c)}?`, `${why}. Refund it, or keep it.`, c);
+  return true;
+}
 
 /** A charge before money has moved (or might be moving): NOT OURS or a booking gone cancels it outright. */
 const UNCHARGED = new Set<Charge["status"]>(["heads_up", "approved", "link_sent", "failed"]);
@@ -135,16 +183,27 @@ function skip(state: AccountState, c: Charge | MonthCharge, now: ISODateTime, wh
 }
 
 /**
- * A charge skipped only because its booking dropped out, and the customer booked again: it's back for that booking,
- * waiting for Jack like a new one. Last in the log (its place and the total are counted from now), and a declined try's
- * PaymentIntent isn't this charge's.
+ * A charge skipped (or refunded) only because its booking dropped out, and the customer booked again: it's back for that
+ * booking, waiting for Jack like a new one. Last in the log (its place and the total are counted from now). It's a
+ * charge of its own at Stripe: none of the old PaymentIntent, refund or Checkouts are this one's (the caller expired
+ * those when it was skipped, and a payment on one still settles it), and its keys are new (stripeKey).
  */
 function revive(state: AccountState, c: Charge, now: ISODateTime, over: Partial<Charge>): Charge {
   const plan = state.dataset.business.plan;
-  const { paymentIntent: _declined, ...stripe } = c.stripe ?? {};
-  Object.assign(c, { status: "heads_up", reason: undefined, dropped: undefined, at: now, approvedAt: undefined, toldAt: undefined, triedAt: undefined, chargeOn: undefined, stripe, ...over } satisfies Partial<Charge>);
+  const { customer, again } = c.stripe ?? {};
+  const stripe = { ...(customer ? { customer } : {}), ...(again ? { again } : {}) };
+  Object.assign(c, { status: "heads_up", reason: undefined, dropped: undefined, revived: (c.revived ?? 0) + 1, at: now, approvedAt: undefined, toldAt: undefined, triedAt: undefined, chargeOn: undefined, paidAt: undefined, refundedAt: undefined, keptAt: undefined, stripe, ...over } satisfies Partial<Charge>);
   plan.charges = [...(plan.charges ?? []).filter((x) => x !== c), c];
   return c;
+}
+
+/**
+ * A Stripe idempotency key for a charge's `what` ("pi", "confirm", "refund", "checkout"): its id, and, once it came back
+ * for a new booking, which time, so Stripe never answers with what it did for the charge before.
+ */
+export function stripeKey(c: Charge | MonthCharge, what: string): string {
+  const n = isMonth(c) ? 0 : (c.revived ?? 0);
+  return `${c.id}:${what}${n ? `:${n}` : ""}`;
 }
 
 /** The owner said it wasn't ours: the customer's bookings from the pass come off the ledger too. */
@@ -173,12 +232,21 @@ export function settleCharges(state: AccountState, now: ISODateTime, opts: Billi
     const back = billable.get(c.customerId);
     // booked again since the booking it was charged for went: what was paid stands for this one, nothing to refund
     if (back && c.ask?.kind === "refund" && !c.ask.why.startsWith(PAID_AFTER)) {
-      log(state, now, "info", `No refund for ${nameOf(state, c)}: booked again`, `${c.ask.why}, but they booked again: the ${fmtMoney(c.amount / 100)} paid stands for that booking.`, c);
+      log(state, now, "info", `No refund for ${nameOf(state, c)}: booked again`, `${c.ask.why}, but they booked again: the ${fmtMoney(c.amount / 100)}${c.status === "paid" ? " paid" : ""} stands for that booking.`, c);
       Object.assign(c, { bookingId: back.bookingId, bookedOn: back.on } satisfies Partial<Charge>);
       againDone(c, now);
     }
     if (back || !holdsPlace(c)) continue;
     const reason = why.get(c.customerId) ?? "Its booking is off the ledger";
+    // by hand, one he may have collected already (its card's day came, or his own link was out): his word, never
+    // cancelled, and it holds its place meanwhile (booked again, the ask goes and it stands for that booking)
+    if (maybeCollected(plan, c, now.slice(0, 10), opts)) {
+      if ((!c.ask || c.ask.kind === "hold") && !c.keptAt) {
+        c.ask = { kind: "refund", at: now, why: `${reason}, when you may have ${c.via === "link" ? "collected" : "charged"} it by hand` };
+        log(state, now, "review", `Refund ${nameOf(state, c)}'s ${fmtMoney(c.amount / 100)}?`, `${c.ask.why}. If you did, refund it or keep it; if not, cancel it.`, c);
+      }
+      continue;
+    }
     if (UNCHARGED.has(c.status)) {
       skip(state, c, now, reason, reason !== AFTER_CANCEL);
       skipped.push(c.id);
@@ -261,18 +329,30 @@ export function chargeMonth(state: AccountState, g: GuaranteeCheck, m: OwnerMess
  * The owner cancelled (by text, or in Settings): a month not charged yet never is, nor is the first month asked for.
  * One going through already is left to settle (paid, the plan stays cancelled), and a later month whose day came before
  * the cancel and didn't go through (its card declined, its link unpaid) stays for Jack. One paid the day he cancelled
- * (charged before his CANCEL reached us) is Jack's to refund or keep. The months skipped (their texts not sent yet are
- * withdrawn by the caller).
+ * (charged before his CANCEL reached us), or a later month paid by its link before its day when that day hadn't come
+ * (on the card, a cancel the day before charges nothing), is Jack's to refund or keep. The months skipped (their texts
+ * not sent yet are withdrawn by the caller).
  */
-export function settleMonths(state: AccountState, now: ISODateTime): string[] {
+export function settleMonths(state: AccountState, now: ISODateTime, opts: Pick<BillingOpts, "stripe"> = { stripe: true }): string[] {
   const plan = state.dataset.business.plan;
   if (plan.stage !== "cancelled") return [];
   const skipped: string[] = [];
-  const cancelDay = state.cancelled?.at.slice(0, 10) ?? plan.cancelledOn;
+  // this cancel's own day, never a one pass's older one kept once it went monthly
+  const cancelDay = plan.lastCancelOn ?? state.cancelled?.at.slice(0, 10) ?? plan.cancelledOn ?? now.slice(0, 10);
   for (const c of plan.months ?? []) {
-    if (c.status === "paid" && c.paidAt?.slice(0, 10) === cancelDay && !c.ask && !c.keptAt) {
-      c.ask = { kind: "refund", at: now, why: CHARGED_CANCEL_DAY };
-      log(state, now, "review", `Refund ${moneyOf(state, c)}?`, `${CHARGED_CANCEL_DAY}. Refund it, or keep it.`, c);
+    const why = c.status !== "paid" ? undefined : c.paidAt?.slice(0, 10) === cancelDay ? CHARGED_CANCEL_DAY : paidEarly(c) && cancelDay <= c.month ? PAID_EARLY : undefined;
+    if (why && !c.ask && !c.keptAt) {
+      c.ask = { kind: "refund", at: now, why };
+      log(state, now, "review", `Refund ${moneyOf(state, c)}?`, `${why}. Refund it, or keep it.`, c);
+      continue;
+    }
+    // by hand, a month that may be collected already (its saved card's day came by the cancel, or his own link was out):
+    // Jack's word, never cancelled
+    if (maybeCollected(plan, c, cancelDay, opts)) {
+      if ((!c.ask || c.ask.kind === "hold") && !c.keptAt) {
+        c.ask = { kind: "refund", at: now, why: c.via === "link" ? COLLECTED_BY_HAND : CHARGED_BY_HAND };
+        log(state, now, "review", `Refund ${moneyOf(state, c)}?`, `${c.ask.why}. If you did, refund it or keep it; if not, cancel it.`, c);
+      }
       continue;
     }
     const due = !c.first && c.month <= now.slice(0, 10) && (c.status === "link_sent" || c.status === "failed");
@@ -379,11 +459,11 @@ export function linkAgain(state: AccountState, id: string, now: ISODateTime, opt
 
 /**
  * The saved card is about to be charged (or read back after a restart): claimed, so nothing else starts it. Never
- * before its text reached the owner.
+ * before its text reached the owner, nor while Jack is asked about it (he may have charged it by hand).
  */
 export function chargeStarted(state: AccountState, id: string, now: ISODateTime): Charge | MonthCharge | undefined {
   const c = chargeOf(state, id);
-  if (!c || (c.status !== "approved" && c.status !== "charging") || (c.status === "approved" && !c.toldAt)) return undefined;
+  if (!c || (c.status !== "approved" && c.status !== "charging") || (c.status === "approved" && (!c.toldAt || c.ask))) return undefined;
   c.status = "charging";
   c.triedAt = now;
   return c;
@@ -400,6 +480,8 @@ export function chargePaid(state: AccountState, id: string, now: ISODateTime, ho
   const plan = state.dataset.business.plan;
   const starts = isMonth(c) && c.first && c.status !== "skipped" && plan.stage !== "paying" && plan.stage !== "cancelled";
   if (c.status === "skipped") c.ask = { kind: "refund", at: now, why: `${PAID_AFTER} (${c.reason})` };
+  // paid (by its link, or Jack marked it): whether it goes on the card is settled
+  if (c.ask?.kind === "hold") c.ask = undefined;
   if (!isMonth(c)) c.dropped = undefined;
   if (starts) startMonthly(plan, now.slice(0, 10), c.amount / 100);
   c.status = "paid";
@@ -473,6 +555,9 @@ export function chargeRefunded(state: AccountState, id: string, now: ISODateTime
   }
   if (!c || c.status !== "paid") return false;
   if (c.ask?.kind === "not_ours" && !isMonth(c)) disputeBookings(state, c.customerId, now);
+  // refunded because its booking dropped out (its job cancelled before the work): if the customer books again, that's
+  // their first booking, as for one skipped before the charge
+  if (!isMonth(c) && droppedOut(c)) c.dropped = true;
   Object.assign(c, { status: "refunded", refundedAt: now, reason: c.ask?.why ?? "Refunded", ask: undefined } satisfies Partial<Charge>);
   if (refundId) c.stripe = { ...c.stripe, refund: refundId };
   text(state, now, "charge_refund", c, chargeRefundText(state, c));
@@ -484,11 +569,11 @@ export function chargeRefunded(state: AccountState, id: string, now: ISODateTime
 /**
  * The owner texted NOT OURS #code (the code of the charge, or of a lead whose customer has one). Before the charge,
  * it's cancelled (its place freed) and the booking comes off the ledger; after it, Jack decides, and the charge holds
- * its place meanwhile. A lead with no charge yet has its bookings from the pass taken off the ledger, and on a one pass
- * its customer gets a charge cancelled for it, so nothing their records show later is ever charged either. Undefined:
- * no charge and no lead has that code.
+ * its place meanwhile (one Jack collects by hand whose day came may be charged already: his too). A lead with no charge
+ * yet has its bookings from the pass taken off the ledger, and on a one pass its customer gets a charge cancelled for
+ * it, so nothing their records show later is ever charged either. Undefined: no charge and no lead has that code.
  */
-export function notOurs(state: AccountState, code: string, now: ISODateTime): { customerId: string; charge?: Charge; done: "skipped" | "asked" | "already" | "disputed" } | undefined {
+export function notOurs(state: AccountState, code: string, now: ISODateTime, opts: Pick<BillingOpts, "stripe"> = { stripe: true }): { customerId: string; charge?: Charge; done: "skipped" | "asked" | "already" | "disputed" } | undefined {
   const plan = state.dataset.business.plan;
   const lead = state.replies.find((r) => r.customerId && r.handedOffAt && leadCode(r.id) === code);
   const c = [...(plan.charges ?? [])].reverse().find((x) => x.code === code) ?? plan.charges?.find((x) => x.customerId === lead?.customerId);
@@ -500,7 +585,8 @@ export function notOurs(state: AccountState, code: string, now: ISODateTime): { 
     }
     return { customerId: c.customerId, charge: c, done: "already" };
   }
-  if (c && !UNCHARGED.has(c.status)) {
+  // charged, or (by hand, its day come) maybe charged already
+  if (c && (!UNCHARGED.has(c.status) || maybeCharged(plan, c, now.slice(0, 10), opts))) {
     c.ask = { kind: "not_ours", at: now, why: NOT_OURS };
     c.keptAt = undefined;
     log(state, now, "review", `${state.dataset.business.ownerFirstName} says ${nameOf(state, c)} wasn't ours`, `After the ${fmtMoney(c.amount / 100)} was charged: refund it, or keep it.`, c);
@@ -519,14 +605,45 @@ export function notOurs(state: AccountState, code: string, now: ISODateTime): { 
   return { customerId: lead.customerId!, charge: none, done: "disputed" };
 }
 
+/** Why a charge waits for Jack once the owner answered a money text with a no. */
+const OWNER_NO = "The owner answered a text about money with a no";
+
+/**
+ * The owner answered a money text with a no (a month's pre-charge text, or a charge's), with no #code: whatever was to go
+ * on the card (approved, not charged yet) waits for Jack's word, never charged meanwhile. The charges held.
+ */
+export function holdCharges(state: AccountState, now: ISODateTime, said: string): (Charge | MonthCharge)[] {
+  const plan = state.dataset.business.plan;
+  const held = [...(plan.charges ?? []), ...(plan.months ?? [])].filter((c) => c.via === "card" && c.status === "approved" && !c.ask);
+  for (const c of held) {
+    c.ask = { kind: "hold", at: now, why: `${OWNER_NO}: “${said.trim().slice(0, 160)}”` };
+    log(state, now, "review", `${moneyOf(state, c, { start: isMonth(c) })} waits for you`, `${c.ask.why}. Nothing goes on the card until you say: charge it as planned, or cancel it.`, c);
+  }
+  return held;
+}
+
 /**
  * Jack's answer to a charge waiting on him (a refund to approve, a NOT OURS after the charge, a second payment).
  * Refund: the caller refunds a paid one (or the second payment) through Stripe, then chargeRefunded; one never charged
- * is just skipped. Keep: it stays, and isn't asked again. Nothing while a charge is still going through.
+ * is just skipped. Keep: it stays, and isn't asked again. Nothing while a charge is still going through. One he collects
+ * by hand that may be collected already (approved, never paid here): keeping it says he collected it, so it's paid;
+ * `charged` with a refund says he collected it and gave it back, so it's paid, then refunded (by hand); a refund alone
+ * says he never collected it, so it's cancelled. One held after the owner's no: refund cancels it, keep lets it go on
+ * as planned.
  */
-export function decideCharge(state: AccountState, id: string, refund: boolean, now: ISODateTime): "refund" | "skipped" | "kept" | undefined {
+export function decideCharge(state: AccountState, id: string, refund: boolean, now: ISODateTime, charged = false): "refund" | "skipped" | "kept" | undefined {
   const c = chargeOf(state, id);
   if (!c?.ask || c.status === "charging") return undefined;
+  // held after the owner's no: cancelled, or it goes on as planned (on its day, or now when that's past)
+  if (c.ask.kind === "hold") {
+    if (refund) skip(state, c, now, c.ask.why);
+    else {
+      log(state, now, "info", `${moneyOf(state, c, { start: isMonth(c) })} goes on as planned`, c.ask.why, c);
+      c.ask = undefined;
+    }
+    return refund ? "skipped" : "kept";
+  }
+  if (c.status === "approved" && (charged || !refund)) chargePaid(state, c.id, now, { by: "outside" });
   if (!refund) {
     log(state, now, "info", `Kept ${moneyOf(state, c)}`, c.ask.why, c);
     if (c.ask.kind !== "paid_twice") c.keptAt = now;
@@ -535,7 +652,8 @@ export function decideCharge(state: AccountState, id: string, refund: boolean, n
   }
   if (c.status === "paid" || c.ask.kind === "paid_twice") return "refund";
   if (c.ask.kind === "not_ours" && !isMonth(c)) disputeBookings(state, c.customerId, now);
-  skip(state, c, now, c.ask.why);
+  // never charged because its booking dropped out: it comes back if they book again, as one skipped before its day does
+  skip(state, c, now, c.ask.why, droppedOut(c));
   return "skipped";
 }
 

@@ -1,5 +1,5 @@
-import { addDays, billableBookings, billsPass, bookingWho, CHARGE_TEXTS, CHARGED_CANCEL_DAY, cancelPlan, CHECK_IN_DAYS, counted, daysBetween, fmtMoney, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, QUESTION_OPEN_DAYS, renewPlan, round2, setBookedOut, skipPerson, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
-import { firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
+import { addDays, billableBookings, billsPass, bookingWho, CHARGE_TEXTS, CHARGED_CANCEL_DAY, cancelPlan, CHECK_IN_DAYS, counted, daysBetween, fmtMoney, holdCharges, isOnePass, leadCode, markContacted, notOurs, NUDGE_MAX_AGE_HOURS, ONE_PASS, paidYearOn, peopleNamed, plural, QUESTION_OPEN_DAYS, renewPlan, round2, setBookedOut, skipPerson, textsOf, totals, underWay, undoCancel, wantedWords, type AccountState, type BusinessProfile, type Reply } from "@qa/engine";
+import { billingOpts, firstMonth, settleBilling, withdrawStaleTexts } from "./billing.ts";
 import { localIso } from "./clock.ts";
 import { notAnAmount, readLeadTextWithClaude } from "../agents/ownerText.ts";
 import { inboxTaken } from "./senders.ts";
@@ -62,6 +62,11 @@ const APPROVE = new RegExp(`^${APPROVE_WORD}( ${APPROVE_TAIL})*$`);
 const CANCEL_ALL = /^cancel( (the|my|our|service|plan|subscription|everything|it|all|quiet|accounts|account|yes|confirm|please|now))*$/;
 /** A yes said first: "Go ahead" and "Go for it" too (a bare "go" only on its own; "Go with Hey instead" is not a yes). */
 const AFFIRM = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go ahead|go for it|go(?=\W*$)|let'?s (do it|go|keep going|keep it going)|keep (it )?going|i'?m in|deal|absolutely|definitely|do it)\b/;
+/**
+ * A yes that says so plainly (matched against the words only): "Yes", "Let's keep going", "Sure, sign me up", "I'm in",
+ * "Deal", "Monthly". Not "Ok", "Ok thanks, will call her" or "Sounds good", which may be about another text of ours.
+ */
+const PLAIN_YES = /\b(yes|yeah|yep|yup|ya|sure|(lets|let s) (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it|go ahead|go for it|sign (me|us) up|monthly|month to month)\b|^go$/;
 /** The whole text is a yes (matched against the words only): "Keep it going", "I'm in, thanks". Not "Ok but…". */
 const WHOLE_YES = /^(yes|yeah|yep|yup|ya|sure|ok|okay|sounds good|go|go ahead|go for it|let s (do it|go|keep going|keep it going)|lets (do it|go|keep going|keep it going)|keep (it )?going|i m in|im in|deal|absolutely|definitely|do it)( (thanks|thank you|thx|ty|jack|man|please|pls|cool|great|perfect|awesome|sounds good|got it))*$/;
 /**
@@ -525,7 +530,9 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     // day came and didn't go through stays: Jack looks at both
     const monthsOf = () => d.accounts.peek(one.id)!.state.dataset.business.plan.months ?? [];
     if (monthsOf().length) await settleBilling(d, one.id);
-    const open = monthsOf().filter((c) => c.status === "charging" || c.status === "failed" || c.status === "link_sent" || (c.status === "paid" && c.ask?.why === CHARGED_CANCEL_DAY));
+    // (a month paid, or maybe paid by Jack's hand on its day, that he's asked to refund or keep: the day of the cancel,
+    // by its link before its day)
+    const open = monthsOf().filter((c) => c.status === "charging" || c.status === "failed" || c.status === "link_sent" || ((c.status === "paid" || c.status === "approved") && c.ask?.kind === "refund"));
     d.accounts.repo.audit(one.id, "owner-sms", "cancel", { stopped: r.stopped, refund: r.refund });
     // a yearly refund text goes straight to the operator's queue: they issue it, then send it
     if (r.refund) await deliverOwnerMessages(d, one.id);
@@ -535,10 +542,10 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const price = fmtMoney(one.profile.plan.pricePerBooking ?? ONE_PASS.pricePerBooking);
     const charges = owed
       ? `No more notes, and nothing that books from today on is charged. ${owed === 1 ? `The job booked before today is still ${price}` : `The ${owed} jobs booked before today are still ${price} each`}, and I text before every charge.`
-      : open.some((c) => c.status === "paid")
+      : open.some((c) => c.status === "paid" || c.status === "approved")
         ? "No more notes."
         : "No more notes, no more charges.";
-    const left = open.map((c) => `the ${fmtMoney(c.amount / 100)} for ${c.first ? "your first month" : `the month from ${fmtDay(c.month)}`} ${c.status === "paid" ? "went through today" : c.status === "charging" ? "was already going through" : "is still unpaid"}`);
+    const left = open.map((c) => `the ${fmtMoney(c.amount / 100)} for ${c.first ? "your first month" : `the month from ${fmtDay(c.month)}`} ${c.status === "paid" ? (c.ask?.why === CHARGED_CANCEL_DAY ? "went through today" : "went through") : c.status === "charging" ? "was already going through" : c.status === "approved" ? "may have gone through" : "is still unpaid"}`);
     const still = left.length ? ` ${joinOr(left, "and").replace(/^t/, "T")}, so Jack will look at ${left.length === 1 ? "it" : "them"}.` : "";
     return {
       businessId: one.id,
@@ -691,6 +698,14 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     }
     return { businessId: hits[0]?.b.id ?? fallback().id, reply: `${one ? tag(one) : ""}Thanks — that one could go either way, so Jack will read it and mark the lead himself. Next time: BOOKED + amount + the #code, or NO + the #code.`, handled: "unclear_lead", needsPerson: true };
   }
+  // A no without a #code while a text about money is out to him (a month's pre-charge text, or a charge's on his card
+  // or by its link, reached him and not paid yet) answers that, not a lead: it never marks one lost. Whatever was to go
+  // on his card waits for Jack's word, and Jack reads it.
+  if (lead?.outcome === "lost" && !hasCode && /^(no|nope)\b/.test(bare)) {
+    const owing = (one ? [one] : all).filter((b) => moneyOut(d, b.id));
+    for (const b of owing) await d.accounts.withAccount(b.id, (state) => void holdCharges(state, nowLocal(d, state), text));
+    if (owing[0]) return { businessId: owing[0].id, reply: `${tag(owing[0])}Got it — Jack will read this before anything is charged. To cancel the service, text CANCEL. About a lead? Text NO and the #code.`, handled: "money_no", needsPerson: true };
+  }
   // A bare "No" / "Not interested" with the close, the renewal, a one pass's offer or its ask for a fresh export out
   // answers that, not a lead: it never marks one lost. A person reads it (it could still be about a lead, so the reply
   // says how to name one).
@@ -714,9 +729,11 @@ async function run(d: Deps, fromPhone: string, text: string): Promise<OwnerComma
     const ending = pool.filter((b) => outstanding(d, b.id, "pass_end"));
     const exporting = pool.filter((b) => outstanding(d, b.id, "export_ask"));
     if (closing.length + renewing.length + ending.length + exporting.length > 1) return askWhich();
-    // a money text (a booking's, the cap, a refund) reached him since the end text: his "Ok" may be to that, so Jack
-    // reads it and no first month is asked for
-    if (ending[0] && moneySince(d, ending[0].id)) return { businessId: ending[0].id, reply: `${tag(ending[0])}Got it — Jack will read this and get back to you.`, handled: "pass_end_unclear", needsPerson: true };
+    // another text an "Ok" could be answering reached his phone since the question went (a money text, a pre-charge, a
+    // hand-off, from any business on it): his "Ok" may be to that, so Jack reads it and nothing is asked for. A yes that
+    // says so plainly ("Yes, let's keep going"), or names the business, is the yes.
+    const q = ending[0] ? ([ending[0], "pass_end"] as const) : closing[0] ? ([closing[0], "close"] as const) : renewing[0] ? ([renewing[0], "renewal"] as const) : undefined;
+    if (q && !named && !PLAIN_YES.test(bare) && textSince(d, all, q[0].id, q[1])) return { businessId: q[0].id, reply: `${tag(q[0])}Got it — Jack will read this and get back to you.`, handled: `${q[1]}_unclear`, needsPerson: true };
     if (ending[0]) return keepGoing(ending[0], "monthly");
     const b = closing[0] ?? renewing[0];
     // the free 150's yes: the first month's text, with the link that saves the card, waits for Jack's OK; paid, the
@@ -762,12 +779,14 @@ async function notOursCommand(d: Deps, pool: Biz[], code: string, tag: (b: Biz) 
   let r: ReturnType<typeof notOurs>;
   let name = "";
   await d.accounts.withAccount(b.id, (state) => {
-    r = notOurs(state, code, nowLocal(d, state));
+    r = notOurs(state, code, nowLocal(d, state), billingOpts(d, b.id));
     name = (r && bookingWho(state, r.customerId, code)) ?? "that one";
   });
   withdrawStaleTexts(d, b.id);
   const res = r!;
   d.accounts.repo.audit(b.id, "owner-sms", "not_ours", { code, done: res?.done });
+  // one Jack collects by hand whose day came: he may not have charged it yet, so it's never said to be charged
+  if (res?.done === "asked" && res.charge!.status === "approved") return { businessId: b.id, reply: `${tag(b)}Got it. Jack will check whether the ${fmtMoney(res.charge!.amount / 100)} for ${name} (#${code}) was charged, and text you.`, handled: "not_ours_charged" };
   if (res?.done === "asked") return { businessId: b.id, reply: `${tag(b)}Got it. The ${fmtMoney(res.charge!.amount / 100)} for ${name} (#${code}) was already charged, so Jack will look at it and text you.`, handled: "not_ours_charged" };
   if (res?.done === "disputed") return { businessId: b.id, reply: `${tag(b)}Got it: ${name} (#${code}) is off your bookings, so there's no charge for it.`, handled: "not_ours", needsPerson: true };
   return { businessId: b.id, reply: `${tag(b)}Got it: no charge for ${name} (#${code}).`, handled: "not_ours" };
@@ -961,12 +980,32 @@ function outstanding(d: Deps, bid: string, kind: "close" | "renewal" | "pass_end
   return s.ownerMessages.some((m) => m.kind === kind && daysBetween(m.at.slice(0, 10), today) <= (kind === "renewal" ? 45 : QUESTION_OPEN_DAYS) && !answered(m) && offered(m));
 }
 
-/** A money text (a booking's, the cap's, a refund's) went to the owner after the one pass's end text did. */
-function moneySince(d: Deps, bid: string): boolean {
-  const all = d.accounts.repo.ownerMessages(bid, { limit: 300 });
-  const went = (m: (typeof all)[number]) => (m.delivery === "sent" || m.delivery === "manual") && !!m.delivered_at;
-  const end = all.find((m) => m.kind === "pass_end" && went(m));
-  return !!end && all.some((m) => (CHARGE_TEXTS as readonly string[]).includes(m.kind) && went(m) && m.delivered_at! > end.delivered_at!);
+/**
+ * Texts of ours an "Ok" could be answering: a money text, a pre-charge or free-month text, a refund, a hand-off, a nudge,
+ * a heads-up, a check-in, the ask for a fresh export. Never the weekly report, nor our answer to a text he sent us.
+ */
+const OK_ANSWERS = new Set<string>([...CHARGE_TEXTS, "precharge", "free_month", "refund", "handoff", "sla_nudge", "info", "check_in", "export_ask"]);
+
+/**
+ * Another text an "Ok" could be answering (OK_ANSWERS) reached the owner's phone after this business's question (`kind`:
+ * the close, the renewal, a one pass's end text) did, from any business on the cell (`cell`).
+ */
+function textSince(d: Deps, cell: Biz[], bid: string, kind: "close" | "renewal" | "pass_end"): boolean {
+  const asked = d.accounts.repo.ownerMessages(bid, { limit: 300 }).find((m) => m.kind === kind && m.delivered_at);
+  return !!asked && cell.some((b) => d.accounts.repo.ownerMessages(b.id, { limit: 300 }).some((m) => m.id !== asked.id && OK_ANSWERS.has(m.kind) && !!m.delivered_at && m.delivered_at > asked.delivered_at!));
+}
+
+/**
+ * A text about money reached the owner and its charge hasn't gone through: a month's pre-charge text, or a charge's
+ * (on the saved card, or by its link), still waiting for his card or his payment. A no without a #code answers it.
+ */
+function moneyOut(d: Deps, bid: string): boolean {
+  const s = d.accounts.peek(bid)?.state;
+  const p = s?.dataset.business.plan;
+  const waiting = [...(p?.charges ?? []), ...(p?.months ?? [])].filter((c) => c.status === "approved" || c.status === "link_sent");
+  if (!s || !waiting.length) return false;
+  const went = new Set(d.accounts.repo.ownerMessages(bid, { limit: 300 }).filter((m) => m.delivered_at).map((m) => m.id));
+  return waiting.some((c) => textsOf(s, c).some((m) => went.has(m.id) && (m.kind === "precharge" || m.kind === "charge_card" || m.kind === "charge_link" || m.kind === "charge_retry")));
 }
 
 /** The client whose lead was texted to this owner most recently. */
