@@ -611,6 +611,19 @@ Phase A, then B, then C, one commit per item, `pnpm check` green before each.
   - With C1, C2 and C3 on top of B6 and the holiday rule: engine 1,781, site 178, server 565.
 
 **Live steps for Jack**
+Before launch, in order (details for each in the list below): DNS; deploy the server (A8) with every setting from
+.env.example; Stripe test mode end to end (B4, B5), then live with STRIPE_ALLOW_LIVE=true; each client's own inboxes and
+sender names in Instantly (A3); the site to Netlify with form detection or VITE_SERVER_URL (A7); one test sign-up and
+one test client from import to the first OK.
+- (DNS) What the code needs, nothing more:
+  - quietaccounts.com and www point at Netlify (its records or its name servers), so the pages and /start's form load.
+  - One host name for the server (for example app.quietaccounts.com) points at the always-on host; PUBLIC_URL is that
+    https address, and every webhook (Stripe, Instantly, inbound email, Twilio later) and /pay link uses it.
+  - INBOUND_DOMAIN (for example in.quietaccounts.com) has MX records to your inbound email service, which posts to
+    PUBLIC_URL/webhooks/inbound-email/WEBHOOK_SECRET. quotes@quietaccounts.com, the address the pages give owners, must
+    forward there (or be that service's address) so a forwarded export lands in the import.
+  - Each client's sending inboxes need SPF, DKIM and DMARC on their own domain before they're connected in Instantly;
+    the server never touches DNS.
 - (C3) Text each cleaning owner the clicks for his software. ZenMaid: Reports → Data exports → Export data → Appointments (only on its Pro Max plan). BookingKoala: Bookings → Booking Time Logs → Export, plus Customers → Customers → Export (the customer file has emails but no dates, and time logs exist only if clocking in is on; otherwise "Download booking CSV"). Launch27: Bookings → Download CSV (active bookings only).
 - (Holidays) On Thanksgiving, open one Instantly client's page. Its campaigns that were Active should say Paused in Instantly, and its activity should say "Sending platform paused for this client: Because of Thanksgiving, a holiday".
 - By Saturday those should be Active again, and the follow-ups due over the holiday should go out Monday.
