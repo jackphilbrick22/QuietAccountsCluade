@@ -10,7 +10,8 @@ import { exampleNote } from "../build/examples.ts";
 import { EXAMPLE_SIGNER } from "../build/render.ts";
 import { runAudit, type AuditFile } from "../src/audit.ts";
 import { netlifyBody, signupBody, withFile, type Signup } from "../src/form.ts";
-import { PAGES } from "../src/trades.ts";
+import { fillIn } from "../src/note.ts";
+import { MONTHLY, PAGES, VIEWS } from "../src/trades.ts";
 import { lawnClients, visitsReport } from "../../../packages/engine/test/lawn-fixtures.ts";
 
 /**
@@ -63,7 +64,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 describe("the build", () => {
   it("writes / and a page per path (/lawn/index.html is Netlify's /lawn), their assets, and a zip of all of it", () => {
     const built = files(dist);
-    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "cleaning/index.html", "tree/index.html", "painting/index.html", "fence/index.html"]));
+    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "cleaning/index.html", "tree/index.html", "painting/index.html", "fence/index.html", "main-site/index.html", "cold-email-page/index.html", "og-soro.png"]));
     for (const shot of ["tom-text", "david-text", "ryan-text"]) expect(built.some((f) => f.startsWith(`assets/${shot}`) && f.endsWith(".jpg")), shot).toBe(true);
     const zipped = unzip(`${dist}.zip`);
     expect([...zipped.keys()].sort()).toEqual([...built].sort());
@@ -163,10 +164,11 @@ describe.runIf(playwright)("in Chromium", () => {
   });
 
   it("every tap target is at least 44px tall, form and footer included", async () => {
-    for (const path of ["/", ...PAGES.map((p) => `/${p.id}`)]) {
+    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), "/cold-email-page?co=Ridgeline%20Landscaping"]) {
       const page = await open(path);
       await page.evaluate(() => {
-        for (const el of document.querySelectorAll("#reveal, #done, #done [hidden]")) el.removeAttribute("hidden");
+        for (const el of document.querySelectorAll("#reveal, #done, #done [hidden], #coLine, #coField")) el.removeAttribute("hidden");
+        for (const d of document.querySelectorAll("details")) d.open = true;
       });
       const small = await page.evaluate(() =>
         [...document.querySelectorAll<HTMLElement>("a, button, summary, input:not([type=hidden]):not([type=checkbox]):not(.hp), label.consent")]
@@ -179,7 +181,7 @@ describe.runIf(playwright)("in Chromium", () => {
   });
 
   it("every word on a solid background has WCAG AA contrast: 4.5:1, or 3:1 for large text, buttons and the sticky bar included", async () => {
-    for (const path of ["/", ...PAGES.map((p) => `/${p.id}`)]) {
+    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), "/cold-email-page?co=Ridgeline%20Landscaping"]) {
       const page = await open(path);
       // all of it that can show: the rest of the form, the step after it and a file's result, the FAQ answers, the sticky bar
       await page.evaluate(() => {
@@ -679,5 +681,128 @@ describe.runIf(playwright)("in Chromium", () => {
     expect(await again.textContent("#rpHead")).toMatch(/^\d+ past customers haven't been back\.$/);
     expect(tries).toBe(2);
     await again.close();
+  });
+  /* ------------------------------ the violet views: main-site/ and cold-email-page/ ------------------------------ */
+
+  it("the violet pages: at 390x844 the headline, the promise and a button beside its price are on the first screen, with no sideways scroll", async () => {
+    let page = await open("/main-site");
+    await firstScreen(page, "#submit");
+    await page.close();
+    for (const path of ["/cold-email-page", "/cold-email-page?co=Ridgeline%20Landscaping%20Co."]) {
+      page = await open(path);
+      for (const sel of ["h1", ".promise"]) {
+        const b = await box(page, sel);
+        expect(b.y + b.height, `${path} ${sel}`).toBeLessThanOrEqual(844);
+      }
+      // the form's own button, or while it's below the fold, the bar that carries it and its price
+      const submit = await box(page, "#submit");
+      if (submit.y + submit.height > 844) {
+        await page.waitForSelector("#sticky.show");
+        const bar = await box(page, "#sticky .btn");
+        expect(bar.y + bar.height, path).toBeLessThanOrEqual(844);
+        expect(await page.textContent("#sticky span")).toBe("First 150 freethen $497/mo if you say yes");
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+      await page.close();
+    }
+  });
+
+  it("main-site: a ?co= link opens his note on load, the second press sends the form to Netlify, and ref names the page", async () => {
+    const { posts, post } = recorder();
+    const page = await open("/main-site?co=Green%20Acre%20Lawn&src=home", dist, post);
+    expect(await page.isVisible("#reveal")).toBe(true);
+    expect(await page.locator("#reveal .nb").textContent()).toBe(exampleNote("lawn", "Green Acre Lawn", EXAMPLE_SIGNER).main);
+    await page.fill("#first", "Pat");
+    await page.fill("#cell", "603-555-0122");
+    await page.check("#consent");
+    await page.click("#submit");
+    await page.waitForSelector("#done", { state: "visible" });
+    expect(posts.map((r) => r.postData())).toEqual([netlifyBody({ company: "Green Acre Lawn", first: "Pat", cell: "603-555-0122", software: "jobber", trade: "lawn", offer: "monthly", ref: "page=main-site&src=home", website: "" })]);
+    await page.close();
+  });
+
+  it("main-site: without a link, the first press opens his note in place and sends nothing", async () => {
+    const { posts, post } = recorder();
+    const page = await open("/main-site", dist, post, 1280);
+    expect(await page.isVisible("#reveal")).toBe(false);
+    await page.fill("#company", "Green Acre Lawn");
+    await page.click("#submit");
+    await page.waitForSelector("#reveal", { state: "visible" });
+    expect(await page.locator("#reveal .nb").textContent()).toBe(exampleNote("lawn", "Green Acre Lawn", EXAMPLE_SIGNER).main);
+    expect(posts).toHaveLength(0);
+    await page.close();
+  });
+
+  it("cold-email-page: his link's company is a line he can change; nothing sends without his name, cell and the box; then it goes to Netlify as this page", async () => {
+    const { posts, post } = recorder();
+    const page = await open("/cold-email-page?co=Ridgeline%20Landscaping%20Co.&src=showme&utm_source=instantly", dist, post);
+    // his company, at the top and in the form, and not as a field to fill
+    expect(await page.innerText(".chip")).toBe("For Ridgeline Landscaping Co.");
+    expect(await page.isVisible("#coLine")).toBe(true);
+    expect(await page.isVisible("#coField")).toBe(false);
+    expect(await page.textContent("#coLine b")).toBe("Ridgeline Landscaping Co.");
+    expect(await page.textContent(".consent span")).toBe(fillIn(MONTHLY.consent, "Ridgeline Landscaping Co.", ""));
+    // every field shows from the start; opening the page sends nothing and takes no focus
+    for (const id of ["#first", "#cell", "#consent", "#submit"]) expect(await page.isVisible(id), id).toBe(true);
+    expect(await page.evaluate(() => [scrollY, document.activeElement === document.body])).toEqual([0, true]);
+    // the note is one tap away, his company in it
+    expect(await page.isVisible(".peek .nb")).toBe(false);
+    await page.click(".peek summary");
+    expect(await page.locator(".peek .nb").textContent()).toBe(exampleNote("lawn", "Ridgeline Landscaping Co.", EXAMPLE_SIGNER).main);
+    await page.click("#submit");
+    expect(posts).toHaveLength(0);
+    expect(await page.getAttribute("#first", "aria-invalid")).toBe("true");
+    await page.waitForFunction(() => document.activeElement?.id === "first");
+    await page.fill("#first", "Pat");
+    expect(await page.locator(".peek .nb").textContent()).toBe(exampleNote("lawn", "Ridgeline Landscaping Co.", "Pat").main);
+    await page.fill("#cell", "603-555-0122");
+    await page.click('.sw[data-sw="other"]');
+    await page.click("#submit");
+    expect(posts).toHaveLength(0);
+    await page.check("#consent");
+    await page.click("#submit");
+    await page.waitForSelector("#done", { state: "visible" });
+    expect(posts).toHaveLength(1);
+    expect(posts[0].url()).toBe("http://site.test/");
+    expect(posts[0].postData()).toBe(netlifyBody({ company: "Ridgeline Landscaping Co.", first: "Pat", cell: "603-555-0122", software: "other", trade: "lawn", offer: "monthly", ref: "page=cold-email-page&src=showme&utm_source=instantly", website: "" }));
+    expect(await page.textContent("#doneH")).toBe("Got it, Pat. One thing left.");
+    expect(await page.isVisible('[data-step="other"]')).toBe(true);
+    expect(await page.isVisible("#sticky.show")).toBe(false);
+    await page.close();
+  });
+
+  it("cold-email-page: Change opens his company to type; without a link the field shows, and the box says 'my company' until he types his", async () => {
+    let page = await open("/cold-email-page?co=Ridgeline%20Landscaping");
+    await page.click("#coChange");
+    expect(await page.isVisible("#coField")).toBe(true);
+    expect(await page.isVisible("#coLine")).toBe(false);
+    await page.waitForFunction(() => document.activeElement?.id === "company");
+    await page.fill("#company", "Ridgeline Lawn & Snow");
+    expect(await page.textContent(".consent span")).toBe(fillIn(MONTHLY.consent, "Ridgeline Lawn & Snow", ""));
+    expect(await page.innerText(".chip")).toBe("For Ridgeline Lawn & Snow");
+    await page.close();
+    page = await open("/cold-email-page");
+    expect(await page.innerText(".chip")).toBe("For lawn and landscaping companies");
+    expect(await page.isVisible("#coField")).toBe(true);
+    expect(await page.isVisible("#coLine")).toBe(false);
+    expect(await page.textContent(".consent span")).toBe(fillIn(MONTHLY.consent, "my company", ""));
+    await page.fill("#company", "Green Acre Lawn");
+    expect(await page.textContent(".consent span")).toBe(fillIn(MONTHLY.consent, "Green Acre Lawn", ""));
+    await page.close();
+  });
+
+  it("cold-email-page: on a phone the bar carries the button while the form's own is out of sight, and steps aside when it shows; the bar's button goes to his first empty field", async () => {
+    const page = await open("/cold-email-page?co=Ridgeline%20Landscaping");
+    const showing = () => page.evaluate(() => document.querySelector("#sticky")!.classList.contains("show"));
+    const submit = await box(page, "#submit");
+    if (submit.y + submit.height > 844) await page.waitForFunction(() => document.querySelector("#sticky")!.classList.contains("show"));
+    await page.locator("#submit").scrollIntoViewIfNeeded();
+    await page.waitForFunction(() => !document.querySelector("#sticky")!.classList.contains("show"));
+    await page.evaluate(() => scrollTo(0, 2600));
+    await page.waitForFunction(() => document.querySelector("#sticky")!.classList.contains("show"));
+    expect(await showing()).toBe(true);
+    await page.click("#sticky .btn");
+    await page.waitForFunction(() => document.activeElement?.id === "first");
+    await page.close();
   });
 });

@@ -294,6 +294,33 @@ export const PAGES: SitePage[] = [
   },
 ];
 
+/**
+ * The violet ("Soro") pages, Oct 3, 2026: one page's words in a new look, each at a folder named for its job.
+ * - `main-site`: the whole page, for quietaccounts.com itself. Company first, then his note, then the rest.
+ * - `cold-email-page`: for owners who replied "show me" and tapped the link (quietaccounts.com/lawn?co=His+Company).
+ *   His email already showed him the note, so the form is open from the start, with his company filled in.
+ * Each has its own page id, so a sign-up's `ref` says which page it came from.
+ */
+export interface SiteView {
+  id: "main-site" | "cold-email-page";
+  /** Whose words it uses: an id in PAGES. */
+  words: string;
+  /** The form opens with every field showing (the cold email page). */
+  open?: true;
+}
+
+export const VIEWS: SiteView[] = [
+  { id: "main-site", words: "lawn" },
+  { id: "cold-email-page", words: "lawn", open: true },
+];
+
+/** A view as a page: its words' page, under the view's own id. */
+export function viewPage(v: SiteView): SitePage {
+  const p = PAGES.find((x) => x.id === v.words);
+  if (!p) throw new Error(`No page "${v.words}" in PAGES for view ${v.id}`);
+  return { ...p, id: v.id };
+}
+
 /** A figure from packages/engine/src/claims.ts, never typed in here. */
 function figure(id: string): number {
   const f = claim(id)?.figure;

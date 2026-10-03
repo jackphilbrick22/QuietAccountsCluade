@@ -2,7 +2,7 @@ import type { TradeId } from "@qa/engine";
 import type { AuditFile, AuditResult } from "./audit.ts";
 import { sums, whole as n } from "./calc.ts";
 import { companyFromQuery, netlifyBody, numberFromQuery, refFor, signupBody, smsLink, withFile, type Signup } from "./form.ts";
-import { fillIn } from "./note.ts";
+import { fillIn, MINE } from "./note.ts";
 import type { AuditRequest } from "./worker.ts";
 import AuditWorker from "./worker.ts?worker";
 
@@ -32,9 +32,11 @@ let signup: Signup | undefined;
 /* ------------------------------ his note, as he types ------------------------------ */
 
 function paint() {
-  const co = company.value.trim() || company.placeholder;
+  const typed = company.value.trim();
+  const co = typed || company.placeholder;
   const signer = first.value.trim() || form.dataset.signer!;
-  for (const el of all("[data-template]")) el.textContent = fillIn(el.dataset.template!, co, signer);
+  // the consent box never puts the example company in his mouth: until he types his own, it's "my company"
+  for (const el of all("[data-template]")) el.textContent = fillIn(el.dataset.template!, typed || !el.closest(".consent") ? co : MINE, signer);
   for (const el of all("[data-company]")) el.textContent = co;
   $("#sigHint").hidden = !!first.value.trim();
 }
@@ -47,6 +49,20 @@ if (fromLink) {
   reveal.hidden = false;
   paint();
 }
+
+// the cold email page: the company his link brought is a line he can change, and the page says it's his
+const coLine = document.querySelector<HTMLElement>("#coLine");
+if (coLine && fromLink.length >= 2) {
+  coLine.hidden = false;
+  $("#coField").hidden = true;
+  $("#coChange").addEventListener("click", () => {
+    coLine.hidden = true;
+    $("#coField").hidden = false;
+    company.focus();
+  });
+}
+for (const el of all("[data-if-link]")) el.hidden = !fromLink;
+for (const el of all("[data-if-no-link]")) el.hidden = !!fromLink;
 
 /* ------------------------------ where your jobs live ------------------------------ */
 
@@ -298,7 +314,9 @@ const watch = new IntersectionObserver((entries) => {
   for (const x of entries) inView.set(x.target, x.isIntersecting);
   stick();
 });
-for (const el of all("#hero, #final")) watch.observe(el);
+// on the cold email page the bar hides while its own button shows; elsewhere, while the hero or the closing block does
+const hiders = all("[data-hides-sticky]");
+for (const el of hiders.length ? [...hiders, ...all("#final")] : all("#hero, #final")) watch.observe(el);
 
 /* ------------------------------ the money ------------------------------ */
 

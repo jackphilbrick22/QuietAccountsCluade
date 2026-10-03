@@ -3,6 +3,9 @@
  * so is the consent line's {company}. This fills them in as the owner types, with the engine's one tidy-up that a name
  * can trigger: "Co." before a full stop stays "Co.", never "Co..". A test holds it to the engine's own output.
  */
+/** The consent box's {company} before he's typed his own: the example company is never put in his mouth. */
+export const MINE = "my company";
+
 export function fillIn(template: string, company: string, signer: string): string {
   return template.replace(/\{(company|signer)\}/g, (_m, k: string) => (k === "company" ? company : signer)).replace(/([^.])\.\.(?!\.)/g, "$1.");
 }

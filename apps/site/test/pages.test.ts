@@ -1,39 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { claim, emptyState, generateSample, lintMarketing, reportWeek } from "@qa/engine";
-import { ADDRESS, CALL, POLICIES } from "../build/render.ts";
+import { claim, emptyState, generateSample, reportWeek } from "@qa/engine";
+import { POLICIES } from "../build/render.ts";
 import { fillIn } from "../src/note.ts";
 import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, type SitePage } from "../src/trades.ts";
-import { blocks, lawn, page, rendered, textOf, visibleText } from "./html.ts";
+import { blocks, count, lawn, page, rendered, textOf, visibleText, wordRules } from "./html.ts";
 
-/** The brief's rules for every page (§1 words, §5 rules 1–10 and "Claims the software doesn't back"), checked on the built HTML. */
-const BANNED = /7am to 8pm|money map|reply desk|ready text|every month after|year floor|money-back|risk-free|free trial|guaranteed \d+\s?%|price or a date|preview only|tom alvarez|\$29|pick the day|over about a week|still goes out|deleted 30 days|saved on your own page|open days near you|one-page report|four years old|every friday,? your quiet rate|spots? left|countdown/i;
-const count = (s: string, part: string) => s.split(part).length - 1;
 /** §1: the monthly promise, in one of its two forms and nothing else. */
 const MONTHLY_PROMISES = ["Any month nobody asks to come back is free.", "Any month nobody asks to come back, you don't pay."];
 /** §1: the one-pass promise. */
 const ONE_PASS_PROMISE = "You pay $250 for each job that books, never more than $1,000. Nothing books, you owe nothing.";
-
-function wordRules(html: string, offer?: SitePage["words"]["offer"]) {
-  const text = visibleText(html);
-  expect(text).not.toMatch(BANNED);
-  expect(lintMarketing(text)).toEqual([]);
-  // "free" always has its price beside it, and a one-pass page has no free offer at all
-  if (offer === "one_pass") expect(text).not.toMatch(/\bfree\b|\$497|any month nobody/i);
-  for (const m of text.matchAll(/\bfree\b/gi)) expect(text.slice(Math.max(0, m.index - 90), m.index + 90), `"free" at ${m.index}`).toMatch(/\$497/);
-  // a shop's result, in any sentence, carries the label; Dow's never shows without the family disclosure right after it
-  for (const m of text.matchAll(/\bbooked \d+ from\b|\b\d+ booked out of\b/g)) expect(text.slice(m.index, m.index + 300), `result at ${m.index}`).toContain(LABEL);
-  for (const m of text.matchAll(/Dow's/g)) expect(text.slice(m.index, m.index + 300), `Dow's at ${m.index}`).toContain(FAMILY);
-  // the trust footer: the postal address, the text number, and the only place the 15-minute call is offered
-  const foot = blocks(html, /<footer/, "footer")[0]!;
-  expect(textOf(foot)).toContain(`Quiet Accounts · ${ADDRESS}`);
-  expect(foot).toContain('href="sms:+16033407673"');
-  expect(count(html, CALL)).toBe(1);
-  expect(foot).toContain(CALL);
-  // the live site's privacy and terms pages, since the consent box asks to text him
-  for (const [href, name] of POLICIES) expect(foot).toContain(`<a href="${href}">${name}</a>`);
-  expect(html).not.toMatch(/<nav\b/);
-}
 
 const h1 = (html: string) => textOf(/<h1[^>]*>([\s\S]*?)<\/h1>/.exec(html)![1]!);
 const promise = (html: string) => textOf(/<p class="promise[^"]*">([\s\S]*?)<\/p>/.exec(html)![1]!);

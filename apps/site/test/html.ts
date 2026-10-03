@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
-import { renderPage } from "../build/render.ts";
-import { PAGES, type SitePage } from "../src/trades.ts";
+import { expect } from "vitest";
+import { lintMarketing } from "@qa/engine";
+import { ADDRESS, CALL, POLICIES, renderPage } from "../build/render.ts";
+import { FAMILY, LABEL, PAGES, type SitePage } from "../src/trades.ts";
 
 /** The pages as the build writes them (markers filled), and plain-text views of them for the word rules. */
 export const page = (id: string) => PAGES.find((p) => p.id === id)!;
@@ -33,3 +35,29 @@ export function blocks(html: string, open: RegExp, tag: string): string[] {
 }
 
 export const textOf = (html: string) => unescape(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
+
+/** The brief's rules for every page (§1 words, §5 rules 1–10 and "Claims the software doesn't back"), checked on the built HTML. */
+export const BANNED = /7am to 8pm|money map|reply desk|ready text|every month after|year floor|money-back|risk-free|free trial|guaranteed \d+\s?%|price or a date|preview only|tom alvarez|\$29|pick the day|over about a week|still goes out|deleted 30 days|saved on your own page|open days near you|one-page report|four years old|every friday,? your quiet rate|spots? left|countdown/i;
+export const count = (s: string, part: string) => s.split(part).length - 1;
+
+/** The words rules every page keeps, and its trust footer. */
+export function wordRules(html: string, offer?: SitePage["words"]["offer"]) {
+  const text = visibleText(html);
+  expect(text).not.toMatch(BANNED);
+  expect(lintMarketing(text)).toEqual([]);
+  // "free" always has its price beside it, and a one-pass page has no free offer at all
+  if (offer === "one_pass") expect(text).not.toMatch(/\bfree\b|\$497|any month nobody/i);
+  for (const m of text.matchAll(/\bfree\b/gi)) expect(text.slice(Math.max(0, m.index - 90), m.index + 90), `"free" at ${m.index}`).toMatch(/\$497/);
+  // a shop's result, in any sentence, carries the label; Dow's never shows without the family disclosure right after it
+  for (const m of text.matchAll(/\bbooked \d+ from\b|\b\d+ booked out of\b/g)) expect(text.slice(m.index, m.index + 300), `result at ${m.index}`).toContain(LABEL);
+  for (const m of text.matchAll(/Dow's/g)) expect(text.slice(m.index, m.index + 300), `Dow's at ${m.index}`).toContain(FAMILY);
+  // the trust footer: the postal address, the text number, and the only place the 15-minute call is offered
+  const foot = blocks(html, /<footer/, "footer")[0]!;
+  expect(textOf(foot)).toContain(`Quiet Accounts · ${ADDRESS}`);
+  expect(foot).toContain('href="sms:+16033407673"');
+  expect(count(html, CALL)).toBe(1);
+  expect(foot).toContain(CALL);
+  // the live site's privacy and terms pages, since the consent box asks to text him
+  for (const [href, name] of POLICIES) expect(foot).toContain(`<a href="${href}">${name}</a>`);
+  expect(html).not.toMatch(/<nav\b/);
+}

@@ -1,9 +1,9 @@
 import type { Plugin } from "vite";
 import { claim } from "@qa/engine";
 import { JACK, NETLIFY_FIELDS } from "../src/form.ts";
-import { fillIn } from "../src/note.ts";
+import { fillIn, MINE } from "../src/note.ts";
 import { sums, whole as n } from "../src/calc.ts";
-import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
+import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, VIEWS, viewPage, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
 import { exampleHandoff, exampleNote, SLOTS } from "./examples.ts";
 
 /**
@@ -32,8 +32,11 @@ const SOFTWARE: [Software, string][] = [
   ["other", "Something else"],
 ];
 
+/** The page a path builds: a trade's page, or one of the violet views (main-site, cold-email-page). */
 export function pageFor(path: string): SitePage | undefined {
-  return PAGES.find((p) => path === `/${p.id}/index.html` || path === `/${p.id}/`);
+  const at = (id: string) => path === `/${id}/index.html` || path === `/${id}/`;
+  const view = VIEWS.find((v) => at(v.id));
+  return view ? viewPage(view) : PAGES.find((p) => at(p.id));
 }
 
 export function sitePages(): Plugin {
@@ -44,7 +47,7 @@ export function sitePages(): Plugin {
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
         const [path, query = ""] = (req.url ?? "").split("?");
-        if (PAGES.some((p) => path === `/${p.id}`)) req.url = `${path}/${query ? `?${query}` : ""}`;
+        if ([...PAGES, ...VIEWS].some((p) => path === `/${p.id}`)) req.url = `${path}/${query ? `?${query}` : ""}`;
         next();
       });
     },
@@ -69,7 +72,7 @@ function fragment(key: string, page?: SitePage): string {
   if (!page) throw new Error(`<!--qa:${key}--> needs a page in PAGES`);
   switch (name) {
     case "form":
-      return form(page);
+      return form(page, arg === "open");
     case "cta":
       return cta(page);
     case "sticky":
@@ -87,7 +90,7 @@ function fragment(key: string, page?: SitePage): string {
     case "handoff":
       return handoff(page);
     case "works":
-      return works(page);
+      return works(page, arg === "chips");
   }
   throw new Error(`Unknown marker <!--qa:${key}-->`);
 }
@@ -166,33 +169,43 @@ function handoff(p: SitePage): string {
  * he'd get, and sends nothing (a ?co= link opens them on load). The same button then sends the rest. Once the note
  * shows, a button that leads on to the rest sits where the first one was, so one stays on his first screen at 390px.
  * A static copy named "start" lets Netlify Forms find the fields when there's no server.
+ *
+ * `open` (the cold email page): his email already showed him the note, so every field shows from the start and the
+ * first press sends. A ?co= link shows his company as a line he can change, and the note waits one tap away.
  */
-function form(p: SitePage): string {
+function form(p: SitePage, open = false): string {
   const w = p.words;
   const consent = (company: string) => esc(fillIn(w.consent, company, ""));
   const picker = SOFTWARE.map(([id, name], i) => `<button type="button" class="sw sw-${id}${i ? "" : " on"}" data-sw="${id}" role="radio" aria-checked="${i ? "false" : "true"}"><b>${name}</b><small>${esc(w.picker[id])}</small></button>`).join("");
   const steps = SOFTWARE.map(([id], i) => `<p data-step="${id}"${i ? " hidden" : ""}>${p.exportStep[id]}</p>`).join("");
-  return `<div class="fcard" id="start">
-<form id="form" data-page="${esc(p.id)}" data-trade="${esc(p.trade)}" data-offer="${w.offer}" data-signer="${EXAMPLE_SIGNER}" autocomplete="on" novalidate>
-  <div class="field"><label for="company">Your company name</label><input id="company" name="company" autocomplete="organization" maxlength="120" required placeholder="${esc(p.companyExample)}"></div>
-  <div class="reveal" id="reveal" hidden>
+  const co = esc(p.companyExample);
+  const sig = (where: string) => `<p class="rv-sig" id="sigHint">Signed ${EXAMPLE_SIGNER}, an example name, until you type yours ${where}.</p>`;
+  const shown = open
+    ? ""
+    : `
     ${cta(p, true)}
-    <p class="rv-h" id="revealH" tabindex="-1">Your first note, from <span data-company>${esc(p.companyExample)}</span></p>
+    <p class="rv-h" id="revealH" tabindex="-1">Your first note, from <span data-company>${co}</span></p>
     ${note(p)}
-    <p class="rv-sig" id="sigHint">Signed ${EXAMPLE_SIGNER}, an example name, until you type yours below.</p>
+    ${sig("below")}
     <p class="rv-h">The text you get when someone wants the work</p>
-    ${handoff(p)}
+    ${handoff(p)}`;
+  const line = open ? `\n  <div class="co-line" id="coLine" hidden><span class="co-k">Your company</span><b data-company>${co}</b><button type="button" class="co-change" id="coChange" aria-controls="coField">Change</button></div>` : "";
+  const peek = open ? `\n  <details class="peek"><summary><span>See your first note, with <span data-company>${co}</span> on it</span></summary>${note(p)}${sig("above")}</details>` : "";
+  return `<div class="fcard${open ? " open" : ""}" id="start">
+<form id="form" data-page="${esc(p.id)}" data-trade="${esc(p.trade)}" data-offer="${w.offer}" data-signer="${EXAMPLE_SIGNER}"${open ? " data-open" : ""} autocomplete="on" novalidate>${line}
+  <div class="field"${open ? ' id="coField"' : ""}><label for="company">Your company name</label><input id="company" name="company" autocomplete="organization" maxlength="120" required placeholder="${co}"></div>
+  <div class="reveal" id="reveal"${open ? "" : " hidden"}>${shown}
     <div class="fgrid">
       <div class="field"><label for="first">Your first name</label><input id="first" name="first" autocomplete="given-name" maxlength="60" required placeholder="Dave"></div>
       <div class="field"><label for="cell">Your cell <small>(the yeses come here)</small></label><input id="cell" name="cell" type="tel" inputmode="tel" autocomplete="tel-national" maxlength="40" required placeholder="555-555-0100"></div>
       <div class="field"><span class="swlbl" id="swLbl">Where your jobs live</span><div class="swpick" role="radiogroup" aria-labelledby="swLbl">${picker}</div><input type="hidden" id="software" name="software" value="jobber"></div>
-      <label class="consent"><input type="checkbox" id="consent" name="consent" required><span data-template="${consent(SLOTS.company)}">${consent(p.companyExample)}</span></label>
+      <label class="consent"><input type="checkbox" id="consent" name="consent" required><span data-template="${consent(SLOTS.company)}">${consent(open ? MINE : p.companyExample)}</span></label>
     </div>
   </div>
   <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
-  <div class="cta full"><button class="btn" type="submit" id="submit">${esc(w.button)} ${arrow}</button><span class="price-line">${esc(w.priceLine)}</span></div>
+  <div class="cta full"${open ? " data-hides-sticky" : ""}><button class="btn" type="submit" id="submit">${esc(w.button)} ${arrow}</button><span class="price-line">${esc(w.priceLine)}</span></div>
   <p class="err" id="formErr" role="alert" hidden>That didn't go through. <a id="smsJack" href="sms:${JACK.tel}">Text Jack at ${JACK.text}.</a></p>
-  <p class="fine2">Nothing goes to your customers until you OK the first note.</p>
+  <p class="fine2">Nothing goes to your customers until you OK the first note.</p>${peek}
 </form>
 <div class="done" id="done" tabindex="-1" hidden>
   <h3 id="doneH">Got it. One thing left.</h3>
@@ -252,9 +265,10 @@ function footer(): string {
   return `<footer class="foot"><div class="wrap"><span>Quiet Accounts &middot; ${ADDRESS} &middot; ${new Date().getFullYear()}</span><span>Text <a href="sms:${JACK.tel}">${JACK.text}</a> &middot; <a href="${CALL}">Rather talk it through? 15 minutes</a></span><span>${policies}</span></div></footer>`;
 }
 
-/** "Works from your export": the software the page's FAQ already names, as plain words. */
-function works(p: SitePage): string {
-  return `<div class="works"><p class="works-k">Works from your export</p><ul>${p.works.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
+/** "Works from your export": the software the page's FAQ already names, as plain words. `chips`: the list alone, under a heading the page writes. */
+function works(p: SitePage, chips = false): string {
+  const list = `<ul>${p.works.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>`;
+  return chips ? `<div class="works chips">${list}</div>` : `<div class="works"><p class="works-k">Works from your export</p>${list}</div>`;
 }
 
 
