@@ -11,7 +11,7 @@ import { EXAMPLE_SIGNER } from "../build/render.ts";
 import { runAudit, type AuditFile } from "../src/audit.ts";
 import { netlifyBody, signupBody, withFile, type Signup } from "../src/form.ts";
 import { fillIn } from "../src/note.ts";
-import { MONTHLY, PAGES, VIEWS } from "../src/trades.ts";
+import { LOOKS, MONTHLY, PAGES, VIEWS, viewPage } from "../src/trades.ts";
 import { lawnClients, visitsReport } from "../../../packages/engine/test/lawn-fixtures.ts";
 
 /**
@@ -64,7 +64,7 @@ afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 describe("the build", () => {
   it("writes / and a page per path (/lawn/index.html is Netlify's /lawn), their assets, and a zip of all of it", () => {
     const built = files(dist);
-    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "cleaning/index.html", "tree/index.html", "painting/index.html", "fence/index.html", "main-site/index.html", "cold-email-page/index.html", "og-soro.png"]));
+    expect(built).toEqual(expect.arrayContaining(["index.html", "lawn/index.html", "cleaning/index.html", "tree/index.html", "painting/index.html", "fence/index.html", "main-site/index.html", "cold-email-page/index.html", "og-soro.png", ...LOOKS.map((v) => `${v.id}/index.html`)]));
     for (const shot of ["tom-text", "david-text", "ryan-text"]) expect(built.some((f) => f.startsWith(`assets/${shot}`) && f.endsWith(".jpg")), shot).toBe(true);
     const zipped = unzip(`${dist}.zip`);
     expect([...zipped.keys()].sort()).toEqual([...built].sort());
@@ -164,7 +164,7 @@ describe.runIf(playwright)("in Chromium", () => {
   });
 
   it("every tap target is at least 44px tall, form and footer included", async () => {
-    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), "/cold-email-page?co=Ridgeline%20Landscaping"]) {
+    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), ...["cold-email-page", ...LOOKS.filter((v) => v.open).map((v) => v.id)].map((id) => `/${id}?co=Ridgeline%20Landscaping`)]) {
       const page = await open(path);
       await page.evaluate(() => {
         for (const el of document.querySelectorAll("#reveal, #done, #done [hidden], #coLine, #coField")) el.removeAttribute("hidden");
@@ -178,10 +178,10 @@ describe.runIf(playwright)("in Chromium", () => {
       expect(small, path).toEqual([]);
       await page.close();
     }
-  });
+  }, 60_000);
 
   it("every word on a solid background has WCAG AA contrast: 4.5:1, or 3:1 for large text, buttons and the sticky bar included", async () => {
-    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), "/cold-email-page?co=Ridgeline%20Landscaping"]) {
+    for (const path of ["/", ...[...PAGES, ...VIEWS].map((p) => `/${p.id}`), ...["cold-email-page", ...LOOKS.filter((v) => v.open).map((v) => v.id)].map((id) => `/${id}?co=Ridgeline%20Landscaping`)]) {
       const page = await open(path);
       // all of it that can show: the rest of the form, the step after it and a file's result, the FAQ answers, the sticky bar
       await page.evaluate(() => {
@@ -217,7 +217,7 @@ describe.runIf(playwright)("in Chromium", () => {
       expect(low, path).toEqual([]);
       await page.close();
     }
-  });
+  }, 60_000);
 
   it("the Jobber table is rows to a screen reader, and still the same grid: two columns on a phone, three wide", async () => {
     for (const width of [390, 1280]) {
@@ -805,4 +805,44 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.waitForFunction(() => document.activeElement?.id === "first");
     await page.close();
   });
+
+  /* ------------------------------ the looks Jack tries live: green, paper, sky ------------------------------ */
+
+  it("each look: at 390x844 the headline, the promise and a button beside its price are on the first screen, with no sideways scroll", async () => {
+    for (const v of LOOKS) {
+      const page = await open(v.open ? `/${v.id}?co=Ridgeline%20Landscaping` : `/${v.id}`);
+      if (!v.open) await firstScreen(page, "#submit");
+      else {
+        for (const sel of ["h1", ".promise"]) {
+          const b = await box(page, sel);
+          expect(b.y + b.height, `${v.id} ${sel}`).toBeLessThanOrEqual(844);
+        }
+        const submit = await box(page, "#submit");
+        if (submit.y + submit.height > 844) {
+          await page.waitForSelector("#sticky.show");
+          const bar = await box(page, "#sticky .btn");
+          expect(bar.y + bar.height, v.id).toBeLessThanOrEqual(844);
+        }
+        expect(await page.evaluate(() => document.documentElement.scrollWidth), v.id).toBeLessThanOrEqual(390);
+      }
+      await page.close();
+    }
+  }, 60_000);
+
+  it("each look signs him up through Netlify as its own page: a main page on the second press, a cold email page on the first", async () => {
+    for (const v of LOOKS) {
+      const p = viewPage(v);
+      const { posts, post } = recorder();
+      const src = v.open ? "showme" : "home";
+      const page = await open(`/${v.id}?co=Green%20Acre%20Lawn&src=${src}`, dist, post);
+      if (!v.open) expect(await page.isVisible("#reveal"), v.id).toBe(true);
+      await page.fill("#first", "Pat");
+      await page.fill("#cell", "603-555-0122");
+      await page.check("#consent");
+      await page.click("#submit");
+      await page.waitForSelector("#done", { state: "visible" });
+      expect(posts.map((r) => r.postData()), v.id).toEqual([netlifyBody({ company: "Green Acre Lawn", first: "Pat", cell: "603-555-0122", software: "jobber", trade: p.trade, offer: p.words.offer, ref: `page=${v.id}&src=${src}`, website: "" })]);
+      await page.close();
+    }
+  }, 60_000);
 });

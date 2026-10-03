@@ -302,16 +302,36 @@ export const PAGES: SitePage[] = [
  * Each has its own page id, so a sign-up's `ref` says which page it came from.
  */
 export interface SiteView {
-  id: "main-site" | "cold-email-page";
+  /** The folder the view builds to and the page's name in `ref`: main-site, green-site, sky-tree... */
+  id: string;
   /** Whose words it uses: an id in PAGES. */
   words: string;
   /** The form opens with every field showing (the cold email page). */
   open?: true;
 }
 
+/**
+ * Three more looks Jack wants to try live (Oct 3, 2026), each a full site in a zip of its own: the green one for
+ * landscapers, the explee-style one ("paper"), and the every-trade one ("sky"), whose trade picker leads to a page per
+ * trade. Each look has a main page and a cold email page in /lawn's words; sky also has cleaning, tree, painting, fence.
+ */
+export const LOOKS: SiteView[] = [
+  { id: "green-site", words: "lawn" },
+  { id: "green-cold-email-page", words: "lawn", open: true },
+  { id: "paper-site", words: "lawn" },
+  { id: "paper-cold-email-page", words: "lawn", open: true },
+  { id: "sky-site", words: "lawn" },
+  { id: "sky-cold-email-page", words: "lawn", open: true },
+  { id: "sky-cleaning", words: "cleaning" },
+  { id: "sky-tree", words: "tree" },
+  { id: "sky-painting", words: "painting" },
+  { id: "sky-fence", words: "fence" },
+];
+
 export const VIEWS: SiteView[] = [
   { id: "main-site", words: "lawn" },
   { id: "cold-email-page", words: "lawn", open: true },
+  ...LOOKS,
 ];
 
 /** A view as a page: its words' page, under the view's own id. */

@@ -1,0 +1,148 @@
+/*
+ * The every-trade look (Oct 3, 2026): sky-site/, sky-cold-email-page/ and sky-cleaning/, sky-tree/, sky-painting/,
+ * sky-fence/. It sits on top of soro.css, so the form, the calculator, the results and the footer are the violet pages'
+ * own; this changes how they look. A morning sky over the top of the page, glass over the sky, our violet for the one
+ * button, Funnel Display over Funnel Sans. The trade picker leads to each trade's own page in the same dress.
+ */
+:root{
+  --ink:#0A1222; --ink-2:#2D3A52; --ink-3:#46556F; --ink-4:#53627C;
+  --line:#E3EAF6; --line-2:#D5DFEE; --soft:#F6F8FC; --soft-2:#EEF2F8;
+  --violet:#5B3FE8; --violet-deep:#3F28BF; --violet-link:#4A30D9; --violet-mid:#8B73FF;
+  --lav:#F1EEFF; --lav-2:#F7F5FF; --lav-line:#E1DAFF; --lav-edge:#CFC2FF;
+  --blue:#2266D6; --bwash:#EEF5FF; --bline:#D8E7FA;
+  --green:#1E9E55; --green-ink:#137A3D; --green-soft:#E3F5EA;
+  --grad:linear-gradient(90deg,#5B3FE8 0%,#7B5CFF 100%);
+  --sky:linear-gradient(180deg,#8DC0FF 0%,#B3D6FF 28%,#D3E6FF 58%,#E6F0FF 100%);
+  --glass:rgba(255,255,255,.58);
+  --display:"Funnel Display",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --sans:"Funnel Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --shadow:0 30px 70px -40px rgba(30,70,150,.42),0 2px 6px rgba(20,40,90,.04);
+  --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235B3FE8' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+}
+h1,h2,h3{font-weight:600;letter-spacing:-.03em}
+.btn{font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,.35),0 14px 32px -12px rgba(91,63,232,.7)}
+:focus-visible{outline-color:var(--violet)}
+
+/* the floating pill: glass over the sky */
+.top{margin-bottom:-72px}
+.logo{background:rgba(255,255,255,.62);border-color:rgba(255,255,255,.92);box-shadow:0 14px 34px -18px rgba(30,70,150,.45);font-weight:600}
+
+/* hero: a morning sky, the picker, the words, the form; then the work, on glass over the clouds */
+.hero{background:var(--sky);padding-top:100px;overflow-x:clip;isolation:isolate}
+@media (min-width:860px){.hero{padding-top:128px}}
+.hero::before{display:none}
+.hero>.wrap,.hero-start>.wrap{position:relative;z-index:2}
+/* the sky runs on into the next band, where the work sits on glass: the hero itself ends with the form, so the phone's bar shows once the form is gone */
+.hero-top{background:linear-gradient(180deg,#8DC0FF 0%,#B3D6FF 52%,#CFE3FF 100%)}
+.hero2{position:relative;isolation:isolate;overflow-x:clip;background:linear-gradient(180deg,#CFE3FF 0%,#E6F0FF 100%)}
+.pick-k{font-size:14px;font-weight:600;color:var(--ink-2)}
+.pick{display:inline-flex;flex-wrap:wrap;justify-content:center;gap:4px;margin-top:10px;padding:5px;border-radius:28px;background:var(--glass);border:1px solid rgba(255,255,255,.92);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:0 20px 50px -34px rgba(30,70,150,.5)}
+.pick a{display:inline-flex;align-items:center;min-height:44px;padding:0 18px;border-radius:999px;font-size:15px;font-weight:600;color:var(--ink-2);text-decoration:none}
+.pick a:hover{background:rgba(255,255,255,.55);color:var(--ink)}
+.pick a[aria-current]{background:#FFFFFF;color:var(--ink);box-shadow:0 6px 16px -8px rgba(30,70,150,.45)}
+@media (max-width:599px){.pick{flex-wrap:nowrap;gap:0;padding:4px}.pick a{padding:0 10px;font-size:14px}}
+.chip{margin-top:24px;background:rgba(255,255,255,.72);color:var(--violet-deep);font-weight:600}
+.hero h1{font-size:clamp(38px,9.4vw,76px);line-height:1.0;margin-top:16px}
+.promise{font-weight:600}
+.lede{color:var(--ink-3)}
+.hero .ticks{color:var(--ink-2)}
+.hero .fcard:has(#reveal[hidden]) #form::before{border-color:#E3EAF6;box-shadow:0 24px 54px -30px rgba(30,70,150,.55)}
+
+/* the clouds along the bottom of the sky, behind the glass, fading into the page */
+.hclouds{position:absolute;left:-6%;right:-6%;bottom:0;height:240px;z-index:0;overflow:hidden;pointer-events:none}
+.hclouds i{position:absolute;border-radius:50%;background:radial-gradient(circle at 50% 32%,#FFFFFF 0%,#FFFFFF 54%,#E4EEFF 100%);box-shadow:0 -12px 32px -16px rgba(60,110,200,.3)}
+.hclouds i:nth-child(1){left:-6%;bottom:-70px;width:340px;height:220px}
+.hclouds i:nth-child(2){left:10%;bottom:-50px;width:380px;height:240px}
+.hclouds i:nth-child(3){left:28%;bottom:-80px;width:420px;height:250px}
+.hclouds i:nth-child(4){left:47%;bottom:-56px;width:380px;height:240px}
+.hclouds i:nth-child(5){left:65%;bottom:-74px;width:400px;height:250px}
+.hclouds i:nth-child(6){left:83%;bottom:-52px;width:360px;height:230px}
+.hfade{position:absolute;left:0;right:0;bottom:0;height:110px;z-index:0;pointer-events:none;background:linear-gradient(180deg,rgba(255,255,255,0) 0%,#FFFFFF 92%)}
+.hwork{position:relative;z-index:1;padding-block:52px 64px}
+.hwork .wrap{max-width:1080px}
+.glass{display:flex;flex-wrap:wrap;align-items:flex-start;gap:14px;padding:14px;border-radius:30px;background:var(--glass);border:1px solid rgba(255,255,255,.92);-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px);box-shadow:0 30px 70px -40px rgba(30,70,150,.45);text-align:left}
+.g-left{flex:999 1 440px;min-width:0;display:flex;flex-direction:column;gap:14px}
+.g-right{flex:1 1 330px;min-width:0;display:flex;flex-direction:column;gap:10px;padding:16px;border-radius:22px;background:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.95)}
+.g-left .ex-note{border-radius:22px;border-color:var(--bline);box-shadow:0 30px 60px -40px rgba(30,70,150,.5)}
+.ex-note .nh{background:#F8FAFF;color:var(--ink-3)}
+.rchips{padding:14px 16px;border-radius:20px;background:rgba(255,255,255,.72);border:1px solid rgba(255,255,255,.95)}
+.rchips p{font-size:13px;font-weight:600;color:var(--ink-3)}
+.rchips div{margin-top:9px;display:flex;flex-wrap:wrap;gap:6px}
+.rchips span{padding:6px 11px;border-radius:12px 12px 12px 4px;font-size:13px;font-weight:500;color:var(--green-ink);background:var(--green-soft)}
+.rchips span.x{color:var(--ink-3);background:var(--soft-2)}
+.g-right .pill-k{min-height:0;padding:0;background:none;font-size:13px;font-weight:600;color:var(--ink-3)}
+.g-right .qw-feed{gap:6px}
+.g-right .sms p{border-radius:18px;border-color:var(--bline);box-shadow:0 18px 36px -26px rgba(30,70,150,.5);font-size:14.5px}
+.g-right .msg-me{margin-top:auto;padding:4px 0 0}
+.tally-row .hot b{color:var(--green-ink)}
+.hwork .tally{margin-top:22px;box-shadow:0 24px 50px -36px rgba(30,70,150,.5);border-color:var(--bline)}
+
+/* results: each owner's text on top, then the numbers */
+.cards{gap:18px}
+.card{border-radius:26px;border-color:var(--bline);padding:18px;box-shadow:0 24px 50px -40px rgba(30,70,150,.4)}
+.shot{order:-1;margin:0 0 14px;padding:16px;border-radius:18px;background:var(--bwash)}
+.shot img{width:auto;height:210px;max-width:100%;object-fit:contain;box-shadow:0 16px 34px -22px rgba(30,70,150,.6)}
+.card h3{font-size:19px}
+.mini{order:1;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:14px}
+.mini span{display:flex;flex-direction:column;align-items:center;gap:2px;padding:10px 6px;border-radius:14px;background:var(--soft);font-size:12.5px;font-weight:500;color:var(--ink-3);text-align:center}
+.mini b{font-family:var(--display);font-size:24px;font-weight:600;color:var(--ink)}
+.mini span:last-child{background:var(--lav)}
+.mini span:last-child b{color:var(--violet-deep)}
+.card .money{order:2;margin-top:14px;color:var(--green-ink);font-size:32px;font-weight:600}
+.card .note{order:3}
+.card .label{order:4}
+
+/* how: a pale blue band, white panels */
+.how{margin-top:84px;padding-block:72px 32px;background:linear-gradient(180deg,#F3F8FF 0%,#FFFFFF 100%)}
+@media (min-width:860px){.how{margin-top:120px;padding-block:96px 40px}}
+.panel{background:#FFFFFF;border-color:var(--bline)}
+.panel .eg-pill{background:var(--soft-2)}
+.fwd{border-color:var(--bline);box-shadow:0 16px 30px -22px rgba(30,70,150,.5)}
+.fwd+.fwd{margin-top:2px}
+.list{grid-template-columns:minmax(0,1fr)}
+.list div{min-width:0;background:#F8FAFF;border-color:#E6EDF8}
+.list .more{background:var(--lav);border-color:var(--lav-line);color:var(--violet-deep)}
+.friday{margin-top:36px;text-align:center}
+
+/* the money: violet, blue, then the money in green */
+.big div:nth-child(1){background:var(--violet)}
+.big div:nth-child(2){background:var(--blue)}
+.big div.hot{background:var(--green-soft)}
+.big .hot b{color:var(--green-ink)}
+.big .hot span{color:var(--ink-2)}
+.calc .pay{margin-top:12px;padding-inline:4px;font-size:16px;color:var(--ink)}
+.calc .pay b{font-weight:700}
+.calc{border-color:var(--bline)}
+.big b,.slider output{font-family:var(--display);font-weight:600}
+input[type=range]::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--violet) 0 var(--p),#DCE6F7 var(--p) 100%)}
+input[type=range]::-moz-range-track{background:#DCE6F7}
+
+/* Jobber, the one-pass plan */
+.vs2 thead .us{background:var(--lav-2)}
+.vs2 tbody td.us{background:var(--lav-2)}
+.works{margin:22px auto 0;max-width:900px;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px}
+.works-k{width:100%;text-align:center;font-size:14px;font-weight:600;color:var(--ink-3)}
+.works ul{display:contents}
+.works li{list-style:none;padding:7px 13px;border-radius:999px;background:#FFFFFF;border:1px solid var(--line-2);font-size:13.5px;font-weight:600;color:var(--ink-2)}
+.plan.pass{max-width:760px;margin:52px auto 0;text-align:left;background:linear-gradient(180deg,var(--lav-2) 0%,#FFFFFF 62%);border:2px solid var(--violet-mid);box-shadow:0 44px 84px -52px rgba(91,63,232,.6)}
+.plan.pass .tag{color:var(--violet-deep)}
+.plan.pass .price small{margin-left:8px}
+.terms{display:grid;gap:12px;margin-top:18px;font-size:16px;line-height:1.55;color:var(--ink-2)}
+.terms b{color:var(--ink)}
+
+/* the close: back into the sky, the mark rising out of the clouds */
+.final{background:linear-gradient(180deg,#FFFFFF 0%,#E6F1FF 34%,#B9D9FF 100%)}
+.clouds i{background:radial-gradient(circle at 50% 32%,#FFFFFF 0%,#FFFFFF 54%,#E4EEFF 100%);box-shadow:0 -12px 32px -16px rgba(60,110,200,.3)}
+.sky .rise{filter:drop-shadow(0 26px 30px rgba(63,40,191,.35))}
+
+/* the cold email page: the form beside the words, in the sky */
+.hero-start{position:relative;padding-bottom:150px}
+@media (min-width:1000px){.hero-start h1{font-size:60px;max-width:13ch}}
+.hero-start .fcard.open #form{border-color:rgba(255,255,255,.95);box-shadow:0 40px 80px -46px rgba(30,70,150,.55)}
+.hero-start .tally{border-color:var(--bline)}
+.nexts>li{background:#F8FAFF;border-color:var(--bline)}
+.nexts .qw-feed{margin-top:14px}
+
+.foot{background:#F7F9FD;border-top-color:#E6ECF5}
+/* soro's .sticky span rule reaches the arrow inside the button: give it back the button's own white */
+.sticky .btn .arr{color:inherit;font-size:inherit;font-weight:inherit;line-height:inherit}

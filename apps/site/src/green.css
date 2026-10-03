@@ -1,0 +1,149 @@
+/*
+ * The green look (Oct 3, 2026): green-site/ and green-cold-email-page/. It sits on top of soro.css, so the layout, the form,
+ * the calculator, the results and the footer are the violet pages' own; this changes how they look. Field green with a
+ * harvest-yellow button (Deere's idea, not Deere's colors), wide Archivo headings, mowed-lawn stripes on the hero and the
+ * close, and gold wherever a job got booked.
+ */
+:root{
+  --ink:#0E1D13; --ink-2:#33453A; --ink-3:#4A5D50; --ink-4:#56695C;
+  --line:#E2EBE3; --line-2:#D6E3D8; --soft:#F6FAF5; --soft-2:#EDF4EE;
+  --violet:#1B5A31; --violet-deep:#123F22; --violet-link:#1B5A31; --violet-mid:#277A41;
+  --lav:#FFF5CF; --lav-2:#F3F9F3; --lav-line:#DCEBDE; --lav-edge:#3E9A57;
+  --blue:#277A41;
+  --gold:#FFD23F; --gold-deep:#E2B000; --gold-ink:#4A3D00;
+  --on-dark:#D4E8D8;
+  --grad:linear-gradient(90deg,#1B5A31 0%,#1B5A31 100%);
+  --display:"Archivo",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --sans:"Archivo",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --shadow:0 30px 70px -40px rgba(18,63,34,.38),0 2px 6px rgba(10,40,20,.05);
+  --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231B5A31' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  --tick-gold:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FFD23F' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  --stripes:radial-gradient(900px 460px at 82% -6%,rgba(255,255,255,.11),rgba(255,255,255,0) 70%),linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,.14) 100%),repeating-linear-gradient(112deg,rgba(255,255,255,0) 0 118px,rgba(255,255,255,.05) 118px 236px);
+}
+body{font-stretch:100%}
+h1,h2,h3{font-weight:780;font-stretch:118%;letter-spacing:-.02em}
+.logo,.rv-h,.dz b,.dz-h,.tally-row b,.msg-title,.card .money,.lines p,.vs2 td.money,.plan .price,.expect-row b,.big b,.slider output{font-stretch:112%;font-weight:750}
+.lines p{font-size:clamp(25px,5.6vw,37px)}
+h2{font-size:clamp(32px,7.6vw,52px)}
+.split h2{font-size:clamp(30px,6.6vw,42px);font-stretch:112%}
+@media (max-width:599px){h1,h2,h3{font-stretch:106%}.lines p{font-stretch:104%}}
+
+/* the one button: harvest yellow with dark text, a firm edge underneath */
+.btn{background:var(--gold);color:var(--ink);font-weight:700;font-stretch:108%;box-shadow:inset 0 -3px 0 var(--gold-deep),0 16px 32px -16px rgba(18,63,34,.6)}
+.btn:hover{color:var(--ink);filter:brightness(1.04)}
+.plan .flag{background:var(--gold);color:var(--ink);font-weight:700;box-shadow:inset 0 -2px 0 var(--gold-deep)}
+
+/* the floating pill stays white over the lawn */
+.logo{background:#FFFFFF;border-color:#FFFFFF;box-shadow:0 14px 34px -18px rgba(0,0,0,.55)}
+
+/* hero: a mowed lawn, the words in white, the promise in gold */
+.hero{background-color:#1B5A31;background-image:var(--stripes);color:#FFFFFF;padding-bottom:260px}
+.hero::before{display:none}
+.top{margin-bottom:-74px}
+.hero{padding-top:110px}
+@media (min-width:860px){.hero{padding-top:140px}}
+.hero h1{color:#FFFFFF;font-stretch:125%;font-weight:800;line-height:.98;font-size:clamp(40px,9.6vw,82px)}
+@media (max-width:599px){.hero h1{font-stretch:108%}}
+.hero .chip{background:var(--lav);color:var(--ink)}
+.hero .promise{color:var(--gold);font-weight:700}
+.hero .lede{color:var(--on-dark)}
+.hero .ticks{color:#FFFFFF;font-weight:600}
+.hero .ticks li::before{background-image:var(--tick-gold)}
+.hero .fcard:has(#reveal[hidden]) #form>.field>label{color:var(--on-dark)}
+.hero .fcard:has(#reveal[hidden]) #form>.cta>.price-line{color:#FFFFFF}
+.hero .fcard:has(#reveal[hidden]) #form>.fine2{color:var(--on-dark)}
+.hero .fcard:has(#reveal[hidden]) #form>.err,.hero .fcard:has(#reveal[hidden]) #form>.err a{color:#FFE3D6}
+.hero .fcard:has(#reveal[hidden]) #form::before{border-color:#FFFFFF;box-shadow:0 26px 54px -26px rgba(0,0,0,.6)}
+.hero .tally{box-shadow:0 26px 54px -30px rgba(0,0,0,.55);border-color:#FFFFFF}
+.hero :focus-visible{outline-color:var(--gold)}
+.hero #form :focus-visible,.hero .done :focus-visible{outline-color:var(--violet)}
+
+/* the list, half on the lawn: last season's customers, one of them booked */
+.qlist{position:relative;z-index:2;margin-top:-200px}
+.qlist .wrap{max-width:1100px}
+.qcard{display:flex;flex-wrap:wrap;gap:16px;padding:14px;border-radius:30px;background:#FFFFFF;box-shadow:0 56px 100px -56px rgba(10,40,20,.6),0 2px 10px rgba(10,40,20,.06);text-align:left}
+.qtable{flex:999 1 520px;min-width:0;border-radius:20px;border:1px solid var(--line);overflow:hidden}
+.qhead{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:14px 18px;background:var(--soft)}
+.qhead b{display:flex;align-items:center;gap:10px;min-width:0;font-size:15px;font-weight:700;font-stretch:108%}
+.qhead b span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qhead svg{width:18px;height:18px;flex:none}
+.qrow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 18px;border-top:1px solid var(--line)}
+.qrow span{min-width:0}
+.qrow b{display:block;font-size:15.5px;font-weight:650}
+.qrow small{display:block;font-size:13.5px;color:var(--ink-3)}
+.qrow i{flex:none;font-style:normal;padding:6px 12px;border-radius:999px;font-size:13px;font-weight:600;color:var(--ink-3);background:#EEF2EE}
+.qrow i.booked{color:var(--ink);background:var(--gold);font-weight:700}
+.qrow i.yes{color:#FFFFFF;background:var(--violet)}
+.qrow i.back{color:var(--violet);background:#E2F0E4}
+.qmore{padding:12px 18px 14px;border-top:1px solid var(--line);font-size:13.5px;font-weight:600;color:var(--ink-3)}
+.qside{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:12px;padding:18px;border-radius:20px;background:var(--soft);border:1px solid var(--line)}
+.qside .pill-k{background:none;padding:0;min-height:0;font-size:13.5px;font-weight:600;color:var(--ink-3)}
+.qside .msg{background:#FFFFFF;border-color:var(--line)}
+.qside .msg-said{background:var(--soft);border-color:var(--line)}
+.qside .msg-me{margin-top:auto;padding:0}
+.qside .msg-me span{background:var(--violet);font-weight:600}
+.qlist .works{margin-top:26px;display:flex;flex-wrap:wrap;justify-content:center;align-items:center;gap:8px 10px}
+.qlist .works-k{font-size:14px;font-weight:600;color:var(--ink-3)}
+.qlist .works ul{display:contents}
+.qlist .works li{list-style:none;padding:7px 13px;border-radius:999px;font-size:13.5px;font-weight:600;background:var(--soft);border:1px solid var(--line)}
+.qlist .works li:last-child{color:var(--ink);background:var(--lav);border:1px dashed var(--gold-deep)}
+.qlist .tally{margin-top:26px}
+
+/* the three lines: gold tiles */
+.ico{background:var(--lav);border-color:#F3DE8A}
+
+/* the money: the third tile is the money, in gold */
+.big{gap:8px;background:none;border:0;border-radius:0}
+.big div{border-radius:18px}
+.big div:nth-child(3){background:var(--gold);color:var(--ink)}
+.big .hot b{color:var(--ink)}
+.big .hot span{color:var(--gold-ink)}
+input[type=range]::-webkit-slider-runnable-track{height:8px;background:linear-gradient(90deg,var(--violet) 0 var(--p),#DCEBDE var(--p) 100%)}
+input[type=range]::-webkit-slider-thumb{width:28px;height:28px;margin-top:-10px;background:var(--gold);border:3px solid var(--violet);box-shadow:0 4px 12px rgba(18,63,34,.3)}
+input[type=range]::-moz-range-track{background:#DCEBDE}
+input[type=range]::-moz-range-thumb{background:var(--gold);border:3px solid var(--violet)}
+input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 5px rgba(27,90,49,.3)}
+
+/* results, the note, the table: green and gold */
+.card{box-shadow:0 24px 60px -44px rgba(18,63,34,.5)}
+.card .money{color:var(--violet)}
+.shot{background:var(--soft-2)}
+.shot img{box-shadow:0 18px 36px -24px rgba(18,63,34,.55)}
+.tally-row .hot b{color:var(--violet)}
+.list .more{background:var(--violet);border-color:var(--violet);color:#FFFFFF}
+.fwd .go{background:var(--gold);color:var(--ink);font-weight:700}
+.notebox .ex-note{border-color:#CFE3D3;box-shadow:0 44px 84px -50px rgba(18,63,34,.55)}
+.ex-note .nh{background:var(--soft)}
+.vs2 thead .us{color:var(--violet)}
+.plan.free{box-shadow:0 44px 84px -52px rgba(18,63,34,.6)}
+.expect-row span:last-child b{color:var(--violet)}
+.dstep .n{background:var(--violet)}
+.dz{border-color:#9CC9A7}
+.sw.on{box-shadow:inset 0 0 0 1px var(--violet)}
+
+/* the close, back on the lawn, the mark sitting on a striped hill */
+.final{background-color:#1B5A31;background-image:var(--stripes);color:#FFFFFF}
+.final h2{color:#FFFFFF;font-stretch:125%;font-weight:800}
+@media (max-width:599px){.final h2{font-stretch:108%}}
+.final .ticks{color:#FFFFFF;font-weight:600}
+.final .ticks li::before{background-image:var(--tick-gold)}
+.final .sub{color:var(--on-dark)}
+.final .price-line{color:#FFFFFF}
+.final :focus-visible{outline-color:var(--gold)}
+.hill{position:relative;height:250px;margin:36px auto 0;max-width:1200px}
+.hill .rise{position:absolute;left:50%;bottom:96px;z-index:1;width:142px;height:142px;transform:translateX(-50%) rotate(-6deg);filter:drop-shadow(0 26px 30px rgba(0,0,0,.35))}
+.hill .mound{position:absolute;left:-10%;right:-10%;bottom:-170px;height:300px;border-radius:50% 50% 0 0;background-color:#3E9A55;background-image:repeating-linear-gradient(68deg,rgba(255,255,255,0) 0 70px,rgba(255,255,255,.08) 70px 140px);box-shadow:0 -18px 40px -20px rgba(0,0,0,.35)}
+
+/* the cold email page: the form beside the words, on the lawn */
+.hero-start{padding-bottom:84px}
+.hero-start .tally{border-color:#FFFFFF}
+.nexts>li::before{background:var(--violet)}
+.when{color:var(--violet)}
+
+.foot{background:var(--soft)}
+.foot a{color:var(--violet)}
+.sticky .btn{font-size:15px}
+
+/* white cards on the lawn keep dark words: the form once it opens, the done step, the tally */
+.hero #form,.hero .done,.hero .tally{color:var(--ink)}
+@media (min-width:1000px){.hero-start h1{font-size:54px;font-stretch:110%;max-width:none}}

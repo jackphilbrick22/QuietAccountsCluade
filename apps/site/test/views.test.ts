@@ -5,7 +5,7 @@ import { exampleHandoff, exampleNote } from "../build/examples.ts";
 import { EXAMPLE_SIGNER, pageFor } from "../build/render.ts";
 import { NETLIFY_FIELDS } from "../src/form.ts";
 import { fillIn, MINE } from "../src/note.ts";
-import { FAMILY, LABEL, MONTHLY, VIEWS, viewPage, type SitePage } from "../src/trades.ts";
+import { FAMILY, LABEL, LOOKS, MONTHLY, VIEWS, viewPage, type SitePage } from "../src/trades.ts";
 import { blocks, count, lawn, rendered, textOf, visibleText, wordRules } from "./html.ts";
 
 /**
@@ -30,7 +30,7 @@ const formOf = (h: string) => {
 
 describe("the violet views", () => {
   it("are /lawn's words under their own names, each built at the folder named for its job", () => {
-    expect(VIEWS.map((v) => v.id)).toEqual(["main-site", "cold-email-page"]);
+    expect(VIEWS.map((v) => v.id)).toEqual(["main-site", "cold-email-page", ...LOOKS.map((v) => v.id)]);
     for (const p of [main, cold]) {
       expect(p.words).toBe(MONTHLY);
       expect(p.trade).toBe("lawn");
