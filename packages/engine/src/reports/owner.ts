@@ -73,7 +73,8 @@ export function handoffText(state: AccountState, r: Reply): string {
     r.ack ? ackLine(r.ack.promise, r.receivedAt) : "",
     `They said: “${oneLine(r.text, 160)}”`,
     `Best contact: ${r.extracted.phone ? fmtPhone(r.extracted.phone) : c?.phones[0] ? fmtPhone(c.phones[0]) : c?.emails[0] ?? r.from}${r.extracted.bestTime ? ` (${r.extracted.bestTime})` : ""}`,
-    `Wants: ${wantsLine(r)}`,
+    // the line reads on its own ("Wants it done", "Has a question"): a "Wants:" label before it said "Wants: Wants it done"
+    wantsLine(r),
     `Text back BOOKED + amount, DONE, or NO · #${leadCode(r.id)}`,
   ].filter(Boolean);
   return lines.join("\n");

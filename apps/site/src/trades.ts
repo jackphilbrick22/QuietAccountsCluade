@@ -159,6 +159,11 @@ export interface SitePage {
   words: OfferWords;
   /** Placeholder in the company field. */
   companyExample: string;
+  /**
+   * The hero's "Works from your export" strip: software names as plain text (no logos), each one the page's own FAQ
+   * already says works, last the catch-all.
+   */
+  works: string[];
   /** In page order; the first one leads (the hero's tally, the calculator's rate). */
   proofs: Proof[];
   /**
@@ -190,6 +195,7 @@ export const PAGES: SitePage[] = [
     trade: "lawn",
     words: MONTHLY,
     companyExample: "Ridgeline Landscaping",
+    works: ["Jobber", "Housecall Pro", "Service Autopilot", "Yardbook", "LMN", "Aspire", "QuickBooks", "Any spreadsheet"],
     proofs: [CAPITAL, NELSON, DOWS],
     calc: {
       count: { label: "Customers who haven't booked this season", min: 50, max: 1500, step: 10, value: 300 },
@@ -209,6 +215,7 @@ export const PAGES: SitePage[] = [
     trade: "cleaning",
     words: MONTHLY,
     companyExample: "Ridgeline Cleaning",
+    works: ["Jobber", "Housecall Pro", "ZenMaid", "BookingKoala", "Launch27", "Any spreadsheet"],
     proofs: [LANDSCAPER, { ...NELSON, otherTrade: "a fence company's old quotes" }, { ...DOWS, otherTrade: "a tree company's old quotes" }],
     calc: {
       // 100 regulars held steady, losing the churn claims.ts gives every month for a year: about 80
@@ -233,6 +240,7 @@ export const PAGES: SitePage[] = [
     trade: "tree",
     words: ONE_PASS,
     companyExample: "Ridgeline Tree Co.",
+    works: ["Jobber", "Housecall Pro", "Any spreadsheet"],
     proofs: [NELSON, DOWS, LANDSCAPER],
     calc: {
       count: { label: "Quotes that never booked", min: 50, max: 3000, step: 10, value: 600 },
@@ -251,6 +259,7 @@ export const PAGES: SitePage[] = [
     trade: "painting",
     words: ONE_PASS,
     companyExample: "Ridgeline Painting",
+    works: ["Jobber", "Housecall Pro", "Any spreadsheet"],
     proofs: [{ ...NELSON, otherTrade: "a fence company's old quotes: different trade, same kind of list" }, LANDSCAPER],
     calc: {
       count: { label: "Estimates that never booked", min: 50, max: 2000, step: 10, value: 400 },
@@ -270,6 +279,7 @@ export const PAGES: SitePage[] = [
     words: ONE_PASS,
     unlinked: true,
     companyExample: "Ridgeline Fence",
+    works: ["Jobber", "Housecall Pro", "Any spreadsheet"],
     proofs: [NELSON, DOWS, LANDSCAPER],
     calc: {
       count: { label: "Quotes that never booked", min: 50, max: 3000, step: 10, value: 500 },

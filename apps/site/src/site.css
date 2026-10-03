@@ -79,6 +79,23 @@ h2{font-size:clamp(31px,7.6vw,48px);line-height:1.04;font-weight:700}
 .tally-row .hot b{color:var(--peach)}
 .hero-side{display:none}
 .hero-side .qw-feed{margin-left:auto}
+/* the example texts land one at a time, the way they reach his phone; with reduced motion they're simply there */
+@keyframes qw-in{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes qw-pop{0%{opacity:0;transform:scale(.82)}60%{opacity:1;transform:scale(1.05)}100%{opacity:1;transform:none}}
+.hero-side .qw-feed>*{animation:qw-in .55s cubic-bezier(.2,.7,.2,1) both}
+.hero-side .qw-feed>:nth-child(1){animation-delay:.15s}
+.hero-side .qw-feed>:nth-child(2){animation-delay:.45s}
+.hero-side .qw-feed>:nth-child(3){animation-delay:1.7s}
+.hero-side .qw-feed>:nth-child(4){animation-delay:2.9s}
+.hero-side .qw-win{animation:qw-pop .45s ease both}
+.hero-side .qw-feed>:nth-child(2) .qw-win{animation-delay:1.05s}
+.hero-side .qw-feed>:nth-child(4) .qw-win{animation-delay:3.5s}
+/* "works from your export": plain names, no logos */
+.works{margin-top:18px;max-width:560px}
+.works-k{font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--mist-2)}
+.works ul{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}
+.works li{font-size:13px;font-weight:700;line-height:1.2;color:#E3E9ED;border:1px solid var(--navy-line);background:rgba(255,255,255,.05);border-radius:99px;padding:6px 11px}
+.works li:last-child{color:var(--mist);font-weight:600;border-style:dashed}
 /* the one-pass hero: on phones the form comes right after the promise, then the ticks and the tally; wide, it sits beside them */
 .kgrid{display:grid;grid-template-columns:minmax(0,1fr)}
 .kcopy{display:contents}
@@ -234,6 +251,16 @@ input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 5px rgba(244,
 .swipe{font-size:13px;font-weight:700;color:var(--ink-3);margin-top:2px}
 .ask{font-size:15px;color:var(--ink-2);margin-top:10px}
 .ask a{display:inline-block;padding-block:11px;font-weight:800;color:var(--ink);text-underline-offset:2px}
+/* who's behind it: a contact card, the way his phone would show one */
+.jack{display:flex;gap:16px;align-items:flex-start;margin-top:22px;max-width:640px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px 18px 8px}
+.jack-face{flex:none;width:64px;height:64px;border-radius:50%;display:grid;place-items:center;object-fit:cover;background:linear-gradient(160deg,var(--navy-2),var(--navy));color:#fff;font-family:var(--display);font-weight:700;font-size:23px;letter-spacing:.02em;box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--orange)}
+.jack-body{min-width:0}
+.jack-name{font-family:var(--display);font-size:20px;font-weight:700;letter-spacing:-.015em;line-height:1.2}
+.jack-name span{display:block;font-family:var(--sans);font-size:13.5px;font-weight:600;letter-spacing:0;color:var(--ink-3);margin-top:2px}
+.jack-text{font-size:15.5px;color:var(--ink-2);margin-top:8px;line-height:1.5}
+/* a 44px tap target that doesn't push its line apart */
+.jack-text a{display:inline-block;padding-block:11px;margin-block:-11px;font-weight:800;color:var(--ink);text-underline-offset:2px;white-space:nowrap}
+@media (max-width:420px){.jack{gap:13px;padding:16px 15px 6px}.jack-face{width:52px;height:52px;font-size:19px}}
 @media (min-width:860px){.cards{grid-auto-flow:row;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;margin-inline:0;padding-inline:0}.swipe{display:none}}
 
 /* how it works */

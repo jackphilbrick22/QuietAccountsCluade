@@ -49,7 +49,8 @@ describe.each(PAGES.map((p) => [p.id, p] as const))("the %s page's note", (_id, 
     const sms = blocks(html, /<div class="sms">/, "p").map((b) => unescape(b.slice(b.lastIndexOf("<p>") + 3, -"</p>".length)));
     expect(sms).toHaveLength(2);
     for (const s of sms) expect(s).toBe(exampleHandoff(p.trade));
-    expect(sms[0]).toContain("Wants: Wants it done");
+    expect(sms[0]).toContain("\nWants it done\n");
+    expect(sms[0]).not.toContain("Wants: ");
   });
 });
 

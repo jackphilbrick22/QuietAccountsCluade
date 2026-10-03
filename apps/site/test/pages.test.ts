@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { claim, emptyState, generateSample, lintMarketing, reportWeek } from "@qa/engine";
-import { ADDRESS, CALL } from "../build/render.ts";
+import { ADDRESS, CALL, POLICIES } from "../build/render.ts";
 import { fillIn } from "../src/note.ts";
 import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, type SitePage } from "../src/trades.ts";
 import { blocks, lawn, page, rendered, textOf, visibleText } from "./html.ts";
@@ -30,6 +30,8 @@ function wordRules(html: string, offer?: SitePage["words"]["offer"]) {
   expect(foot).toContain('href="sms:+16033407673"');
   expect(count(html, CALL)).toBe(1);
   expect(foot).toContain(CALL);
+  // the live site's privacy and terms pages, since the consent box asks to text him
+  for (const [href, name] of POLICIES) expect(foot).toContain(`<a href="${href}">${name}</a>`);
   expect(html).not.toMatch(/<nav\b/);
 }
 
@@ -94,6 +96,22 @@ describe.each(PAGES.map((p) => [`/${p.id}`, p] as const))("%s, like every page",
     const lead = p.proofs[0]!;
     expect(textOf(blocks(html, /<figure class="tally">/, "figure")[0]!)).toContain(`${lead.shop}, ${lead.where} · `);
     expect(textOf(blocks(html, /<div class="calc"/, "section")[0]!)).toContain(LABEL);
+  });
+
+  it("says in the hero what it works from: the FAQ's own software, as plain words", () => {
+    const hero = blocks(html, /<section class="hero"/, "section")[0]!;
+    const strip = blocks(hero, /<div class="works">/, "div")[0]!;
+    expect([...strip.matchAll(/<li>([^<]*)<\/li>/g)].map((m) => textOf(m[1]!))).toEqual(p.works);
+    expect(strip).not.toMatch(/<img|<a\b/);
+    expect(p.works.at(-1)).toMatch(/spreadsheet/i);
+  });
+
+  it("puts Jack under the results: his card, and the offer to pass on the shops' numbers", () => {
+    const results = blocks(html, /<section class="sec band" id="results">/, "section")[0]!;
+    const card = textOf(blocks(results, /<aside class="jack"/, "aside")[0]!);
+    expect(card).toMatch(/^JP Jack Philbrick Quiet Accounts · Concord, NH I grew up in Concord and worked .+ before I started this\. Want to ask (these shops|that shop) yourself\? Text me at 603-340-7673 and I'll pass on their numbers?\.$/);
+    expect(results).toContain('href="sms:+16033407673"');
+    expect(html).not.toContain('class="ask"');
   });
 
   it("starts its calculator on example numbers, and says so", () => {
@@ -364,8 +382,13 @@ describe("/cleaning", () => {
   it("asks Jobber for its Visits report, and anyone else for the brief's one line, with no vendor's menu path", () => {
     expect(textOf(/<p data-step="jobber">([\s\S]*?)<\/p>/.exec(html)![1]!)).toBe("In Jobber: Insights → Reports → Visits → All time → Export to CSV. It doesn't download; Jobber emails it to your login address.");
     expect(textOf(/<p data-step="other" hidden>([\s\S]*?)<\/p>/.exec(html)![1]!)).toBe("Send any export of your clients with their last cleaning date and email. We'll text you where to click.");
-    // Jack texts the BookingKoala, Launch27 and ZenMaid clicks; the page names those tools only in the FAQ, with no path
-    for (const tool of ["BookingKoala", "Launch27", "ZenMaid"]) expect(count(text, tool), tool).toBe(1);
+    // Jack texts the BookingKoala, Launch27 and ZenMaid clicks; the page names those tools only in the FAQ and the hero's
+    // "Works from your export" strip, never with a path
+    const strip = textOf(blocks(html, /<div class="works">/, "div")[0]!);
+    for (const tool of ["BookingKoala", "Launch27", "ZenMaid"]) {
+      expect(count(text, tool), tool).toBe(2);
+      expect(strip, tool).toContain(tool);
+    }
     expect(text).not.toMatch(/time logs|data exports|download (booking )?csv|pro max/i);
     expect(answer(html, "I don't use Jobber.")).toBe(`BookingKoala, Launch27, ZenMaid, Housecall Pro or a spreadsheet. Anything that exports your clients with their last cleaning date and email works. Pick "Something else" at the top and we'll text you where to click.`);
   });
@@ -587,7 +610,8 @@ describe("/", () => {
     expect(MONTHLY.card.text).toBe("Past customers back on your schedule. First 150 free, then $497 a month if you say yes.");
     expect(ONE_PASS.card.text).toBe("One pass through your old quotes and past customers. $250 per booked job, never more than $1,000.");
     const links = [...html.matchAll(/href="(\/[^"]*)"/g)].map((m) => m[1]).filter((h) => !h!.startsWith("/src/"));
-    expect(links).toEqual(["/lawn", "/cleaning", "/tree", "/painting"]);
+    // the footer's privacy and terms links are the live site's own pages, not more of ours
+    expect(links).toEqual(["/lawn", "/cleaning", "/tree", "/painting", ...POLICIES.map(([href]) => href)]);
     expect(html).not.toMatch(/<form|<script|class="btn"/);
   });
 
