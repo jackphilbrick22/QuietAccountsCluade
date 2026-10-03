@@ -106,14 +106,6 @@ describe.each(PAGES.map((p) => [`/${p.id}`, p] as const))("%s, like every page",
     expect(p.works.at(-1)).toMatch(/spreadsheet/i);
   });
 
-  it("puts Jack under the results: his card, and the offer to pass on the shops' numbers", () => {
-    const results = blocks(html, /<section class="sec band" id="results">/, "section")[0]!;
-    const card = textOf(blocks(results, /<aside class="jack"/, "aside")[0]!);
-    expect(card).toMatch(/^JP Jack Philbrick Quiet Accounts · Concord, NH I grew up in Concord and worked .+ before I started this\. Want to ask (these shops|that shop) yourself\? Text me at 603-340-7673 and I'll pass on their numbers?\.$/);
-    expect(results).toContain('href="sms:+16033407673"');
-    expect(html).not.toContain('class="ask"');
-  });
-
   it("starts its calculator on example numbers, and says so", () => {
     for (const [id, s] of [["cN", p.calc.count], ["cJ", p.calc.job]] as const) {
       expect(html).toContain(`<input type="range" id="${id}" min="${s.min}" max="${s.max}" step="${s.step}" value="${s.value}">`);

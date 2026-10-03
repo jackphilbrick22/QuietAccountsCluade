@@ -251,16 +251,6 @@ input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 5px rgba(244,
 .swipe{font-size:13px;font-weight:700;color:var(--ink-3);margin-top:2px}
 .ask{font-size:15px;color:var(--ink-2);margin-top:10px}
 .ask a{display:inline-block;padding-block:11px;font-weight:800;color:var(--ink);text-underline-offset:2px}
-/* who's behind it: a contact card, the way his phone would show one */
-.jack{display:flex;gap:16px;align-items:flex-start;margin-top:22px;max-width:640px;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:18px 18px 8px}
-.jack-face{flex:none;width:64px;height:64px;border-radius:50%;display:grid;place-items:center;object-fit:cover;background:linear-gradient(160deg,var(--navy-2),var(--navy));color:#fff;font-family:var(--display);font-weight:700;font-size:23px;letter-spacing:.02em;box-shadow:0 0 0 3px var(--card),0 0 0 5px var(--orange)}
-.jack-body{min-width:0}
-.jack-name{font-family:var(--display);font-size:20px;font-weight:700;letter-spacing:-.015em;line-height:1.2}
-.jack-name span{display:block;font-family:var(--sans);font-size:13.5px;font-weight:600;letter-spacing:0;color:var(--ink-3);margin-top:2px}
-.jack-text{font-size:15.5px;color:var(--ink-2);margin-top:8px;line-height:1.5}
-/* a 44px tap target that doesn't push its line apart */
-.jack-text a{display:inline-block;padding-block:11px;margin-block:-11px;font-weight:800;color:var(--ink);text-underline-offset:2px;white-space:nowrap}
-@media (max-width:420px){.jack{gap:13px;padding:16px 15px 6px}.jack-face{width:52px;height:52px;font-size:19px}}
 @media (min-width:860px){.cards{grid-auto-flow:row;grid-template-columns:repeat(3,minmax(0,1fr));overflow:visible;margin-inline:0;padding-inline:0}.swipe{display:none}}
 
 /* how it works */

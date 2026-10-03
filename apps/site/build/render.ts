@@ -19,18 +19,6 @@ export const POLICIES = [
   ["/privacy", "Privacy"],
   ["/terms", "Terms"],
 ] as const;
-/**
- * Jack's card under the results. Every line is his own (where he grew up, what he did before), for him to OK. A photo
- * goes in src/assets and its name here; blank shows his initials, the way a phone shows a contact with no picture.
- */
-export const JACK_CARD = {
-  name: "Jack Philbrick",
-  where: "Quiet Accounts · Concord, NH",
-  photo: "",
-  initials: "JP",
-  /** What he did before, in his words. /painting never names tree work (its page leaves Dow's and tree jobs out). */
-  crews: { all: "tree crews, land clearing and landscaping", painting: "land clearing and landscaping crews" },
-};
 /** Signs the example note until he types his own first name. */
 export const EXAMPLE_SIGNER = "Sarah";
 
@@ -100,8 +88,6 @@ function fragment(key: string, page?: SitePage): string {
       return handoff(page);
     case "works":
       return works(page);
-    case "jack":
-      return jack(page);
   }
   throw new Error(`Unknown marker <!--qa:${key}-->`);
 }
@@ -271,17 +257,6 @@ function works(p: SitePage): string {
   return `<div class="works"><p class="works-k">Works from your export</p><ul>${p.works.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
 }
 
-/** Who's behind it, under the results: Jack's card, and the offer to put an owner in touch with the shops above. */
-function jack(p: SitePage): string {
-  const c = JACK_CARD;
-  const face = c.photo
-    ? `<img class="jack-face" src="/src/assets/${c.photo}" width="64" height="64" alt="${esc(c.name)}">`
-    : `<span class="jack-face" aria-hidden="true">${esc(c.initials)}</span>`;
-  const story = `I grew up in Concord and worked ${p.trade === "painting" ? c.crews.painting : c.crews.all} before I started this.`;
-  const shops = p.proofs.length === 1 ? "that shop" : "these shops";
-  const numbers = p.proofs.length === 1 ? "their number" : "their numbers";
-  return `<aside class="jack" aria-label="Who's behind Quiet Accounts">${face}<div class="jack-body"><p class="jack-name">${esc(c.name)}<span>${esc(c.where)}</span></p><p class="jack-text">${esc(story)} Want to ask ${shops} yourself? Text me at <a href="sms:${JACK.tel}">${JACK.text}</a> and I'll pass on ${numbers}.</p></div></aside>`;
-}
 
 /** A front-page card: its offer in one line, and links only to the pages that are built and meant to be found. */
 function card(offer: Offer): string {
