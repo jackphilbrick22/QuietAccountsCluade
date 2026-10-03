@@ -1,0 +1,36 @@
+/*
+ * Tree (Oct 3, 2026): the lawn page's cousin, cut for tree work. Deeper conifer green, the rings of a cut log across
+ * the top, arborist orange where green has harvest yellow, and the mark rising behind a pine ridge at the close.
+ */
+:root{
+  --ink:#10221A; --ink-2:#2F4337; --ink-3:#465A4E; --ink-4:#526659;
+  --line:#E0E8E2; --line-2:#D2DED5; --soft:#F5F8F5; --soft-2:#EBF1EC;
+  --violet:#1E4D33; --violet-deep:#12331F; --violet-link:#1E4D33; --violet-mid:#2A6644;
+  --lav:#FFE8D4; --lav-2:#F3F8F4; --lav-line:#DBE7DE; --lav-edge:#3F8A5E;
+  --blue:#2A6644;
+  --gold:#FF8A2A; --gold-deep:#D9690C; --gold-ink:#4A2200;
+  --on-dark:#D3E5D9;
+  --grad:linear-gradient(90deg,#1E4D33 0%,#1E4D33 100%);
+  --shadow:0 30px 70px -40px rgba(12,40,24,.42),0 2px 6px rgba(10,30,18,.05);
+  --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%231E4D33' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  --tick-gold:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FF8A2A' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  /* the end of a cut log, low on the right: two ring spacings beating against each other read as real growth rings */
+  --rings:radial-gradient(1200px 760px at 92% 112%,rgba(255,176,96,.13),rgba(255,176,96,0) 62%),
+    repeating-radial-gradient(circle at 92% 112%,rgba(255,255,255,0) 0 15px,rgba(255,255,255,.055) 15px 16.5px),
+    repeating-radial-gradient(circle at 92% 112%,rgba(255,255,255,0) 0 37px,rgba(255,236,214,.05) 37px 39px),
+    linear-gradient(180deg,rgba(0,0,0,0) 55%,rgba(0,0,0,.2) 100%);
+}
+.hero{background-color:#14301F;background-image:var(--rings)}
+.hero-start{background-color:#14301F;background-image:var(--rings)}
+.btn{box-shadow:inset 0 -3px 0 var(--gold-deep),0 16px 32px -16px rgba(8,30,18,.65)}
+.hero .chip{background:var(--lav);color:#3A1A00}
+.qrow i.back{background:#E0EFE5}
+.qlist .works li:last-child{background:var(--lav);border-color:var(--gold-deep)}
+.ico{background:#FFF1E4;border-color:#FFD2AE}
+
+/* the close: dawn over the treeline, the mark coming up behind the pines */
+.final{background-color:#14301F;background-image:linear-gradient(180deg,#14301F 0%,#1B412C 38%,#5E9A76 100%)}
+.ridge{position:relative;height:300px;margin:36px calc(-1 * var(--gutter)) 0;overflow:hidden}
+.ridge .rise{position:absolute;left:50%;bottom:118px;width:142px;height:142px;transform:translateX(-50%) rotate(-6deg);filter:drop-shadow(0 26px 30px rgba(0,0,0,.35))}
+.ridge .pines{position:absolute;left:0;right:0;bottom:0;width:100%;height:300px}
+.foot{background:var(--soft)}

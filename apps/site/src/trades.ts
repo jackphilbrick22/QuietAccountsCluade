@@ -2,9 +2,9 @@ import { claim, type TradeId } from "@qa/engine";
 
 /**
  * Everything on the pages that changes by page, read at build time (build/render.ts), never shipped to the browser.
- * Proof is only ever a real shop's real first 150, named with permission, and always carries LABEL; Dow's always
- * carries FAMILY too, wherever it's counted (16 CFR 255.5). Every outside figure comes from packages/engine/src/claims.ts
- * and carries its source. A new page is an HTML file plus an entry in PAGES.
+ * Proof is only ever a real shop's real first 150, named with permission, and always carries LABEL. No page says who
+ * owns Dow's (Jack took that line off, Oct 3). Every outside figure comes from packages/engine/src/claims.ts and
+ * carries its source. A new page is an HTML file plus an entry in PAGES.
  */
 export type Offer = "monthly" | "one_pass";
 
@@ -12,7 +12,6 @@ export type Offer = "monthly" | "one_pass";
 export type Software = "jobber" | "housecall_pro" | "other";
 
 export const LABEL = "Owner-reported. First 150 people. No comparison group.";
-export const FAMILY = "Dow's is owned by Jack's uncle.";
 
 export interface Proof {
   shop: string;
@@ -31,8 +30,6 @@ export interface Proof {
   note: string;
   /** The owner's own text, unedited (a screenshot in src/assets). */
   shot: { file: string; width: number; height: number; alt: string; by: string };
-  /** Dow's: Jack's uncle's shop. */
-  family?: boolean;
 }
 
 const CAPITAL: Proof = {
@@ -86,7 +83,6 @@ const DOWS: Proof = {
     alt: "Text from Ryan: Honestly I was pretty skeptical at first but it ended up bringing us back 4 jobs that we probably would've never gotten. We booked over 10k from it so yeah I'd definitely tell another tree guy about it",
     by: "Ryan's text, unedited",
   },
-  family: true,
 };
 /** Capital City on another trade's page: the one-pass pages, where the lists are old quotes, and /cleaning. */
 const LANDSCAPER: Proof = { ...CAPITAL, otherTrade: "a landscaper's past customers" };
@@ -328,10 +324,29 @@ export const LOOKS: SiteView[] = [
   { id: "sky-fence", words: "fence" },
 ];
 
+/**
+ * The all-trades site (Oct 3, 2026): a page per trade, each in a look of its own, and each trade's cold email page in
+ * the same look. Lawn is the green look; cleaning after ZenMaid's site; fence in cedar; tree the lawn page's cousin;
+ * painting on a freshly rolled wall. Every page is that trade's own words.
+ */
+export const TRADE_SITE: SiteView[] = [
+  { id: "lawn-site", words: "lawn" },
+  { id: "lawn-cold-email-page", words: "lawn", open: true },
+  { id: "cleaning-site", words: "cleaning" },
+  { id: "cleaning-cold-email-page", words: "cleaning", open: true },
+  { id: "fence-site", words: "fence" },
+  { id: "fence-cold-email-page", words: "fence", open: true },
+  { id: "tree-site", words: "tree" },
+  { id: "tree-cold-email-page", words: "tree", open: true },
+  { id: "painting-site", words: "painting" },
+  { id: "painting-cold-email-page", words: "painting", open: true },
+];
+
 export const VIEWS: SiteView[] = [
   { id: "main-site", words: "lawn" },
   { id: "cold-email-page", words: "lawn", open: true },
   ...LOOKS,
+  ...TRADE_SITE,
 ];
 
 /** A view as a page: its words' page, under the view's own id. */

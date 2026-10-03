@@ -1,0 +1,40 @@
+/*
+ * Fence (Oct 3, 2026): the lawn page's layout in cedar. The top is a horizontal-slat cedar fence, the button is the
+ * clear sky over it, and at the close the mark peeks over a run of dog-ear boards against an evening sky.
+ */
+:root{
+  --ink:#24160E; --ink-2:#4A3428; --ink-3:#5C4535; --ink-4:#6A5242;
+  --line:#EEE4DB; --line-2:#E3D6CA; --soft:#FBF7F3; --soft-2:#F4ECE4;
+  --violet:#7A4423; --violet-deep:#5A2F15; --violet-link:#7A4423; --violet-mid:#93562F;
+  --lav:#FFF0DD; --lav-2:#FBF5EF; --lav-line:#EDDCCB; --lav-edge:#B97A4E;
+  --blue:#93562F;
+  --gold:#8FD0FF; --gold-deep:#5AAEE6; --gold-ink:#0E2A40;
+  --on-dark:#F5E1CC;
+  --grad:linear-gradient(90deg,#7A4423 0%,#7A4423 100%);
+  --shadow:0 30px 70px -40px rgba(60,28,10,.42),0 2px 6px rgba(40,20,8,.05);
+  --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237A4423' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  --tick-gold:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238FD0FF' stroke-width='3.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  /* horizontal cedar slats: a dark gap every 49px, three tones of board, grain running along each board, shade behind the words */
+  --cedar:radial-gradient(ellipse 62% 46% at 50% 34%,rgba(28,12,4,.58),rgba(28,12,4,0) 72%),
+    repeating-linear-gradient(180deg,rgba(0,0,0,0) 0 46px,rgba(34,15,5,.62) 46px 49px),
+    repeating-linear-gradient(180deg,rgba(255,206,160,.07) 0 49px,rgba(0,0,0,.07) 49px 98px,rgba(255,206,160,.02) 98px 147px,rgba(0,0,0,.12) 147px 196px),
+    repeating-linear-gradient(178.6deg,rgba(255,236,214,.035) 0 1px,rgba(0,0,0,0) 1px 6px),
+    repeating-linear-gradient(181.2deg,rgba(40,16,4,.07) 0 2px,rgba(0,0,0,0) 2px 11px),
+    linear-gradient(90deg,#7C4526 0%,#8E5530 30%,#83502E 62%,#76421F 100%);
+}
+.hero{background-color:#6E3E22;background-image:var(--cedar)}
+.hero .chip{background:var(--lav);color:var(--ink)}
+.hero h1{text-shadow:0 2px 24px rgba(20,8,2,.35)}
+.btn{box-shadow:inset 0 -3px 0 var(--gold-deep),0 16px 32px -16px rgba(30,12,4,.7)}
+.qrow i.yes{background:var(--violet)}
+.qrow i.back{color:var(--violet);background:#F6E7D9}
+.qlist .works li:last-child{background:#EAF6FF;border-color:var(--gold-deep)}
+.ico{background:#EAF6FF;border-color:#BFE3FF}
+.big .hot span{color:var(--gold-ink)}
+
+/* the close: evening sky, the mark peeking over the fence */
+.final{background-color:#1D2F47;background-image:linear-gradient(180deg,#1C2D45 0%,#2B4A6C 46%,#C99A86 86%,#F0C7A2 100%)}
+.fenceline{position:relative;height:270px;margin:36px calc(-1 * var(--gutter)) 0;overflow:hidden}
+.fenceline .rise{position:absolute;left:50%;bottom:132px;width:134px;height:134px;transform:translateX(-50%) rotate(-8deg);filter:drop-shadow(0 22px 26px rgba(0,0,0,.35))}
+.fenceline .boards{position:absolute;left:0;right:0;bottom:0;width:100%;height:220px;filter:drop-shadow(0 -6px 18px rgba(40,18,6,.35))}
+.foot{background:var(--soft)}

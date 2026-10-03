@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { claim, emptyState, generateSample, reportWeek } from "@qa/engine";
 import { POLICIES } from "../build/render.ts";
 import { fillIn } from "../src/note.ts";
-import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, type SitePage } from "../src/trades.ts";
+import { LABEL, MONTHLY, ONE_PASS, PAGES, type SitePage } from "../src/trades.ts";
 import { blocks, count, lawn, page, rendered, textOf, visibleText, wordRules } from "./html.ts";
 
 /** §1: the monthly promise, in one of its two forms and nothing else. */
@@ -68,7 +68,6 @@ describe.each(PAGES.map((p) => [`/${p.id}`, p] as const))("%s, like every page",
   it("labels every result and leads with the page's own shop", () => {
     expect(cards(html).map((c) => textOf(/<h3>(.*?)<\/h3>/.exec(c)![1]!))).toEqual(p.proofs.map((x) => x.shop));
     for (const c of cards(html)) expect(textOf(c)).toContain(LABEL);
-    for (const [i, x] of p.proofs.entries()) if (x.family) expect(textOf(cards(html)[i]!)).toContain(FAMILY);
     const lead = p.proofs[0]!;
     expect(textOf(blocks(html, /<figure class="tally">/, "figure")[0]!)).toContain(`${lead.shop}, ${lead.where} · `);
     expect(textOf(blocks(html, /<div class="calc"/, "section")[0]!)).toContain(LABEL);
@@ -174,17 +173,15 @@ describe("/lawn", () => {
     expect(MONTHLY.consent).toBe("I run {company}. Quiet Accounts can write to my past customers in my company's name and text me at this number about it. Msg & data rates may apply. Reply STOP to stop.");
   });
 
-  it("labels every result, leads with Capital City, and never shows Dow's without the family disclosure", () => {
+  it("labels every result, leads with Capital City, and names Dow's only on its card", () => {
     expect(cards(html).map((c) => textOf(/<h3>(.*?)<\/h3>/.exec(c)![1]!))).toEqual(["Capital City Landscaping", "Nelson Fence", "Dow's Tree Service"]);
-    expect(textOf(cards(html)[2]!)).toContain(FAMILY);
-    // the ranges count Dow's, so they carry both lines
+    expect(textOf(cards(html)[2]!)).toContain(`He was skeptical going in. ${LABEL} Ryan's text, unedited`);
     const plan = blocks(html, /<div class="plan free">/, "ul")[0]!;
-    expect(textOf(plan)).toContain(`12–28 wrote back 4–17 booked $10k–$34k in jobs ${LABEL} ${FAMILY}`);
+    expect(textOf(plan)).toContain(`12–28 wrote back 4–17 booked $10k–$34k in jobs ${LABEL}`);
     const tally = blocks(html, /<figure class="tally">/, "figure")[0]!;
     expect(textOf(tally)).toBe(`Capital City Landscaping, NH · first 150 150 asked 28 wrote back 17 booked $34k in jobs ${LABEL}`);
     expect(count(text, LABEL)).toBe(6);
-    expect(count(text, FAMILY)).toBe(2);
-    expect(count(text.replaceAll(FAMILY, ""), "Dow")).toBe(1);
+    expect(count(text, "Dow")).toBe(1);
   });
 
   it("labels anything made up as an example", () => {
@@ -319,10 +316,9 @@ describe("/cleaning", () => {
     expect(capital).toContain("Capital City Landscaping NH · a landscaper's past customers $34,000 in jobs");
     expect(nelson).toContain("Nelson Fence CT · a fence company's old quotes $19,800 in jobs");
     expect(dows).toContain(`Dow's Tree Service NH · a tree company's old quotes $10,000+ in jobs`);
-    expect(dows).toContain(`${LABEL} ${FAMILY}`);
-    expect(textOf(blocks(html, /<div class="plan free">/, "ul")[0]!)).toContain(`12–28 wrote back 4–17 booked $10k–$34k in jobs ${LABEL} ${FAMILY}`);
+    expect(dows).toContain(`He was skeptical going in. ${LABEL} Ryan's text, unedited`);
+    expect(textOf(blocks(html, /<div class="plan free">/, "ul")[0]!)).toContain(`12–28 wrote back 4–17 booked $10k–$34k in jobs ${LABEL}`);
     expect(count(text, LABEL)).toBe(6);
-    expect(count(text, FAMILY)).toBe(2);
   });
 
   it("shows the cleaning note the engine writes to a regular who stopped, labeled an example", () => {
@@ -489,19 +485,19 @@ describe("/tree", () => {
     expect(textOf(blocks(html, /<section class="sec start-sec" id="final">/, "section")[0]!)).toBe("Those quotes get colder every week. Winter is removal season. Nothing books, you owe nothing. Get my first note → $250 per booked job, never more than $1,000");
   });
 
-  it("leads with Nelson Fence, then Dow's with the disclosure, then Capital City as a landscaper's past customers", () => {
+  it("leads with Nelson Fence, then Dow's, then Capital City as a landscaper's past customers", () => {
     const tally = textOf(blocks(html, /<figure class="tally">/, "figure")[0]!);
     expect(tally).toBe(`Nelson Fence, CT · first 150 150 asked 12 wrote back 4 booked $19.8k in jobs ${LABEL}`);
     const [nelson, dows, capital] = cards(html).map(textOf);
     expect(nelson).toContain("Nelson Fence CT · old quotes $19,800 in jobs");
     expect(dows).toContain(`Dow's Tree Service NH · old quotes $10,000+ in jobs`);
-    expect(dows).toContain(`${LABEL} ${FAMILY}`);
+    expect(dows).toContain(`He was skeptical going in. ${LABEL} Ryan's text, unedited`);
     expect(capital).toContain("Capital City Landscaping NH · a landscaper's past customers $34,000 in jobs");
     expect(textOf(blocks(html, /<div class="calc-out"/, "section")[0]!)).toContain("Nelson Fence, CT: 4 booked out of their first 150 old quotes. Older quotes book less often; your list shows your real rate.");
   });
 
-  it("explains $250 with both old-quote shops, labeled, and says whose Dow's is", () => {
-    expect(answer(html, "Why $250?")).toBe(`Our two old-quote shops, Nelson Fence and Dow's, each booked 4 from 150. ${LABEL} ${FAMILY} $250 is about a tenth of a typical tree job, and you pay it only after the customer's booked.`);
+  it("explains $250 with both old-quote shops, labeled", () => {
+    expect(answer(html, "Why $250?")).toBe(`Our two old-quote shops, Nelson Fence and Dow's, each booked 4 from 150. ${LABEL} $250 is about a tenth of a typical tree job, and you pay it only after the customer's booked.`);
   });
 });
 
@@ -558,7 +554,7 @@ describe("/fence", () => {
     expect(textOf(/<p class="eyebrow k1">([^<]*)<\/p>/.exec(html)![1]!)).toBe("For fence companies");
     expect(h1(html)).toBe("Your old quotes and past customers, booked.");
     expect(cards(html).map((c) => textOf(/<h3>(.*?)<\/h3>/.exec(c)![1]!))).toEqual(["Nelson Fence", "Dow's Tree Service", "Capital City Landscaping"]);
-    expect(answer(html, "Why $250?")).toBe(`Our two old-quote shops, Nelson Fence and Dow's, each booked 4 from 150. ${LABEL} ${FAMILY} You pay it only after the customer's booked.`);
+    expect(answer(html, "Why $250?")).toBe(`Our two old-quote shops, Nelson Fence and Dow's, each booked 4 from 150. ${LABEL} You pay it only after the customer's booked.`);
     expect(textOf(blocks(html, /<section class="sec start-sec" id="final">/, "section")[0]!)).toContain("Spring is the busiest fence season. Nothing books, you owe nothing.");
   });
 

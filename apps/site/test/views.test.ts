@@ -5,7 +5,7 @@ import { exampleHandoff, exampleNote } from "../build/examples.ts";
 import { EXAMPLE_SIGNER, pageFor } from "../build/render.ts";
 import { NETLIFY_FIELDS } from "../src/form.ts";
 import { fillIn, MINE } from "../src/note.ts";
-import { FAMILY, LABEL, LOOKS, MONTHLY, VIEWS, viewPage, type SitePage } from "../src/trades.ts";
+import { LABEL, LOOKS, MONTHLY, TRADE_SITE, VIEWS, viewPage, type SitePage } from "../src/trades.ts";
 import { blocks, count, lawn, rendered, textOf, visibleText, wordRules } from "./html.ts";
 
 /**
@@ -30,7 +30,7 @@ const formOf = (h: string) => {
 
 describe("the violet views", () => {
   it("are /lawn's words under their own names, each built at the folder named for its job", () => {
-    expect(VIEWS.map((v) => v.id)).toEqual(["main-site", "cold-email-page", ...LOOKS.map((v) => v.id)]);
+    expect(VIEWS.map((v) => v.id)).toEqual(["main-site", "cold-email-page", ...LOOKS.map((v) => v.id), ...TRADE_SITE.map((v) => v.id)]);
     for (const p of [main, cold]) {
       expect(p.words).toBe(MONTHLY);
       expect(p.trade).toBe("lawn");
@@ -85,11 +85,11 @@ describe.each([
     expect(h).toContain('<input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">');
   });
 
-  it("labels every result and leads with Capital City; Dow's carries the family disclosure", () => {
+  it("labels every result and leads with Capital City", () => {
     const cards = blocks(h, /<article class="card">/, "article");
     expect(cards.map((c) => textOf(/<h3>(.*?)<\/h3>/.exec(c)![1]!))).toEqual(["Capital City Landscaping", "Nelson Fence", "Dow's Tree Service"]);
     for (const c of cards) expect(textOf(c)).toContain(LABEL);
-    expect(textOf(cards[2]!)).toContain(FAMILY);
+    expect(textOf(cards[2]!)).not.toMatch(/uncle/i);
     expect(textOf(blocks(h, /<figure class="tally">/, "figure")[0]!)).toBe(`Capital City Landscaping, NH · first 150 150 asked 28 wrote back 17 booked $34k in jobs ${LABEL}`);
   });
 

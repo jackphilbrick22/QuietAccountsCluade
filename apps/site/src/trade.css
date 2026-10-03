@@ -1,0 +1,48 @@
+/*
+ * The all-trades site (Oct 3, 2026): what every trade's page shares, on top of soro.css and green.css. The trade
+ * switcher, and the icons taking the trade's own color. Each trade's look is its own file: green.css (lawn),
+ * trade-cleaning.css, trade-fence.css, trade-tree.css, trade-painting.css.
+ */
+
+/* the trade switcher: every trade's page in its own look, one tap away */
+.tswitch{display:flex;flex-direction:column;align-items:center;gap:8px;margin:0 auto 24px}
+.tswitch-k{font-size:13px;font-weight:600;color:var(--sw-k,rgba(255,255,255,.86))}
+.tswitch-pills{display:inline-flex;gap:2px;padding:4px;border-radius:999px;background:var(--sw-bg,rgba(255,255,255,.12));border:1px solid var(--sw-line,rgba(255,255,255,.24));-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.tswitch-pills a{display:inline-flex;align-items:center;min-height:44px;padding:0 17px;border-radius:999px;font-size:15px;font-weight:650;color:var(--sw-fg,#FFFFFF);text-decoration:none;white-space:nowrap;transition:background-color .15s}
+.tswitch-pills a:hover{background:var(--sw-hover,rgba(255,255,255,.14));color:var(--sw-fg,#FFFFFF)}
+.tswitch-pills a[aria-current]{background:var(--sw-on-bg,#FFFFFF);color:var(--sw-on-fg,#0E1D13);box-shadow:0 6px 16px -8px rgba(0,0,0,.45)}
+.tswitch-pills a:focus-visible{outline-offset:-2px}
+@media (max-width:599px){.tswitch{margin-bottom:18px}.tswitch-pills{gap:0;padding:3px}.tswitch-pills a{padding:0 10px;font-size:14px}}
+
+/* icons take the trade's color */
+.ico svg,.qhead svg,.pill-k svg,.fwd .ic svg{color:var(--violet)}
+
+/* the one-pass trades' headline runs longer than lawn's: a size that keeps it to three lines on a wide screen */
+.t-fence .hero h1,.t-tree .hero h1,.t-painting .hero h1{font-size:clamp(38px,8.6vw,70px);max-width:1080px}
+@media (min-width:1000px){.t-fence .hero-start h1,.t-tree .hero-start h1,.t-painting .hero-start h1{font-size:46px}}
+
+/* the money on a one-pass page: what he'd pay, under the tiles */
+.calc .pay{margin-top:12px;padding-inline:4px;font-size:16px;color:var(--ink)}
+.calc .pay b{font-weight:750}
+/* a result's number scales to its card, so "$10,000+ in jobs" stays on one line on a narrow card; "in jobs" never splits */
+.card{container-type:inline-size}
+.card .money{font-size:clamp(32px,calc(18.6cqw - 10px),46px)}
+.card .money small{display:inline-block;white-space:nowrap}
+
+/* painting has two shops, not three: center them */
+@media (min-width:860px){.t-painting .cards{grid-template-columns:repeat(2,minmax(0,340px));justify-content:center}}
+
+/* the example list in "how it works" holds longer rows on the one-pass trades: let it shrink to a phone */
+.list{grid-template-columns:minmax(0,1fr)}
+.list div{min-width:0}
+
+/* soro's .sticky span rule reaches the arrow inside the bar's button: give it back the button's own color */
+.sticky .btn .arr{color:inherit;font-size:inherit;font-weight:inherit;line-height:inherit}
+
+/* the one-pass plan: one card, the terms spaced out under the price */
+.plan.pass{max-width:760px;margin:52px auto 0;padding:30px 28px 26px;text-align:left;border:2px solid var(--violet);box-shadow:0 44px 84px -52px rgba(0,0,0,.45)}
+.plan.pass .tag{color:var(--violet)}
+.plan.pass .price small{margin-left:10px}
+.plan.pass .rule{font-size:19px}
+.terms{display:grid;gap:12px;margin-top:18px;padding-top:18px;border-top:1px solid var(--line);font-size:16px;line-height:1.6;color:var(--ink-2)}
+.terms b{color:var(--ink)}

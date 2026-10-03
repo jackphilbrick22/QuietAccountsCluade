@@ -4,23 +4,30 @@ import { CLAIMS } from "@qa/engine";
 import { exampleHandoff } from "../build/examples.ts";
 import { pageFor } from "../build/render.ts";
 import { NETLIFY_FIELDS } from "../src/form.ts";
-import { FAMILY, LABEL, LOOKS, PAGES, viewPage } from "../src/trades.ts";
+import { LABEL, LOOKS, PAGES, TRADE_SITE, viewPage } from "../src/trades.ts";
 import { blocks, rendered, textOf, visibleText, wordRules } from "./html.ts";
 
 /**
- * The looks Jack wants to try live (Oct 3, 2026): green, paper (explee-style) and sky (every trade). Each view is a
+ * The looks Jack wants to try live (Oct 3, 2026): green, paper (explee-style) and sky (every trade), and the all-trades
+ * site, a page per trade in a look of its own with its cold email page. Each view is a
  * trade page's words in a new look, at a folder of its own. Whatever the look, the brief's rules hold: the words rules,
  * one action, every result labeled, outside numbers with their sources, the same answers as the trade's own page, the
  * sign-up named for the page it came from.
  */
-const LOGO: Record<string, string> = { green: "logo-mark-green.svg", paper: "logo-mark-ink.svg", sky: "logo-mark-sky.svg" };
-const OG: Record<string, string> = { green: "og-green.png", paper: "og-paper.png", sky: "og-sky.png" };
+const LOGO: Record<string, string> = {
+  green: "logo-mark-green.svg", paper: "logo-mark-ink.svg", sky: "logo-mark-sky.svg",
+  lawn: "logo-mark-green.svg", cleaning: "logo-mark-aqua.svg", fence: "logo-mark-cedar.svg", tree: "logo-mark-tree.svg", painting: "logo-mark-paint.svg",
+};
+const OG: Record<string, string> = {
+  green: "og-green.png", paper: "og-paper.png", sky: "og-sky.png",
+  lawn: "og-green.png", cleaning: "og-cleaning.png", fence: "og-fence.png", tree: "og-tree.png", painting: "og-painting.png",
+};
 const lookOf = (id: string) => id.split("-")[0]!;
 /** Every FAQ, question to answer. */
 const faq = (h: string) => new Map([...h.matchAll(/<details><summary>([^<]*)<\/summary><div class="a">([\s\S]*?)<\/div><\/details>/g)].map((m) => [textOf(m[1]!), textOf(m[2]!)]));
 const reveal = (h: string) => h.slice(h.indexOf('<div class="reveal"'), h.indexOf('<input class="hp"'));
 
-describe.each(LOOKS.map((v) => [v.id, v] as const))("/%s", (id, v) => {
+describe.each([...LOOKS, ...TRADE_SITE].map((v) => [v.id, v] as const))("/%s", (id, v) => {
   const p = viewPage(v);
   const w = p.words;
   const look = lookOf(id);
@@ -63,11 +70,11 @@ describe.each(LOOKS.map((v) => [v.id, v] as const))("/%s", (id, v) => {
     expect(h).toContain('<input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">');
   });
 
-  it("labels every result, in the trade page's order; Dow's carries the family disclosure", () => {
+  it("labels every result, in the trade page's order, and says nothing about who owns Dow's", () => {
     const cards = blocks(h, /<article class="card">/, "article");
     expect(cards.map((c) => textOf(/<h3>(.*?)<\/h3>/.exec(c)![1]!))).toEqual(p.proofs.map((x) => x.shop));
     for (const c of cards) expect(textOf(c)).toContain(LABEL);
-    for (const c of cards) if (textOf(c).includes("Dow's")) expect(textOf(c)).toContain(FAMILY);
+    expect(visibleText(h)).not.toMatch(/\buncle\b|owned by Jack/i);
   });
 
   it("shows an outside number only with its source beside it", () => {

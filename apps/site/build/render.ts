@@ -3,7 +3,7 @@ import { claim } from "@qa/engine";
 import { JACK, NETLIFY_FIELDS } from "../src/form.ts";
 import { fillIn, MINE } from "../src/note.ts";
 import { sums, whole as n } from "../src/calc.ts";
-import { FAMILY, LABEL, MONTHLY, ONE_PASS, PAGES, VIEWS, viewPage, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
+import { LABEL, MONTHLY, ONE_PASS, PAGES, VIEWS, viewPage, type Offer, type Proof, type SitePage, type Slider, type Software } from "../src/trades.ts";
 import { exampleHandoff, exampleNote, SLOTS } from "./examples.ts";
 
 /**
@@ -65,8 +65,8 @@ function fragment(key: string, page?: SitePage): string {
     if (!c) throw new Error(`No claim "${arg}" in packages/engine/src/claims.ts`);
     return esc(name === "claim" ? c.text : c.source);
   }
-  // a result in the page's own words: the label, and with :family the disclosure too
-  if (name === "label") return labelText(arg === "family");
+  // a result in the page's own words: the label
+  if (key === "label") return esc(LABEL);
   if (name === "footer") return footer();
   if (name === "card") return card(arg as Offer);
   if (!page) throw new Error(`<!--qa:${key}--> needs a page in PAGES`);
@@ -105,26 +105,25 @@ function sticky(p: SitePage): string {
   return `<div class="sticky" id="sticky" aria-hidden="true"><span>${esc(line)}<small>${esc(small)}</small></span><a class="btn" href="#start" tabindex="-1">${esc(p.words.button)} ${arrow}</a></div>`;
 }
 
-const labelText = (family: boolean) => `${esc(LABEL)}${family ? ` ${esc(FAMILY)}` : ""}`;
-const labelFor = (proofs: Proof[]) => `<p class="label">${labelText(proofs.some((x) => x.family))}</p>`;
+const labelLine = `<p class="label">${esc(LABEL)}</p>`;
 const jobsText = (x: Proof) => `${usd(x.value)}${x.over ? "+" : ""}`;
 
 function tally(x: Proof): string {
-  return `<figure class="tally"><figcaption>${esc(x.shop)}, ${esc(x.where)} &middot; ${x.otherTrade ? esc(x.otherTrade) : `first ${x.asked}`}</figcaption><div class="tally-row"><div><b>${x.asked}</b><span>asked</span></div><div><b>${x.wroteBack}</b><span>wrote back</span></div><div><b>${x.booked}</b><span>booked</span></div><div class="hot"><b>${k(x.value)}${x.over ? "+" : ""}</b><span>in jobs</span></div></div>${labelFor([x])}</figure>`;
+  return `<figure class="tally"><figcaption>${esc(x.shop)}, ${esc(x.where)} &middot; ${x.otherTrade ? esc(x.otherTrade) : `first ${x.asked}`}</figcaption><div class="tally-row"><div><b>${x.asked}</b><span>asked</span></div><div><b>${x.wroteBack}</b><span>wrote back</span></div><div><b>${x.booked}</b><span>booked</span></div><div class="hot"><b>${k(x.value)}${x.over ? "+" : ""}</b><span>in jobs</span></div></div>${labelLine}</figure>`;
 }
 
 function result(x: Proof): string {
   const s = x.shot;
-  return `<article class="card"><h3>${esc(x.shop)}</h3><p class="meta">${esc(x.where)} &middot; ${esc(x.otherTrade ?? x.list)}</p><p class="money">${jobsText(x)}<small>in jobs</small></p><div class="mini"><span><b>${x.asked}</b> asked</span><span><b>${x.wroteBack}</b> wrote back</span><span><b>${x.booked}</b> booked</span></div><p class="note">${esc(x.note)}</p>${labelFor([x])}<figure class="shot"><img src="/src/assets/${s.file}" width="${s.width}" height="${s.height}" loading="lazy" alt="${esc(s.alt)}"><figcaption>${esc(s.by)}</figcaption></figure></article>`;
+  return `<article class="card"><h3>${esc(x.shop)}</h3><p class="meta">${esc(x.where)} &middot; ${esc(x.otherTrade ?? x.list)}</p><p class="money">${jobsText(x)}<small>in jobs</small></p><div class="mini"><span><b>${x.asked}</b> asked</span><span><b>${x.wroteBack}</b> wrote back</span><span><b>${x.booked}</b> booked</span></div><p class="note">${esc(x.note)}</p>${labelLine}<figure class="shot"><img src="/src/assets/${s.file}" width="${s.width}" height="${s.height}" loading="lazy" alt="${esc(s.alt)}"><figcaption>${esc(s.by)}</figcaption></figure></article>`;
 }
 
-/** What the first 150 got the shops, as ranges; a range that counts Dow's says so. */
+/** What the first 150 got the shops, as ranges, labeled. */
 function ranges(proofs: Proof[]): string {
   const span = (f: (x: Proof) => number, show: (v: number) => string) => {
     const v = proofs.map(f);
     return `${show(Math.min(...v))}&ndash;${show(Math.max(...v))}`;
   };
-  return `<div class="expect"><p>What the first 150 got ${["one", "two", "three"][proofs.length - 1] ?? proofs.length} shops</p><div class="expect-row"><span><b>${span((x) => x.wroteBack, String)}</b>wrote back</span><span><b>${span((x) => x.booked, String)}</b>booked</span><span><b>${span((x) => x.value, k)}</b>in jobs</span></div>${labelFor(proofs)}</div>`;
+  return `<div class="expect"><p>What the first 150 got ${["one", "two", "three"][proofs.length - 1] ?? proofs.length} shops</p><div class="expect-row"><span><b>${span((x) => x.wroteBack, String)}</b>wrote back</span><span><b>${span((x) => x.booked, String)}</b>booked</span><span><b>${span((x) => x.value, k)}</b>in jobs</span></div>${labelLine}</div>`;
 }
 
 /** A slider whose starting number is an example, and says so until he slides it (or a link sets it). */
@@ -146,7 +145,7 @@ function calc(p: SitePage): string {
   const paid = pay ? `<p class="pay">You'd pay <b id="rPay">${usd(m.pay!)}</b>, that's <b id="rShare">${m.share}</b> of it.</p>` : "";
   const estimate = c.estimate ? `<p class="fine" id="estNote" hidden>${esc(c.estimate)}</p>` : "";
   const counts = c.result ?? { jobs: "jobs booked", value: `left on the table${pay ? ", plus your past customers" : ""}` };
-  return `<div class="calc" id="calc" ${data}>${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${m.rate}</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(m.jobs)}</b><span>${esc(counts.jobs)}</span></div><div class="hot"><b id="rVal">${usd(m.value)}</b><span>${esc(counts.value)}</span></div></div>${paid}<p class="fine">${esc(c.fine)}</p>${estimate}${labelFor([lead])}</div>${cta(p, true)}</div>`;
+  return `<div class="calc" id="calc" ${data}>${slider("cN", "oN", c.count)}${slider("cJ", "oJ", c.job)}<div class="calc-out" aria-live="polite"><p class="rate">${esc(c.rateLine)}</p><div class="big"><div><b>${m.rate}</b><span>${esc(c.rateLabel)}</span></div><div><b id="rJobs">${n(m.jobs)}</b><span>${esc(counts.jobs)}</span></div><div class="hot"><b id="rVal">${usd(m.value)}</b><span>${esc(counts.value)}</span></div></div>${paid}<p class="fine">${esc(c.fine)}</p>${estimate}${labelLine}</div>${cta(p, true)}</div>`;
 }
 
 /**

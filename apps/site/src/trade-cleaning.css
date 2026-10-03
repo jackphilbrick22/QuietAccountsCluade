@@ -1,0 +1,114 @@
+/*
+ * Cleaning (Oct 3, 2026): after ZenMaid's own site (get.zenmaid.com): a calm pale-aqua top, deep teal for the
+ * button, a sunny yellow for what's booked, a plain grotesk for the headline and an elegant serif for the
+ * section titles. The lawn page's layout underneath; soap bubbles where lawn has stripes.
+ */
+:root{
+  --ink:#0B2224; --ink-2:#28403F; --ink-3:#355052; --ink-4:#45605F;
+  --line:#DCEDEC; --line-2:#CCE3E2; --soft:#F2FAFA; --soft-2:#E5F4F5;
+  --violet:#075156; --violet-deep:#04383C; --violet-link:#075156; --violet-mid:#0B6B71;
+  --lav:#FEC827; --lav-2:#F2FAFA; --lav-line:#D3ECEB; --lav-edge:#3BB7AE;
+  --blue:#0B6B71;
+  --gold:#FEC827; --gold-deep:#E3AC00; --gold-ink:#3D2E00;
+  --aqua:#C9F1F0; --aqua-2:#E5F4F5; --plum:#9E4770;
+  --on-dark:#D9F2F1;
+  --grad:linear-gradient(90deg,#075156 0%,#075156 100%);
+  --display:"Instrument Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --sans:"Instrument Sans",ui-sans-serif,system-ui,-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;
+  --serif:"Instrument Serif",ui-serif,Georgia,"Times New Roman",serif;
+  --shadow:0 30px 70px -40px rgba(4,56,60,.38),0 2px 6px rgba(4,40,44,.05);
+  --tick:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23075156' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+  --tick-gold:var(--tick);
+  --sw-k:var(--ink-2); --sw-bg:rgba(255,255,255,.62); --sw-line:rgba(7,81,86,.14); --sw-fg:var(--ink-2); --sw-hover:rgba(255,255,255,.9); --sw-on-bg:#075156; --sw-on-fg:#FFFFFF;
+}
+body{font-stretch:100%}
+h1,h2,h3{font-stretch:100%;font-weight:500;letter-spacing:-.025em}
+.logo,.rv-h,.dz b,.dz-h,.tally-row b,.msg-title,.card .money,.lines p,.vs2 td.money,.plan .price,.expect-row b,.big b,.slider output{font-stretch:100%;font-weight:500}
+/* section titles in the serif, the way ZenMaid sets theirs */
+h2{font-family:var(--serif);font-weight:400;font-size:clamp(36px,9vw,58px);line-height:1.04;letter-spacing:-.01em}
+.split h2{font-size:clamp(34px,7.6vw,48px);font-stretch:100%}
+.lines p{font-family:var(--serif);font-size:clamp(28px,6.6vw,42px);letter-spacing:-.005em}
+@media (max-width:599px){h1,h2,h3{font-stretch:100%}.lines p{font-stretch:100%}}
+
+/* the one button: deep teal, white words */
+.btn{background:#075156;color:#FFFFFF;font-weight:600;font-stretch:100%;box-shadow:inset 0 -3px 0 #04383C,0 16px 32px -16px rgba(4,56,60,.6)}
+.btn:hover{color:#FFFFFF;background:#0A5F65;filter:none}
+.plan .flag{background:var(--gold);color:var(--ink)}
+.logo{background:#FFFFFF;border-color:#FFFFFF;box-shadow:0 14px 34px -20px rgba(4,56,60,.45);font-weight:600}
+
+/* the top: pale aqua, dark words, a yellow tag, bubbles drifting */
+.hero{background-color:var(--aqua);background-image:none;color:var(--ink);isolation:isolate;overflow-x:clip}
+.hero h1{color:var(--ink);font-weight:500;font-stretch:100%;letter-spacing:-.035em;line-height:1.0;font-size:clamp(42px,10vw,84px)}
+@media (max-width:599px){.hero h1{font-stretch:100%}}
+.hero .chip{background:var(--gold);color:var(--ink);font-weight:600}
+.hero .promise{color:var(--violet);font-weight:600}
+.hero .lede{color:var(--ink-3)}
+.hero .ticks{color:var(--ink-2);font-weight:500}
+.hero .ticks li::before{background-image:var(--tick)}
+.hero .fcard:has(#reveal[hidden]) #form>.field>label{color:var(--ink-2)}
+.hero .fcard:has(#reveal[hidden]) #form>.cta>.price-line{color:var(--ink)}
+.hero .fcard:has(#reveal[hidden]) #form>.fine2{color:var(--ink-3)}
+.hero .fcard:has(#reveal[hidden]) #form>.err,.hero .fcard:has(#reveal[hidden]) #form>.err a{color:#9B2C00}
+.hero .fcard:has(#reveal[hidden]) #form::before{border-color:#FFFFFF;box-shadow:0 26px 54px -30px rgba(4,56,60,.45)}
+.hero :focus-visible{outline-color:var(--violet)}
+.hero .tally{border-color:#FFFFFF;box-shadow:0 26px 54px -34px rgba(4,56,60,.4)}
+.bubbles{position:absolute;inset:0;z-index:-1;pointer-events:none;overflow:hidden}
+.bubbles i{position:absolute;border-radius:50%;background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.95) 0 6%,rgba(255,255,255,.38) 18%,rgba(255,255,255,.08) 58%,rgba(255,255,255,.22) 100%);border:1px solid rgba(255,255,255,.7);box-shadow:inset -6px -10px 24px rgba(59,183,174,.16)}
+.bubbles i:nth-child(1){left:5%;top:120px;width:110px;height:110px}
+.bubbles i:nth-child(2){left:11%;top:300px;width:46px;height:46px}
+.bubbles i:nth-child(3){right:7%;top:150px;width:150px;height:150px}
+.bubbles i:nth-child(4){right:15%;top:360px;width:58px;height:58px}
+.bubbles i:nth-child(5){left:2%;top:540px;width:76px;height:76px}
+.bubbles i:nth-child(6){right:3%;top:560px;width:90px;height:90px}
+.bubbles i:nth-child(7){left:24%;top:70px;width:28px;height:28px}
+@media (max-width:759px){.bubbles i:nth-child(n+4){display:none}.bubbles i:nth-child(1){left:-30px;top:96px;width:80px;height:80px}.bubbles i:nth-child(3){right:-40px;top:250px;width:100px;height:100px}}
+
+/* the list of regulars who stopped, on a white card */
+.qcard{box-shadow:0 56px 100px -60px rgba(4,56,60,.5),0 2px 10px rgba(4,56,60,.06)}
+.qhead{background:var(--soft-2)}
+.qrow i.booked{background:var(--gold);color:var(--ink)}
+.qrow i.yes{background:var(--violet);color:#FFFFFF}
+.qrow i.back{color:var(--violet);background:#DDF3F2}
+.qside{background:var(--soft)}
+.qlist .works li:last-child{background:#FFF7D6;border-color:var(--gold-deep)}
+.ico{background:var(--soft-2);border-color:#CDE9E8}
+.msg-title{font-weight:600}
+
+/* the money: teal, then the deep teal, then the money in yellow */
+.big div:nth-child(1){background:#075156}
+.big div:nth-child(2){background:#0B6B71}
+.big div:nth-child(3){background:var(--gold);color:var(--ink)}
+.big .hot span{color:var(--gold-ink)}
+input[type=range]::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--violet) 0 var(--p),#D3ECEB var(--p) 100%)}
+input[type=range]::-moz-range-track{background:#D3ECEB}
+input[type=range]::-webkit-slider-thumb{background:#FFFFFF;border:3px solid var(--violet)}
+input[type=range]::-moz-range-thumb{background:#FFFFFF;border:3px solid var(--violet)}
+.card .money{color:var(--violet)}
+.vs2 td.money{color:var(--violet)}
+
+/* the close: back to the aqua, the mark among the suds */
+.final{background:linear-gradient(180deg,#FFFFFF 0%,#E5F4F5 34%,#C9F1F0 100%);color:var(--ink)}
+.final h2{color:var(--ink);font-family:var(--serif);font-style:italic;font-weight:400;font-stretch:100%}
+.final .ticks{color:var(--ink-2)}
+.final .ticks li::before{background-image:var(--tick)}
+.final .sub{color:var(--ink-3)}
+.final .price-line{color:var(--ink)}
+.final :focus-visible{outline-color:var(--violet)}
+.suds{position:relative;height:280px;margin:30px auto 0;max-width:1200px}
+.suds .rise{position:absolute;left:50%;bottom:70px;z-index:1;width:140px;height:140px;transform:translateX(-50%) rotate(-6deg);filter:drop-shadow(0 24px 28px rgba(4,56,60,.32))}
+.suds i{position:absolute;border-radius:50%;background:radial-gradient(circle at 34% 28%,rgba(255,255,255,.98) 0 7%,rgba(255,255,255,.5) 22%,rgba(255,255,255,.18) 60%,rgba(255,255,255,.4) 100%);border:1px solid rgba(255,255,255,.85);box-shadow:inset -8px -12px 28px rgba(59,183,174,.2)}
+.suds i:nth-child(2){left:calc(50% - 200px);bottom:40px;width:120px;height:120px}
+.suds i:nth-child(3){left:calc(50% + 96px);bottom:30px;width:150px;height:150px}
+.suds i:nth-child(4){left:calc(50% - 300px);bottom:160px;width:54px;height:54px}
+.suds i:nth-child(5){left:calc(50% + 250px);bottom:190px;width:40px;height:40px}
+.suds i:nth-child(6){left:calc(50% - 110px);bottom:200px;width:34px;height:34px}
+.suds i:nth-child(7){left:calc(50% + 40px);bottom:226px;width:24px;height:24px}
+
+/* the cold email page: the form beside the words, in the aqua */
+.hero-start{padding-bottom:84px}
+@media (min-width:1000px){.hero-start h1{font-size:58px;max-width:none}}
+.hero-start .tally{border-color:#FFFFFF}
+.nexts>li::before{background:var(--violet)}
+.when{color:var(--violet)}
+.foot{background:var(--soft)}
+.foot a{color:var(--violet)}

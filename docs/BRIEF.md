@@ -52,7 +52,7 @@ Nothing goes live from your session (§1).
   - **No invented product names:** no Money Map, Reply Desk, Ready Text, Every Month After or Year Floor. Use plain words: "your list", "the replies", "the text you get".
   - **Results labels.**
     - Every result carries "Owner-reported. First 150 people. No comparison group."
-    - Dow's Tree Service appears only with "Dow's is owned by Jack's uncle." (16 CFR 255.5). That includes any range or total that counts Dow's.
+    - No page says who owns Dow's Tree Service. Jack took "Dow's is owned by Jack's uncle." off the site on Oct 3, 2026 (his call; the brief had it for 16 CFR 255.5).
     - Lead with Capital City on lawn and cleaning, and with Nelson Fence on tree, painting and fence.
   - **Outside numbers** come only from `packages/engine/src/claims.ts`, with the source beside them.
 

@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { expect } from "vitest";
 import { lintMarketing } from "@qa/engine";
 import { ADDRESS, CALL, POLICIES, renderPage } from "../build/render.ts";
-import { FAMILY, LABEL, PAGES, type SitePage } from "../src/trades.ts";
+import { LABEL, PAGES, type SitePage } from "../src/trades.ts";
 
 /** The pages as the build writes them (markers filled), and plain-text views of them for the word rules. */
 export const page = (id: string) => PAGES.find((p) => p.id === id)!;
@@ -48,9 +48,9 @@ export function wordRules(html: string, offer?: SitePage["words"]["offer"]) {
   // "free" always has its price beside it, and a one-pass page has no free offer at all
   if (offer === "one_pass") expect(text).not.toMatch(/\bfree\b|\$497|any month nobody/i);
   for (const m of text.matchAll(/\bfree\b/gi)) expect(text.slice(Math.max(0, m.index - 90), m.index + 90), `"free" at ${m.index}`).toMatch(/\$497/);
-  // a shop's result, in any sentence, carries the label; Dow's never shows without the family disclosure right after it
+  // a shop's result, in any sentence, carries the label; no page says who owns Dow's (Jack took that line off, Oct 3)
   for (const m of text.matchAll(/\bbooked \d+ from\b|\b\d+ booked out of\b/g)) expect(text.slice(m.index, m.index + 300), `result at ${m.index}`).toContain(LABEL);
-  for (const m of text.matchAll(/Dow's/g)) expect(text.slice(m.index, m.index + 300), `Dow's at ${m.index}`).toContain(FAMILY);
+  expect(text).not.toMatch(/\buncle\b|owned by Jack/i);
   // the trust footer: the postal address, the text number, and the only place the 15-minute call is offered
   const foot = blocks(html, /<footer/, "footer")[0]!;
   expect(textOf(foot)).toContain(`Quiet Accounts · ${ADDRESS}`);
