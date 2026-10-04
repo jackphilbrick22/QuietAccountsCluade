@@ -41,7 +41,7 @@ function Console() {
   return (
     <div className={cx(consoleRoot, "lg:grid lg:grid-cols-[248px_minmax(0,1fr)]")}>
       <aside className={consoleAside}>
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <Wordmark sub="Live" />
           <span className="flex shrink-0 gap-0.5 lg:hidden">
             <button type="button" className={topLink} onClick={() => go({ area: "welcome", tab: "today" })}>

@@ -63,19 +63,24 @@ export function buildDeps(env: Record<string, string | undefined> = process.env)
   return { cfg, accounts, email, notifier, llm, fsm, log, clock: () => new Date(), parsers: { instantly: parseInstantlyWebhook }, mailCheck, stripe };
 }
 
+/** The web app's own files at the root: its icon, and what a phone needs to add it to the home screen as an app. */
+export const WEB_ROOT_FILES = ["logo-mark.svg", "manifest.webmanifest", "apple-touch-icon.png", "icon-192.png", "icon-512.png"];
+
+/** The dashboard (the built web app), when present: its assets, its root files, and index.html for every other page. */
+export function mountWeb(app: ReturnType<typeof createApp>, webDist: string): void {
+  if (!existsSync(webDist)) return;
+  const index = readFileSync(resolve(webDist, "index.html"), "utf8");
+  app.use("/assets/*", serveStatic({ root: webDist }));
+  for (const f of WEB_ROOT_FILES) app.get(`/${f}`, serveStatic({ root: webDist }));
+  app.get("*", (c) => (c.req.path.startsWith("/api") || c.req.path.startsWith("/webhooks") ? c.notFound() : c.html(index)));
+}
+
 export function start(env: Record<string, string | undefined> = process.env) {
   const deps = buildDeps(env);
   const { cfg, log } = deps;
   if (!isProductionLike(cfg)) log("[boot] running with development secrets — set OPERATOR_TOKEN, APP_SECRET and WEBHOOK_SECRET before going live");
   const app = createApp(deps);
-  // The dashboard (built web app), when present.
-  const webDist = resolve(import.meta.dirname, "../../web/dist");
-  if (existsSync(webDist)) {
-    const index = readFileSync(resolve(webDist, "index.html"), "utf8");
-    app.use("/assets/*", serveStatic({ root: webDist }));
-    app.get("/logo-mark.svg", serveStatic({ root: webDist }));
-    app.get("*", (c) => (c.req.path.startsWith("/api") || c.req.path.startsWith("/webhooks") ? c.notFound() : c.html(index)));
-  }
+  mountWeb(app, resolve(import.meta.dirname, "../../web/dist"));
   const server = serve({ fetch: app.fetch, port: cfg.PORT }, (i) => log(`[boot] Quiet Accounts listening on :${i.port} · email=${deps.email.name} · owner texts=${deps.notifier.name} · AI=${deps.llm?.model ?? "off"} · Jobber=${deps.fsm.jobber ? "on" : "off"}`));
   const worker = cfg.WORKER_ENABLED === "true" ? startWorker(deps) : undefined;
   // A failure is recorded where the operator looks (review queue, /api/health) and retried by the worker.

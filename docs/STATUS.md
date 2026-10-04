@@ -2,6 +2,15 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-04 — the app on Jack's phone, like an app
+
+Jack asked for the software on his iPhone "as an app but not an actual app": a home-screen web app. The app now has a
+web app manifest (opens the live console, full screen, white), the violet "Re:" icon at iPhone and Android sizes
+(apple-touch-icon 180, 192, 512), and the iPhone tags for full-screen use; the server serves those files (mountWeb in
+apps/server/src/main.ts, tested). The phone header now wraps instead of clipping "Sign out" when the fonts are slow.
+Until the server is deployed there is nothing to add: the claude.ai demo link (Quiet Accounts App) can go on the home
+screen only as a shortcut to claude.ai.
+
 ## 2026-10-04 — the app in the site's violet look
 
 Jack (Oct 3): the main website was redesigned (the violet look on main-site/ and cold-email-page/, apps/site/src/soro.css,
@@ -662,6 +671,8 @@ Before launch, in order (details for each in the list below): DNS; deploy the se
 .env.example; Stripe test mode end to end (B4, B5), then live with STRIPE_ALLOW_LIVE=true; each client's own inboxes and
 sender names in Instantly (A3); the site to Netlify with form detection or VITE_SERVER_URL (A7); one test sign-up and
 one test client from import to the first OK.
+- (Phone) After the deploy, open the live console's address in Safari on your iPhone, sign in once, then tap Share and
+  "Add to Home Screen". It opens full screen with the violet icon, straight to the live console, and stays signed in.
 - (DNS) What the code needs, nothing more:
   - quietaccounts.com and www point at Netlify (its records or its name servers), so the pages and /start's form load.
   - One host name for the server (for example app.quietaccounts.com) points at the always-on host; PUBLIC_URL is that
