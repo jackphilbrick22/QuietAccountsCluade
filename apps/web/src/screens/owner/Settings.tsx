@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import { Plus, X } from "lucide-react";
+import { Check, Plus, X } from "lucide-react";
 import { fmtMoney, HOLIDAYS_LINE, mondayOf, playbook, type BusinessProfile } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { cx, Toggle } from "../../components/ui";
@@ -65,7 +65,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
   const v = draft;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHead title="Settings" sub="Changes save as you type." />
 
       <Group title="Business & contact" sub="How notes are signed and where replies and hand-offs go.">
@@ -108,25 +108,35 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
 
       <Group title="Pace" sub="When notes go out and who's worth a note. Size and age limits take effect on the next re-scan.">
         <fieldset className="flex flex-col gap-1.5">
-          <legend className="mb-1.5 text-[12.5px] font-semibold text-ink-2">Send days</legend>
-          <div className="flex flex-wrap gap-1.5">
+          <legend className="mb-2 text-[13px] font-semibold text-ink-2">Send days</legend>
+          <div className="flex flex-wrap gap-2">
             {WEEKDAYS.map((w, i) => {
               const on = v.sendDays.includes(i);
               return (
-                <label key={w} htmlFor={`s-day-${i}`} className={cx("inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-[13px] font-semibold", on ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-line-2 bg-surface text-ink-2")}>
+                <label
+                  key={w}
+                  htmlFor={`s-day-${i}`}
+                  className={cx(
+                    "inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full border py-1 pr-4 pl-1.5 text-[14px] font-semibold transition-colors has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent sm:min-h-10",
+                    on ? "border-accent-edge bg-accent-soft text-accent-ink" : "border-line-2 bg-surface text-ink-2 hover:border-accent-line hover:bg-accent-wash",
+                  )}
+                >
                   <input
                     id={`s-day-${i}`}
                     type="checkbox"
-                    className="accent-[var(--accent)]"
+                    className="peer sr-only"
                     checked={on}
                     onChange={(e) => change((d) => ({ ...d, sendDays: e.target.checked ? [...new Set([...d.sendDays, i])].sort() : d.sendDays.filter((x) => x !== i) }))}
                   />
+                  <span className={cx("grid size-7 place-items-center rounded-full", on ? "bg-accent text-on-accent" : "border border-line-2 bg-surface-2 text-transparent")} aria-hidden="true">
+                    <Check size={15} strokeWidth={3} />
+                  </span>
                   {w}
                 </label>
               );
             })}
           </div>
-          <span className="text-[12.5px] text-ink-3">{HOLIDAYS_LINE}</span>
+          <span className="mt-1 text-[12.5px] text-ink-3">{HOLIDAYS_LINE}</span>
           {!v.sendDays.length && <span className="text-[12.5px] text-bad">Pick at least one day, or nothing will go out.</span>}
         </fieldset>
         <Grid>
@@ -186,8 +196,8 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
                 value={w}
                 onChange={(e) => e.target.value && change((d) => ({ ...d, openCrewWeeks: d.openCrewWeeks.map((x, j) => (j === i ? mondayOf(e.target.value) : x)) }))}
               />
-              <span className="text-[12.5px] text-ink-3">week of {shortDate(w)}</span>
-              <button type="button" aria-label={`Remove week of ${w}`} onClick={() => change((d) => ({ ...d, openCrewWeeks: d.openCrewWeeks.filter((_, j) => j !== i) }))} className="grid size-8 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-surface-2 hover:text-ink">
+              <span className="min-w-0 text-[12.5px] text-ink-3">week of {shortDate(w)}</span>
+              <button type="button" aria-label={`Remove week of ${w}`} onClick={() => change((d) => ({ ...d, openCrewWeeks: d.openCrewWeeks.filter((_, j) => j !== i) }))} className="grid size-11 shrink-0 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-bad-soft hover:text-bad sm:size-9">
                 <X size={15} />
               </button>
             </div>
@@ -219,7 +229,6 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
         <div className="flex flex-wrap items-center gap-3 text-[13px] text-ink-3">
           {v.plan.stage !== "paying" && (
             <Btn
-              variant="primary"
               onClick={() => {
                 markPaid(id);
                 toast("Marked as paying");
@@ -235,7 +244,7 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
       </Group>
 
       <Group title="Data" sub="The files we've read. Add fresh exports any time; we merge them and look again.">
-        <Table minWidth={620} label="Imported files">
+        <Table minWidth={620} label="Imported files" className="shadow-none!">
           <thead>
             <tr>
               <Th>File</Th>
@@ -316,10 +325,10 @@ function SettingsForm({ id, b }: { id: string; b: BusinessProfile }) {
 
 function Group({ title, sub, children, danger }: { title: string; sub?: string; children: ReactNode; danger?: boolean }) {
   return (
-    <Box className={cx("flex flex-col gap-4 p-4 sm:p-5", danger && "border-bad/30")}>
-      <div className="flex flex-col gap-0.5">
-        <h2 className={cx("font-body text-[15px] font-bold tracking-normal", danger && "text-bad")}>{title}</h2>
-        {sub && <p className="text-[12.5px] text-ink-3">{sub}</p>}
+    <Box className={cx("flex flex-col gap-5 p-5 sm:p-7", danger && "border-bad/30")}>
+      <div className="flex flex-col gap-1">
+        <h2 className={cx("text-[20px] sm:text-[22px]", danger && "text-bad")}>{title}</h2>
+        {sub && <p className="text-[13.5px] text-ink-3">{sub}</p>}
       </div>
       {children}
     </Box>
@@ -327,17 +336,17 @@ function Group({ title, sub, children, danger }: { title: string; sub?: string; 
 }
 
 function Grid({ children }: { children: ReactNode }) {
-  return <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">{children}</div>;
+  return <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">{children}</div>;
 }
 
 function F({ id, label, hint, children, wide }: { id: string; label: string; hint?: string; children: ReactNode; wide?: boolean }) {
   return (
     <div className={cx("flex min-w-0 flex-col gap-1", wide && "sm:col-span-2")}>
-      <label htmlFor={id} className="text-[12.5px] font-semibold text-ink-2">
+      <label htmlFor={id} className="text-[13px] font-semibold text-ink-2">
         {label}
       </label>
       {children}
-      {hint && <span className="text-[12px] text-ink-3">{hint}</span>}
+      {hint && <span className="text-[12.5px] text-ink-3">{hint}</span>}
     </div>
   );
 }

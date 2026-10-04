@@ -2,106 +2,148 @@
 
 /*
   Layout: owner app = one calm column, money first, big tap targets, bottom tabs on phones;
-  ops console = dense sidebar workspace. Brand: Quiet Accounts "Re:" — navy ink, the Re: orange,
-  Outfit display over Manrope text, Geist Mono for figures and system voice.
+  ops console = dense sidebar workspace. Brand: the violet look of quietaccounts.com (apps/site/src/soro.css):
+  a white page, Cal Sans for headings over Inter for text, one violet (with a blue beside it and green for good news),
+  lavender tints, quiet greys, pill buttons with a soft violet glow, cards with a long soft violet shadow.
+  A tool, so denser than the marketing page where the work needs it, in the same visual language.
+
+  Token names are the app's semantic ones:
+    bg          the page ground (white)          surface    cards, panels, sidebars (white)
+    surface-2   neutral fills: hover, grey chips, bar tracks   sunken   insets inside a card: quotes, note bodies
+    ink/ink-2/ink-3   text, strongest to quietest (ink-3 still AA on every fill)
+    line/line-2       hairlines / field and control edges
+    accent      the violet          accent-deep  its hover / darker partner     accent-ink  violet text on lavender
+    accent-soft lavender chip fill  accent-wash  the lightest lavender (rows, highlighted column)
+    accent-line lavender hairline   accent-edge  the highlighted column's violet edge, dashed drop zones
+    navy        the one dark surface (ink): toasts, the dark pill button. Inverted (light) in dark mode.
+    ok / warn / bad / info and their -soft fills; ok-strong is the brighter green for dots and fills.
 */
 :root {
-  --bg: #f6f4f0;
+  --bg: #ffffff;
   --surface: #ffffff;
-  --surface-2: #efece6;
-  --sunken: #e9e5de;
-  --ink: #0f2433;
-  --ink-2: #3e4f5c;
-  --ink-3: #5f6e79;
-  --line: #e4e2dd;
-  --line-2: #d3cfc7;
-  --accent: #f4511e;
-  --accent-deep: #c93e10;
-  --accent-soft: #fff1ea;
-  --accent-ink: #c93e10;
+  --surface-2: #f3f3f6;
+  --sunken: #f7f7f9;
+  --ink: #0a0a0b;
+  --ink-2: #3a3a42;
+  --ink-3: #62626c;
+  --line: #ececf0;
+  --line-2: #e0e0e7;
+  --accent: #6a47f5;
+  --accent-deep: #4128c9;
+  --accent-soft: #f3f0ff;
+  --accent-wash: #f7f5ff;
+  --accent-line: #e5deff;
+  --accent-edge: #cfc2ff;
+  --accent-ink: #4128c9;
   --on-accent: #ffffff;
-  --navy: #0f2433;
-  --navy-2: #14304a;
+  --grad: linear-gradient(90deg, #5b4bf5 0%, #7e52f2 100%);
+  --navy: #0a0a0b;
+  --navy-2: #26262c;
   --on-navy: #ffffff;
-  --on-navy-2: #c3cdd4;
-  --ok: #1f7a4a;
-  --ok-soft: #e1f2e8;
-  --warn: #9a6400;
-  --warn-soft: #fbf0d9;
-  --bad: #b42318;
-  --bad-soft: #fbe5e3;
-  --info: #245f9e;
-  --info-soft: #e3edf8;
-  --shadow: 0 1px 2px rgba(15, 36, 51, 0.06), 0 8px 24px -12px rgba(15, 36, 51, 0.18);
-  --shadow-lg: 0 24px 60px -24px rgba(15, 36, 51, 0.35);
-  --font-display: "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-body: "Manrope", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+  --on-navy-2: #c9c9d3;
+  --ok: #0f6b37;
+  --ok-strong: #1e9e55;
+  --ok-soft: #e3f6ea;
+  --warn: #8a5300;
+  --warn-soft: #fdf1d8;
+  --bad: #b3261e;
+  --bad-soft: #fdecec;
+  --info: #2f55c8;
+  --info-soft: #eaf0fe;
+  --scrim: rgba(18, 12, 44, 0.42);
+  --card-shadow: 0 30px 70px -40px rgba(60, 40, 140, 0.32), 0 2px 6px rgba(20, 10, 60, 0.04);
+  --lift-shadow: 0 40px 80px -40px rgba(70, 40, 170, 0.38), 0 2px 6px rgba(20, 10, 60, 0.05);
+  --soft-shadow: 0 10px 30px -18px rgba(40, 30, 90, 0.3);
+  --glow: inset 0 1px 0 rgba(255, 255, 255, 0.35), 0 14px 30px -12px rgba(106, 71, 245, 0.75);
+  --glow-sm: inset 0 1px 0 rgba(255, 255, 255, 0.3), 0 8px 18px -10px rgba(106, 71, 245, 0.7);
+  --font-display: "Cal Sans", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
   color-scheme: light;
 }
 
+/* Dark: the same violet, tuned for a near-black violet ground. Same three-state pattern: follows the system unless
+   data-theme="light" pins it light, and data-theme="dark" pins it dark. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0b1a25;
-    --surface: #10222f;
-    --surface-2: #16303f;
-    --sunken: #0d1e2a;
-    --ink: #eef2f5;
-    --ink-2: #c3cdd4;
-    --ink-3: #8fa3b1;
-    --line: #1f3647;
-    --line-2: #2a4557;
-    --accent: #ff6a3d;
-    --accent-deep: #ff8660;
-    --accent-soft: #3a2016;
-    --accent-ink: #ffb59a;
-    --on-accent: #1a0b05;
-    --navy: #0d1e2a;
-    --navy-2: #16303f;
-    --on-navy: #eef2f5;
-    --on-navy-2: #a9b8c4;
-    --ok: #4ade80;
-    --ok-soft: #133323;
-    --warn: #facc15;
-    --warn-soft: #3a3010;
-    --bad: #f87171;
-    --bad-soft: #3b1717;
-    --info: #7fb3e0;
-    --info-soft: #132b40;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
-    --shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.7);
+    --bg: #0d0c13;
+    --surface: #15131e;
+    --surface-2: #1e1b2b;
+    --sunken: #100e18;
+    --ink: #f2f1f7;
+    --ink-2: #cdcbd9;
+    --ink-3: #a09db2;
+    --line: #272436;
+    --line-2: #363249;
+    --accent: #9d88ff;
+    --accent-deep: #b9a9ff;
+    --accent-soft: #241c4a;
+    --accent-wash: #1a1630;
+    --accent-line: #342a66;
+    --accent-edge: #4f418f;
+    --accent-ink: #c4b5ff;
+    --on-accent: #0d0c13;
+    --grad: linear-gradient(90deg, #5b4bf5 0%, #7e52f2 100%);
+    --navy: #ecebf5;
+    --navy-2: #ffffff;
+    --on-navy: #0d0c13;
+    --on-navy-2: #4a4858;
+    --ok: #5bd38a;
+    --ok-strong: #3fbf73;
+    --ok-soft: #12301f;
+    --warn: #f5c451;
+    --warn-soft: #33280f;
+    --bad: #ff8f8f;
+    --bad-soft: #3b171b;
+    --info: #93b2ff;
+    --info-soft: #172446;
+    --scrim: rgba(4, 3, 10, 0.66);
+    --card-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35);
+    --lift-shadow: 0 40px 80px -36px rgba(0, 0, 0, 0.9), 0 2px 6px rgba(0, 0, 0, 0.4);
+    --soft-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.8);
+    --glow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 14px 30px -12px rgba(124, 92, 255, 0.55);
+    --glow-sm: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 18px -10px rgba(124, 92, 255, 0.5);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0b1a25;
-  --surface: #10222f;
-  --surface-2: #16303f;
-  --sunken: #0d1e2a;
-  --ink: #eef2f5;
-  --ink-2: #c3cdd4;
-  --ink-3: #8fa3b1;
-  --line: #1f3647;
-  --line-2: #2a4557;
-  --accent: #ff6a3d;
-  --accent-deep: #ff8660;
-  --accent-soft: #3a2016;
-  --accent-ink: #ffb59a;
-  --on-accent: #1a0b05;
-  --navy: #0d1e2a;
-  --navy-2: #16303f;
-  --on-navy: #eef2f5;
-  --on-navy-2: #a9b8c4;
-  --ok: #4ade80;
-  --ok-soft: #133323;
-  --warn: #facc15;
-  --warn-soft: #3a3010;
-  --bad: #f87171;
-  --bad-soft: #3b1717;
-  --info: #7fb3e0;
-  --info-soft: #132b40;
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
-  --shadow-lg: 0 24px 60px -24px rgba(0, 0, 0, 0.7);
+  --bg: #0d0c13;
+  --surface: #15131e;
+  --surface-2: #1e1b2b;
+  --sunken: #100e18;
+  --ink: #f2f1f7;
+  --ink-2: #cdcbd9;
+  --ink-3: #a09db2;
+  --line: #272436;
+  --line-2: #363249;
+  --accent: #9d88ff;
+  --accent-deep: #b9a9ff;
+  --accent-soft: #241c4a;
+  --accent-wash: #1a1630;
+  --accent-line: #342a66;
+  --accent-edge: #4f418f;
+  --accent-ink: #c4b5ff;
+  --on-accent: #0d0c13;
+  --grad: linear-gradient(90deg, #5b4bf5 0%, #7e52f2 100%);
+  --navy: #ecebf5;
+  --navy-2: #ffffff;
+  --on-navy: #0d0c13;
+  --on-navy-2: #4a4858;
+  --ok: #5bd38a;
+  --ok-strong: #3fbf73;
+  --ok-soft: #12301f;
+  --warn: #f5c451;
+  --warn-soft: #33280f;
+  --bad: #ff8f8f;
+  --bad-soft: #3b171b;
+  --info: #93b2ff;
+  --info-soft: #172446;
+  --scrim: rgba(4, 3, 10, 0.66);
+  --card-shadow: 0 30px 70px -40px rgba(0, 0, 0, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35);
+  --lift-shadow: 0 40px 80px -36px rgba(0, 0, 0, 0.9), 0 2px 6px rgba(0, 0, 0, 0.4);
+  --soft-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.8);
+  --glow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 14px 30px -12px rgba(124, 92, 255, 0.55);
+  --glow-sm: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 18px -10px rgba(124, 92, 255, 0.5);
   color-scheme: dark;
 }
 
@@ -118,6 +160,9 @@
   --color-accent: var(--accent);
   --color-accent-deep: var(--accent-deep);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-wash: var(--accent-wash);
+  --color-accent-line: var(--accent-line);
+  --color-accent-edge: var(--accent-edge);
   --color-accent-ink: var(--accent-ink);
   --color-on-accent: var(--on-accent);
   --color-navy: var(--navy);
@@ -125,6 +170,7 @@
   --color-on-navy: var(--on-navy);
   --color-on-navy-2: var(--on-navy-2);
   --color-ok: var(--ok);
+  --color-ok-strong: var(--ok-strong);
   --color-ok-soft: var(--ok-soft);
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
@@ -132,11 +178,28 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
+  --color-scrim: var(--scrim);
   --font-display: var(--font-display);
   --font-body: var(--font-body);
   --font-mono: var(--font-mono);
-  --shadow-card: var(--shadow);
-  --shadow-lift: var(--shadow-lg);
+  --shadow-card: var(--card-shadow);
+  --shadow-lift: var(--lift-shadow);
+  --shadow-soft: var(--soft-shadow);
+  --shadow-glow: var(--glow);
+  --shadow-glow-sm: var(--glow-sm);
+}
+
+/* The site's radii: cards 20–26px, boxes and tiles 18px, fields 16px (dense ones 12px), pills full. */
+@theme {
+  --radius-card: 22px;
+  --radius-box: 18px;
+  --radius-field: 16px;
+  --radius-control: 12px;
+}
+
+/* The site's violet gradient, for the primary button and anything else that is the one thing to press. */
+@utility bg-grad {
+  background-image: var(--grad);
 }
 
 html,
@@ -152,7 +215,14 @@ body {
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* Cal Sans has one weight: never fake a bold of it (or any missing Inter weight) */
+  font-synthesis-weight: none;
   overflow-x: hidden;
+}
+::selection {
+  background: var(--accent-line);
+  color: var(--ink);
 }
 /* Base element styles live in the base layer so Tailwind utilities on the element win. */
 @layer base {
@@ -161,10 +231,20 @@ body {
   h3,
   h4 {
     font-family: var(--font-display);
-    letter-spacing: -0.02em;
-    line-height: 1.08;
+    font-weight: 400;
+    letter-spacing: -0.015em;
+    line-height: 1.1;
     text-wrap: balance;
     margin: 0;
+  }
+  /* Cal Sans' word space is narrow: right at the site's big headings, cramped at a tool's 17-30px ("Whatto ask the
+     ownerfor next"). Every face gets a little more of it; the big hero headings put it back (word-spacing:normal). */
+  h1,
+  h2,
+  h3,
+  h4,
+  .font-display {
+    word-spacing: 0.09em;
   }
   p {
     margin: 0;
@@ -173,25 +253,79 @@ body {
     font: inherit;
     color: inherit;
   }
+  a {
+    text-underline-offset: 2px;
+  }
   :focus-visible {
-    outline: 2.5px solid var(--accent);
+    outline: 3px solid var(--accent);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: 8px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--accent);
+  }
+  * {
+    scrollbar-color: var(--line-2) transparent;
   }
 }
 .num {
   font-variant-numeric: tabular-nums;
 }
+/* Cal Sans spaces its tabular figures and punctuation wide ("$1 . 9M"): big display numbers keep its own spacing. */
+.num.font-display,
+.font-display .num,
+:is(h1, h2, h3, h4):not(.font-body).num {
+  font-variant-numeric: normal;
+}
+/* The site's lavender chip (it was a mono uppercase eyebrow). */
 .eyebrow {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--accent-soft);
   color: var(--accent-ink);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  letter-spacing: 0;
 }
 .scroll-x {
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
+}
+/* A table that scrolls sideways fades out at its right edge while there's more to see, and the fade goes as you reach
+   the end. Driven by the scroll itself where the browser can (a table that fits has no timeline, so no fade); where it
+   can't, the table simply scrolls. */
+.table-box {
+  timeline-scope: --qa-table-x;
+}
+.table-scroll {
+  scroll-timeline: --qa-table-x x;
+}
+.table-fade {
+  opacity: 0;
+}
+@supports (animation-timeline: scroll()) {
+  .table-fade {
+    animation: qa-table-fade linear both;
+    animation-timeline: --qa-table-x;
+  }
+}
+@keyframes qa-table-fade {
+  0%,
+  88% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 .note-body {
   white-space: pre-wrap;
@@ -228,5 +362,12 @@ body {
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+  /* not motion: the table's edge fade follows your own scrolling */
+  @supports (animation-timeline: scroll()) {
+    .table-box .table-fade {
+      animation: qa-table-fade linear both !important;
+      animation-timeline: --qa-table-x !important;
+    }
   }
 }

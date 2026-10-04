@@ -1,7 +1,7 @@
 /**
  * Dense list/table primitives for the dashboard: page headers, KPI strips, tables with sticky
  * headers, filter chips, search, pagination, row menus and copyable text blocks.
- * Plain on purpose: thin borders, small type, tabular numbers.
+ * Plain on purpose, in the site's restraint: hairlines, small type, tabular numbers; lavender for what's chosen.
  */
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type ThHTMLAttributes, type TdHTMLAttributes } from "react";
 import { ChevronLeft, ChevronRight, MoreHorizontal, Search } from "lucide-react";
@@ -11,11 +11,11 @@ import { cx } from "./ui";
 export function PageHead({ title, sub, actions }: { title: ReactNode; sub?: ReactNode; actions?: ReactNode }) {
   return (
     <div className="flex flex-wrap items-end justify-between gap-3">
-      <div className="flex min-w-0 flex-1 basis-60 flex-col gap-0.5">
-        <h1 className="font-body text-[21px] font-bold tracking-tight">{title}</h1>
-        {sub && <p className="max-w-[80ch] text-[13.5px] text-ink-3">{sub}</p>}
+      <div className="flex min-w-0 flex-1 basis-72 flex-col gap-0.5">
+        <h1 className="text-[26px] leading-[1.1] sm:text-[30px]">{title}</h1>
+        {sub && <p className="mt-1 max-w-[80ch] text-[14px] text-ink-3">{sub}</p>}
       </div>
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {actions && <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
   );
 }
@@ -25,10 +25,10 @@ export function Section({ title, sub, actions, children, className }: { title: R
     <section className={cx("flex min-w-0 flex-col gap-2.5", className)}>
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div className="flex min-w-0 flex-1 basis-60 flex-col">
-          <h2 className="font-body text-[15px] font-bold tracking-normal">{title}</h2>
-          {sub && <p className="text-[12.5px] text-ink-3">{sub}</p>}
+          <h2 className="text-[18px] leading-tight">{title}</h2>
+          {sub && <p className="mt-0.5 text-[13px] text-ink-3">{sub}</p>}
         </div>
-        {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+        {actions && <div className="flex max-w-full min-w-0 flex-wrap items-center gap-2">{actions}</div>}
       </div>
       {children}
     </section>
@@ -37,32 +37,39 @@ export function Section({ title, sub, actions, children, className }: { title: R
 
 /** A plain bordered box. */
 export function Box({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("min-w-0 rounded-lg border border-line bg-surface", className)}>{children}</div>;
+  return <div className={cx("min-w-0 rounded-box border border-line bg-surface shadow-card", className)}>{children}</div>;
 }
 
 /* ------------------------------ KPI strip ------------------------------ */
 export function Kpis({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-[repeat(auto-fit,minmax(140px,1fr))]", className)}>{children}</div>;
+  return <div className={cx("grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:grid-cols-[repeat(auto-fit,minmax(150px,1fr))]", className)}>{children}</div>;
 }
 
 export function Kpi({ label, value, sub, tone }: { label: string; value: ReactNode; sub?: ReactNode; tone?: "ok" | "accent" | "bad" | "warn" }) {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5 rounded-lg border border-line bg-surface px-3.5 py-3">
-      <span className="truncate text-[12px] font-semibold text-ink-3">{label}</span>
-      <span className={cx("num truncate text-[20px] leading-tight font-bold", tone === "ok" && "text-ok", tone === "accent" && "text-accent-ink", tone === "bad" && "text-bad", tone === "warn" && "text-warn")}>{value}</span>
+    <div className="flex min-w-0 flex-col gap-1 rounded-box border border-line bg-surface px-4 py-3.5 shadow-card">
+      <span className="truncate text-[12.5px] font-medium text-ink-3">{label}</span>
+      <span className={cx("num truncate font-display text-[26px] leading-none", tone === "ok" && "text-ok", tone === "accent" && "text-accent-ink", tone === "bad" && "text-bad", tone === "warn" && "text-warn")}>{value}</span>
       {sub && <span className="truncate text-[12px] text-ink-3">{sub}</span>}
     </div>
   );
 }
 
 /* ------------------------------ Tables ------------------------------ */
-/** Scrolls sideways on phones; `tall` caps the height so the sticky header stays in view. */
+/**
+ * Scrolls sideways on phones; `tall` caps the height so the sticky header stays in view. While there's more to the
+ * right it fades out at that edge, like the nav rows, so a cut-off column reads as "more" (styles.css `.table-fade`).
+ * The scroll box is a size container, so a full-width cell's content can pin itself to the part you can see (`pinned`).
+ */
 export function Table({ children, minWidth = 640, tall, className, label }: { children: ReactNode; minWidth?: number; tall?: boolean; className?: string; label?: string }) {
   return (
-    <div className={cx("scroll-x min-w-0 rounded-lg border border-line bg-surface", tall && "max-h-[70vh] overflow-y-auto", className)}>
-      <table className="w-full border-collapse text-left text-[13.5px]" style={{ minWidth }} aria-label={label}>
-        {children}
-      </table>
+    <div className={cx("table-box relative min-w-0 rounded-box border border-line bg-surface shadow-card", className)}>
+      <div className={cx("table-scroll scroll-x @container rounded-[17px]", tall && "max-h-[70vh] overflow-y-auto")}>
+        <table className="w-full border-collapse text-left text-[13.5px]" style={{ minWidth }} aria-label={label}>
+          {children}
+        </table>
+      </div>
+      <div aria-hidden="true" className="table-fade pointer-events-none absolute inset-y-0 right-0 z-[2] w-10 rounded-r-[17px] bg-linear-to-l from-surface to-transparent" />
     </div>
   );
 }
@@ -72,7 +79,7 @@ export function Th({ children, right, wrap, className, ...rest }: ThHTMLAttribut
     <th
       scope="col"
       {...rest}
-      className={cx("sticky top-0 z-[1] border-b border-line bg-surface-2 px-3 py-2 text-[12px] leading-tight font-semibold text-ink-3", !wrap && "whitespace-nowrap", right && "text-right", className)}
+      className={cx("sticky top-0 z-[1] border-b border-line bg-surface px-3 pt-3 pb-2.5 text-[12px] leading-tight font-semibold text-ink-3 first:pl-4 last:pr-4", !wrap && "whitespace-nowrap", right && "text-right", className)}
     >
       {children}
     </th>
@@ -81,7 +88,7 @@ export function Th({ children, right, wrap, className, ...rest }: ThHTMLAttribut
 
 export function Td({ children, right, className, ...rest }: TdHTMLAttributes<HTMLTableCellElement> & { right?: boolean }) {
   return (
-    <td {...rest} className={cx("border-b border-line px-3 py-2 align-middle", right && "num text-right whitespace-nowrap", className)}>
+    <td {...rest} className={cx("border-b border-line px-3 py-2.5 align-middle first:pl-4 last:pr-4", right && "num text-right whitespace-nowrap", className)}>
       {children}
     </td>
   );
@@ -104,18 +111,30 @@ export function Tr({ children, onClick, selected, className, label }: { children
       }
       tabIndex={onClick ? 0 : undefined}
       aria-label={label}
-      className={cx("last:[&>td]:border-b-0", onClick && "cursor-pointer hover:bg-bg focus-visible:bg-bg", selected && "bg-accent-soft/60 hover:bg-accent-soft/60", className)}
+      className={cx(
+        "transition-colors last:[&>td]:border-b-0",
+        onClick && "cursor-pointer hover:bg-accent-wash focus-visible:bg-accent-wash focus-visible:outline-offset-[-3px]",
+        selected && "bg-accent-wash hover:bg-accent-wash [&>td:first-child]:shadow-[inset_3px_0_0_var(--accent)]",
+        className,
+      )}
     >
       {children}
     </tr>
   );
 }
 
+/**
+ * For a cell that spans the whole row (an empty list, an editor opened under a row): its content stays the width of
+ * the visible part of the table and holds still while the table scrolls sideways, so on a phone it never sits off
+ * screen in the middle of a wide table.
+ */
+export const pinned = "sticky left-0 w-[100cqw]";
+
 export function EmptyRow({ cols, children }: { cols: number; children: ReactNode }) {
   return (
     <tr>
-      <td colSpan={cols} className="px-3 py-8 text-center text-[13.5px] text-ink-3">
-        {children}
+      <td colSpan={cols} className="p-0">
+        <div className={cx(pinned, "px-4 py-10 text-center text-[14px] text-ink-3")}>{children}</div>
       </td>
     </tr>
   );
@@ -129,13 +148,13 @@ export function Chip({ active, onClick, children, count, tone }: { active: boole
       aria-pressed={active}
       onClick={onClick}
       className={cx(
-        "inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-[13px] font-semibold whitespace-nowrap transition-colors",
-        active ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-line bg-surface text-ink-2 hover:bg-surface-2",
+        "inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-full border px-3.5 text-[13px] font-semibold whitespace-nowrap transition-colors sm:min-h-9",
+        active ? "border-accent-edge bg-accent-soft text-accent-ink" : "border-line-2 bg-surface text-ink-2 hover:border-accent-line hover:bg-accent-wash",
       )}
     >
       {children}
       {count !== undefined && (
-        <span className={cx("num rounded px-1.5 text-[11.5px] leading-[18px]", tone === "bad" && count > 0 ? "bg-bad text-surface" : tone === "warn" && count > 0 ? "bg-warn-soft text-warn" : "bg-surface-2 text-ink-3")}>
+        <span className={cx("num rounded-full px-1.5 text-[11.5px] leading-[18px]", tone === "bad" && count > 0 ? "bg-bad text-surface" : tone === "warn" && count > 0 ? "bg-warn-soft text-warn" : active ? "bg-surface text-accent-ink" : "bg-surface-2 text-ink-3")}>
           {count.toLocaleString("en-US")}
         </span>
       )}
@@ -149,26 +168,28 @@ export function SearchBox({ id, value, onChange, placeholder = "Search", classNa
       <label htmlFor={id} className="sr-only">
         {placeholder}
       </label>
-      <Search size={15} className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-ink-3" aria-hidden="true" />
+      <Search size={15} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-ink-3" aria-hidden="true" />
       <input
         id={id}
         type="search"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="min-h-9 w-full rounded-md border border-line-2 bg-surface pr-2.5 pl-8 text-[13.5px] text-ink outline-none placeholder:text-ink-3 focus:border-accent"
+        className="min-h-11 w-full rounded-full border border-line-2 bg-surface pr-4 pl-9 text-[16px] text-ink outline-none placeholder:text-ink-3 focus:border-transparent focus:outline-solid focus:outline-2 focus:outline-offset-1 focus:outline-accent sm:min-h-10 sm:text-[14px]"
       />
     </div>
   );
 }
 
-export const selectCls = "min-h-9 rounded-md border border-line-2 bg-surface px-2.5 text-[13.5px] text-ink outline-none focus:border-accent";
-export const smallInputCls = "min-h-9 w-full rounded-md border border-line-2 bg-surface px-2.5 text-[13.5px] text-ink outline-none placeholder:text-ink-3 focus:border-accent";
+/** The console's denser field: the site's field, shorter (44px on phones, 40px wide), 12px corners, the violet ring. */
+const fieldFocus = "outline-none focus:border-transparent focus:outline-solid focus:outline-2 focus:outline-offset-1 focus:outline-accent";
+export const selectCls = `min-h-11 max-w-full cursor-pointer rounded-control border border-line-2 bg-surface px-3 text-[16px] text-ink sm:min-h-10 sm:text-[14px] ${fieldFocus}`;
+export const smallInputCls = `min-h-11 w-full rounded-control border border-line-2 bg-surface px-3 text-[16px] text-ink placeholder:text-ink-3 sm:min-h-10 sm:text-[14px] ${fieldFocus}`;
 
 export function Select<T extends string>({ id, label, value, onChange, options, hideLabel, className }: { id: string; label: string; value: T; onChange: (v: T) => void; options: { value: T; label: string }[]; hideLabel?: boolean; className?: string }) {
   return (
-    <div className={cx("flex items-center gap-2", className)}>
-      <label htmlFor={id} className={cx("text-[12.5px] font-semibold text-ink-3", hideLabel && "sr-only")}>
+    <div className={cx("flex max-w-full min-w-0 items-center gap-2", className)}>
+      <label htmlFor={id} className={cx("shrink-0 text-[12.5px] font-semibold text-ink-2", hideLabel && "sr-only")}>
         {label}
       </label>
       <select id={id} value={value} onChange={(e) => onChange(e.target.value as T)} className={cx(selectCls, "min-w-0")}>
@@ -193,13 +214,13 @@ export function Pager({ page, pageSize, total, onPage }: { page: number; pageSiz
         {from.toLocaleString("en-US")}–{to.toLocaleString("en-US")} of {total.toLocaleString("en-US")}
       </span>
       <div className="flex items-center gap-1">
-        <button type="button" aria-label="Previous page" disabled={page <= 0} onClick={() => onPage(page - 1)} className="grid size-8 cursor-pointer place-items-center rounded-md border border-line bg-surface hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40">
+        <button type="button" aria-label="Previous page" disabled={page <= 0} onClick={() => onPage(page - 1)} className="grid size-11 cursor-pointer place-items-center rounded-full border border-line-2 bg-surface hover:border-accent-line hover:bg-accent-wash disabled:cursor-not-allowed disabled:opacity-40 sm:size-9">
           <ChevronLeft size={16} />
         </button>
         <span className="num px-2">
           {page + 1} / {pages}
         </span>
-        <button type="button" aria-label="Next page" disabled={page >= pages - 1} onClick={() => onPage(page + 1)} className="grid size-8 cursor-pointer place-items-center rounded-md border border-line bg-surface hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40">
+        <button type="button" aria-label="Next page" disabled={page >= pages - 1} onClick={() => onPage(page + 1)} className="grid size-11 cursor-pointer place-items-center rounded-full border border-line-2 bg-surface hover:border-accent-line hover:bg-accent-wash disabled:cursor-not-allowed disabled:opacity-40 sm:size-9">
           <ChevronRight size={16} />
         </button>
       </div>
@@ -235,11 +256,11 @@ export function Btn({
       title={title}
       aria-label={aria["aria-label"]}
       className={cx(
-        "inline-flex min-h-9 cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 text-[13.5px] font-semibold whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-45",
-        variant === "primary" && "bg-accent text-on-accent hover:bg-accent-deep",
-        variant === "secondary" && "border border-line-2 bg-surface text-ink hover:bg-surface-2",
+        "inline-flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-full px-4 text-[13.5px] leading-tight font-semibold whitespace-nowrap transition-[background-color,border-color,color,filter,transform] active:translate-y-px disabled:cursor-not-allowed disabled:opacity-45 disabled:shadow-none disabled:active:translate-y-0 sm:min-h-9",
+        variant === "primary" && "bg-grad text-white shadow-glow-sm hover:brightness-[1.06] disabled:hover:brightness-100",
+        variant === "secondary" && "border border-line-2 bg-surface text-ink hover:border-accent-line hover:bg-accent-wash",
         variant === "ghost" && "text-ink-2 hover:bg-surface-2 hover:text-ink",
-        variant === "danger" && "border border-bad/30 bg-bad-soft text-bad hover:opacity-85",
+        variant === "danger" && "border border-bad/25 bg-bad-soft text-bad hover:opacity-85",
         className,
       )}
     >
@@ -354,7 +375,7 @@ export function RowMenu({ items, label = "More actions" }: { items: MenuItem[]; 
           setOpen((o) => !o);
           setAsking(null);
         }}
-        className="grid size-8 cursor-pointer place-items-center rounded-md text-ink-3 hover:bg-surface-2 hover:text-ink"
+        className="grid size-11 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-accent-soft hover:text-accent-ink aria-expanded:bg-accent-soft aria-expanded:text-accent-ink sm:size-8"
       >
         <MoreHorizontal size={17} />
       </button>
@@ -363,7 +384,7 @@ export function RowMenu({ items, label = "More actions" }: { items: MenuItem[]; 
           ref={menu}
           role="menu"
           onClick={(e) => e.stopPropagation()}
-          className="fixed z-[80] flex w-52 flex-col rounded-lg border border-line bg-surface p-1 shadow-card"
+          className="fixed z-[80] flex w-52 flex-col rounded-box border border-line bg-surface p-1.5 shadow-lift"
           style={{ top: pos?.top ?? 0, left: pos?.left ?? 0, visibility: pos ? "visible" : "hidden" }}
         >
           {asking ? (
@@ -397,7 +418,7 @@ export function RowMenu({ items, label = "More actions" }: { items: MenuItem[]; 
                   setOpen(false);
                   it.onClick();
                 }}
-                className={cx("cursor-pointer rounded-md px-2.5 py-2 text-left text-[13.5px] font-semibold hover:bg-surface-2", it.danger ? "text-bad" : "text-ink")}
+                className={cx("min-h-11 cursor-pointer rounded-control px-3 py-2 text-left text-[13.5px] font-semibold sm:min-h-9", it.danger ? "text-bad hover:bg-bad-soft" : "text-ink hover:bg-accent-wash")}
               >
                 {it.label}
               </button>
@@ -424,7 +445,7 @@ export function CopyBlock({ text, label = "Copy text" }: { text: string; label?:
   };
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
-      <pre ref={ref} className="note-body max-h-72 overflow-auto rounded-md border border-line bg-bg px-3 py-2.5 text-[13px] leading-relaxed text-ink">
+      <pre ref={ref} className="note-body max-h-72 overflow-auto rounded-control border border-line bg-sunken px-3.5 py-3 text-[13.5px] leading-relaxed text-ink">
         {text}
       </pre>
       <div>

@@ -35,12 +35,12 @@ export function LeadCard({ a, r, rev, accountId, compact }: { a: AccountState; r
   const waitH = (Date.parse(`${a.dataset.asOf}T18:00:00`) - Date.parse(r.receivedAt)) / 3600000;
   const waiting = !r.ownerContactedAt && r.status !== "done";
   return (
-    <Card className={cx("flex flex-col gap-3 p-4 sm:p-5", waiting && waitH > 24 && "border-bad/40")}>
-      <div className="flex items-start gap-3">
-        <span className="grid size-11 shrink-0 place-items-center rounded-full bg-accent-soft font-display text-[15px] font-bold text-accent-ink">{initials(c?.name ?? r.from)}</span>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+    <Card className={cx("flex flex-col gap-4 p-4 sm:p-6", waiting && waitH > 24 && "border-bad/40")}>
+      <div className="flex items-start gap-3 sm:gap-4">
+        <span className="grid size-11 shrink-0 place-items-center rounded-full border border-accent-line bg-accent-soft font-display text-[16px] text-accent-ink sm:size-12 sm:text-[17px]">{initials(c?.name ?? r.from)}</span>
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-display text-[17px] font-bold">{c?.name ?? r.from}</span>
+            <span className="font-display text-[20px] leading-tight sm:text-[22px]">{c?.name ?? r.from}</span>
             {intentPill(r)}
             {r.outcome === "booked" && <Pill tone="ok">Booked {r.outcomeValue ? fmtMoney(r.outcomeValue) : ""}</Pill>}
           </div>
@@ -55,27 +55,29 @@ export function LeadCard({ a, r, rev, accountId, compact }: { a: AccountState; r
         )}
       </div>
 
-      <blockquote className="rounded-xl bg-surface-2 px-3.5 py-2.5 text-[15px] leading-snug">“{r.text.length > 240 ? r.text.slice(0, 239) + "…" : r.text}”</blockquote>
+      <div className="flex flex-col gap-3 rounded-[20px] border border-accent-line bg-accent-wash p-2.5 sm:p-3">
+        <blockquote className="rounded-[14px_14px_14px_6px] border border-accent-line bg-surface px-4 py-3 text-[15.5px] leading-snug">“{r.text.length > 240 ? r.text.slice(0, 239) + "…" : r.text}”</blockquote>
 
-      {!compact && o && (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink-2">
-          <span>
-            <b className="font-semibold text-ink">{o.jobPhrase.replace(/^the /, "").replace(/^./, (x) => x.toUpperCase())}</b>
-            {o.value ? ` · ${fmtMoney(o.value)}` : ""}
-          </span>
-          <span>{BREAKAGE_LABEL[o.type].short}{o.anchorDate ? ` · ${spokenWhen(o.anchorDate, a.dataset.asOf).replace(/^back in /, "")}` : ""}</span>
-          {r.extracted.bestTime && <span>Best time: {r.extracted.bestTime}</span>}
-        </div>
-      )}
+        {!compact && o && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 px-1.5 pb-0.5 text-[13px] text-ink-2">
+            <span>
+              <b className="font-semibold text-ink">{o.jobPhrase.replace(/^the /, "").replace(/^./, (x) => x.toUpperCase())}</b>
+              {o.value ? ` · ${fmtMoney(o.value)}` : ""}
+            </span>
+            <span>{BREAKAGE_LABEL[o.type].short}{o.anchorDate ? ` · ${spokenWhen(o.anchorDate, a.dataset.asOf).replace(/^back in /, "")}` : ""}</span>
+            {r.extracted.bestTime && <span>Best time: {r.extracted.bestTime}</span>}
+          </div>
+        )}
+      </div>
 
       {waiting ? (
         <div className="flex flex-wrap items-center gap-2">
           {phone ? (
-            <a href={`tel:${phone}`} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-accent px-4 font-bold text-on-accent hover:bg-accent-deep">
+            <a href={`tel:${phone}`} className="inline-flex min-h-11 items-center gap-2 rounded-full bg-grad px-5 font-semibold text-white no-underline shadow-glow transition-[filter] hover:brightness-[1.06]">
               <Phone size={17} /> <span className="num">{fmtPhone(phone)}</span>
             </a>
           ) : (
-            <span className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-surface-2 px-4 font-semibold text-ink-2">
+            <span className="inline-flex min-h-11 max-w-full min-w-0 items-center gap-2 rounded-full bg-surface-2 px-4 font-semibold break-all text-ink-2">
               <Mail size={16} /> {c?.emails[0] ?? r.from}
             </span>
           )}
@@ -124,14 +126,14 @@ function BookSheet({ open, onClose, a, r, accountId, suggested }: { open: boolea
         <Button size="lg" onClick={() => done("booked", Number(amount) || undefined)} disabled={!Number(amount)}>
           <CalendarCheck size={18} /> Booked it
         </Button>
-        <div className="grid grid-cols-3 gap-2">
-          <Button variant="secondary" onClick={() => done("quoted")}>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <Button variant="secondary" className="whitespace-nowrap" onClick={() => done("quoted")}>
             Sent a price
           </Button>
-          <Button variant="secondary" onClick={() => done("no_answer")}>
+          <Button variant="secondary" className="whitespace-nowrap" onClick={() => done("no_answer")}>
             No answer
           </Button>
-          <Button variant="secondary" onClick={() => done("lost")}>
+          <Button variant="secondary" className="col-span-2 whitespace-nowrap sm:col-span-1" onClick={() => done("lost")}>
             Not a fit
           </Button>
         </div>
@@ -148,18 +150,18 @@ function ThreadSheet({ open, onClose, a, r, rev }: { open: boolean; onClose: () 
     <Sheet open={open} onClose={onClose} title={`Notes with ${name}`} wide>
       <div className="flex flex-col gap-3">
         {notes.map((t) => (
-          <div key={t.id} className="flex flex-col gap-1 rounded-2xl border border-line p-4">
-            <span className="text-[12px] font-semibold text-ink-3">
+          <div key={t.id} className="overflow-hidden rounded-box border border-line bg-surface">
+            <span className="block border-b border-line bg-accent-wash px-4 py-2.5 text-[12.5px] font-semibold text-ink-3">
               Note {t.step} · sent {new Date(t.sentAt ?? t.dueAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })} · “{t.subject}”
             </span>
-            <p className="note-body text-[14.5px]">{t.body.split('\n\nReply "stop"')[0]}</p>
+            <p className="note-body px-4 py-3.5 text-[14.5px] leading-relaxed">{t.body.split('\n\nReply "stop"')[0]}</p>
           </div>
         ))}
-        <div className="ml-6 flex flex-col gap-1 rounded-2xl bg-accent-soft p-4">
-          <span className="text-[12px] font-semibold text-accent-ink">
+        <div className="ml-6 flex flex-col gap-1 rounded-[18px_18px_6px_18px] border border-accent-line bg-accent-soft px-4 py-3.5 sm:ml-12">
+          <span className="text-[12.5px] font-semibold text-accent-ink">
             {name} replied · {new Date(r.receivedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
           </span>
-          <p className="note-body text-[14.5px]">{r.text}</p>
+          <p className="note-body text-[14.5px] leading-relaxed">{r.text}</p>
         </div>
       </div>
     </Sheet>

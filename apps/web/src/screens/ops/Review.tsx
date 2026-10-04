@@ -3,9 +3,11 @@ import { closeMessage, fmtMoney, plural, slaNudge, type ReplyIntent } from "@qa/
 import { useApp } from "../../store/app";
 import { relTime } from "../../lib/derive";
 import { clientRows, REVIEW_ORDER, reviewItems, waitedHours, type ClientRow, type ReviewKind } from "../../lib/ops";
-import { Pill } from "../../components/ui";
+import { CheckCheck } from "lucide-react";
+import { cx, Pill } from "../../components/ui";
 import { intentPill } from "../../components/lead";
 import { Box, Btn, Chip, CopyBlock, PageHead } from "../../components/table";
+import { Blank, chipRow, inlineTap, theirs } from "../../live/look";
 
 type Kind = ReviewKind;
 
@@ -73,7 +75,11 @@ export function OpsReview() {
               Couldn't tell what <b>{who}</b> meant
             </>
           ),
-          body: <blockquote className="rounded-md bg-bg px-3 py-2 text-[13px]">“{r!.text.length > 280 ? `${r!.text.slice(0, 279)}…` : r!.text}”</blockquote>,
+          body: (
+            <div>
+              <blockquote className={cx(theirs, "w-fit max-w-[72ch]")}>“{r!.text.length > 280 ? `${r!.text.slice(0, 279)}…` : r!.text}”</blockquote>
+            </div>
+          ),
           action: (
             <div className="flex flex-wrap gap-1.5">
               {SORT_CHOICES.map((c) => (
@@ -114,8 +120,10 @@ export function OpsReview() {
           ),
           body: (
             <>
-              <blockquote className="rounded-md bg-bg px-3 py-2 text-[13px]">“{r!.text}”</blockquote>
-              <span className="text-[12.5px] text-ink-3">Already removed from every list. Check the note that caused it and tell the owner.</span>
+              <div>
+                <blockquote className={cx(theirs, "w-fit max-w-[72ch]")}>“{r!.text}”</blockquote>
+              </div>
+              <span className="text-[13px] text-ink-3">Already removed from every list. Check the note that caused it and tell the owner.</span>
             </>
           ),
           action: <Btn onClick={() => open(id, "leads", r!.id)}>See the thread</Btn>,
@@ -125,10 +133,10 @@ export function OpsReview() {
           ...base,
           title: <>{plural(it.flaggedCount ?? 0, "queued note")} failed a quality check</>,
           body: (
-            <ul className="list-disc pl-5 text-[12.5px] text-ink-2">
+            <ul className="list-disc rounded-control bg-warn-soft py-2 pr-3 pl-8 text-[13px] text-warn">
               {(it.flags ?? []).slice(0, 5).map(([f, n]) => (
                 <li key={f}>
-                  {f} <span className="num text-ink-3">×{n}</span>
+                  {f} <span className="num font-semibold">×{n}</span>
                 </li>
               ))}
             </ul>
@@ -139,7 +147,7 @@ export function OpsReview() {
         return {
           ...base,
           title: <>Sending is paused</>,
-          body: <span className="text-[13px] text-ink-2">{row.health.paused ? row.health.reason : row.meta?.paused ? "Paused by hand. Queued notes are on hold." : "Plan is paused."}</span>,
+          body: <span className="text-[13.5px] text-ink-2">{row.health.paused ? row.health.reason : row.meta?.paused ? "Paused by hand. Queued notes are on hold." : "Plan is paused."}</span>,
           action: row.meta?.paused ? (
             <Btn
               onClick={() => {
@@ -193,36 +201,49 @@ export function OpsReview() {
   const shown = filter === "all" ? items : items.filter((i) => i.kind === filter);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHead title="Needs a person" sub="Everything across all clients the agents couldn't finish on their own. Complaints cover the last 30 days; oldest first within each kind." />
 
-      <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0" role="toolbar" aria-label="Filter">
+      {/* a kind with nothing in it keeps its chip, quieter: a dashed edge and grey text */}
+      <div className={chipRow} role="toolbar" aria-label="Filter">
         <Chip active={filter === "all"} count={items.length} onClick={() => setFilter("all")}>
           All
         </Chip>
         {REVIEW_ORDER.map((k) => (
-          <Chip key={k} active={filter === k} count={counts.get(k) ?? 0} tone={KIND[k].tone === "bad" ? "bad" : undefined} onClick={() => setFilter(k)}>
-            {KIND[k].label}
-          </Chip>
+          <span key={k} className={cx("contents", !counts.get(k) && filter !== k && "[&>button]:border-dashed [&>button]:text-ink-3")}>
+            <Chip active={filter === k} count={counts.get(k) ?? 0} tone={KIND[k].tone === "bad" ? "bad" : undefined} onClick={() => setFilter(k)}>
+              {KIND[k].label}
+            </Chip>
+          </span>
         ))}
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         {shown.map((it) => (
-          <Box key={it.key} className="flex flex-col gap-2.5 px-4 py-3">
+          <Box key={it.key} className="flex flex-col gap-3 px-4 py-4 sm:px-5">
             <div className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
               <Pill tone={KIND[it.kind].tone}>{KIND[it.kind].label}</Pill>
-              <button type="button" onClick={() => select(it.row.id, "owner")} className="cursor-pointer font-semibold text-ink-2 hover:text-ink hover:underline">
+              <button type="button" onClick={() => select(it.row.id, "owner")} className={cx(inlineTap, "cursor-pointer font-semibold text-ink-2 hover:text-ink hover:underline")}>
                 {it.row.a.dataset.business.name}
               </button>
               {it.at && <span>· {relTime(it.at, it.row.a.dataset.asOf)}</span>}
             </div>
-            <div className="flex flex-wrap items-center gap-2 text-[14px]">{it.title}</div>
-            {it.body}
-            <div>{it.action}</div>
+            <div className="flex flex-wrap items-center gap-2 text-[14.5px] leading-snug">{it.title}</div>
+            {/* the body's own copy button and the item's action share one row: a CopyBlock's box (its flex-col root)
+                opens into this row, and every other part of the body takes a row of its own */}
+            <div className="flex flex-wrap items-center gap-2 [&_pre]:basis-full [&>:not(:last-child)]:basis-full [&>div.flex-col:not(:last-child)]:contents">
+              {it.body}
+              <div>{it.action}</div>
+            </div>
           </Box>
         ))}
-        {!shown.length && <Box className="px-4 py-10 text-center text-[13.5px] text-ink-3">Nothing needs a person right now.</Box>}
+        {!shown.length && (
+          <Box>
+            <Blank icon={CheckCheck} className="py-12">
+              Nothing needs a person right now.
+            </Blank>
+          </Box>
+        )}
       </div>
     </div>
   );

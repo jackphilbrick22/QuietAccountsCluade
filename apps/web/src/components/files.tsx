@@ -112,12 +112,12 @@ export function FileDrop({ id, files, onChange }: { id: string; files: StagedFil
           setOver(false);
           void add(e.dataTransfer.files);
         }}
-        className={cx("flex flex-col items-center gap-2 rounded-lg border-2 border-dashed px-4 py-7 text-center transition-colors", over ? "border-accent bg-accent-soft/50" : "border-line-2 bg-surface")}
+        className={cx("flex flex-col items-center gap-2 rounded-box border-2 border-dashed px-4 py-7 text-center transition-colors focus-within:border-accent focus-within:bg-accent-soft", over ? "border-accent bg-accent-soft" : "border-accent-edge bg-accent-wash")}
       >
-        <Upload size={22} className="text-ink-3" aria-hidden="true" />
-        <p className="text-[14px] font-semibold">Drag your exported files here</p>
+        <Upload size={22} className="text-accent" aria-hidden="true" />
+        <p className="font-display text-[19px] leading-tight">Drag your exported files here</p>
         <p className="text-[12.5px] text-ink-3">CSV, TSV or TXT. Drop as many as you have: quotes, clients, jobs, invoices.</p>
-        <label htmlFor={id} className="mt-1 inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md border border-line-2 bg-surface px-3 text-[13.5px] font-semibold hover:bg-surface-2">
+        <label htmlFor={id} className="mt-1 inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-full border border-ink bg-surface px-4 text-[14px] font-semibold text-ink hover:bg-accent-wash">
           <FileSpreadsheet size={15} /> Choose files
         </label>
         <input
@@ -136,11 +136,11 @@ export function FileDrop({ id, files, onChange }: { id: string; files: StagedFil
       </div>
 
       {files.length > 0 && (
-        <ul className="flex flex-col divide-y divide-line rounded-lg border border-line bg-surface" aria-label="Files to import">
+        <ul className="flex flex-col divide-y divide-line rounded-box border border-line bg-surface shadow-card" aria-label="Files to import">
           {files.map((f) => (
-            <li key={f.key} className="flex flex-col gap-1.5 px-3 py-2.5 sm:flex-row sm:items-center sm:gap-3">
-              <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-[13.5px] font-semibold" title={f.name}>
+            <li key={f.key} className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2 gap-y-2.5 py-3 pr-2 pl-4 sm:flex sm:items-center sm:gap-3">
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-1 sm:pt-0">
+                <span className="truncate text-[14px] font-semibold" title={f.name}>
                   {f.name}
                 </span>
                 {f.error ? (
@@ -153,14 +153,14 @@ export function FileDrop({ id, files, onChange }: { id: string; files: StagedFil
                 )}
               </div>
               {!f.error && (
-                <div className="flex items-center gap-2">
+                <div className="col-span-2 row-start-2 flex min-w-0 items-center gap-2 pr-2 sm:col-auto sm:row-auto sm:pr-0">
                   {f.confidence < 0.5 && <Pill tone="warn">Check type</Pill>}
                   <label htmlFor={`${id}-kind-${f.key}`} className="sr-only">
                     What's in {f.name}
                   </label>
                   <select
                     id={`${id}-kind-${f.key}`}
-                    className={selectCls}
+                    className={cx(selectCls, "min-w-0 flex-1 sm:flex-none")}
                     value={f.kind ?? f.detectedKind ?? "quote"}
                     onChange={(e) => onChange(files.map((x) => (x.key === f.key ? { ...x, kind: e.target.value as RecordKind } : x)))}
                   >
@@ -177,7 +177,7 @@ export function FileDrop({ id, files, onChange }: { id: string; files: StagedFil
                 type="button"
                 aria-label={`Remove ${f.name}`}
                 onClick={() => onChange(files.filter((x) => x.key !== f.key))}
-                className="grid size-8 shrink-0 cursor-pointer place-items-center self-end rounded-md text-ink-3 hover:bg-surface-2 hover:text-ink sm:self-auto"
+                className="col-start-2 row-start-1 grid size-11 shrink-0 cursor-pointer place-items-center rounded-full text-ink-3 hover:bg-bad-soft hover:text-bad sm:size-9"
               >
                 <X size={16} />
               </button>

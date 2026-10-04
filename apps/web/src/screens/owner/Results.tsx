@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
+import { CalendarCheck, MessageSquare } from "lucide-react";
 import { fmtMoney, plural, wantedWords, type OwnerMessage } from "@qa/engine";
 import { useAccount } from "../../store/app";
 import { derive } from "../../lib/derive";
 import { MATCH_LABEL } from "../../lib/labels";
 import { Pill } from "../../components/ui";
-import { Box, Btn, Chip, EmptyRow, Kpi, Kpis, PageHead, pct, Section, shortDate, Table, Td, Th, Tr } from "../../components/table";
+import { Box, Btn, Chip, PageHead, pct, Section, shortDate, Table, Td, Th, Tr } from "../../components/table";
+import { chipRow } from "../../live/look";
 import { Guarantee } from "./Today";
+import { EmptyNote, MiniStats, MoneyBand } from "./parts";
 
 const MSG_KIND: Record<OwnerMessage["kind"], string> = {
   handoff: "Hand-off text",
@@ -66,63 +69,76 @@ export function Results() {
   const confTone = l.confidence === "solid" ? "ok" : l.confidence === "fair" ? "info" : "neutral";
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <PageHead title="Recovered" sub="Every job that came back after a note, how we matched it, and how much of it the notes actually caused." />
 
-      <Kpis>
-        <Kpi label="Recovered revenue" value={fmtMoney(d.recovered)} tone="ok" sub={plural(a.recoveries.length, "job")} />
-        <Kpi label="Caused by the notes" value={fmtMoney(l.incremental)} tone="ok" sub="after subtracting who'd come back anyway" />
-        <Kpi label="Booked by you" value={a.recoveries.filter((r) => r.match === "owner_reported").length.toLocaleString("en-US")} sub="logged from calls" />
-        <Kpi label="Found in your records" value={a.recoveries.filter((r) => r.match !== "owner_reported").length.toLocaleString("en-US")} sub="matched from exports" />
-        <Kpi label="Avg. days to come back" value={avgLag !== undefined ? avgLag.toLocaleString("en-US") : "—"} sub={avgLag !== undefined ? "after the last note" : "shows once exports come back"} />
-      </Kpis>
+      <div className="flex flex-col gap-3">
+        <MoneyBand
+          items={[
+            { label: "Recovered revenue", value: fmtMoney(d.recovered), sub: plural(a.recoveries.length, "job") },
+            { label: "Caused by the notes", value: fmtMoney(l.incremental), sub: "after subtracting who'd come back anyway" },
+          ]}
+        />
+        <MiniStats
+          items={[
+            { label: "Booked by you", value: a.recoveries.filter((r) => r.match === "owner_reported").length.toLocaleString("en-US"), sub: "logged from calls" },
+            { label: "Found in your records", value: a.recoveries.filter((r) => r.match !== "owner_reported").length.toLocaleString("en-US"), sub: "matched from exports" },
+            { label: "Avg. days to come back", value: avgLag !== undefined ? avgLag.toLocaleString("en-US") : "—", sub: avgLag !== undefined ? "after the last note" : "shows once exports come back" },
+          ]}
+        />
+      </div>
 
       <Section title="Ledger" sub="Newest first.">
-        <Table minWidth={760} tall label="Recovered revenue">
-          <thead>
-            <tr>
-              <Th>Name</Th>
-              <Th>Job</Th>
-              <Th right>Value</Th>
-              <Th>Came back on</Th>
-              <Th>How we matched it</Th>
-              <Th right>Days after note</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {ledger.map(({ r, name, job }) => (
-              <Tr key={r.id}>
-                <Td className="font-semibold whitespace-nowrap">{name}</Td>
-                <Td className="max-w-[260px] truncate">{job}</Td>
-                <Td right className="font-semibold text-ok">
-                  {fmtMoney(r.value)}
-                </Td>
-                <Td className="whitespace-nowrap">{shortDate(r.cameBackOn)}</Td>
-                <Td className="whitespace-nowrap">
-                  <Pill tone={r.match === "owner_reported" ? "neutral" : r.match === "same_record" ? "ok" : "info"}>{MATCH_LABEL[r.match]}</Pill>
-                </Td>
-                <Td right>{r.lagDays ?? "—"}</Td>
-              </Tr>
-            ))}
-            {!ledger.length && <EmptyRow cols={6}>Nothing has come back yet. When someone books, it lands here with the dollar amount.</EmptyRow>}
-          </tbody>
-          {ledger.length > 0 && (
-            <tfoot>
-              <tr className="bg-surface-2 font-bold">
-                <td className="px-3 py-2" colSpan={2}>
-                  Total · {plural(ledger.length, "job")}
-                </td>
-                <td className="num px-3 py-2 text-right text-ok">{fmtMoney(d.recovered)}</td>
-                <td colSpan={3} />
+        {ledger.length ? (
+          <Table minWidth={560} tall label="Recovered revenue">
+            <thead>
+              <tr>
+                <Th>Name</Th>
+                <Th>Job</Th>
+                <Th right>Value</Th>
+                <Th>Came back on</Th>
+                <Th>How we matched it</Th>
+                <Th right>Days after note</Th>
               </tr>
-            </tfoot>
-          )}
-        </Table>
+            </thead>
+            <tbody>
+              {ledger.map(({ r, name, job }) => (
+                <Tr key={r.id}>
+                  <Td className="font-semibold whitespace-nowrap">{name}</Td>
+                  <Td className="max-w-[260px] truncate max-sm:max-w-[110px]">{job}</Td>
+                  <Td right className="font-semibold text-ok">
+                    {fmtMoney(r.value)}
+                  </Td>
+                  <Td className="whitespace-nowrap">{shortDate(r.cameBackOn)}</Td>
+                  <Td className="whitespace-nowrap">
+                    <Pill tone={r.match === "owner_reported" ? "neutral" : r.match === "same_record" ? "ok" : "info"}>{MATCH_LABEL[r.match]}</Pill>
+                  </Td>
+                  <Td right>{r.lagDays ?? "—"}</Td>
+                </Tr>
+              ))}
+            </tbody>
+            {ledger.length > 0 && (
+              <tfoot>
+                <tr className="bg-accent-wash font-semibold">
+                  <td className="sticky bottom-0 border-t border-accent-line bg-accent-wash py-3 pr-3 pl-4" colSpan={2}>
+                    Total · {plural(ledger.length, "job")}
+                  </td>
+                  <td className="num sticky bottom-0 border-t border-accent-line bg-accent-wash px-3 py-3 text-right text-ok">{fmtMoney(d.recovered)}</td>
+                  <td colSpan={3} className="sticky bottom-0 border-t border-accent-line bg-accent-wash" />
+                </tr>
+              </tfoot>
+            )}
+          </Table>
+        ) : (
+          <Box>
+            <EmptyNote icon={<CalendarCheck size={20} />}>Nothing has come back yet. When someone books, it lands here with the dollar amount.</EmptyNote>
+          </Box>
+        )}
       </Section>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+      <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:gap-6">
         <Section title="Lift: did the notes cause it?" sub={`We leave ${Math.round(b.persistence.holdoutPct * 100)}% of the list alone on purpose and compare.`}>
-          <Box className="flex flex-col gap-3 p-4">
+          <div className="flex flex-col gap-3">
             <Table minWidth={420} label="Contacted versus held back">
               <thead>
                 <tr>
@@ -150,57 +166,53 @@ export function Results() {
                 </Tr>
               </tbody>
             </Table>
-            <dl className="grid grid-cols-2 gap-3 text-[13px]">
-              <div>
-                <dt className="text-ink-3">Would have come back anyway</dt>
-                <dd className="num text-[16px] font-bold">{fmtMoney(l.baseline)}</dd>
-              </div>
-              <div>
-                <dt className="text-ink-3">Caused by the notes</dt>
-                <dd className="num text-[16px] font-bold text-ok">{fmtMoney(l.incremental)}</dd>
-              </div>
-            </dl>
-            <p className="flex flex-wrap items-center gap-2 text-[13px] text-ink-2">
+            <MiniStats
+              items={[
+                { label: "Would have come back anyway", value: fmtMoney(l.baseline) },
+                { label: "Caused by the notes", value: fmtMoney(l.incremental), tone: "ok" },
+              ]}
+            />
+            <p className="flex flex-wrap items-center gap-2 px-1 text-[13.5px] text-ink-2">
               <Pill tone={confTone}>Confidence: {l.confidence}</Pill>
               {l.note}
             </p>
-          </Box>
+          </div>
         </Section>
 
         <Section title="Guarantee history">
           <Guarantee />
-          <Box>
-            <ul className="divide-y divide-line text-[13px]">
-              <li className="flex justify-between gap-3 px-3.5 py-2">
+          <Box className="overflow-hidden">
+            <ul className="divide-y divide-line text-[13.5px]">
+              <li className="flex items-center justify-between gap-3 px-4 py-2.5">
                 <span className="text-ink-3">Plan</span>
                 <span className="font-semibold">{b.plan.stage === "trial" ? `Free round (${b.plan.trialSize})` : b.plan.stage === "paying" ? `${fmtMoney(b.plan.monthlyPrice)}/month` : b.plan.stage}</span>
               </li>
               {b.plan.trialStartedOn && (
-                <li className="flex justify-between gap-3 px-3.5 py-2">
+                <li className="flex items-center justify-between gap-3 px-4 py-2.5">
                   <span className="text-ink-3">Free round started</span>
                   <span className="font-semibold">{shortDate(b.plan.trialStartedOn)}</span>
                 </li>
               )}
               {b.plan.paidOn && (
-                <li className="flex justify-between gap-3 px-3.5 py-2">
+                <li className="flex items-center justify-between gap-3 px-4 py-2.5">
                   <span className="text-ink-3">First paid month</span>
                   <span className="font-semibold">{shortDate(b.plan.paidOn)}</span>
                 </li>
               )}
               {b.plan.freeMonths.map((m) => (
-                <li key={m} className="flex justify-between gap-3 px-3.5 py-2">
+                <li key={m} className="flex items-center justify-between gap-3 px-4 py-2.5">
                   <span className="text-ink-3">Month ending {shortDate(m)}</span>
                   <Pill tone="warn">Free: nobody asked</Pill>
                 </li>
               ))}
-              {b.plan.paidOn && !b.plan.freeMonths.length && <li className="px-3.5 py-2 text-ink-3">No free months so far. Every month, someone has {wantedWords(b.plan).past}.</li>}
+              {b.plan.paidOn && !b.plan.freeMonths.length && <li className="px-4 py-2.5 text-ink-3">No free months so far. Every month, someone has {wantedWords(b.plan).past}.</li>}
             </ul>
           </Box>
         </Section>
       </div>
 
       <Section title="Messages to you" sub="The texts we sent you: hand-offs, reminders, weekly reports and billing notes. Newest first.">
-        <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0" role="toolbar" aria-label="Filter messages">
+        <div className={chipRow} role="toolbar" aria-label="Filter messages">
           {(
             [
               ["all", "All"],
@@ -223,17 +235,21 @@ export function Results() {
             </Chip>
           ))}
         </div>
-        <div className="flex flex-col gap-2">
+        <div className="flex flex-col gap-4 pt-1">
           {msgs.slice(0, msgLimit).map((m) => (
-            <Box key={m.id} className="flex flex-col gap-1.5 px-3.5 py-3">
-              <span className="flex flex-wrap items-center gap-2 text-[12px] text-ink-3">
+            <div key={m.id} className="flex max-w-[720px] flex-col items-start gap-1.5">
+              <span className="flex flex-wrap items-center gap-2 pl-1 text-[12px] font-medium text-ink-3">
                 <Pill tone={m.kind === "handoff" ? "accent" : m.kind === "sla_nudge" ? "warn" : m.kind === "free_month" ? "ok" : "neutral"}>{MSG_KIND[m.kind]}</Pill>
                 {new Date(m.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
               </span>
-              <p className="note-body text-[13.5px] leading-relaxed">{m.text}</p>
-            </Box>
+              <p className="note-body max-w-full rounded-[20px_20px_20px_6px] border border-line bg-surface px-4 py-3 text-[14px] leading-relaxed text-ink shadow-soft [overflow-wrap:anywhere]">{m.text}</p>
+            </div>
           ))}
-          {!msgs.length && <Box className="px-4 py-8 text-center text-[13.5px] text-ink-3">No messages yet.</Box>}
+          {!msgs.length && (
+            <Box>
+              <EmptyNote icon={<MessageSquare size={20} />}>No messages yet.</EmptyNote>
+            </Box>
+          )}
           {msgs.length > msgLimit && (
             <div>
               <Btn onClick={() => setMsgLimit((n) => n + 20)}>Show 20 more ({msgs.length - msgLimit} left)</Btn>

@@ -1,6 +1,6 @@
 /** Pieces shared by the live console screens. */
 import { useMemo, useState } from "react";
-import { AlertOctagon, Copy, PlusCircle, Sparkles } from "lucide-react";
+import { AlertOctagon, AlertTriangle, Check, Copy, PlusCircle, Sparkles } from "lucide-react";
 import { fmtMoney, type Readiness, type Reply } from "@qa/engine";
 import { cx, Pill } from "../components/ui";
 import { Box, Btn, selectCls, smallInputCls } from "../components/table";
@@ -37,35 +37,38 @@ export function ReadinessPanel({ r, ownerFirst }: { r?: Readiness; ownerFirst?: 
         .join("\n")}\nJust forward the export emails to us. Thanks.`
     : "";
   return (
-    <Box className={cx("flex flex-col gap-3 p-4", !r.ready && "border-bad/40")}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 basis-60 flex-col gap-0.5">
-          <span className="flex flex-wrap items-center gap-2 text-[15px] font-bold">
-            What to ask the owner for next
-            <Pill tone={r.ready ? "ok" : "bad"}>{r.ready ? "Ready to send" : "Not ready yet"}</Pill>
+    <Box className={cx("flex flex-col gap-4 p-4 sm:p-5", !r.ready && "border-bad/30")}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 basis-60 flex-col gap-1.5">
+          <span className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+            <h2 className="text-[19px] leading-tight">What to ask the owner for next</h2>
+            <Pill tone={r.ready ? "ok" : "bad"}>
+              {r.ready ? <Check size={12} strokeWidth={3} aria-hidden="true" /> : <AlertOctagon size={12} aria-hidden="true" />}
+              {r.ready ? "Ready to send" : "Not ready yet"}
+            </Pill>
           </span>
-          <span className="text-[13.5px] text-ink-2">{r.headline}</span>
+          <span className="text-[14px] text-ink-2">{r.headline}</span>
         </div>
         {gaps.length > 0 && (
-          <Btn onClick={() => void copy(ask, "Ask copied — text it to the owner")}>
+          <Btn variant={r.ready ? "secondary" : "primary"} onClick={() => void copy(ask, "Ask copied — text it to the owner")}>
             <Copy size={15} /> Copy the ask
           </Btn>
         )}
       </div>
       {gaps.length > 0 ? (
-        <ul className="flex flex-col divide-y divide-line rounded-md border border-line">
+        <ul className="flex flex-col divide-y divide-line overflow-hidden rounded-control border border-line">
           {gaps.map((g) => {
             const L = LEVEL[g.level];
             return (
-              <li key={g.id} className="flex flex-col gap-1 px-3 py-2.5 sm:flex-row sm:items-start sm:gap-3">
-                <span className="shrink-0 sm:w-52">
+              <li key={g.id} className={cx("flex flex-col gap-1.5 px-3.5 py-3 sm:flex-row sm:items-start sm:gap-4", g.level === "blocker" && "bg-bad-soft/40")}>
+                <span className="shrink-0 sm:w-48">
                   <Pill tone={L.tone}>
                     <L.icon size={12} /> {L.label}
                   </Pill>
                 </span>
                 <span className="flex min-w-0 flex-col gap-0.5">
-                  <span className="text-[13.5px] font-semibold">{g.ask}</span>
-                  <span className="text-[12.5px] text-ink-2">{g.unlocks}</span>
+                  <span className="text-[14px] font-semibold">{g.ask}</span>
+                  <span className="text-[13px] text-ink-2">{g.unlocks}</span>
                   {g.where && <span className="text-[12px] text-ink-3">Where: {g.where}</span>}
                 </span>
               </li>
@@ -73,9 +76,14 @@ export function ReadinessPanel({ r, ownerFirst }: { r?: Readiness; ownerFirst?: 
           })}
         </ul>
       ) : (
-        <p className="text-[13px] text-ink-3">Nothing missing. We have everything we need from the owner.</p>
+        <p className="flex items-center gap-2.5 text-[13.5px] text-ink-2">
+          <span className="grid size-6 shrink-0 place-items-center rounded-full bg-ok-soft text-ok" aria-hidden="true">
+            <Check size={14} strokeWidth={3} />
+          </span>
+          Nothing missing. We have everything we need from the owner.
+        </p>
       )}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-ink-3">
+      <div className="flex flex-wrap gap-1.5 text-[12.5px] text-ink-2 [&>span]:rounded-full [&>span]:bg-surface-2 [&>span]:px-2.5 [&>span]:py-1">
         <span>
           Quotes <b className="num text-ink">{r.have.quote.toLocaleString("en-US")}</b>
         </span>
@@ -121,7 +129,8 @@ export function OutcomeForm({ bid, reply, suggested, compact }: { bid: string; r
           <input id={id} inputMode="numeric" className={cx(smallInputCls, "pl-6")} value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))} />
         </div>
       </div>
-      <Btn variant="primary" disabled={!Number(amount) || !!busy} onClick={() => void post("booked", Number(amount))}>
+      {/* the gradient once there's an amount to book; before that it waits as a plain pill */}
+      <Btn variant={Number(amount) ? "primary" : "secondary"} disabled={!Number(amount) || !!busy} onClick={() => void post("booked", Number(amount))}>
         Booked it
       </Btn>
       <Btn disabled={!!busy} onClick={() => void post("quoted")}>
@@ -168,11 +177,11 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
   return (
     <div className="flex flex-col gap-2.5">
       {draft && !writing && (
-        <div className="flex flex-col gap-1.5 rounded-md border border-line bg-bg px-3 py-2.5">
-          <span className="flex flex-wrap items-center gap-2 text-[12px] font-semibold text-ink-3">
-            <Sparkles size={13} /> Drafted answer, not sent {draftNeedsOwner && <Pill tone="warn">Check with the owner first</Pill>}
+        <div className="flex flex-col gap-2.5 rounded-box border border-accent-line bg-accent-wash px-4 py-3.5">
+          <span className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-accent-ink">
+            <Sparkles size={14} aria-hidden="true" /> Drafted answer, not sent {draftNeedsOwner && <Pill tone="warn">Check with the owner first</Pill>}
           </span>
-          <p className="note-body text-[13px]">{draft}</p>
+          <p className="note-body max-w-[72ch] text-[13.5px] leading-relaxed">{draft}</p>
           <div className="flex flex-wrap gap-2">
             <Btn variant="primary" disabled={!!busy} onClick={() => void run("draft", () => api("POST", `${base}/answer`, { useDraft: true }), `Sent to ${who} in their thread`)}>
               Send as-is
@@ -194,12 +203,12 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
       )}
       {writing ? (
         <div className="flex flex-col gap-1.5">
-          <label htmlFor={`ans-${reply.id}`} className="text-[12px] font-semibold text-ink-3">
+          <label htmlFor={`ans-${reply.id}`} className="text-[12.5px] font-semibold text-ink-2">
             Your answer to {who} (goes in their email thread)
           </label>
           <textarea id={`ans-${reply.id}`} rows={4} className={cx(smallInputCls, "py-2 leading-relaxed")} value={text} onChange={(e) => setText(e.target.value)} />
           <div className="flex flex-wrap gap-2">
-            <Btn variant="primary" disabled={!text.trim() || !!busy} onClick={() => void run("answer", () => api("POST", `${base}/answer`, { text }), `Sent to ${who} in their thread`).then((r) => r && setWriting(false))}>
+            <Btn variant={text.trim() ? "primary" : "secondary"} disabled={!text.trim() || !!busy} onClick={() => void run("answer", () => api("POST", `${base}/answer`, { text }), `Sent to ${who} in their thread`).then((r) => r && setWriting(false))}>
               Send
             </Btn>
             <Btn variant="ghost" onClick={() => setWriting(false)}>
@@ -222,7 +231,7 @@ export function ReplyActions({ bid, reply, draft, draftNeedsOwner, handedOff }: 
           </Btn>
           <div className="flex items-end gap-1.5">
             <div className="flex flex-col gap-1">
-              <label htmlFor={`int-${reply.id}`} className="text-[12px] font-semibold text-ink-3">
+              <label htmlFor={`int-${reply.id}`} className="text-[12.5px] font-semibold text-ink-2">
                 What they mean
               </label>
               <select id={`int-${reply.id}`} className={selectCls} value={intent} onChange={(e) => setIntent(e.target.value)}>
@@ -260,17 +269,17 @@ export function NoteEditor({ bid, touch, onDone }: { bid: string; touch: { id: s
   return (
     <div className="flex flex-col gap-2">
       {touch.flags.length > 0 && (
-        <ul className="list-disc pl-5 text-[12.5px] text-warn">
+        <ul className="list-disc rounded-control bg-warn-soft py-2 pr-3 pl-8 text-[13px] text-warn">
           {touch.flags.map((f) => (
             <li key={f}>{f}</li>
           ))}
         </ul>
       )}
-      <label htmlFor={`subj-${touch.id}`} className="text-[12px] font-semibold text-ink-3">
+      <label htmlFor={`subj-${touch.id}`} className="text-[12.5px] font-semibold text-ink-2">
         Subject
       </label>
       <input id={`subj-${touch.id}`} className={smallInputCls} value={subject} disabled={sent} maxLength={120} onChange={(e) => setSubject(e.target.value)} />
-      <label htmlFor={`body-${touch.id}`} className="text-[12px] font-semibold text-ink-3">
+      <label htmlFor={`body-${touch.id}`} className="text-[12.5px] font-semibold text-ink-2">
         Note
       </label>
       <textarea id={`body-${touch.id}`} rows={9} className={cx(smallInputCls, "py-2 leading-relaxed")} value={body} disabled={sent} onChange={(e) => setBody(e.target.value)} />
@@ -278,11 +287,11 @@ export function NoteEditor({ bid, touch, onDone }: { bid: string; touch: { id: s
         <p className="text-[12.5px] text-ink-3">This note has gone out and can't be changed.</p>
       ) : (
         <div className="flex flex-wrap gap-2">
-          <Btn variant="primary" disabled={!changed || !!busy || body.trim().length < 20 || !subject.trim()} onClick={() => void patch({ subject: subject.trim(), body }, "Note saved and re-checked")}>
+          <Btn variant={changed ? "primary" : "secondary"} disabled={!changed || !!busy || body.trim().length < 20 || !subject.trim()} onClick={() => void patch({ subject: subject.trim(), body }, "Note saved and re-checked")}>
             Save changes
           </Btn>
           {touch.status !== "approved" && (
-            <Btn disabled={!!busy} onClick={() => void patch({ status: "approved" }, "Approved: it'll go out on schedule")}>
+            <Btn variant={changed ? "secondary" : "primary"} disabled={!!busy} onClick={() => void patch({ status: "approved" }, "Approved: it'll go out on schedule")}>
               Approve
             </Btn>
           )}
@@ -380,8 +389,11 @@ export function ago(iso: string | undefined | null): string {
 export function ErrorNote({ error, onRetry }: { error?: string; onRetry?: () => void }) {
   if (!error) return null;
   return (
-    <Box className="flex flex-wrap items-center justify-between gap-2 border-bad/40 px-4 py-3 text-[13.5px] text-bad" >
-      <span>{error}</span>
+    <Box className="flex flex-wrap items-center justify-between gap-3 border-bad/30 bg-bad-soft px-4 py-3.5 text-[13.5px] text-bad">
+      <span className="flex min-w-0 flex-1 basis-64 items-start gap-2.5">
+        <AlertTriangle size={17} className="mt-px shrink-0" aria-hidden="true" />
+        <span className="min-w-0">{error}</span>
+      </span>
       {onRetry && <Btn onClick={onRetry}>Try again</Btn>}
     </Box>
   );

@@ -1,3 +1,4 @@
+import { SlidersHorizontal } from "lucide-react";
 import type { SetupHealth } from "./api";
 import { ago } from "./parts";
 import { useApi } from "./store";
@@ -13,8 +14,10 @@ export function SetupPanel() {
   const hooks = s.instantly;
   const backupFailed = !!s.backup.failedAt;
   return (
-    <div className="rounded-md bg-bg px-3 py-2 text-[12px] text-ink-3">
-      <div className="font-semibold text-ink-2">Setup</div>
+    <div className="flex flex-col px-3.5 py-3 text-[12px] leading-relaxed text-ink-3">
+      <div className="mb-1 flex items-center gap-2 text-[12.5px] font-semibold text-ink">
+        <SlidersHorizontal size={13} aria-hidden="true" className="text-accent-ink" /> Setup
+      </div>
       <div className={hooks.webhooks === "failing" ? "font-semibold text-bad" : undefined} title={hooks.error ?? undefined}>
         Instantly webhooks: {WEBHOOKS[hooks.webhooks]}
         {hooks.lastEventAt ? `, last ${ago(hooks.lastEventAt)}` : ""}

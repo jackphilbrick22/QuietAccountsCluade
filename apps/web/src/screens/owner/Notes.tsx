@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
-import { ArrowRight, Pause, Play } from "lucide-react";
+import { ArrowRight, Mail, Pause, Play } from "lucide-react";
 import { addDays, BREAKAGE_LABEL, fmtMoney, fmtPhone, holidayOn, HOLIDAYS_LINE, planOutreach, plural, SEQUENCES, type BreakageType, type Touch } from "@qa/engine";
 import { nextSendDay, useApp, useAccount } from "../../store/app";
 import { derive, niceDate } from "../../lib/derive";
 import { cx, Pill } from "../../components/ui";
 import { Box, Btn, EmptyRow, PageHead, Section, Select, Table, Td, Th, Tr } from "../../components/table";
+import { EmptyNote, ReadyCard } from "./parts";
 
 export function Notes() {
   const { a, id, meta, rev } = useAccount();
@@ -77,7 +78,7 @@ export function Notes() {
     .slice(0, 10);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <PageHead
         title="Sequence & schedule"
         sub={`Short notes from ${b.signerName || "your office"} about each person's own job. ${b.weeklyNewContacts} new people a week, on ${b.sendDays.length} send days.`}
@@ -117,18 +118,18 @@ export function Notes() {
       />
 
       {!launched && (
-        <Box className="flex flex-col gap-3 border-accent/40 p-4 sm:flex-row sm:items-center">
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="text-[14.5px] font-bold">Nothing has gone out yet. This is what the free round would send.</span>
-            <span className="text-[13px] text-ink-2">
+        <ReadyCard className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-6">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
+            <span className="font-display text-[20px] leading-tight sm:text-[22px]">Nothing has gone out yet. This is what the free round would send.</span>
+            <span className="text-[14px] text-ink-2">
               {preview ? `${plural(preview.people.length, "person", "people")}, ${plural(preview.touches.length, "note")}, ${preview.firstDay ? `${niceDate(preview.firstDay)} to ${niceDate(preview.lastDay!)}` : ""}.` : "Run a scan first to see the notes."}
               {preview?.skipped.length ? ` ${preview.skipped.length} skipped because a clean note couldn't be written.` : ""}
             </span>
           </div>
-          <Btn variant="primary" disabled={!preview?.touches.length} onClick={() => launch(id)}>
+          <Btn variant="primary" className="px-5 sm:min-h-11" disabled={!preview?.touches.length} onClick={() => launch(id)}>
             Start the free round <ArrowRight size={15} />
           </Btn>
-        </Box>
+        </ReadyCard>
       )}
 
       {launched && (
@@ -142,43 +143,54 @@ export function Notes() {
       )}
 
       <Section title="Steps in use" sub="Each kind of opportunity gets its own short sequence. A reply of any kind stops the rest.">
-        <Table minWidth={620} label="Sequence steps">
-          <thead>
-            <tr>
-              <Th>Opportunity type</Th>
-              <Th>Step</Th>
-              <Th right>Day</Th>
-              <Th right>Notes</Th>
-              <Th right>Sent</Th>
-              <Th right>Queued</Th>
-              <Th right>Stopped</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {groups.flatMap((g) =>
-              g.steps.map(([step, x], i) => (
-                <Tr key={`${g.type}-${step}`} onClick={() => setPreviewType(g.type)} selected={pType === g.type} label={`${BREAKAGE_LABEL[g.type].title} step ${step}`}>
-                  {i === 0 && (
-                    <Td rowSpan={g.steps.length} className="align-top font-semibold">
-                      {BREAKAGE_LABEL[g.type].title}
-                      <span className="block text-[12px] font-normal text-ink-3">{plural(g.people, "person", "people")}</span>
+        {groups.length ? (
+          <Table minWidth={620} label="Sequence steps">
+            <thead>
+              <tr>
+                <Th>Opportunity type</Th>
+                <Th>Step</Th>
+                <Th right>Day</Th>
+                <Th right>Notes</Th>
+                <Th right>Sent</Th>
+                <Th right>Queued</Th>
+                <Th right>Stopped</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {groups.flatMap((g) =>
+                g.steps.map(([step, x], i) => (
+                  <Tr
+                    key={`${g.type}-${step}`}
+                    onClick={() => setPreviewType(g.type)}
+                    selected={pType === g.type}
+                    label={`${BREAKAGE_LABEL[g.type].title} step ${step}`}
+                    className={cx(i > 0 && "[&>td:first-child]:pl-3! [&>td:first-child]:shadow-none!")}
+                  >
+                    {i === 0 && (
+                      <Td rowSpan={g.steps.length} className="align-top font-semibold">
+                        {BREAKAGE_LABEL[g.type].title}
+                        <span className="block text-[12px] font-normal text-ink-3">{plural(g.people, "person", "people")}</span>
+                      </Td>
+                    )}
+                    <Td>
+                      <span className="whitespace-nowrap">Note {step}</span>
+                      {x.first && <span className="block text-[12px] whitespace-nowrap text-ink-3 sm:ml-1.5 sm:inline">{x.first.angle.replace(/_/g, " ")}</span>}
                     </Td>
-                  )}
-                  <Td>
-                    Note {step}
-                    {x.first && <span className="ml-1.5 text-[12px] text-ink-3">{x.first.angle.replace(/_/g, " ")}</span>}
-                  </Td>
-                  <Td right>{SEQUENCES[g.type].steps.find((s) => s.step === step)?.day ?? "—"}</Td>
-                  <Td right>{x.total.toLocaleString("en-US")}</Td>
-                  <Td right>{x.sent.toLocaleString("en-US")}</Td>
-                  <Td right>{x.queued.toLocaleString("en-US")}</Td>
-                  <Td right>{x.stopped.toLocaleString("en-US")}</Td>
-                </Tr>
-              )),
-            )}
-            {!groups.length && <EmptyRow cols={7}>No notes written yet.</EmptyRow>}
-          </tbody>
-        </Table>
+                    <Td right>{SEQUENCES[g.type].steps.find((s) => s.step === step)?.day ?? "—"}</Td>
+                    <Td right>{x.total.toLocaleString("en-US")}</Td>
+                    <Td right>{x.sent.toLocaleString("en-US")}</Td>
+                    <Td right>{x.queued.toLocaleString("en-US")}</Td>
+                    <Td right>{x.stopped.toLocaleString("en-US")}</Td>
+                  </Tr>
+                )),
+              )}
+            </tbody>
+          </Table>
+        ) : (
+          <Box>
+            <EmptyNote icon={<Mail size={20} />}>No notes written yet.</EmptyNote>
+          </Box>
+        )}
       </Section>
 
       {pGroup && (
@@ -195,21 +207,21 @@ export function Notes() {
             />
           }
         >
-          <div className="grid gap-3 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-3">
             {pGroup.steps.map(([step, x]) => {
               const t = x.first!;
               const c = d.customers.get(t.customerId);
               return (
-                <Box key={step} className="flex min-w-0 flex-col">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3.5 py-2">
+                <Box key={step} className="flex min-w-0 flex-col overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-accent-wash px-4 py-2.5">
                     <span className="text-[12.5px] font-semibold text-ink-3">
                       Note {step} · to {c?.name ?? "—"} · {niceDate(t.dueAt)}
                     </span>
                     {t.flags.length > 0 && <Pill tone="warn">{plural(t.flags.length, "flag")}</Pill>}
                   </div>
-                  <div className="flex flex-col gap-2 px-3.5 py-3">
-                    <span className="text-[13.5px] font-bold">{t.subject || "(no subject)"}</span>
-                    <p className="note-body text-[13.5px] leading-relaxed text-ink-2">{t.body}</p>
+                  <div className="flex flex-col gap-2.5 px-4 py-4">
+                    <span className="text-[14.5px] font-semibold">{t.subject || "(no subject)"}</span>
+                    <p className="note-body text-[14px] leading-relaxed text-ink-2">{t.body}</p>
                     {t.flags.length > 0 && (
                       <ul className="list-disc pl-5 text-[12px] text-warn">
                         {t.flags.map((f) => (
@@ -243,9 +255,15 @@ export function Notes() {
               return (
                 <Tr key={day}>
                   <Td className={cx(!sendDay && "text-ink-3")}>
-                    {niceDate(day)}
-                    {day === a.dataset.asOf && <span className="ml-2 text-[12px] font-semibold text-accent-ink">today</span>}
-                    {!sendDay && <span className="ml-2 text-[12px]">{holiday ? `${holiday}, no sends` : "no sends"}</span>}
+                    <span className="whitespace-nowrap">
+                      {niceDate(day)}
+                      {day === a.dataset.asOf && (
+                        <Pill tone="accent" className="ml-2 py-0">
+                          today
+                        </Pill>
+                      )}
+                    </span>
+                    {!sendDay && <span className="block text-[12px] sm:ml-2 sm:inline">{holiday ? `${holiday}, no sends` : "no sends"}</span>}
                   </Td>
                   <Td right>{x?.notes || "—"}</Td>
                   <Td right>{x?.people || "—"}</Td>

@@ -1,12 +1,13 @@
 import { useState, type ReactNode } from "react";
-import { Plus, RefreshCw } from "lucide-react";
+import { Building2, Plus, RefreshCw } from "lucide-react";
 import { fmtMoney, isOnePass, playbook, SEND_BRAKES, TIMEZONES, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill } from "../components/ui";
-import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, pct, SearchBox, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
+import { Box, Btn, EmptyRow, PageHead, pct, SearchBox, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
 import { api, ApiError, type Overview } from "./api";
 import { useApi, useLive } from "./store";
 import { ErrorNote, ago } from "./parts";
+import { Blank, Monogram, Tally } from "./look";
 
 export function stageOf(o: Overview): { label: string; tone: "ok" | "info" | "warn" | "neutral" | "bad" } {
   const p = o.business.plan;
@@ -34,7 +35,7 @@ export function LiveClients() {
   const blocked = all.filter((o) => o.readiness && !o.readiness.ready).length;
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHead
         title="Clients"
         sub="Every business we run follow-ups for. Click a client to run it."
@@ -51,18 +52,21 @@ export function LiveClients() {
       />
       <ErrorNote error={q.error} onRetry={q.reload} />
 
-      <Kpis>
-        <Kpi label="MRR" value={fmtMoney(paying.reduce((n, o) => n + o.business.plan.monthlyPrice, 0))} tone="ok" sub={`${paying.length} paying`} />
-        <Kpi label="Clients" value={all.length} sub={blocked ? `${blocked} waiting on files` : "all have their files"} tone={blocked ? "warn" : undefined} />
-        <Kpi label="Sent this week" value={sum((o) => o.week?.sent ?? 0).toLocaleString("en-US")} />
-        <Kpi label="Replies this week" value={sum((o) => o.week?.replied ?? 0).toLocaleString("en-US")} />
-        <Kpi label="Waiting on owners" value={sum((o) => o.waitingOnOwner?.length ?? 0)} tone={sum((o) => o.waitingOnOwner?.length ?? 0) ? "bad" : undefined} sub="hot leads not called yet" />
-        <Kpi label="Booked, all time" value={fmtMoney(sum((o) => o.recoveredValue ?? 0), { compact: true })} tone="ok" />
-      </Kpis>
+      <Tally
+        items={[
+          { label: "MRR", value: fmtMoney(paying.reduce((n, o) => n + o.business.plan.monthlyPrice, 0)), tone: "ok", sub: `${paying.length} paying` },
+          { label: "Clients", value: all.length, sub: blocked ? `${blocked} waiting on files` : "all have their files", tone: blocked ? "warn" : undefined },
+          { label: "Sent this week", value: sum((o) => o.week?.sent ?? 0).toLocaleString("en-US") },
+          { label: "Replies this week", value: sum((o) => o.week?.replied ?? 0).toLocaleString("en-US") },
+          { label: "Waiting on owners", value: sum((o) => o.waitingOnOwner?.length ?? 0), tone: sum((o) => o.waitingOnOwner?.length ?? 0) ? "bad" : undefined, sub: "hot leads not called yet" },
+          { label: "Booked, all time", value: fmtMoney(sum((o) => o.recoveredValue ?? 0), { compact: true }), tone: "ok" },
+        ]}
+      />
 
-      <SearchBox id="live-search" className="w-full sm:w-72" value={search} onChange={setSearch} placeholder="Search clients" />
+      <div className="flex flex-col gap-3">
+        <SearchBox id="live-search" className="w-full sm:w-80" value={search} onChange={setSearch} placeholder="Search clients" />
 
-      <Table minWidth={1000} label="Clients">
+      <Table minWidth={960} label="Clients">
         <thead>
           <tr>
             <Th>Business</Th>
@@ -89,11 +93,16 @@ export function LiveClients() {
             const h = o.health;
             return (
               <Tr key={b.id} onClick={() => go({ area: "live", tab: "client", detail: b.id })} label={`Open ${b.name}`}>
-                <Td className="max-w-[220px]">
-                  <span className="block truncate font-semibold">{b.name}</span>
-                  <span className="block truncate text-[12px] text-ink-3">
-                    {tradeLabel(b.trade)}
-                    {b.city ? ` · ${b.city}` : ""}
+                <Td className="max-w-[250px] min-w-[220px] py-3">
+                  <span className="flex min-w-0 items-center gap-3">
+                    <Monogram name={b.name} />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="line-clamp-2 text-[14px] leading-snug font-semibold">{b.name}</span>
+                      <span className="block truncate text-[12.5px] text-ink-3">
+                        {tradeLabel(b.trade)}
+                        {b.city ? ` · ${b.city}` : ""}
+                      </span>
+                    </span>
                   </span>
                 </Td>
                 <Td className="whitespace-nowrap">
@@ -103,9 +112,9 @@ export function LiveClients() {
                   {!o.readiness ? (
                     "—"
                   ) : blockers ? (
-                    <span className="flex flex-col">
+                    <span className="flex min-w-0 flex-col items-start gap-1">
                       <Pill tone="bad">{blockers === 1 ? "1 blocker" : `${blockers} blockers`}</Pill>
-                      <span className="mt-0.5 truncate text-[12px] text-ink-3">{o.readiness.gaps.find((g) => g.level === "blocker")?.ask}</span>
+                      <span className="max-w-full truncate text-[12px] text-ink-3">{o.readiness.gaps.find((g) => g.level === "blocker")?.ask}</span>
                     </span>
                   ) : asks ? (
                     <Pill tone="accent">{asks} to ask for</Pill>
@@ -117,18 +126,29 @@ export function LiveClients() {
                 <Td right>{(o.counts?.sent ?? 0).toLocaleString("en-US")}</Td>
                 <Td right>{(o.totals?.replied ?? 0).toLocaleString("en-US")}</Td>
                 <Td right>{(o.totals?.wants ?? 0).toLocaleString("en-US")}</Td>
-                <Td right className="font-semibold">
+                <Td right className={cx("font-semibold", (o.recoveredValue ?? 0) > 0 && "text-ok")}>
                   {fmtMoney(o.recoveredValue ?? 0)}
                 </Td>
-                <Td right>{o.waitingOnOwner?.length ? <span className="font-semibold text-bad">{o.waitingOnOwner.length}</span> : <span className="text-ink-3">0</span>}</Td>
+                <Td right>{o.waitingOnOwner?.length ? <Pill tone="bad">{o.waitingOnOwner.length}</Pill> : <span className="text-ink-3">0</span>}</Td>
                 <Td right>{h?.sent ? <Pill tone={h.bounceRate > SEND_BRAKES.bounces.rate ? "bad" : h.bounceRate > 0.02 ? "warn" : "ok"}>{pct(h.bounceRate)}</Pill> : <span className="text-ink-3">—</span>}</Td>
                 <Td className="whitespace-nowrap text-ink-2">{o.events?.[0]?.at ? ago(o.events[0].at) : "—"}</Td>
               </Tr>
             );
           })}
-          {!rows.length && <EmptyRow cols={11}>{q.loading ? "Loading…" : all.length ? "No clients match." : "No clients yet. Add the first one."}</EmptyRow>}
+          {!rows.length && (
+            <EmptyRow cols={11}>
+              {q.loading ? (
+                "Loading…"
+              ) : (
+                <Blank icon={Building2} className="py-0">
+                  {all.length ? "No clients match." : "No clients yet. Add the first one."}
+                </Blank>
+              )}
+            </EmptyRow>
+          )}
         </tbody>
       </Table>
+      </div>
     </div>
   );
 }
@@ -198,10 +218,10 @@ export function NewClient() {
   );
 
   return (
-    <div className="flex max-w-[860px] flex-col gap-5">
+    <div className="flex max-w-[880px] flex-col gap-6">
       <PageHead title="Add a client" sub="The basics we need to write and sign notes for them. Their files come next." />
-      <Box className="flex flex-col gap-4 p-4 sm:p-5">
-        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+      <Box className="flex flex-col gap-5 rounded-card p-4 sm:p-7">
+        <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           {field("name", "Business name", { placeholder: "Ridgeline Tree Co.", autoComplete: "organization" })}
           <Field id="nc-trade" label="Trade">
             <select id="nc-trade" className={cx(selectCls, "w-full")} value={f.trade} onChange={(e) => set("trade", e.target.value)}>
@@ -215,7 +235,7 @@ export function NewClient() {
           {field("ownerName", "Owner's name", { placeholder: "Dave Ridge" })}
           {field("ownerPhone", "Owner's cell", { type: "tel", hint: "Hand-offs and the Friday report are texted here.", placeholder: "+1 603 555 0199" })}
           {field("ownerEmail", "Owner's email", { type: "email", hint: "Hand-offs go here when a text can't (no cell, or they texted STOP)." })}
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2 self-start">
             {field("signerName", "Who signs the notes", { placeholder: "Sarah" })}
             <div className="flex flex-col gap-1">
               <label htmlFor="nc-role" className="sr-only">
@@ -247,9 +267,9 @@ export function NewClient() {
             {error}
           </p>
         )}
-        <div className="flex flex-wrap gap-2">
+        <div className="-mx-4 -mb-4 flex flex-wrap items-center gap-2 border-t border-line px-4 pt-4 pb-4 sm:-mx-7 sm:-mb-7 sm:px-7 sm:pb-6">
           <Btn variant="primary" disabled={busy} onClick={() => void submit()}>
-            {busy ? "Adding…" : "Add client"}
+            <Plus size={15} aria-hidden="true" /> {busy ? "Adding…" : "Add client"}
           </Btn>
           <Btn variant="ghost" onClick={() => go({ area: "live", tab: "clients" })}>
             Cancel
@@ -262,12 +282,12 @@ export function NewClient() {
 
 export function Field({ id, label, hint, error, wide, children }: { id: string; label: string; hint?: string; error?: string; wide?: boolean; children: ReactNode }) {
   return (
-    <div className={cx("flex min-w-0 flex-col gap-1", wide && "sm:col-span-2")}>
-      <label htmlFor={id} className={cx("text-[12.5px] font-semibold", error ? "text-bad" : "text-ink-2")}>
+    <div className={cx("flex min-w-0 flex-col gap-1.5", wide && "sm:col-span-2")}>
+      <label htmlFor={id} className={cx("text-[13px] font-semibold", error ? "text-bad" : "text-ink-2")}>
         {label}
       </label>
       {children}
-      {error ? <span className="text-[12px] text-bad">{error}</span> : hint && <span className="text-[12px] text-ink-3">{hint}</span>}
+      {error ? <span className="text-[12.5px] font-semibold text-bad">{error}</span> : hint && <span className="text-[12.5px] leading-snug text-ink-3">{hint}</span>}
     </div>
   );
 }

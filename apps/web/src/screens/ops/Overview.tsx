@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
-import { Plus } from "lucide-react";
+import { Building2, Plus } from "lucide-react";
 import { fmtMoney, playbook, SEND_BRAKES, TRADE_OPTIONS, type TradeId } from "@qa/engine";
 import { useApp } from "../../store/app";
 import { relTime } from "../../lib/derive";
 import { clientRows, mrr } from "../../lib/ops";
 import { SOURCE_LABEL } from "../../components/files";
 import { Bar, cx, Pill } from "../../components/ui";
-import { Btn, EmptyRow, Kpi, Kpis, PageHead, pct, RowMenu, SearchBox, Select, Table, Td, Th, Tr } from "../../components/table";
+import { Btn, EmptyRow, PageHead, pct, RowMenu, SearchBox, Select, Table, Td, Th, Tr } from "../../components/table";
+import { Blank, Monogram, Tally } from "../../live/look";
 
 export function OpsOverview() {
   const order = useApp((s) => s.order);
@@ -33,7 +34,7 @@ export function OpsOverview() {
   const booked = rows.reduce((n, r) => n + r.d.recovered, 0);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHead
         title="Clients"
         sub="Every business we run follow-ups for. Click a row to open that client's view."
@@ -56,27 +57,33 @@ export function OpsOverview() {
         }
       />
 
-      <Kpis>
-        <Kpi label="MRR" value={fmtMoney(mrr(rows))} tone="ok" sub={`${paying.length} paying`} />
-        <Kpi label="Clients" value={rows.length} sub={`${rows.filter((r) => r.a.dataset.business.plan.stage === "trial").length} in free round`} />
-        <Kpi label="Notes sent this week" value={weekSent.toLocaleString("en-US")} />
-        <Kpi label="Replies this week" value={weekReplies.toLocaleString("en-US")} />
-        <Kpi label="Booked, all time" value={fmtMoney(booked, { compact: true })} tone="ok" />
-      </Kpis>
+      <Tally
+        items={[
+          { label: "MRR", value: fmtMoney(mrr(rows)), tone: "ok", sub: `${paying.length} paying` },
+          { label: "Clients", value: rows.length, sub: `${rows.filter((r) => r.a.dataset.business.plan.stage === "trial").length} in free round` },
+          { label: "Notes sent this week", value: weekSent.toLocaleString("en-US") },
+          { label: "Replies this week", value: weekReplies.toLocaleString("en-US") },
+          { label: "Booked, all time", value: fmtMoney(booked, { compact: true }), tone: "ok" },
+        ]}
+      />
 
-      <SearchBox id="ops-search" className="w-full sm:w-72" value={q} onChange={setQ} placeholder="Search clients" />
+      <div className="flex flex-col gap-3">
+      <SearchBox id="ops-search" className="w-full sm:w-80" value={q} onChange={setQ} placeholder="Search clients" />
 
-      <Table minWidth={980} label="Clients">
+      {/* eleven columns: a touch less padding between them, so the business keeps its room at a laptop's width */}
+      <Table minWidth={940} label="Clients" className="[&_:is(th,td)]:px-2.5">
         <thead>
           <tr>
-            <Th>Business</Th>
+            <Th className="w-[22%]">Business</Th>
             <Th>Stage</Th>
-            <Th className="w-28">Progress</Th>
+            <Th>Progress</Th>
             <Th right>Sent</Th>
             <Th right>Replied</Th>
             <Th right>Interested</Th>
             <Th right>Booked</Th>
-            <Th right wrap className="w-20">Waiting on owner</Th>
+            <Th right wrap>
+              <span className="whitespace-nowrap">Waiting on</span> owner
+            </Th>
             <Th right>Bounce</Th>
             <Th wrap>Last activity</Th>
             <Th>
@@ -91,20 +98,25 @@ export function OpsOverview() {
             const bounceTone = r.health.bounceRate > SEND_BRAKES.bounces.rate ? "bad" : r.health.bounceRate > 0.02 ? "warn" : "ok";
             return (
               <Tr key={r.id} onClick={() => select(r.id, "owner")} label={`Open ${b.name}`}>
-                <Td className="max-w-[210px]">
-                  <span className="block truncate font-semibold">{b.name}</span>
-                  <span className="block truncate text-[12px] text-ink-3">
-                    {trade} · {SOURCE_LABEL[b.software]}
-                    {r.meta?.sample ? " · sample" : ""}
+                <Td className="py-3">
+                  <span className="flex min-w-0 items-center gap-3">
+                    <Monogram name={b.name} />
+                    <span className="flex min-w-0 flex-col gap-0.5">
+                      <span className="line-clamp-2 text-[14px] leading-snug font-semibold">{b.name}</span>
+                      <span className="block text-[12.5px] leading-snug text-ink-3">
+                        {trade} · {SOURCE_LABEL[b.software]}
+                        {r.meta?.sample ? " · sample" : ""}
+                      </span>
+                    </span>
                   </span>
                 </Td>
                 <Td className="whitespace-nowrap">
                   <Pill tone={r.stage.tone}>{r.stage.label}</Pill>
                 </Td>
                 <Td>
-                  <div className="flex flex-col gap-1">
-                    <Bar value={r.contacted} max={Math.max(1, r.reachable)} tone="ok" />
-                    <span className="num text-[11.5px] whitespace-nowrap text-ink-3">
+                  <div className="flex flex-col gap-1.5">
+                    <Bar value={r.contacted} max={Math.max(1, r.reachable)} />
+                    <span className="num text-[12px] whitespace-nowrap text-ink-3">
                       {r.contacted.toLocaleString("en-US")} / {r.reachable.toLocaleString("en-US")}
                     </span>
                   </div>
@@ -112,14 +124,16 @@ export function OpsOverview() {
                 <Td right>{r.d.sentCount.toLocaleString("en-US")}</Td>
                 <Td right>{r.d.totals.replied.toLocaleString("en-US")}</Td>
                 <Td right>{r.d.totals.wants.toLocaleString("en-US")}</Td>
-                <Td right className="font-semibold">
+                <Td right className={cx("font-semibold", r.d.recovered > 0 && "text-ok")}>
                   {fmtMoney(r.d.recovered)}
                 </Td>
                 <Td right>
                   {r.d.hot.length ? (
-                    <span className={cx("font-semibold", r.lateHot.length ? "text-bad" : "text-ink")} title={r.lateHot.length ? `${r.lateHot.length} waiting over 24 hours` : undefined}>
-                      {r.d.hot.length}
-                      {r.lateHot.length ? ` (${r.lateHot.length} >24h)` : ""}
+                    <span title={r.lateHot.length ? `${r.lateHot.length} waiting over 24 hours` : undefined}>
+                      <Pill tone={r.lateHot.length ? "bad" : "accent"}>
+                        {r.d.hot.length}
+                        {r.lateHot.length ? ` (${r.lateHot.length} >24h)` : ""}
+                      </Pill>
                     </span>
                   ) : (
                     <span className="text-ink-3">0</span>
@@ -145,9 +159,16 @@ export function OpsOverview() {
               </Tr>
             );
           })}
-          {!shown.length && <EmptyRow cols={11}>{rows.length ? "No clients match." : "No clients yet. Add a new business or a sample one."}</EmptyRow>}
+          {!shown.length && (
+            <EmptyRow cols={11}>
+              <Blank icon={Building2} className="py-0">
+                {rows.length ? "No clients match." : "No clients yet. Add a new business or a sample one."}
+              </Blank>
+            </EmptyRow>
+          )}
         </tbody>
       </Table>
+      </div>
     </div>
   );
 }

@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
+import { ChevronDown, ScanSearch } from "lucide-react";
 import { BREAKAGE_LABEL, fmtMoney, plural, type BreakageType, type SuppressionReason } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { derive } from "../../lib/derive";
 import { OPP_STATUS, oppStatuses, SUPPRESS_LABEL, type OppStatus } from "../../lib/labels";
 import { cx, Pill } from "../../components/ui";
-import { Box, Btn, EmptyRow, Kpi, Kpis, PageHead, Pager, SearchBox, Section, Select, Table, Td, Th, Tr } from "../../components/table";
+import { Box, Btn, EmptyRow, PageHead, Pager, SearchBox, Section, Select, Table, Td, Th, Tr } from "../../components/table";
+import { EmptyNote, MoneyBand } from "./parts";
 
 const PAGE = 50;
 type SortKey = "score" | "value";
@@ -44,10 +46,12 @@ export function Drawer() {
   const s = a.summary;
   if (!a.scan || !s)
     return (
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-8">
         <PageHead title="Opportunities" />
-        <Box className="flex flex-col items-start gap-3 p-5">
-          <p className="text-[14px]">No scan yet. Add your exported files in Settings → Data, or run the scan now.</p>
+        <Box className="flex flex-col items-center pb-8">
+          <EmptyNote icon={<ScanSearch size={20} />} className="pb-5">
+            No scan yet. Add your exported files in Settings → Data, or run the scan now.
+          </EmptyNote>
           <Btn variant="primary" onClick={() => rescan(id)}>
             Scan now
           </Btn>
@@ -62,7 +66,7 @@ export function Drawer() {
   const resetPage = () => setPage(0);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <PageHead
         title="Opportunities"
         sub={`Everything in ${a.dataset.business.name}'s records that's worth a follow-up: ${stats.quotes.toLocaleString("en-US")} quotes, ${stats.jobs.toLocaleString("en-US")} jobs and ${stats.customers.toLocaleString("en-US")} customers${stats.from ? `, ${stats.from.slice(0, 4)}–${(stats.to ?? a.dataset.asOf).slice(0, 4)}` : ""}.`}
@@ -78,15 +82,17 @@ export function Drawer() {
         }
       />
 
-      <Kpis>
-        <Kpi label="Total found" value={fmtMoney(s.totalValue, { compact: true })} sub={plural(s.opportunities, "opportunity", "opportunities")} />
-        <Kpi label="Reachable" value={fmtMoney(s.reachableValue, { compact: true })} sub="people we can legally reach" />
-        <Kpi label="People" value={s.reachablePeople.toLocaleString("en-US")} sub="reachable, one sequence each" />
-      </Kpis>
+      <MoneyBand
+        items={[
+          { label: "Total found", value: fmtMoney(s.totalValue, { compact: true }), sub: plural(s.opportunities, "opportunity", "opportunities") },
+          { label: "Reachable", value: fmtMoney(s.reachableValue, { compact: true }), sub: "people we can legally reach" },
+          { label: "People", value: s.reachablePeople.toLocaleString("en-US"), sub: "reachable, one sequence each" },
+        ]}
+      />
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_300px] xl:gap-6">
         <Section title="By type" sub="Click a type to filter the list below.">
-          <Table minWidth={620} label="Opportunities by type">
+          <Table minWidth={420} label="Opportunities by type">
             <thead>
               <tr>
                 <Th>Type</Th>
@@ -135,14 +141,17 @@ export function Drawer() {
         </Section>
 
         <div className="flex min-w-0 flex-col gap-4">
-          <details className="group rounded-lg border border-line bg-surface">
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-[14px] font-bold">
+          <details className="group overflow-hidden rounded-box border border-line bg-surface shadow-card xl:mt-[52px]">
+            <summary className="flex min-h-14 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-[14.5px] font-semibold hover:bg-accent-wash [&::-webkit-details-marker]:hidden">
               <span>People we're leaving alone on purpose</span>
-              <span className="num text-[13px] font-semibold text-ink-3">{suppressedTotal.toLocaleString("en-US")}</span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="num rounded-full bg-surface-2 px-2.5 py-0.5 text-[12.5px] font-semibold text-ink-2">{suppressedTotal.toLocaleString("en-US")}</span>
+                <ChevronDown size={17} className="text-ink-3 transition-transform group-open:rotate-180" aria-hidden="true" />
+              </span>
             </summary>
             <ul className="divide-y divide-line border-t border-line">
               {suppressed.map(([k, n]) => (
-                <li key={k} className="flex items-center justify-between gap-3 px-4 py-2 text-[13px]">
+                <li key={k} className="flex items-center justify-between gap-3 px-4 py-2.5 text-[13.5px]">
                   <span>{SUPPRESS_LABEL[k] ?? k}</span>
                   <span className="num font-semibold">{n.toLocaleString("en-US")}</span>
                 </li>

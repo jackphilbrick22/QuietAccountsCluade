@@ -2,8 +2,10 @@ import { useMemo } from "react";
 import { fmtMoney } from "@qa/engine";
 import { useApp } from "../../store/app";
 import { clientRows, mrr } from "../../lib/ops";
+import { Wallet } from "lucide-react";
 import { Pill } from "../../components/ui";
-import { Box, Btn, CopyBlock, EmptyRow, Kpi, Kpis, PageHead, shortDate, Table, Td, Th, Tr } from "../../components/table";
+import { Box, Btn, CopyBlock, EmptyRow, PageHead, Section, shortDate, Table, Td, Th, Tr } from "../../components/table";
+import { Blank, Tally } from "../../live/look";
 
 export function OpsBilling() {
   const order = useApp((s) => s.order);
@@ -19,16 +21,18 @@ export function OpsBilling() {
   const freeTotal = rows.reduce((n, r) => n + r.a.dataset.business.plan.freeMonths.length, 0);
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="flex flex-col gap-6">
       <PageHead title="Billing" sub="Plans, next charges and the guarantee: any month nobody asks to come back is free." />
 
-      <Kpis>
-        <Kpi label="MRR" value={fmtMoney(mrr(rows))} tone="ok" sub={`${paying.length} paying`} />
-        <Kpi label="In free round" value={rows.filter((r) => r.a.dataset.business.plan.stage === "trial").length} />
-        <Kpi label="Free this month so far" value={freeNow.length} tone={freeNow.length ? "warn" : undefined} sub="nobody has asked yet" />
-        <Kpi label="Charging soon" value={due.length} sub="within 2 days" />
-        <Kpi label="Free months given" value={freeTotal} sub="all time" />
-      </Kpis>
+      <Tally
+        items={[
+          { label: "MRR", value: fmtMoney(mrr(rows)), tone: "ok", sub: `${paying.length} paying` },
+          { label: "In free round", value: rows.filter((r) => r.a.dataset.business.plan.stage === "trial").length },
+          { label: "Free this month so far", value: freeNow.length, tone: freeNow.length ? "warn" : undefined, sub: "nobody has asked yet" },
+          { label: "Charging soon", value: due.length, sub: "within 2 days" },
+          { label: "Free months given", value: freeTotal, sub: "all time" },
+        ]}
+      />
 
       <Table minWidth={900} label="Billing">
         <thead>
@@ -51,11 +55,13 @@ export function OpsBilling() {
             const g = r.guarantee;
             return (
               <Tr key={r.id}>
-                <Td className="max-w-[200px] truncate font-semibold">{r.a.dataset.business.name}</Td>
+                <Td className="max-w-[240px] truncate font-semibold">{r.a.dataset.business.name}</Td>
                 <Td>
                   <Pill tone={r.stage.tone}>{r.stage.label}</Pill>
                 </Td>
-                <Td right>{fmtMoney(p.monthlyPrice)}</Td>
+                <Td right className="font-semibold">
+                  {fmtMoney(p.monthlyPrice)}
+                </Td>
                 <Td className="whitespace-nowrap">{shortDate(p.paidOn)}</Td>
                 <Td className="whitespace-nowrap">
                   {g ? (
@@ -84,24 +90,29 @@ export function OpsBilling() {
               </Tr>
             );
           })}
-          {!rows.length && <EmptyRow cols={8}>No clients yet.</EmptyRow>}
+          {!rows.length && (
+            <EmptyRow cols={8}>
+              <Blank icon={Wallet} className="py-0">
+                No clients yet.
+              </Blank>
+            </EmptyRow>
+          )}
         </tbody>
       </Table>
 
       {due.length > 0 && (
-        <section className="flex flex-col gap-2.5">
-          <h2 className="font-body text-[15px] font-bold tracking-normal">Texts to send before a charge</h2>
+        <Section title="Texts to send before a charge">
           {due.map((r) => (
-            <Box key={r.id} className="flex flex-col gap-2 px-4 py-3">
-              <span className="flex flex-wrap items-center gap-2 text-[13px]">
-                <b>{r.a.dataset.business.name}</b>
+            <Box key={r.id} className="flex flex-col gap-3 px-4 py-4 sm:px-5">
+              <span className="flex flex-wrap items-center gap-2 text-[13.5px]">
+                <b className="text-[14.5px]">{r.a.dataset.business.name}</b>
                 <Pill tone={r.guarantee!.free ? "warn" : "info"}>{r.guarantee!.free ? "Free month" : "Pre-charge"}</Pill>
                 <span className="text-ink-3">charge date {shortDate(r.guarantee!.chargeOn)}</span>
               </span>
               <CopyBlock text={r.guarantee!.text} />
             </Box>
           ))}
-        </section>
+        </Section>
       )}
     </div>
   );

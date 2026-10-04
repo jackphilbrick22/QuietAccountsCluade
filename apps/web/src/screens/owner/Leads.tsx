@@ -1,11 +1,13 @@
 import { useMemo, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Inbox, MessageSquareText } from "lucide-react";
 import { type Reply, type ReplyIntent } from "@qa/engine";
 import { useApp, useAccount } from "../../store/app";
 import { derive, relTime } from "../../lib/derive";
 import { cx } from "../../components/ui";
 import { intentPill, LeadCard } from "../../components/lead";
 import { Box, Btn, Chip, PageHead, SearchBox, hoursBetween } from "../../components/table";
+import { chipRow } from "../../live/look";
+import { EmptyNote } from "./parts";
 
 type Filter = "hot" | "handled" | "later" | "closed" | "review";
 
@@ -64,11 +66,11 @@ export function Leads() {
   const meta = FILTERS.find((f) => f.id === filter)!;
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-5">
       <PageHead title="Unibox" sub="Every reply to every note, read and sorted. The ones who want the work come first." />
 
       <div className={cx("flex flex-col gap-3", picked && "hidden lg:flex")}>
-        <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-0.5 sm:mx-0 sm:flex-wrap sm:px-0" role="toolbar" aria-label="Filter replies">
+        <div className={chipRow} role="toolbar" aria-label="Filter replies">
           {FILTERS.map((f) => (
             <Chip
               key={f.id}
@@ -102,10 +104,10 @@ export function Leads() {
                       type="button"
                       onClick={() => setSel(r.id)}
                       aria-current={active ? "true" : undefined}
-                      className={cx("flex w-full cursor-pointer flex-col gap-0.5 border-l-[3px] px-3 py-2.5 text-left", active ? "border-accent bg-accent-soft/50" : "border-transparent hover:bg-bg")}
+                      className={cx("flex w-full cursor-pointer flex-col gap-1 border-l-[3px] px-3.5 py-3 text-left transition-colors", active ? "border-accent bg-accent-wash" : "border-transparent hover:bg-accent-wash/60")}
                     >
                       <span className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold">{c?.name ?? r.from}</span>
+                        <span className="min-w-0 flex-1 truncate text-[14px] font-semibold">{c?.name ?? r.from}</span>
                         <span className={cx("num shrink-0 text-[12px]", late ? "font-semibold text-bad" : "text-ink-3")}>{relTime(r.receivedAt, a.dataset.asOf)}</span>
                       </span>
                       <span className="flex min-w-0 items-center gap-2">
@@ -116,7 +118,11 @@ export function Leads() {
                   </li>
                 );
               })}
-              {!list.length && <li className="px-4 py-10 text-center text-[13.5px] text-ink-3">{q ? "No replies match that search." : meta.empty}</li>}
+              {!list.length && (
+                <li>
+                  <EmptyNote icon={<Inbox size={20} />}>{q ? "No replies match that search." : meta.empty}</EmptyNote>
+                </li>
+              )}
             </ul>
           </Box>
         </div>
@@ -124,7 +130,7 @@ export function Leads() {
         {/* Detail */}
         <div className={cx("min-w-0", !picked && "hidden lg:block")}>
           {picked && (
-            <button type="button" onClick={() => setSel(undefined)} className="mb-3 inline-flex cursor-pointer items-center gap-1.5 text-[13.5px] font-semibold text-ink-2 hover:text-ink lg:hidden">
+            <button type="button" onClick={() => setSel(undefined)} className="-ml-2 mb-2 inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-full px-3 text-[14px] font-semibold text-ink-2 hover:bg-surface-2 hover:text-ink lg:hidden">
               <ArrowLeft size={16} /> Back to {meta.label.toLowerCase()}
             </button>
           )}
@@ -132,10 +138,10 @@ export function Leads() {
             <div className="flex flex-col gap-3">
               <LeadCard key={shown.id} a={a} r={shown} rev={rev} accountId={id} />
               {shown.intent === "unclear" && shown.status === "new" && (
-                <Box className="flex flex-col gap-2 p-3.5">
-                  <span className="text-[13.5px] font-bold">What does this reply mean?</span>
-                  <span className="text-[12.5px] text-ink-3">Pick one. "Wants" answers go to you as a hand-off; "Stop" removes them everywhere.</span>
-                  <div className="flex flex-wrap gap-1.5">
+                <Box className="flex flex-col gap-2 p-4 sm:p-5">
+                  <h3 className="text-[18px]">What does this reply mean?</h3>
+                  <span className="text-[13px] text-ink-3">Pick one. "Wants" answers go to you as a hand-off; "Stop" removes them everywhere.</span>
+                  <div className="mt-1 flex flex-wrap gap-2">
                     {SORT_OPTIONS.map((o) => (
                       <Btn
                         key={o.intent}
@@ -154,7 +160,9 @@ export function Leads() {
               <ReplyFacts r={shown} />
             </div>
           ) : (
-            <Box className="grid min-h-60 place-items-center p-6 text-center text-[13.5px] text-ink-3">Select a reply to see it here.</Box>
+            <Box className="grid min-h-60 place-items-center">
+              <EmptyNote icon={<MessageSquareText size={20} />}>Select a reply to see it here.</EmptyNote>
+            </Box>
           )}
         </div>
       </div>
@@ -176,7 +184,7 @@ function ReplyFacts({ r }: { r: Reply }) {
   ];
   return (
     <Box>
-      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 px-3.5 py-3 text-[13px]">
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-2 px-4 py-3.5 text-[13.5px] sm:px-5">
         {rows
           .filter(([, v]) => v)
           .map(([k, v]) => (

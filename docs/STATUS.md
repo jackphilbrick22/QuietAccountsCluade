@@ -2,6 +2,25 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-04 — the app in the site's violet look
+
+Jack (Oct 3): the main website was redesigned (the violet look on main-site/ and cold-email-page/, apps/site/src/soro.css,
+built on site-monday and now on this branch); make the software fit it. Look only: no wording, behaviour, data or API
+changes (checked: every user-visible string is the same, some only moved or wrapped).
+- Tokens (apps/web/src/styles.css) carry the site's design system under the names the app already used: white ground,
+  the violet accent with its gradient, lavender tints, quiet greys, the site's soft violet shadows, a violet focus ring,
+  and violet-tuned dark tokens in the same three-state pattern. Cal Sans headings over Inter (Google Fonts, as the site);
+  the mono eyebrow is the site's lavender chip. Every text/fill pair checked at WCAG AA in both themes.
+- The violet "Re:" mark replaces the orange one (same file names, so the server's /logo-mark.svg still serves it).
+- Shared pieces: gradient pill primary buttons, white pill secondary, cards and boxes with the site's radii, line and
+  shadow, 52px fields, lavender chips and status pills, pill nav with gradient count badges, lavender table hovers.
+- Owner app and Welcome (a centred hero like the site's), onboarding, the demo console and the live console each got a
+  pass at 390 and 1280 in both themes, then a screenshot critique against the site (16 issues, all fixed): empty tables
+  on phones, word spacing in Cal Sans, tables that pushed past 390px, 44px tap targets.
+- Left: the trade pages keep their own colours (green, aqua, cedar...); the app takes the main site's violet. Some live
+  states were styled from code without real data (charges tables, a saved card, a brake that's on).
+- Engine 1,795, server 629, site 422; the web build passes.
+
 ## 2026-10-01 — the two-offer brief (docs/BRIEF.md)
 
 Jack's brief replaces the one big $497 offer with two: monthly for lawn and cleaning (first 150 free, then $497 a

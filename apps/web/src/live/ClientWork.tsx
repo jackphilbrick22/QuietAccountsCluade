@@ -1,9 +1,9 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { Activity, Check, ChevronDown, ChevronRight, FileText, Inbox, Mail, MessageSquare } from "lucide-react";
 import { addMonths, AGENTS, annualPrice, fmtMoney, HOLIDAYS_LINE, isOnePass, monthlyPlan, onePassPlan, PLAN_STAGES, playbook, plural, TIMEZONES, TRADE_OPTIONS, type AgentId, type BusinessProfile, type Reply, type Touch, type TradeId } from "@qa/engine";
 import { useApp } from "../store/app";
 import { cx, Pill, Toggle } from "../components/ui";
-import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
+import { Box, Btn, Chip, ConfirmBtn, EmptyRow, Pager, pinned, SearchBox, Section, Select, selectCls, smallInputCls, Table, Td, Th, Tr } from "../components/table";
 import { FileDrop, KIND_LABEL, SOURCE_LABEL, toFileIns, type StagedFile } from "../components/files";
 import { hourLabel, WEEKDAYS } from "../lib/labels";
 import { api, type AgentEvent, type FileRow, type ImportResult, type Links, type OwnerMessageRow, type OwnerTextRow, type Overview, type TouchPage } from "./api";
@@ -13,6 +13,7 @@ import { inboxesText, parseInboxes } from "./inboxes";
 import { diff, settingsKey } from "./settings";
 import { DELIVERY, ErrorNote, IntentPill, MSG_KIND, NoteEditor, OUTCOME_LABEL, OutcomeForm, ReplyActions, usePeople, when } from "./parts";
 import { Field } from "./Clients";
+import { AgentTag, Blank, chipRow, ours, theirs, Waiting } from "./look";
 
 const PER = 50;
 
@@ -54,7 +55,7 @@ export function NotesTab({ id }: { id: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0" role="toolbar" aria-label="Filter notes">
+      <div className={chipRow} role="toolbar" aria-label="Filter notes">
         {NOTE_FILTERS.map((f) => (
           <Chip
             key={f.id}
@@ -117,15 +118,28 @@ export function NotesTab({ id }: { id: string }) {
                 </Tr>
                 {isOpen && (
                   <tr>
-                    <td colSpan={6} className="border-b border-line bg-bg px-3 py-3">
-                      <NoteEditor bid={id} touch={{ ...t, subject: t.subject }} onDone={() => setOpen(null)} />
+                    <td colSpan={6} className="border-b border-line p-0">
+                      {/* above the table's edge fade: the note being edited is never faded out */}
+                      <div className={cx(pinned, "z-[3] bg-[color-mix(in_oklab,var(--accent-wash)_60%,var(--surface))] px-4 py-4")}>
+                        <NoteEditor bid={id} touch={{ ...t, subject: t.subject }} onDone={() => setOpen(null)} />
+                      </div>
                     </td>
                   </tr>
                 )}
               </FragmentRows>
             );
           })}
-          {!pageRows.length && <EmptyRow cols={6}>{q.loading ? "Loading…" : "No notes here."}</EmptyRow>}
+          {!pageRows.length && (
+            <EmptyRow cols={6}>
+              {q.loading ? (
+                "Loading…"
+              ) : (
+                <Blank icon={Mail} className="py-0">
+                  No notes here.
+                </Blank>
+              )}
+            </EmptyRow>
+          )}
         </tbody>
       </Table>
       <Pager page={page} pageSize={PER} total={rows.length} onPage={setPage} />
@@ -162,7 +176,7 @@ export function RepliesTab({ id }: { id: string }) {
   const people = usePeople(id, pageRows.map((r) => r.customerId));
   return (
     <div className="flex flex-col gap-3">
-      <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:flex-wrap sm:px-0" role="toolbar" aria-label="Filter replies">
+      <div className={chipRow} role="toolbar" aria-label="Filter replies">
         {REPLY_FILTERS.map((x) => (
           <Chip
             key={x.id}
@@ -187,20 +201,22 @@ export function RepliesTab({ id }: { id: string }) {
             const isOpen = open === r.id;
             return (
               <li key={r.id}>
-                <button type="button" onClick={() => setOpen(isOpen ? null : r.id)} aria-expanded={isOpen} className={cx("flex w-full cursor-pointer items-start gap-3 px-3.5 py-2.5 text-left hover:bg-bg", isOpen && "bg-bg")}>
-                  <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="flex flex-wrap items-center gap-2">
-                      <span className="text-[13.5px] font-semibold">{p?.name ?? r.from}</span>
-                      <IntentPill intent={r.intent} />
-                      {r.outcome && <Pill tone={r.outcome === "booked" ? "ok" : "neutral"}>{OUTCOME_LABEL[r.outcome]}{r.outcomeValue ? ` ${fmtMoney(r.outcomeValue)}` : ""}</Pill>}
-                    </span>
-                    <span className={cx("text-[12.5px] text-ink-2", !isOpen && "truncate")}>{isOpen ? r.text : r.text.split("\n")[0]}</span>
+                {/* a grid: the date stays on the name's line, and on a phone the opened reply takes the whole row */}
+                <button type="button" onClick={() => setOpen(isOpen ? null : r.id)} aria-expanded={isOpen} className={cx("grid min-h-11 w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-0.5 px-4 py-3 text-left transition-colors hover:bg-accent-wash", isOpen && "bg-accent-wash shadow-[inset_3px_0_0_var(--accent)]")}>
+                  <span className="col-start-1 row-start-1 mt-0.5 text-ink-3" aria-hidden="true">
+                    {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                   </span>
-                  <span className="shrink-0 text-[12px] text-ink-3">{when(r.receivedAt)}</span>
+                  <span className="col-start-2 row-start-1 flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="text-[13.5px] font-semibold">{p?.name ?? r.from}</span>
+                    <IntentPill intent={r.intent} />
+                    {r.outcome && <Pill tone={r.outcome === "booked" ? "ok" : "neutral"}>{OUTCOME_LABEL[r.outcome]}{r.outcomeValue ? ` ${fmtMoney(r.outcomeValue)}` : ""}</Pill>}
+                  </span>
+                  <span className={isOpen ? cx(theirs, "note-body col-span-full row-start-2 mt-1.5 block sm:col-start-2 sm:col-end-3") : "col-start-2 col-end-4 row-start-2 truncate text-[13px] text-ink-2 sm:col-end-3"}>{isOpen ? r.text : r.text.split("\n")[0]}</span>
+                  <span className="num col-start-3 row-start-1 pt-0.5 text-[12px] whitespace-nowrap text-ink-3">{when(r.receivedAt)}</span>
                 </button>
                 {isOpen && (
-                  <div className="flex flex-col gap-3 border-t border-line bg-bg px-3.5 py-3">
-                    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1 text-[12.5px]">
+                  <div className="flex flex-col gap-4 border-t border-line bg-sunken px-4 py-4 sm:pl-11">
+                    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-1.5 text-[13px]">
                       <dt className="text-ink-3">From</dt>
                       <dd className="truncate">{r.from}</dd>
                       {(r.extracted.phone ?? p?.phone) && (
@@ -243,10 +259,10 @@ export function RepliesTab({ id }: { id: string }) {
                       )}
                     </dl>
                     {r.status !== "done" && (WANTS.has(r.intent) || r.intent === "unclear") && (
-                      <div className="flex flex-col gap-1.5">
-                        <span className="text-[12.5px] font-semibold text-ink-2">Answer them, sort the reply, or hand it to the owner</span>
+                      <div className="flex flex-col gap-2.5 border-t border-line pt-4">
+                        <span className="text-[13px] font-semibold text-ink">Answer them, sort the reply, or hand it to the owner</span>
                         <ReplyActions bid={id} reply={{ id: r.id, name: p?.name }} draft={r.draft?.text} draftNeedsOwner={r.draft?.needsOwner} handedOff={r.status === "handed_off"} />
-                        <span className="mt-1 text-[12.5px] font-semibold text-ink-2">Log what happened (when the owner tells you)</span>
+                        <span className="mt-2 text-[13px] font-semibold text-ink">Log what happened (when the owner tells you)</span>
                         <OutcomeForm bid={id} reply={{ id: r.id, name: p?.name }} />
                       </div>
                     )}
@@ -255,7 +271,15 @@ export function RepliesTab({ id }: { id: string }) {
               </li>
             );
           })}
-          {!pageRows.length && <li className="px-3.5 py-8 text-center text-[13.5px] text-ink-3">{q.loading ? "Loading…" : "No replies here."}</li>}
+          {!pageRows.length && (
+            <li>
+              {q.loading ? (
+                <Waiting>Loading…</Waiting>
+              ) : (
+                <Blank icon={Inbox}>No replies here.</Blank>
+              )}
+            </li>
+          )}
         </ul>
       </Box>
       <Pager page={page} pageSize={PER} total={rows.length} onPage={setPage} />
@@ -286,22 +310,23 @@ export function OwnerTextsTab({ id }: { id: string }) {
             { value: "sent", label: "Sent" },
           ]}
         />
-        <span className="text-[12.5px] text-ink-3">Texts about money (the close, pre-charge, free month) wait here for you before they go.</span>
+        <span className="min-w-0 flex-1 basis-60 text-[13px] text-ink-3">Texts about money (the close, pre-charge, free month) wait here for you before they go.</span>
       </div>
       <ErrorNote error={q.error} onRetry={q.reload} />
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         {(q.data ?? []).map((m) => {
           const dv = DELIVERY[m.delivery] ?? { label: m.delivery, tone: "neutral" as const };
+          const waiting = m.delivery === "review" || m.delivery === "failed";
           return (
-            <Box key={m.id} className="flex flex-col gap-2 px-3.5 py-3">
+            <Box key={m.id} className={cx("flex flex-col gap-3 px-4 py-3.5 sm:px-5", waiting && "border-accent-line")}>
               <span className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
                 <Pill tone={m.kind === "handoff" ? "accent" : m.kind === "sla_nudge" ? "warn" : "neutral"}>{MSG_KIND[m.kind] ?? m.kind}</Pill>
                 <Pill tone={dv.tone}>{dv.label}</Pill>
                 {when(m.at)}
                 {m.channel ? ` · by ${m.channel === "manual" ? "hand" : m.channel}` : ""}
               </span>
-              <p className="note-body text-[13.5px] leading-relaxed">{m.text}</p>
-              {(m.delivery === "review" || m.delivery === "failed") && (
+              <p className={cx(ours, "note-body max-w-[68ch]")}>{m.text}</p>
+              {waiting && (
                 <div className="flex flex-wrap gap-2">
                   <Btn variant="primary" disabled={!!busy} onClick={() => void run(m.id, () => api<OwnerSendResult>("POST", `/businesses/${encodeURIComponent(id)}/owner-messages/${encodeURIComponent(m.id)}/send`), ownerSendToast)}>
                     Approve and send
@@ -312,7 +337,7 @@ export function OwnerTextsTab({ id }: { id: string }) {
             </Box>
           );
         })}
-        {!q.data?.length && <Box className="px-4 py-8 text-center text-[13.5px] text-ink-3">{q.loading ? "Loading…" : "No texts here."}</Box>}
+        {!q.data?.length && <Box>{q.loading ? <Waiting>Loading…</Waiting> : <Blank icon={MessageSquare}>No texts here.</Blank>}</Box>}
       </div>
       <FromOwner id={id} />
     </div>
@@ -324,17 +349,17 @@ function FromOwner({ id }: { id: string }) {
   const q = useApi<OwnerTextRow[]>(`/businesses/${encodeURIComponent(id)}/owner-texts`);
   const { busy, run } = useAction();
   return (
-    <Section title="From the owner" sub="Their texts to us, newest first, and what each one did.">
+    <Section title="From the owner" sub="Their texts to us, newest first, and what each one did." className="mt-5">
       <ErrorNote error={q.error} onRetry={q.reload} />
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-3">
         {(q.data ?? []).map((t) => (
-          <Box key={t.seq} className="flex flex-col gap-1.5 px-3.5 py-3">
+          <Box key={t.seq} className="flex flex-col gap-2.5 px-4 py-3.5 sm:px-5">
             <span className="flex flex-wrap items-center gap-2 text-[12.5px] text-ink-3">
               <Pill tone={t.needs_person && !t.done_at ? "warn" : "neutral"}>{t.handled.replace(/_/g, " ")}</Pill>
               {when(t.at)}
             </span>
-            <p className="note-body text-[13.5px]">“{t.body}”</p>
-            <p className="text-[12.5px] text-ink-3">We replied: {t.reply}</p>
+            <p className={cx(theirs, "note-body w-fit max-w-[68ch]")}>“{t.body}”</p>
+            <p className="text-[13px] text-ink-3">We replied: {t.reply}</p>
             {t.needs_person && !t.done_at ? (
               <div>
                 <Btn disabled={!!busy} onClick={() => void run(`t${t.seq}`, () => api("POST", `/businesses/${encodeURIComponent(id)}/owner-texts/${t.seq}/done`), "Marked handled")}>
@@ -344,7 +369,7 @@ function FromOwner({ id }: { id: string }) {
             ) : null}
           </Box>
         ))}
-        {!q.data?.length && <Box className="px-4 py-6 text-center text-[13.5px] text-ink-3">{q.loading ? "Loading…" : "The owner hasn't texted us yet."}</Box>}
+        {!q.data?.length && <Box>{q.loading ? <Waiting>Loading…</Waiting> : <Blank icon={MessageSquare}>The owner hasn't texted us yet.</Blank>}</Box>}
       </div>
     </Section>
   );
@@ -403,7 +428,7 @@ export function ActivityTab({ id }: { id: string }) {
             <Tr key={`${e.id}-${i}`}>
               <Td className="num whitespace-nowrap text-ink-2">{when(e.at)}</Td>
               <Td>
-                <span className="rounded bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px] font-medium tracking-wide text-ink-2 uppercase">{AGENTS[e.agent]?.name ?? e.agent}</span>
+                <AgentTag agent={e.agent} />
               </Td>
               <Td>
                 <span className={cx("block font-semibold", e.kind === "win" && "text-ok", e.kind === "warning" && "text-warn", e.kind === "review" && "text-accent-ink")}>{e.title}</span>
@@ -411,7 +436,17 @@ export function ActivityTab({ id }: { id: string }) {
               </Td>
             </Tr>
           ))}
-          {!rows.length && <EmptyRow cols={3}>{q.loading ? "Loading…" : "Nothing yet."}</EmptyRow>}
+          {!rows.length && (
+            <EmptyRow cols={3}>
+              {q.loading ? (
+                "Loading…"
+              ) : (
+                <Blank icon={Activity} className="py-0">
+                  Nothing yet.
+                </Blank>
+              )}
+            </EmptyRow>
+          )}
         </tbody>
       </Table>
       <Pager page={page} pageSize={100} total={rows.length} onPage={setPage} />
@@ -454,8 +489,10 @@ export function FilesTab({ id, o }: { id: string; o: Overview }) {
           </div>
         )}
         {result && (
-          <Box className="flex flex-col gap-1 px-3.5 py-3 text-[13px]">
-            <b>Just imported</b>
+          <Box className="flex flex-col gap-1.5 border-ok/30 bg-ok-soft px-4 py-3.5 text-[13.5px]">
+            <b className="flex items-center gap-2 text-ok">
+              <Check size={16} aria-hidden="true" /> Just imported
+            </b>
             {result.map((f) => (
               <span key={f.file}>
                 {f.file}: {f.accepted.toLocaleString("en-US")} of {f.rows.toLocaleString("en-US")} rows as {KIND_LABEL[f.kind as keyof typeof KIND_LABEL] ?? f.kind}
@@ -496,25 +533,35 @@ export function FilesTab({ id, o }: { id: string; o: Overview }) {
                 <Td className="whitespace-nowrap">{when(f.importedAt)}</Td>
               </Tr>
             ))}
-            {!files.data?.length && <EmptyRow cols={6}>{files.loading ? "Loading…" : "No files yet."}</EmptyRow>}
+            {!files.data?.length && (
+              <EmptyRow cols={6}>
+                {files.loading ? (
+                  "Loading…"
+                ) : (
+                  <Blank icon={FileText} className="py-0">
+                    No files yet.
+                  </Blank>
+                )}
+              </EmptyRow>
+            )}
           </tbody>
         </Table>
       </Section>
 
       <Section title="Other ways in">
-        <Box className="flex flex-col gap-3 px-4 py-3 text-[13px]">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span>
+        <Box className="flex flex-col gap-4 px-4 py-4 text-[13.5px] leading-relaxed sm:px-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="min-w-0 flex-1 basis-72">
               <b>Forwarding exports by email:</b> the owner can forward Jobber's export emails to{" "}
-              <span className="font-mono">{links.data?.importAddress ?? "import+<token>@ your inbound address"}</span>.
+              <span className="rounded-md bg-accent-wash px-1.5 py-0.5 font-mono text-[12.5px] break-all text-accent-ink">{links.data?.importAddress ?? "import+<token>@ your inbound address"}</span>.
             </span>
             {links.data && <Btn onClick={() => void copy(links.data!.importAddress ?? links.data!.importToken, links.data!.importAddress ? "Import address copied" : "Import token copied")}>{links.data.importAddress ? "Copy address" : "Copy token"}</Btn>}
           </div>
           {requests && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
-              <span>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+              <span className="min-w-0 flex-1 basis-72">
                 <b>New requests by email:</b> the owner forwards request emails (website form, Angi, Thumbtack, Google, a homeowner writing in) to{" "}
-                <span className="font-mono">{links.data?.requestsAddress ?? "requests+<token>@ your inbound address"}</span>, or sets one Gmail filter to do it. Each is answered from the office and texted to them.
+                <span className="rounded-md bg-accent-wash px-1.5 py-0.5 font-mono text-[12.5px] break-all text-accent-ink">{links.data?.requestsAddress ?? "requests+<token>@ your inbound address"}</span>, or sets one Gmail filter to do it. Each is answered from the office and texted to them.
               </span>
               <Btn onClick={() => void copy(links.data?.requestsAddress ?? requests, links.data?.requestsAddress ? "Requests address copied — send it to the owner" : "Requests token copied")}>{links.data?.requestsAddress ? "Copy address" : "Copy token"}</Btn>
             </div>
@@ -567,7 +614,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
   return (
     <div className="flex flex-col gap-5">
       <Group title="Business and contact">
-        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           {TEXT_FIELDS.map(([k, label, hint]) => (
             <Field key={k} id={`ls-${k}`} label={label} hint={hint} wide={k === "mailingAddress"}>
               <input id={`ls-${k}`} className={smallInputCls} value={String(d[k] ?? "")} onChange={(e) => set(k, (k === "state" ? e.target.value.toUpperCase().slice(0, 2) : e.target.value) as never)} />
@@ -603,13 +650,21 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
 
       <Group title="Pace">
         <fieldset className="flex flex-col gap-1.5">
-          <legend className="mb-1.5 text-[12.5px] font-semibold text-ink-2">Send days</legend>
+          <legend className="mb-2 text-[13px] font-semibold text-ink-2">Send days</legend>
           <div className="flex flex-wrap gap-1.5">
             {WEEKDAYS.map((w, i) => {
               const on = d.sendDays.includes(i);
               return (
-                <label key={w} htmlFor={`ls-day-${i}`} className={cx("inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md border px-2.5 text-[13px] font-semibold", on ? "border-accent/40 bg-accent-soft text-accent-ink" : "border-line-2 bg-surface text-ink-2")}>
-                  <input id={`ls-day-${i}`} type="checkbox" checked={on} onChange={(e) => set("sendDays", e.target.checked ? [...new Set([...d.sendDays, i])].sort() : d.sendDays.filter((x) => x !== i))} />
+                <label
+                  key={w}
+                  htmlFor={`ls-day-${i}`}
+                  className={cx(
+                    "inline-flex min-h-11 cursor-pointer items-center gap-1.5 rounded-full border px-4 text-[13.5px] font-semibold transition-colors has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-accent sm:min-h-10",
+                    on ? "border-accent-edge bg-accent-soft text-accent-ink" : "border-line-2 bg-surface text-ink-2 hover:border-accent-line hover:bg-accent-wash",
+                  )}
+                >
+                  <input id={`ls-day-${i}`} type="checkbox" className="sr-only" checked={on} onChange={(e) => set("sendDays", e.target.checked ? [...new Set([...d.sendDays, i])].sort() : d.sendDays.filter((x) => x !== i))} />
+                  {on ? <Check size={14} strokeWidth={3} aria-hidden="true" /> : <span className="size-3.5 rounded-full border-[1.5px] border-line-2" aria-hidden="true" />}
                   {w}
                 </label>
               );
@@ -617,7 +672,7 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
           </div>
           <span className="text-[12.5px] text-ink-3">{HOLIDAYS_LINE}</span>
         </fieldset>
-        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           <Field id="ls-w0" label="Send window starts">
             <select id="ls-w0" className={cx(selectCls, "w-full")} value={d.sendWindow[0]} onChange={(e) => set("sendWindow", [Number(e.target.value), Math.max(Number(e.target.value) + 1, d.sendWindow[1])])}>
               {Array.from({ length: 23 }, (_, h) => (
@@ -649,14 +704,14 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
         <Toggle id="ls-options" checked={d.voice.offerOptions} onChange={(v) => set("voice", { ...d.voice, offerOptions: v })} label="Offer smaller options" />
         <Toggle id="ls-freelook" checked={d.voice.freeLook ?? playbook(d.trade).freeLook} onChange={(v) => set("voice", { ...d.voice, freeLook: v })} label={'Say "No charge to look"'} sub="Only if the owner never charges to come out (off by default for HVAC, septic, pest, cleaning)." />
         <Toggle id="ls-seasonal" checked={d.persistence.seasonalCheckIn} onChange={(v) => set("persistence", { ...d.persistence, seasonalCheckIn: v })} label="Seasonal check-in" sub="One more note when the job's season comes back around." />
-        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           <NumField id="ls-maxnotes" label="Most notes to one person per year" value={d.persistence.maxNotesPerYear} onChange={(v) => set("persistence", { ...d.persistence, maxNotesPerYear: num(v, 1, 12, d.persistence.maxNotesPerYear) })} />
           <NumField id="ls-holdout" label="Held back to measure lift (%)" value={Math.round(d.persistence.holdoutPct * 100)} onChange={(v) => set("persistence", { ...d.persistence, holdoutPct: num(v, 0, 30, d.persistence.holdoutPct * 100) / 100 })} />
         </div>
       </Group>
 
       <Group title="Plan">
-        <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+        <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
           <Field id="ls-kind" label="Offer" hint={pass ? "The whole list once, paced to its end date. Paid per booking." : `The first ${d.plan.trialSize} free, then ${fmtMoney(d.plan.monthlyPrice)} a month if they say yes.`}>
             <select id="ls-kind" className={cx(selectCls, "w-full")} value={pass ? "one_pass" : "monthly"} onChange={(e) => set("plan", withKind(d.plan, e.target.value as "monthly" | "one_pass"))}>
               <option value="monthly">Monthly</option>
@@ -704,9 +759,9 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
               <div id="ls-years" role="group" aria-label="Paid years" className="flex flex-wrap gap-1.5">
                 {(d.plan.yearsPaidOn ?? []).length ? (
                   (d.plan.yearsPaidOn ?? []).map((y) => (
-                    <span key={y} className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-line-2 bg-surface px-2.5 text-[13px] font-semibold text-ink-2">
+                    <span key={y} className="inline-flex min-h-11 items-center gap-1 rounded-full border border-accent-edge bg-accent-soft pr-1 pl-3.5 text-[13.5px] font-semibold text-accent-ink sm:min-h-9">
                       {y}
-                      <button type="button" aria-label={`Take off the year from ${y}`} className="text-ink-3 hover:text-bad" onClick={() => set("plan", { ...d.plan, yearsPaidOn: (d.plan.yearsPaidOn ?? []).filter((x) => x !== y) })}>
+                      <button type="button" aria-label={`Take off the year from ${y}`} className="grid size-9 cursor-pointer place-items-center rounded-full text-[17px] leading-none text-accent-ink hover:bg-bad-soft hover:text-bad sm:size-7" onClick={() => set("plan", { ...d.plan, yearsPaidOn: (d.plan.yearsPaidOn ?? []).filter((x) => x !== y) })}>
                         ×
                       </button>
                     </span>
@@ -720,8 +775,8 @@ function SettingsForm({ id, b, sellsYear }: { id: string; b: BusinessProfile; se
         </div>
       </Group>
 
-      <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t border-line bg-bg/95 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-lg sm:border sm:px-4">
-        <Btn variant="primary" disabled={!dirty || !!busy || needsDay || noDays} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
+      <div className="sticky bottom-0 z-10 -mx-4 flex flex-wrap items-center gap-2 border-t border-line bg-surface/95 px-4 py-3 shadow-lift backdrop-blur sm:bottom-3 sm:mx-0 sm:rounded-box sm:border sm:px-4">
+        <Btn variant={dirty ? "primary" : "secondary"} disabled={!dirty || !!busy || needsDay || noDays} onClick={() => void run("save", () => api("PATCH", `/businesses/${encodeURIComponent(id)}`, patch), "Saved")}>
           {busy === "save" ? "Saving…" : "Save changes"}
         </Btn>
         <Btn variant="ghost" disabled={!dirty} onClick={() => setD(b)}>
@@ -777,8 +832,8 @@ function withPaidOn(p: Plan, paidOn: string | undefined): Plan {
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <Box className="flex flex-col gap-3 p-4 sm:p-5">
-      <h2 className="font-body text-[15px] font-bold tracking-normal">{title}</h2>
+    <Box className="flex flex-col gap-4 p-4 sm:p-6">
+      <h2 className="text-[19px] leading-tight">{title}</h2>
       {children}
     </Box>
   );
