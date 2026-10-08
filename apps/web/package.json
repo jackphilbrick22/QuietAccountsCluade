@@ -8,7 +8,11 @@
     "build": "vite build",
     "build:single": "vite build --mode single",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "film:content": "../server/node_modules/.bin/tsx --no-warnings=ExperimentalWarning film/content.ts",
+    "film:build": "vite build --config film/vite.config.ts",
+    "film:render": "node film/render.mjs",
+    "film:dev": "vite --config film/vite.config.ts"
   },
   "dependencies": {
     "@qa/engine": "workspace:*",

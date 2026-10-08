@@ -204,7 +204,8 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
     `When someone ${wantedWords(b.plan).present}, I'll text you their name, number and what they said. Just reply:`,
     `BOOKED 2400 (the amount) when you book one`,
     `NO if it's dead`,
-    `BUSY until Nov 15 if you're slammed — we'll wait`,
+    // the example date is a few weeks past the first notes, so it reads as a real one in any month
+    `BUSY until ${busyExample(firstDay)} if you're slammed — we'll wait`,
     `PAUSE to stop everything`,
     ``,
     ...callListLines(state),
@@ -362,16 +363,22 @@ export function passEndText(state: AccountState, asOf: ISODate): string {
 }
 
 /** "Tuesday, November 10" */
+/** "Mar 3": three weeks past the first notes, as the owner would text it. */
+function busyExample(firstDay: ISODate): string {
+  const d = addDays(firstDay, 21);
+  return `${monthName(d).slice(0, 3)} ${Number(d.slice(8))}`;
+}
+
 function dayWords(d: ISODate): string {
   return `${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][new Date(`${d}T12:00:00Z`).getUTCDay()]}, ${monthName(d)} ${Number(d.slice(8))}`;
 }
 
-/** The people we won't email — big quotes and phone-only — handed over once, biggest first. */
+/** The people we won't email — big quotes and phone-only — handed over once, biggest first, numbers written the way the hand-off writes them. */
 function callListLines(state: AccountState): string[] {
   const cl = state.summary?.callList;
   if (!cl?.people) return [];
   const parts = [cl.bigQuotes ? `${cl.bigQuotes} quote${cl.bigQuotes === 1 ? "" : "s"} over ${fmtMoney(state.dataset.business.callOverAmount ?? CALL_OVER_AMOUNT)}` : "", cl.phoneOnly ? `${cl.phoneOnly} with only a phone number` : ""].filter(Boolean);
-  const top = cl.top.slice(0, 3).map((x) => `${x.name} ${x.phone}${x.job ? ` (${x.job}, ${fmtMoney(x.value, { compact: true })})` : ""}`);
+  const top = cl.top.slice(0, 3).map((x) => `${x.name} ${fmtPhone(x.phone)}${x.job ? ` (${x.job}, ${fmtMoney(x.value, { compact: true })})` : ""}`);
   return [`Worth a call from you (we don't email these): ${parts.join(" and ")}, ${fmtMoney(cl.value, { compact: true })} in all. Biggest first: ${top.join("; ")}.`, ``];
 }
 

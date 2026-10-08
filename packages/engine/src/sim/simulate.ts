@@ -90,7 +90,7 @@ export function simulate(state: AccountState, from: ISODate, days: number, opts:
           const rep = receiveReply(state, { from: `${c?.name ?? ""} <${email}>`, subject: `Re: ${touch.subject ?? ""}`, text, receivedAt: at, inReplyTo: touch.providerId });
           if ((rep.intent === "wants_it" || rep.intent === "wants_price" || rep.intent === "question") && rep.customerId) {
             const hrs = Math.max(0.3, median * Math.exp((r() - 0.5) * 2));
-            const callAt = new Date(Date.parse(`${at}Z`) + hrs * 3600000).toISOString().slice(0, 19);
+            const callAt = workingHours(new Date(Date.parse(`${at}Z`) + hrs * 3600000).toISOString().slice(0, 19));
             const books = r() < bookRate * (rep.intent === "question" ? 0.5 : 1);
             const value = Math.round(((opp?.value ?? 1500) * (0.85 + r() * 0.3)) / 25) * 25;
             pending.push({ at: callAt, run: () => markContacted(state, rep.id, callAt, books ? "booked" : r() < 0.5 ? "quoted" : "lost", books ? value : undefined) });
@@ -113,4 +113,15 @@ export function simulate(state: AccountState, from: ISODate, days: number, opts:
     detail: "Replies and bookings in this window are simulated from calibrated rates — not real results.",
   });
   return state;
+}
+
+/**
+ * The owner calls back in working hours (9 AM to 7 PM): a call that would land at night or before 9 waits for the
+ * morning, keeping its minutes so the mornings don't all read 9:00. Times are the business's wall clock.
+ */
+function workingHours(at: ISODateTime): ISODateTime {
+  const hour = Number(at.slice(11, 13));
+  if (hour >= 9 && hour < 19) return at;
+  const day = hour >= 19 ? addDays(at.slice(0, 10), 1) : at.slice(0, 10);
+  return `${day}T${String(9 + (hour % 2)).padStart(2, "0")}${at.slice(13, 19)}`;
 }

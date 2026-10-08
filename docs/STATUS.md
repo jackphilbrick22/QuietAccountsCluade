@@ -2,6 +2,36 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-08 — the service film
+
+Jack (Oct 8): a demo video of the service, with the software as its backdrop, made like the video on smartlead.ai's
+homepage (clean, smooth, no jump cuts, fits a page), with a made-up lawn company that looks real.
+- apps/web/film/out/quiet-accounts-film.mp4 (35.5 s silent loop, 1920x894, 30 fps, 3.1 MB), .webm (2.5 MB), a
+  1280-wide MP4 (1.6 MB) for small screens, and a poster. Embed it like SmartLead does: autoplay, muted, loop,
+  playsinline. Its edges are white, so it sits on the site's white page with no border.
+- The story, in the operator console's page for one client with the owner's phone for his part: his Jobber export
+  comes in; the 525 past customers who haven't been back; a note to one of them typing itself in his name; nothing
+  goes until he texts OK; the notes go out and every reply is read, sorted and answered; the hand-off text; his BOOKED
+  text; Booked climbing on Overview; the round's last text and his YES; "First 150 free, then $497/mo if you say yes."
+  and "Any month nobody asks to come back, you don't pay."; back to the empty canvas it began on.
+- The company is made up and reads as real: Desrochers Lawn & Landscape, Bow, NH, owner Kyle Desrochers (no business by
+  that name found Oct 8), a PO box for its address, (603) 958/959 phone numbers (reserved, they reach nobody). Every
+  note, text, reply and figure is the engine's or the server's own output for that company (apps/web/film/content.ts);
+  nothing on screen says example, sample or demo.
+- Built as a page of its own (apps/web/film, own Vite config, the app's tokens and pieces), every frame a function of
+  one clock, rendered frame by frame in Chromium and encoded with ffmpeg; the render checks the loop seam, white edges,
+  the words rules and the fonts. Another trade: add its company to film/profiles.ts and re-render
+  (`pnpm --filter @qa/web film:content <trade>`, then `film:build` and `film:render --trade <trade>`). The one-pass
+  trades (tree, painting, fence) get the pass's promise automatically.
+- Reviewed twice against SmartLead's frames (motion) and as a lawn owner who'd never heard of us (message).
+- Engine changes it brought: the welcome text's BUSY example date now falls three weeks after the first notes (it said
+  "Nov 15" in every month) and its call list writes phone numbers as (603) 555-0122, not +16035550122; the simulator's
+  owner calls land in working hours. Tests updated.
+- Left: 35.5 s is longer than SmartLead's 12 s (a shorter cut would drop a beat); the screen shows Jobber's Jobs report
+  where the site asks for the Visits report; three labels for the same thing ("Wants it done", "Wanted the work",
+  "Asked to come back"); a few generated names repeat a first name in the ledger.
+- Engine 1,795, server 632, site 422.
+
 ## 2026-10-04 — the app on Jack's phone, like an app
 
 Jack asked for the software on his iPhone "as an app but not an actual app": a home-screen web app. The app now has a

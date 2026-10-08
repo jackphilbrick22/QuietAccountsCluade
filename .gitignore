@@ -12,3 +12,7 @@ test-results/
 playwright-report/
 dist.zip
 .scratch*/
+
+# the film's review contact sheets (made by apps/web/film/render.mjs)
+apps/web/film/out/sheets/
+__pycache__/

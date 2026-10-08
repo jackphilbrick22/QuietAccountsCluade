@@ -46,7 +46,7 @@ describe("the Jobber listing's promises", () => {
     const state = { ...emptyState(ds, `${ASOF}T12:00:00Z`), scan: r, summary: s };
     const text = kickoffText(state, ASOF, 40);
     expect(text).toMatch(/Worth a call from you \(we don't email these\): 1 with only a phone number/);
-    expect(text).toContain("+16035550122");
+    expect(text).toContain("Mike Sanderson (603) 555-0122");
   });
 
   it("someone who asked us to stop stays off the call list too", () => {

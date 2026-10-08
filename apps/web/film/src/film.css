@@ -1,0 +1,27 @@
+/* The film page: the app's own tokens and Tailwind (apps/web/src/styles.css), laid out at 1280 × 596 CSS px. */
+@import "../../src/styles.css";
+@source "./";
+@source "../../src/components";
+@source "../../src/live/look.tsx";
+
+html,
+body,
+#root {
+  width: 1280px;
+  height: 596px;
+  margin: 0;
+  overflow: hidden;
+  background: #ffffff;
+}
+/* Every movement is a function of the film clock: nothing animates on its own. */
+*,
+*::before,
+*::after {
+  transition: none !important;
+  animation: none !important;
+  caret-color: transparent;
+}
+.film-type {
+  font-kerning: normal;
+  text-rendering: geometricPrecision;
+}

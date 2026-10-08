@@ -1,0 +1,4 @@
+/* The app's stylesheet: its tokens and Tailwind (styles.css). The service film (apps/web/film) is a page of its own
+   with its own build, so its classes are kept out of the app's CSS. */
+@import "./styles.css";
+@source not "../film";
