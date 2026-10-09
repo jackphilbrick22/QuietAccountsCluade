@@ -7,8 +7,9 @@
 //
 // It serves apps/site/dist offline (fonts fall back) with the machine's own Playwright Chromium. That Chromium has no
 // H.264, so play() is made to resolve, as it does in Chrome and Safari, and the shots show a moment of the film as it
-// plays (its poster still, 22 s: the replies, our answer and the hand-off on his phone) where the page would show the
-// film itself. At 390 and 768 that's the square cut, at 1280 the film.
+// plays (its poster still: on the film, 22 s, the replies, our answer and the hand-off on his phone; on the square cut,
+// 20 s, the replies with our answer) where the page would show the film itself. At 390 and 768 that's the square cut,
+// at 1280 the film.
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
