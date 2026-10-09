@@ -376,7 +376,7 @@ if (film) {
     v.preload = "auto";
     v.src = `${at}film${cut}.mp4`;
   };
-  /** It won't play here: its strong still under the Example line, and no button that does nothing. */
+  /** It won't play here: its strong still, and no button that does nothing. */
   const fail = () => {
     broken = true;
     picture("poster");

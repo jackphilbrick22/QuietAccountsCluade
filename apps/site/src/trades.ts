@@ -176,10 +176,9 @@ export interface SitePage {
   quotes?: "quotes" | "estimates";
   /**
    * The film of the service running for a made-up company in this trade (public/film/<trade>/), on the all-trades
-   * site's page: what kind of company ("a {kind} company") and who it writes to, in the page's own words ("we write,
-   * in the owner's name, to {to}").
+   * site's page: who it writes to, in the page's own words ("we write, in the owner's name, to {to}").
    */
-  film?: { kind: string; to: string };
+  film?: { to: string };
 }
 
 /** A monthly page's past visits: one report from Jobber or Housecall Pro. */
@@ -211,7 +210,7 @@ export const PAGES: SitePage[] = [
       other: "Export your customers or visits, with dates and emails, from whatever you use, as a CSV or spreadsheet. Not sure how? Reply to our text and we'll walk you through it.",
     },
     // "landscaping", as the page calls him (its row's second line stays two lines on a phone)
-    film: { kind: "landscaping", to: "a landscaping company's past customers" },
+    film: { to: "a landscaping company's past customers" },
   },
   {
     id: "cleaning",
@@ -237,7 +236,7 @@ export const PAGES: SitePage[] = [
       other: "Send any export of your clients with their last cleaning date and email. We'll text you where to click.",
     },
     ask: "One question we'll text you: how many new regulars can you take this month? We pace the notes to that.",
-    film: { kind: "cleaning", to: "a cleaning company's regulars who stopped booking" },
+    film: { to: "a cleaning company's regulars who stopped booking" },
   },
   {
     id: "tree",
@@ -257,7 +256,7 @@ export const PAGES: SitePage[] = [
     },
     exportStep: oldQuotes("quotes"),
     quotes: "quotes",
-    film: { kind: "tree", to: "the people behind a tree company's old quotes, and its past customers" },
+    film: { to: "the people behind a tree company's old quotes, and its past customers" },
   },
   {
     id: "painting",
@@ -297,7 +296,7 @@ export const PAGES: SitePage[] = [
     },
     exportStep: oldQuotes("quotes"),
     quotes: "quotes",
-    film: { kind: "fence", to: "the people behind a fence company's old quotes, and its past customers" },
+    film: { to: "the people behind a fence company's old quotes, and its past customers" },
   },
 ];
 

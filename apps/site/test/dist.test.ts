@@ -1324,15 +1324,15 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.close();
   }, 30_000);
 
-  it("the film: a screen reader hears what it shows and the example label with it, and finds its pause button", async () => {
+  it("the film: a screen reader hears what it shows, and finds its pause button", async () => {
     const page = await open("/lawn-site", dist, undefined, 1280, { motion: true, before: filmPage([]), height: 800 });
     await page.waitForLoadState("load");
     await filmAt(page, 160);
     await playing(page, 1);
     const video = page.locator("#film video");
     expect(await video.getAttribute("aria-label")).toMatch(/^A \d+-second film, no sound: we write, in the owner's name, to a landscaping company's past customers/);
-    const described = await page.evaluate((ids: string) => ids.split(" ").map((x) => document.getElementById(x)!.textContent).join(" "), (await video.getAttribute("aria-describedby"))!);
-    expect(described).toBe("Example A made-up landscaping company. The notes and texts are what our software writes.");
+    expect(await video.getAttribute("aria-describedby")).toBeNull();
+    expect(await page.locator("#film figcaption").count()).toBe(0);
     const pp = page.getByRole("button", { name: "Pause the film" });
     expect(await pp.getAttribute("aria-pressed")).toBe("false");
     await pp.focus();

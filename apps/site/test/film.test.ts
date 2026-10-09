@@ -7,8 +7,8 @@ import { blocks, count, FILMED, FILMED_COLD, rendered, textOf } from "./html.ts"
 /**
  * The film (Oct 9, 2026): on the all-trades site's lawn, cleaning, fence and tree pages, the film of the service running
  * for a made-up company in that trade, a feature of the page under the three lines that say what we do. It plays where
- * it is, muted and looping, while he can see it; nothing of it loads until he's near it, it's labeled an example, and it
- * never reads as a second call to action. Their cold email pages (the link in each trade's "show me" reply, where an
+ * it is, muted and looping, while he can see it; nothing of it loads until he's near it, nothing under it but full
+ * screen (no caption: it shows how the service works, Jack, Oct 9), and it never reads as a second call to action. Their cold email pages (the link in each trade's "show me" reply, where an
  * owner from an email lands) have it too, at the end of "What happens after you press start". (How it plays, rests and
  * loads, in a browser: dist.test.ts.)
  */
@@ -61,15 +61,10 @@ describe.each([...FILMED, ...FILMED_COLD])("/%s's film", (id) => {
     );
   });
 
-  it("labels the film an example, right under it, as everything made up on the page is", () => {
-    const cap = /<figcaption id="filmCap">([\s\S]*?)<\/figcaption>/.exec(film)![1]!;
-    expect(film).toContain(`</div><figcaption id="filmCap">`);
-    expect(cap.startsWith('<span class="eg-pill" id="filmEg">Example</span>')).toBe(true);
-    expect(textOf(cap)).toBe(`Example A made-up ${p.film!.kind} company. The notes and texts are what our software writes.`);
-    // what a screen reader hears with it: the label and the sentence, and nothing else (no button's words)
-    expect(film).toContain('aria-describedby="filmEg filmCapT"');
-    expect(textOf(/<span id="filmCapT">([\s\S]*?)<\/span>/.exec(film)![1]!)).toBe(`A made-up ${p.film!.kind} company. The notes and texts are what our software writes.`);
-    expect(cap).not.toMatch(/<button/);
+  it("has no caption under it: nothing between the film and full screen (Jack, Oct 9)", () => {
+    expect(film).not.toMatch(/<figcaption|eg-pill|made-up|aria-describedby/i);
+    expect(textOf(film)).not.toMatch(/example/i);
+    expect(film).toMatch(/<\/span><\/button><\/div><\/figure>\n  <div class="film-more">/);
   });
 
   it("can be paused: a real toggle button over it, which says so (shown by the page's script, which plays the film)", () => {

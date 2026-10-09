@@ -301,13 +301,13 @@ export function filmSeconds(trade: string, name = "film.mp4"): number {
  * The film (Oct 9, 2026): the service running for a made-up company in the page's trade, a feature of the page under
  * the three lines that say what we do. It plays where it is, muted and looping, while he can see it. It costs nothing
  * until he's near it: the video has no src and no poster here; page.ts picks the cut for his screen (the square one
- * on a phone, else the 1280 or 1920 film) and its first frame as the picture until it plays. Made up, so labeled an
- * example right under it, like every other example. Without scripts there's nothing to play: no film at all, not the
- * browser's own empty player.
+ * on a phone, else the 1280 or 1920 film) and its first frame as the picture until it plays. Nothing under it but full
+ * screen: it shows how the service works, so it needs no caption (Jack, Oct 9). Without scripts there's nothing to
+ * play: no film at all, not the browser's own empty player.
  */
 function film(p: SitePage): string {
   if (!p.film) throw new Error(`<!--qa:film--> needs a film in src/trades.ts for ${p.id}`);
-  const { kind, to } = p.film;
+  const { to } = p.film;
   const at = `/film/${p.trade}/`;
   const secs = Math.floor(filmSeconds(p.trade));
   const play = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a1 1 0 0 0 1.5.86l10.6-6.4a1 1 0 0 0 0-1.72L9.5 4.74A1 1 0 0 0 8 5.6z"/></svg>`;
@@ -316,7 +316,7 @@ function film(p: SitePage): string {
   const label = `A ${secs}-second film, no sound: we write, in the owner's name, to ${to}, read every reply, and text the owner when one wants the work.`;
   return `<noscript><style>#film{display:none}</style></noscript>
 <div class="film" id="film">
-  <figure><div class="film-v"><video muted loop playsinline preload="none" width="1920" height="894" data-film="${at}" aria-label="${esc(label)}" aria-describedby="filmEg filmCapT"></video><button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden><span class="film-pp-i">${pause}${play}</span></button></div><figcaption id="filmCap"><span class="eg-pill" id="filmEg">Example</span><span id="filmCapT">A made-up ${esc(kind)} company. The notes and texts are what our software writes.</span></figcaption></figure>
+  <figure><div class="film-v"><video muted loop playsinline preload="none" width="1920" height="894" data-film="${at}" aria-label="${esc(label)}"></video><button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden><span class="film-pp-i">${pause}${play}</span></button></div></figure>
   <div class="film-more"><button type="button" class="film-fs" id="filmFs" hidden>${expand}Full screen</button></div>
 </div>`;
 }

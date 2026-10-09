@@ -84,9 +84,7 @@
 .film-pp.film-wait svg{width:26px;height:26px}
 .film-pp.film-wait svg:first-child{display:none}
 .film-pp.film-wait svg+svg{display:block}
-.film figcaption{max-width:980px;margin:0 auto;padding:6px var(--gutter) 0;text-align:center;font-size:14px;line-height:1.6;color:var(--ink-3);text-wrap:balance}
-.film figcaption .eg-pill{display:inline-block;margin-right:8px;line-height:1.4}
-/* full screen, on a line of its own under the caption */
+/* full screen, on a line of its own under the film */
 .film-more{margin:0;padding:0 var(--gutter);text-align:center}
 .film-fs{display:inline-flex;align-items:center;min-height:44px;margin:0;padding:0 6px;border:0;background:none;font:inherit;font-size:14px;font-weight:600;color:var(--violet);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
 .film-fs svg{width:15px;height:15px;margin-right:6px;text-decoration:none}
