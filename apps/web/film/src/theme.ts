@@ -14,14 +14,14 @@
  *
  * A trade page repurposes --lav as its highlight chip ("gold" on lawn, yellow on cleaning, peach on fence and tree), so
  * --accent-soft is drawn between --lav-2 and --lav-line instead. The canvas's two glows are the accent and the page's
- * --gold (harvest yellow, sunny yellow, sky blue, arborist orange): the colours the page puts beside its accent.
+ * --gold (harvest yellow, sunny yellow, coral, arborist orange): the colours the page puts beside its accent.
  */
 import type { LucideIcon } from "lucide-react";
 import { Fence, Sparkles, Sprout, TreePine } from "lucide-react";
 import violetMark from "../../src/assets/logo-mark.svg";
 import greenMark from "../../../site/src/assets/logo-mark-green.svg";
 import aquaMark from "../../../site/src/assets/logo-mark-aqua.svg";
-import cedarMark from "../../../site/src/assets/logo-mark-cedar.svg";
+import paintMark from "../../../site/src/assets/logo-mark-paint.svg";
 import treeMark from "../../../site/src/assets/logo-mark-tree.svg";
 
 /** A trade page's tokens, as its CSS sets them (the ones the film uses). */
@@ -191,12 +191,12 @@ export const THEMES: Record<string, FilmTheme> = {
     aquaMark,
     Sparkles,
   ),
-  // trade-fence.css: cedar, the clear sky over it
+  // trade-fence.css: the painting page's navy and coral, the colour of a vinyl fence (Jack, Oct 9: not cedar brown)
   fence: fromPage(
     "apps/site/src/trade-fence.css",
-    { ink: "#24160E", ink2: "#4A3428", ink3: "#5C4535", ink4: "#6A5242", line: "#EEE4DB", line2: "#E3D6CA", soft: "#FBF7F3", soft2: "#F4ECE4", violet: "#7A4423", violetDeep: "#5A2F15", violetLink: "#7A4423", lav2: "#FBF5EF", lavLine: "#EDDCCB", lavEdge: "#B97A4E", gold: "#8FD0FF", shadow: "60, 28, 10" },
+    { ink: "#141B2E", ink2: "#333C55", ink3: "#4A536B", ink4: "#556079", line: "#E3E7F0", line2: "#D7DCE8", soft: "#F6F7FB", soft2: "#EDF0F6", violet: "#22345C", violetDeep: "#17243F", violetLink: "#2A4373", lav2: "#F5F7FB", lavLine: "#E1E6F0", lavEdge: "#7A8FC0", gold: "#FF8566", shadow: "16, 26, 52" },
     ARCHIVO,
-    cedarMark,
+    paintMark,
     Fence,
   ),
   // trade-tree.css: deep conifer green, arborist orange

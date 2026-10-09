@@ -16,7 +16,7 @@ import { blocks, rendered, textOf, visibleText, wordRules } from "./html.ts";
  */
 const LOGO: Record<string, string> = {
   green: "logo-mark-green.svg", paper: "logo-mark-ink.svg", sky: "logo-mark-sky.svg",
-  lawn: "logo-mark-green.svg", cleaning: "logo-mark-aqua.svg", fence: "logo-mark-cedar.svg", tree: "logo-mark-tree.svg", painting: "logo-mark-paint.svg",
+  lawn: "logo-mark-green.svg", cleaning: "logo-mark-aqua.svg", fence: "logo-mark-paint.svg", tree: "logo-mark-tree.svg", painting: "logo-mark-paint.svg",
 };
 const OG: Record<string, string> = {
   green: "og-green.png", paper: "og-paper.png", sky: "og-sky.png",

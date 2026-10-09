@@ -18,7 +18,8 @@ ORDER = ["lawn", "cleaning", "fence", "tree", "painting"]
 T = {
     "lawn": dict(label="Lawn", href="/", css="green.css", mark="logo-mark-green.svg", og="og-green.png", color="#1B5A31", fonts=ARCHIVO),
     "cleaning": dict(label="Cleaning", href="/cleaning", css="trade-cleaning.css", mark="logo-mark-aqua.svg", og="og-cleaning.png", color="#C9F1F0", fonts=INSTRUMENT),
-    "fence": dict(label="Fence", href="/fence", css="trade-fence.css", mark="logo-mark-cedar.svg", og="og-fence.png", color="#5C3520", fonts=ARCHIVO),
+    # fence wears the painting page's look (Jack, Oct 9: navy like a vinyl fence, not cedar brown)
+    "fence": dict(label="Fence", href="/fence", css="trade-fence.css", mark="logo-mark-paint.svg", og="og-fence.png", color="#1C2C4E", fonts=ARCHIVO),
     "tree": dict(label="Tree", href="/tree-service", css="trade-tree.css", mark="logo-mark-tree.svg", og="og-tree.png", color="#14301F", fonts=ARCHIVO),
     "painting": dict(label="Painting", href="/painting", css="trade-painting.css", mark="logo-mark-paint.svg", og="og-painting.png", color="#1C2C4E", fonts=ARCHIVO),
 }
@@ -37,12 +38,12 @@ Q = {
               "22 Summer St &middot; best contact: text", "On it. Texting her now.")),
     "fence": dict(
         label="old quotes, asked", head="Quotes that never booked",
-        rows=[("Carl Mendes", "Cedar privacy, 140 ft", "quoted Apr 2026", "booked", "Booked &middot; $7,400"),
-              ("Lisa Grenier", "Vinyl picket + gate", "quoted Jun 2026", "yes", "Wants it done"),
+        rows=[("Carl Mendes", "White vinyl privacy, 140 ft", "quoted Apr 2026", "booked", "Booked &middot; $7,400"),
+              ("Lisa Grenier", "Vinyl semi-privacy + gate", "quoted Jun 2026", "yes", "Wants it done"),
               ("Ben Tardif", "Black aluminum, pool code", "quoted Mar 2026", "back", "Wrote back"),
               ("Meg Castonguay", "Split rail, 220 ft", "quoted Sep 2025", "", "Note 2 sent"),
               ("Ray Bilodeau", "Chain link + double gate", "quoted Nov 2025", "", "Asked")],
-        text=("Carl Mendes wants it done", "Cedar privacy, 140 ft &middot; quoted Apr 2026", "Yes, we still want the fence. Can you come measure again next week?",
+        text=("Carl Mendes wants it done", "White vinyl privacy, 140 ft &middot; quoted Apr 2026", "Yes, we still want the fence. Can you come measure again next week?",
               "6 Brook St &middot; best contact: text", "On it. Texting him now.")),
     "tree": dict(
         label="old quotes, asked", head="Quotes that never booked",
@@ -196,7 +197,7 @@ def motif(trade, where):
     if trade == "tree":
         return f'<div class="ridge" aria-hidden="true">{mark}{pines()}</div>' if where == "final" else ""
     if trade == "fence":
-        return f'<div class="fenceline" aria-hidden="true">{mark}{fence_row()}</div>' if where == "final" else ""
+        return f'<div class="chips" aria-hidden="true">{mark}{fence_samples()}</div>' if where == "final" else ""
     if trade == "painting":
         return f'<div class="chips" aria-hidden="true">{mark}{swatches()}</div>' if where == "final" else ""
     if trade == "cleaning":
@@ -226,18 +227,15 @@ def pines():
     return f'<svg class="pines" viewBox="0 0 1440 300" preserveAspectRatio="xMidYMax slice">{"".join(rows)}</svg>'
 
 
-def fence_row():
-    """Cedar boards with dog-ear tops along the bottom of the close, each board a slightly different tone."""
-    tones = ["#B9764A", "#A9683F", "#C4835A", "#AE6D43", "#BE7B4F", "#A46340", "#B5714A"]
-    boards = []
-    x, i = -12, 0
-    while x < 1460:
-        w, top = 46, 64 + (5 if i % 3 == 1 else 0)
-        boards.append(f'<path fill="{tones[i % len(tones)]}" d="M{x} {top + 10}L{x + 10} {top}H{x + w - 10}L{x + w} {top + 10}V220H{x}Z"/>')
-        boards.append(f'<path fill="rgba(255,236,214,.16)" d="M{x + 6} {top + 12}H{x + 9}V220H{x + 6}Z"/>')
-        x += w + 3
-        i += 1
-    return f'<svg class="boards" viewBox="0 0 1440 220" preserveAspectRatio="xMidYMax slice">{"".join(boards)}</svg>'
+def fence_samples():
+    """A fan of fence samples, like the painting page's paint chips: flat-top privacy fence in the colours fences come
+    in (black, barn red, sand, sage, white, slate blue), the mark resting on them; the darkest at the back, so the front
+    of the fan is light. No pickets, no cedar (Jack, Oct 9)."""
+    samples = [("#2E3440", -28), ("#B5503F", -16), ("#E6D5B5", -4), ("#9DB79B", 8), ("#ECEFF3", 20), ("#6E93BD", 32)]
+    out = []
+    for i, (c, rot) in enumerate(samples):
+        out.append(f'<i style="--c:{c};--r:{rot}deg;--i:{i}"></i>')
+    return f'<div class="fan">{"".join(out)}</div>'
 
 
 def swatches():
