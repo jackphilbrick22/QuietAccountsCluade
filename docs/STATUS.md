@@ -17,7 +17,7 @@ breaking it up; and mockups of the pages with the film in them.
   Tree Service (Henniker). Every word on screen is the engine's or the
   server's output for that company. Fence and tree run the one pass ($250 a booking, never more than $1,000); lawn and
   cleaning the monthly plan.
-- The page: under the three lines that say what we do, a quiet row, "Want to see it run? 35 seconds of it working for
+- The page: under the three lines that say what we do, a quiet row, "Want to see it run? 34–35 seconds of it working for
   a <trade> company. No sound." Closed, nothing of the film loads; open, it plays in place, muted and looping, scrolled
   into view under the header, with pause and full screen; the cut fits the screen (phone, 1280, 1920). Also on the
   cold email pages, closed, at the end of "What happens after you press start". Painting waits for its own film.
