@@ -2,7 +2,75 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-09 — the full deploy in one zip; fence in the painting look; no caption under the film
+
+Jack uploaded the Oct 8 deploy (Netlify's Download of deploy 6ac813ea31eb8908077665bb). It has everything a copy of
+the public site can't:
+- the 10 functions;
+- the 72 redirect rules;
+- netlify.toml and package.json;
+- 469 prospect files under p/;
+- the old pages.
+
+It is kept in the private archive (quietaccounts-site, branch `archive`, `archive/oct8-deploy/`).
+
+**The package.** quietaccounts-com-full-v3-2026-10-09.zip (39.3 MB, 641 files, sha256 d80dd813f87e036da5e485a2ea3e84f6483e3d23695359131283a9f8026d449c) is that deploy with every file kept, except:
+- the ten trade and cold email pages, swapped for the new ones (the renewal letter link put back on the five site
+  pages);
+- og-fence.png, replaced by the navy one.
+
+The new pages' assets and the films are added beside the old files. It lives in the private archive,
+`archive/website/`, because it holds the prospect files and the function code. Made by
+`archive/tools/make_complete.py`. Netlify's file names are lower case and it serves any case, so the tool compares
+names without case. It also lists every style or script a swapped page stopped loading.
+
+**Changes made by hand on the live site.** Rebuilding f29f213 (the commit the deploy came from) and comparing it file by
+file with the deploy found five:
+- the "Free renewal letter" link;
+- the Jobber `?code=` hand-off to /jobber/manage in the page script;
+- the tick list's wrap in soro.css;
+- the tree pages' maple leaves;
+- og-tree.png.
+
+All but the letter link are now in the source (28c57a7, 43a29c2). The letter link stays a merge step, because its page
+exists only in the deploy.
+
+**Jack's Oct 9 asks.**
+- The caption under the film is gone (f46cec9).
+- Fence wears the painting page's look (7a1c9e1, 43a29c2, 612f303, 651a29d):
+  - navy, like a vinyl fence, with faint board seams;
+  - coral button, painter's tape, the navy mark and link picture;
+  - at the close, a fan of fence samples in place of the cedar boards;
+  - vinyl jobs leading the examples, 🏡 in place of 🪵, no "picket".
+- The fence film is re-rendered in those colours. It follows a vinyl fence: the film's sample shop is retitled from
+  cedar, picket and stockade to vinyl (film only).
+
+**Verified.** Three rounds of independent checks covered package integrity, routing, the swapped pages, the browser,
+Netlify's own build and a design review:
+- Every deploy file is kept.
+- Every address matches the live site apart from the swap.
+- Netlify builds the same 10 functions with the same 72 redirects and 4 forms.
+- The films play, and the ?code= hand-off works on every trade route.
+- All tests pass.
+
+What the rounds found was fixed:
+- the three hand edits;
+- the tree example text spilling out of its panel. The step panels keep 280px and get room where three sit side by
+  side on a narrow screen, all level;
+- the film set going through a catch, so a film failure hides the film and can't stop the calculator;
+- the mint leftovers on the navy pages.
+
+**Open, for Jack.**
+- /results, /g, /z/*, /a, /b and /n (old pages, live today, unchanged by the package) still say "Guaranteed".
+- Social sites may keep showing the old brown fence link picture for a while.
+- Nobody has tried an iPhone yet: after the deploy, open /fence and move the slider.
+- Before dropping the zip, check that Deploys still shows Oct 8's deploy as the published one. A drop replaces the whole
+  site. To roll back, publish 6ac813ea again.
+
 ## 2026-10-09 — the whole website in one zip
+
+(Superseded by the entry above: this was the public site without the functions or redirects. It is no longer on the
+`site-zip` branch.)
 
 Jack (Oct 9) wants one finished zip with everything in it, and nothing for him to add or sign in to.
 
