@@ -64,5 +64,7 @@
 /* the green page's mint, where green.css sets it outright, in this page's own colours */
 input[type=range]::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--violet) 0 var(--p),var(--lav-line) var(--p) 100%)}
 input[type=range]::-moz-range-track{background:var(--lav-line)}
+input[type=range]::-webkit-slider-thumb{box-shadow:0 4px 12px rgba(16,26,52,.3)}
+input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 5px rgba(34,52,92,.3)}
 .notebox .ex-note{border-color:var(--line-2);box-shadow:0 44px 84px -50px rgba(16,26,52,.55)}
 .dz{border-color:var(--lav-edge)}
