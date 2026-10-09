@@ -14,13 +14,16 @@ the public site can't:
 
 It is kept in the private archive (quietaccounts-site, branch `archive`, `archive/oct8-deploy/`).
 
-**The package.** quietaccounts-com-full-v3-2026-10-09.zip (39.3 MB, 641 files, sha256 d80dd813f87e036da5e485a2ea3e84f6483e3d23695359131283a9f8026d449c) is that deploy with every file kept, except:
+**The package.** quietaccounts-com-full-v5-2026-10-09.zip (39.3 MB, 641 files, sha256 e7c19a586c82d50d9e47852deaba6382245216b256be30956c2c5a4fc9a82081, built from 3c89966) is that deploy with every file kept, except:
 - the ten trade and cold email pages, swapped for the new ones (the renewal letter link put back on the five site
   pages);
 - og-fence.png, replaced by the navy one.
 
 The new pages' assets and the films are added beside the old files. It lives in the private archive,
-`archive/website/`, because it holds the prospect files and the function code. Made by
+`archive/website/` (commit e08e77c), because it holds the prospect files and the function code. Beside it,
+`full-v5-2026-10-09/` has its README (what changed, how it was checked, how to put it live and roll back), the merge
+report, the four rounds' findings and the `netlify dev` pictures. The earlier zips that lack the functions moved to
+`archive/website/superseded/` under DONT-UPLOAD names. Made by
 `archive/tools/make_complete.py`. Netlify's file names are lower case and it serves any case, so the tool compares
 names without case. It also lists every style or script a swapped page stopped loading.
 
@@ -45,7 +48,7 @@ exists only in the deploy.
 - The fence film is re-rendered in those colours. It follows a vinyl fence: the film's sample shop is retitled from
   cedar, picket and stockade to vinyl (film only).
 
-**Verified.** Three rounds of independent checks covered package integrity, routing, the swapped pages, the browser,
+**Verified.** Four rounds of independent checks covered package integrity, routing, the swapped pages, the browser,
 Netlify's own build and a design review:
 - Every deploy file is kept.
 - Every address matches the live site apart from the swap.
@@ -59,6 +62,13 @@ What the rounds found was fixed:
   side on a narrow screen, all level;
 - the film set going through a catch, so a film failure hides the film and can't stop the calculator;
 - the mint leftovers on the navy pages.
+
+Round 4 found nothing that blocks. Its two small notes went into 3c89966: more room for the example text where three
+panels sit side by side (420px from 860 to 999px wide, 380px from 1000 to 1199px), and navy slider shadows.
+
+Last, Netlify's own local server (`netlify dev`) ran on the unzipped v5: all 10 functions load, and every key address
+opens at phone and computer size with the films playing and the letter button on the five site pages. The ten claude.ai
+previews are republished from 3c89966.
 
 **Open, for Jack.**
 - /results, /g, /z/*, /a, /b and /n (old pages, live today, unchanged by the package) still say "Guaranteed".
