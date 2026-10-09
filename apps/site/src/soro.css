@@ -278,8 +278,11 @@ input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 5px rgba(106,
 /* main page: how it works, three steps on grey panels */
 .steps{display:grid;gap:36px;margin-top:48px;text-align:center}
 @media (min-width:860px){.steps{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}}
-.panel{min-height:280px;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px;background:var(--soft);border:1px solid #EFEFF3}
+.panel{height:280px;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px;background:var(--soft);border:1px solid #EFEFF3}
 .panel .eg-pill{background:#E9E9EE}
+/* three panels side by side on a narrow screen: room for the example text, the three still level */
+@media (min-width:860px) and (max-width:999px){.panel{height:390px}}
+@media (min-width:1000px) and (max-width:1199px){.panel{height:360px}}
 .steps h3{font-size:24px;margin-top:22px}
 .steps h3+p{font-size:16px;line-height:1.55;color:var(--ink-3);margin:8px auto 0;max-width:34ch}
 .fwd{width:100%;max-width:320px;display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;background:#FFFFFF;border:1px solid var(--line);box-shadow:0 14px 30px -20px rgba(60,40,140,.35);text-align:left}

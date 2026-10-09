@@ -57,6 +57,12 @@ export interface FilmProfile {
    * for a fence (not a gate latch), a tree company a removal. Unset: any.
    */
   featureWork?: RegExp;
+  /**
+   * Work titles in his export, renamed before the film reads it: the sample's shop does wood fences, Jack's film is
+   * for a vinyl one (Oct 9: "I hated the brown and I don't like any picket stuff"). Off screen; the engine's sample
+   * catalog is left as it is.
+   */
+  retitle?: [string, string][];
   /** The kinds of people the film follows (BREAKAGE types), most wanted first. */
   featureTypes: string[];
   /**
@@ -176,8 +182,14 @@ export const PROFILES: Partial<Record<TradeId, FilmProfile>> = {
     simSeeds: Array.from({ length: 60 }, (_, i) => `film-fence-replies-${i + 1}`),
     exportFiles: ["Quotes Report.csv", "Jobs Report.csv"],
     software: "Jobber",
-    // an old quote for a fence, not a gate latch or a two-section repair
-    featureWork: /privacy|pool|chain link|picket|split rail|stockade/i,
+    // a vinyl fence company (Jack, Oct 9): the sample shop's cedar, picket and stockade fences are vinyl ones here
+    retitle: [
+      ["150 ft 6' cedar privacy fence", "150 ft 6' vinyl privacy fence"],
+      ["White picket fence - front yard", "White vinyl fence - front yard"],
+      ["Wood stockade fence - 120 ft", "Tan vinyl privacy - 120 ft"],
+    ],
+    // an old quote for a vinyl or privacy fence, not a gate latch, a two-section repair or a split rail
+    featureWork: /vinyl|privacy|pool/i,
     featureTypes: ["unanswered_quote", "archived_quote", "changes_requested"],
     preferWants: [
       "Yes, still want it done. Any day next week works.",

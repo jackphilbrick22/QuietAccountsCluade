@@ -50,3 +50,9 @@
 .chips .fan i{position:absolute;left:-48px;bottom:0;width:96px;height:270px;border-radius:12px;background:linear-gradient(180deg,var(--c) 0 76%,#FFFFFF 76%);border:5px solid #FFFFFF;box-shadow:0 14px 34px -14px rgba(20,30,60,.45);transform-origin:50% 94%;transform:rotate(var(--r))}
 .chips .rise{position:absolute;left:50%;bottom:126px;z-index:2;width:132px;height:132px;transform:translateX(-50%) rotate(-6deg);filter:drop-shadow(0 22px 26px rgba(20,30,60,.35))}
 .foot{background:var(--soft)}
+
+/* the green page's mint, where green.css sets it outright, in this page's own colours */
+input[type=range]::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--violet) 0 var(--p),var(--lav-line) var(--p) 100%)}
+input[type=range]::-moz-range-track{background:var(--lav-line)}
+.notebox .ex-note{border-color:var(--line-2);box-shadow:0 44px 84px -50px rgba(16,26,52,.55)}
+.dz{border-color:var(--lav-edge)}

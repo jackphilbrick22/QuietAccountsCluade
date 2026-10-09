@@ -229,9 +229,9 @@ def pines():
 
 def fence_samples():
     """A fan of fence samples, like the painting page's paint chips: flat-top privacy fence in the colours fences come
-    in (black, barn red, sand, sage, white, slate blue), the mark resting on them; the darkest at the back, so the front
-    of the fan is light. No pickets, no cedar (Jack, Oct 9)."""
-    samples = [("#2E3440", -28), ("#B5503F", -16), ("#E6D5B5", -4), ("#9DB79B", 8), ("#ECEFF3", 20), ("#6E93BD", 32)]
+    in (black, red, sand, sage, white, slate blue), the mark resting on them; the darkest at the back, so the front of
+    the fan is light. No pickets, no cedar, no wood tones (Jack, Oct 9)."""
+    samples = [("#2E3440", -28), ("#B23A48", -16), ("#E6D5B5", -4), ("#9DB79B", 8), ("#ECEFF3", 20), ("#6E93BD", 32)]
     out = []
     for i, (c, rot) in enumerate(samples):
         out.append(f'<i style="--c:{c};--r:{rot}deg;--i:{i}"></i>')

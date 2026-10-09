@@ -54,9 +54,15 @@
   background:
     linear-gradient(180deg,rgba(0,0,0,0) 0 76%,#FFFFFF 76%),
     linear-gradient(180deg,rgba(0,0,0,0) 0 7%,rgba(0,0,0,.13) 7% 8.5%,rgba(255,255,255,.22) 8.5% 9.5%,rgba(0,0,0,0) 9.5% 66%,rgba(0,0,0,.13) 66% 67.5%,rgba(255,255,255,.22) 67.5% 68.5%,rgba(0,0,0,0) 68.5%),
-    repeating-linear-gradient(90deg,rgba(255,255,255,0) 0 13px,rgba(0,0,0,.12) 13px 14px,rgba(255,255,255,.2) 14px 15px,rgba(255,255,255,0) 15px 21.5px),
+    linear-gradient(90deg,transparent 0 calc(25% - 1px),rgba(0,0,0,.12) calc(25% - 1px) 25%,rgba(255,255,255,.2) 25% calc(25% + 1px),transparent calc(25% + 1px) calc(50% - 1px),rgba(0,0,0,.12) calc(50% - 1px) 50%,rgba(255,255,255,.2) 50% calc(50% + 1px),transparent calc(50% + 1px) calc(75% - 1px),rgba(0,0,0,.12) calc(75% - 1px) 75%,rgba(255,255,255,.2) 75% calc(75% + 1px),transparent calc(75% + 1px)),
     linear-gradient(90deg,rgba(255,255,255,.14),rgba(255,255,255,0) 55%,rgba(0,0,0,.06)),
     var(--c);
   box-shadow:0 14px 34px -14px rgba(20,30,60,.45);transform-origin:50% 94%;transform:rotate(var(--r))}
 .chips .rise{position:absolute;left:50%;bottom:126px;z-index:2;width:132px;height:132px;transform:translateX(-50%) rotate(-6deg);filter:drop-shadow(0 22px 26px rgba(20,30,60,.35))}
 .foot{background:var(--soft)}
+
+/* the green page's mint, where green.css sets it outright, in this page's own colours */
+input[type=range]::-webkit-slider-runnable-track{background:linear-gradient(90deg,var(--violet) 0 var(--p),var(--lav-line) var(--p) 100%)}
+input[type=range]::-moz-range-track{background:var(--lav-line)}
+.notebox .ex-note{border-color:var(--line-2);box-shadow:0 44px 84px -50px rgba(16,26,52,.55)}
+.dz{border-color:var(--lav-edge)}

@@ -25,7 +25,7 @@ export function wantedWords(plan: Pick<PlanState, "kind">): { label: string; pas
 
 function tradeMark(b: BusinessProfile): string {
   return (
-    ({ tree: "🌳", septic: "🚛", lawn: "🌱", landscape: "🌿", fence: "🪵", concrete: "🧱", pressure_washing: "💦", gutter: "🏠", pool: "🏊", pest: "🐜", hvac: "❄️", roofing: "🏠", cleaning: "🧽", painting: "🎨" } as Record<string, string>)[b.trade] ?? "🔔"
+    ({ tree: "🌳", septic: "🚛", lawn: "🌱", landscape: "🌿", fence: "🏡", concrete: "🧱", pressure_washing: "💦", gutter: "🏠", pool: "🏊", pest: "🐜", hvac: "❄️", roofing: "🏠", cleaning: "🧽", painting: "🎨" } as Record<string, string>)[b.trade] ?? "🔔"
   );
 }
 

@@ -53,8 +53,8 @@ const EXAMPLES: Partial<Record<TradeId, Example>> = {
     asOf: "2026-10-20",
     customer: { id: "thibodeau", first: "Gail", last: "Thibodeau", street: "31 Birch Hill Rd" },
     types: ["unanswered_quote"],
-    records: oldQuote("Remove leaning pine over garage", 2400, "2026-04-14"),
-    subject: "Re: the pine removal over the garage",
+    records: oldQuote("Remove leaning pine", 2400, "2026-04-14"),
+    subject: "Re: the pine removal",
     reply: "Yes, we still want the pine gone before the snow. Can you come by next week? Call me at 603-555-0164, after 4 is best.",
   },
   painting: {

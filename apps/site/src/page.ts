@@ -511,6 +511,8 @@ if (film) {
   try {
     filmOn(film);
   } catch (e) {
+    // no picture to show yet: no film, rather than an empty box where it was
+    film.hidden = true;
     console.error(e);
   }
 }

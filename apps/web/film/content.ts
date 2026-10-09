@@ -170,7 +170,13 @@ const business = companyProfile(p, sample.business);
 const files = p.exportFiles.map((name) => {
   const f = sample.files.find((x) => x.name === name);
   if (!f) throw new Error(`The sample has no ${name}: ${sample.files.map((x) => x.name).join(", ")}`);
-  return f;
+  // the profile's own names for the sample shop's work (fence: vinyl, not cedar or pickets)
+  let text = f.text;
+  for (const [from, to] of p.retitle ?? []) {
+    if (!text.includes(from) && !sample.files.some((x) => x.text.includes(from))) throw new Error(`retitle: no "${from}" in the sample`);
+    text = text.split(from).join(to);
+  }
+  return { ...f, text };
 });
 const pass = isOnePass(business.plan);
 
