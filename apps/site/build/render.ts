@@ -275,8 +275,8 @@ function works(p: SitePage, chips = false): string {
 
 
 /**
- * A film's length in seconds, from its MP4's movie header (moov → mvhd), so the row above it never says a length the
- * film doesn't have when a new cut lands.
+ * A film's length in seconds, from its MP4's movie header (moov → mvhd), so the film's spoken label never gives a
+ * length the film doesn't have when a new cut lands.
  */
 export function filmSeconds(trade: string, name = "film.mp4"): number {
   const file = `public/film/${trade}/${name}`;
@@ -298,10 +298,11 @@ export function filmSeconds(trade: string, name = "film.mp4"): number {
 }
 
 /**
- * The film (Oct 8, 2026): the service running for a made-up company in the page's trade, behind a quiet row under the
- * three lines that say what we do. Closed, it costs nothing: the video has no src and no poster until he opens it; then
- * the page picks the cut for his screen (page.ts: the phone cut under 600 px, else the 1280 or 1920 film) and its first
- * frame as the picture until it plays. Made up, so labeled an example right under it, like every other example.
+ * The film (Oct 9, 2026): the service running for a made-up company in the page's trade, a feature of the page under
+ * the three lines that say what we do. It plays where it is, muted and looping, while he can see it. It costs nothing
+ * until he's near it: the video has no src and no poster here; page.ts picks the cut for his screen (the square one
+ * on a phone, else the 1280 or 1920 film) and its first frame as the picture until it plays. Made up, so labeled an
+ * example right under it, like every other example.
  */
 function film(p: SitePage): string {
   if (!p.film) throw new Error(`<!--qa:film--> needs a film in src/trades.ts for ${p.id}`);
@@ -310,12 +311,11 @@ function film(p: SitePage): string {
   const secs = Math.floor(filmSeconds(p.trade));
   const play = `<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5.6v12.8a1 1 0 0 0 1.5.86l10.6-6.4a1 1 0 0 0 0-1.72L9.5 4.74A1 1 0 0 0 8 5.6z"/></svg>`;
   const pause = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect fill="currentColor" x="6.5" y="5" width="4" height="14" rx="1.2"/><rect fill="currentColor" x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>`;
-  const chev = `<svg class="film-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>`;
   const expand = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
   const label = `A ${secs}-second film, no sound: we write, in the owner's name, to ${to}, read every reply, and text the owner when one wants the work.`;
   return `<div class="film" id="film">
-  <button type="button" class="film-k" id="filmK" aria-expanded="false" aria-controls="filmPanel"><span class="ico">${play}</span><span class="film-t"><b>Want to see it run?</b><small>${secs} seconds of it working for a ${esc(kind)} company. No sound.</small></span>${chev}</button>
-  <div class="film-panel" id="filmPanel" hidden><figure><div class="film-v"><video muted loop playsinline preload="none" width="1920" height="894" data-film="${at}" aria-label="${esc(label)}" aria-describedby="filmEg filmCapT"></video><button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden><span class="film-pp-i">${pause}${play}</span></button></div><figcaption id="filmCap"><span class="eg-pill" id="filmEg">Example</span><span id="filmCapT">A made-up ${esc(kind)} company. The notes and texts are what our software writes.</span></figcaption><p class="film-more"><button type="button" class="film-fs" id="filmFs" hidden>${expand}Full screen</button></p></figure></div>
+  <figure><div class="film-v"><video muted loop playsinline preload="none" width="1920" height="894" data-film="${at}" aria-label="${esc(label)}" aria-describedby="filmEg filmCapT"></video><button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden><span class="film-pp-i">${pause}${play}</span></button></div><figcaption id="filmCap"><span class="eg-pill" id="filmEg">Example</span><span id="filmCapT">A made-up ${esc(kind)} company. The notes and texts are what our software writes.</span></figcaption></figure>
+  <p class="film-more"><button type="button" class="film-fs" id="filmFs" hidden>${expand}Full screen</button></p>
 </div>`;
 }
 

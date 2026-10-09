@@ -2,6 +2,34 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-09 — the film plays on the page
+
+Jack (Oct 9): the film is good enough to be a feature of the website; behind a drop-down most people won't see it, so
+it should just be there and play where it is, on its own.
+- The "Want to see it run?" row and its panel are gone. On the lawn, cleaning, fence and tree pages the film sits under
+  the three lines that say what we do (on their cold email pages, at the end of "What happens after you press start"),
+  as wide as the section, its white edges in the page's white, with the Example line under it, word for word.
+- It plays by itself, muted, looping and in place, as smartlead.ai's does, while a quarter of it is on his screen; off
+  screen it rests (battery), and it plays again when it's back, unless he paused it. Pause: a tap on the film, or its
+  button (a real toggle, shown on touch screens and on keyboard focus), as WCAG 2.2.2 asks of anything moving over 5 s.
+- It costs nothing until he's near it: no src and no poster in the page; three-quarters of a screen away the page picks
+  the cut (the square one on a phone, the 1280 or 1920 film) and its first frame. A visitor who never reads that far
+  down loads none of it.
+- Nothing on the page moves when it loads: the box has its shape from the stylesheet before anything loads, the square
+  one by the same media query the page picks the square cut with (a test holds the two equal). A phone turned on its
+  side mid-film gets the wide cut at the same moment, playing or paused as it was.
+- Reduced motion, or a phone saving data (Save-Data): it doesn't start on its own; its strong still waits under one big
+  play, and nothing heavier than that picture loads until he taps. A browser that refuses to start it (an iPhone in Low
+  Power Mode) gets the same still and play; a pause before it started is no refusal.
+- Kept: the phone's bottom bar steps aside while the film is on screen; full screen for the wide cuts; the film's
+  spoken label and description. Painting and every other page stay without a film.
+- Checked in Chromium with WebM stand-ins for the films (this Chromium plays no H.264) and the pages' own fonts: the
+  lawn, cleaning, fence and tree pages and the fence cold email page at 390 (a phone at 2x) and 1280, each playing a
+  few seconds in, and the whole fence page at 390. Still for Jack: open one page on his iPhone and watch it start on
+  its own, with Low Power Mode off and on.
+- The zip for Netlify, as before: `pnpm build:site` writes apps/site/dist.zip (not in git).
+- Engine 1,800, server 632, site 485.
+
 ## 2026-10-09 — a film per trade, behind a drop-down on its page
 
 Jack (Oct 8): a drop-down on each industry page ("want to see demo"), starting with cleaning, fence, tree and

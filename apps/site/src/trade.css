@@ -48,34 +48,28 @@
 .terms b{color:var(--ink)}
 
 /*
- * The film (Oct 8, 2026): a quiet row under the three lines, not a button: the page keeps its one. One tap opens the
- * film in place on the page's white, its own white edges melting into it; the page above never moves, and what's below
- * moves down by the film's height, eased. The panel is never the scroll anchor, so the row stays where his finger was.
+ * The film (Oct 9, 2026): a feature of the page, under the three lines that say what we do (on a cold email page, under
+ * what happens after he presses start). It plays where it is, muted and looping, while he can see it. As wide as the
+ * section, its own white edges melting into the page's white. Its box has its shape before anything of it loads, so
+ * nothing on the page moves when it does. Its own white edge adds some 20 px above what it shows (50 on the square's
+ * first frame): about a section's gap in all, so it reads as the page's next part, not a box tacked on.
  */
-.film{margin-top:44px}
-.film-k{display:inline-flex;align-items:center;gap:14px;max-width:100%;min-height:60px;margin:0;padding:8px 14px 8px 8px;border:0;border-radius:20px;background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer;-webkit-tap-highlight-color:transparent;transition:background-color .15s}
-@media (hover:hover){.film-k:hover{background:var(--soft)}.film-k:hover .film-t b{text-decoration-color:var(--violet)}}
-.film-k .ico{flex:none;width:46px;height:46px;margin:0;border-radius:14px;vertical-align:0}
-.film-k .ico svg{width:18px;height:18px;margin-left:2px}
-.film-t{display:flex;flex-direction:column;gap:2px;min-width:0}
-.film-t b{font-size:17px;font-weight:650;line-height:1.35;text-decoration:underline;text-decoration-color:var(--line-2);text-decoration-thickness:2px;text-underline-offset:5px;transition:text-decoration-color .15s}
-.film-k[aria-expanded=true] .film-t b{text-decoration-color:var(--violet)}
-.film-t small{font-size:14.5px;line-height:1.45;color:var(--ink-3)}
-.film-chev{flex:none;width:20px;height:20px;color:var(--ink-3);transition:transform .35s cubic-bezier(.4,0,.2,1)}
-.film-k[aria-expanded=true] .film-chev{transform:rotate(180deg)}
-.film-panel{display:grid;grid-template-rows:0fr;opacity:0;margin-inline:calc(-1 * var(--gutter));overflow-anchor:none;transition:grid-template-rows .5s cubic-bezier(.4,0,.2,1),opacity .22s ease}
-.film.open .film-panel{grid-template-rows:1fr;opacity:1;transition:grid-template-rows .5s cubic-bezier(.4,0,.2,1),opacity .4s ease .1s}
-.film figure{min-height:0;margin:0;overflow:hidden}
-/* the space above the film is its own margin, inside the figure: a padding would keep 14px open while it's closed */
-.film-v{position:relative;margin-top:14px}
-/* never taller than his screen under the page's floating header (a phone on its side): the film's white edges meet the
-   page's white, so a film held to the height draws no bars */
-.film video{display:block;width:100%;height:auto;max-height:calc(100svh - var(--film-head,0px) - 16px);aspect-ratio:1920/894;background:#FFFFFF;cursor:pointer}
-/* a phone, or a tablet held upright, gets the phone cut (film-phone.mp4): a square, framed close on whatever is acting,
-   so its words read */
-.film video.cut-phone{aspect-ratio:1/1;max-width:min(100%,560px);margin-inline:auto}
+.film{margin:32px calc(-1 * var(--gutter)) 0}
+@media (min-width:860px){.film{margin-top:64px}}
+.film figure{margin:0}
+.film-v{position:relative}
+/* never taller than his screen under the page's floating header, 60 px (a phone on its side): the film's white edges
+   meet the page's white, so a film held to the height draws no bars */
+.film video{display:block;width:100%;height:auto;max-height:calc(100svh - 76px);aspect-ratio:1920/894;background:#FFFFFF;cursor:pointer}
+/* the square cut (film-phone.mp4), framed close on whatever is acting so its words read: a phone held upright, and a
+   tablet or window up to 900 px that's taller than a phone on its side. The same rule as `phone` in page.ts, which
+   picks the file: change one, change the other. A square is already its screen's shape: no full screen */
+@media (max-width:599px),(max-width:899px) and (min-height:500px){
+  .film video{aspect-ratio:1/1;max-width:min(100%,560px);margin-inline:auto}
+  .film-more{display:none}
+}
 /* pause and play: a tap on the film, or this. Small in its corner, there when he looks for it; while it waits for him
-   (reduced motion, or a browser that won't start it on its own) it's the one big play in the middle */
+   (reduced motion, Save-Data, or a browser that won't start it on its own) it's the one big play in the middle */
 .film-pp{position:absolute;left:clamp(12px,3vw,32px);bottom:clamp(12px,3vw,28px);display:grid;place-items:center;width:44px;height:44px;margin:0;padding:0;border:0;border-radius:999px;background:rgba(255,255,255,.94);color:var(--ink);box-shadow:0 8px 20px -10px rgba(0,0,0,.4),0 0 0 1px var(--line);cursor:pointer;opacity:0;transition:opacity .2s ease}
 .film-pp-i{display:grid;place-items:center}
 .film-pp svg{width:17px;height:17px}
@@ -89,10 +83,10 @@
 .film-pp.film-wait svg{width:26px;height:26px}
 .film-pp.film-wait svg:first-child{display:none}
 .film-pp.film-wait svg+svg{display:block}
-.film figcaption{max-width:980px;margin:0 auto;padding:0 var(--gutter);text-align:center;font-size:14px;line-height:1.6;color:var(--ink-3);text-wrap:balance}
+.film figcaption{max-width:980px;margin:0 auto;padding:6px var(--gutter) 0;text-align:center;font-size:14px;line-height:1.6;color:var(--ink-3);text-wrap:balance}
 .film figcaption .eg-pill{display:inline-block;margin-right:8px;line-height:1.4}
-/* full screen, on a line of its own under the caption (a phone's cut is already its screen's shape: none there) */
-.film-more{margin:0;padding:0 var(--gutter) 8px;text-align:center}
+/* full screen, on a line of its own under the caption */
+.film-more{margin:0;padding:0 var(--gutter);text-align:center}
 .film-fs{display:inline-flex;align-items:center;min-height:44px;margin:0;padding:0 6px;border:0;background:none;font:inherit;font-size:14px;font-weight:600;color:var(--violet);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
 .film-fs svg{width:15px;height:15px;margin-right:6px;text-decoration:none}
 .film :focus-visible{outline-offset:2px}

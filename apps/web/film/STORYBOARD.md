@@ -488,6 +488,11 @@ the Notes table starts with the welcome text's note; the fence's jobs are a fenc
 
 ### On the pages (Oct 8)
 
+**Oct 9: the drop-down became a film that plays in place.** Jack wanted it seen, not behind a row most people won't
+open: the row is gone, and the film sits where the panel opened, playing by itself, muted and looping, while it's on
+his screen, loading only once he's near it (`docs/STATUS.md`, Oct 9, has the rest). What follows is the Oct 8 drop-down;
+its cuts, pictures and pause carry over.
+
 Each film plays on its own trade's page of the all-trades site (`lawn-site/`, `cleaning-site/`, `fence-site/`,
 `tree-site/`), behind the "Want to see it run?" row under the three lines that say what we do. The site has its own
 embed: `apps/site/build/render.ts` (`film()`) writes the row and a `<video data-film="/film/<trade>/">` with no `src`

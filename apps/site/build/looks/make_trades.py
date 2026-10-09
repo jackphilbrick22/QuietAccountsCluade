@@ -67,7 +67,7 @@ Q = {
 FINDS = {"cleaning": "find every client who stopped booking.", "fence": "find every quote that never booked.",
          "tree": "find every quote that never booked.", "painting": "find every estimate that never booked."}
 ONE_PASS_FINAL_TICKS = "<li>No card to start</li><li>No contract</li><li>Never more than $1,000</li>"
-# The film drop-down (Oct 8, 2026): the service running for a made-up company in the trade, one tap away under the three
+# The film (Oct 9, 2026): the service running for a made-up company in the trade, playing on the page under the three
 # lines that say what we do, where he's just understood it and wants to see it's real. Build/render.ts fills the marker
 # from the trade's film in public/film/<trade>/. Its cold email page (where an owner from an email lands) has it too, at
 # the end of "What happens after you press start". Painting waits for its own film.
@@ -510,8 +510,8 @@ def lawn_pages():
     a = re.search(r'<section class="sec lines"[^>]*><div class="wrap">\n.*?\n(?=</div></section>)', main, re.S)
     assert a and "lawn" in FILM
     main = main[:a.end()] + FILM_MARK + main[a.end():]
-    # its cold email page, the link in the "show me" reply, where an owner from an email lands: the film too, closed, at
-    # the end of "What happens after you press start" (what it shows), in the lawn page's look
+    # its cold email page, the link in the "show me" reply, where an owner from an email lands: the film too, at the end
+    # of "What happens after you press start" (what it shows), in the lawn page's look
     cold = open(f"{SITE}/green-cold-email-page/index.html", encoding="utf-8").read()
     a = '<link rel="stylesheet" href="/src/green.css">'
     assert cold.count(a) == 1
