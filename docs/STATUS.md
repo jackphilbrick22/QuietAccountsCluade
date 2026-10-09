@@ -2,6 +2,23 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-09 — everything kept in GitHub, and the complete site zip
+
+Jack (Oct 9): the new zip must have everything the old one did, and everything made should be kept in GitHub.
+- The archive is in the private repo jackphilbrick22/quietaccounts-site, branch `archive` (613 files): a copy of
+  everything public on quietaccounts.com on Oct 9 (128 files, including the /for/ prospect pages, the renewal letter
+  page, results, blog, privacy and terms), the new site build, both phone-preview zips, the ten preview pages, the source
+  of every claude.ai page made for the project (the Blueprint, the call card, "Quiet Accounts, explained", the Sep 30
+  site, the app, the service film, the trade films mockups), the review screenshots, and the tools. Private because
+  the copy has the prospect pages; this repo (QuietAccountsCluade) is public.
+- `archive/tools/make_complete.py` builds the complete site: the deployed folder kept whole, the ten trade and cold email
+  pages swapped wherever they're stored (17 files: /, /landscaping, /lawn and the rest), the "Free renewal letter" button
+  the live site added put back on the five trade pages, and the films and new assets added beside the old ones. Tested
+  on the live-site copy: all 92 old files kept, 48 added, every page fine at 390 and 1280, the films playing.
+- Still needed to finish it: the Oct 8 deploy itself (Netlify, project brilliant-sorbet-d89cb5, Deploys, the published
+  deploy, Download). A copy can't reach its 10 functions, 72 redirects or unlinked /for/ pages. With it, the script makes
+  the zip in a minute.
+
 ## 2026-10-09 — the film plays on the page
 
 Jack (Oct 9): the film is good enough to be a feature of the website; behind a drop-down most people won't see it, so
