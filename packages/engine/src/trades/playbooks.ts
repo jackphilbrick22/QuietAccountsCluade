@@ -156,8 +156,18 @@ const tree: TradePlaybook = {
     [/\bstumps?\b/i, "the stump"],
     [/\bhedges?\b/i, "the hedges"],
     [/\blimbs?\b|\bbranch(es)?\b/i, "the limbs"],
+    // what a tree company calls the work: "the lot clearing", not "the lot"
+    [/\blot clearing\b|\bclear(ing)? (the |a )?lot\b/i, "the lot clearing"],
     [/\blot\b/i, "the lot"],
   ],
+  // what was quoted on the tree: "the oak removal", "the maple pruning", "the stump grinding", "the ash treatment"
+  // (storm work and clearing keep their object: "the maple" after a storm, "the lot clearing")
+  objectWork: {
+    service: { "tree.removal": "removal", "tree.prune": "pruning", "tree.prune_oak": "pruning", "tree.stump": "grinding", "tree.ash": "treatment", "tree.health": "treatment" },
+    // cabling holds a tree up; it isn't pruning it
+    words: [[/\bcabl\w*|\bbrac(e|ed|ing)\b/i, "cabling"]],
+    object: { "the hedges": "the hedge trimming", "the limbs": "", "the lot clearing": "", "the lot": "" },
+  },
   places: [
     [/driveway/i, "by the driveway"],
     [/garage/i, "over the garage"],
@@ -548,14 +558,19 @@ const fence: TradePlaybook = {
     },
   ],
   objects: [
-    [/privacy/i, "the privacy fence"],
+    // the material when it's vinyl ("the vinyl fence in the backyard"), else the kind
     [/vinyl/i, "the vinyl fence"],
-    [/(wood|cedar)/i, "the wood fence"],
+    [/privacy/i, "the privacy fence"],
+    [/split ?rail/i, "the split rail fence"],
+    [/picket/i, "the picket fence"],
+    [/(wood|cedar|stockade)/i, "the wood fence"],
     [/aluminum|ornamental/i, "the aluminum fence"],
     [/chain ?link/i, "the chain link"],
     [/\bgate\b/i, "the gate"],
     [/\bfence\b/i, "the fence"],
   ],
+  // a repair is named as one ("the fence repair", "the vinyl fence repair"), not as the fence a shop would put in
+  objectWork: { service: { "fence.repair": "repair" } },
   places: [
     [/back ?yard|rear/i, "in the backyard"],
     [/pool/i, "around the pool"],

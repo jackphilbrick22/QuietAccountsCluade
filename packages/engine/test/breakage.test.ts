@@ -25,7 +25,7 @@ describe("detectors", () => {
       expect(o.value).toBe(1500);
       expect(o.ageDays).toBe(60);
       expect(o.anchorDate).toBe(ago(60));
-      expect(o.jobPhrase).toBe("the maples");
+      expect(o.jobPhrase).toBe("the maple pruning");
       expect(o.channels).toContain("email");
       expect(o.expectedValue).toBeGreaterThan(0);
       expect(o.expectedValue).toBeLessThan(o.value);

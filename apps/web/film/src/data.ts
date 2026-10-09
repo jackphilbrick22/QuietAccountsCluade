@@ -3,12 +3,15 @@
  * from the software itself. The scenes read only from here, plus the app's own labels.
  */
 import lawn from "../content.json";
+import { themeFor } from "./theme";
 
 export type Content = typeof lawn;
 
 const all = import.meta.glob<Content>("../content*.json", { eager: true, import: "default" });
 const trade = new URLSearchParams(location.search).get("trade");
 export const C: Content = (trade && trade !== "lawn" ? all[`../content.${trade}.json`] : undefined) ?? lawn;
+/** The trade page's look (theme.ts): its colours, fonts and logo mark. */
+export const TH = themeFor(C.company.trade);
 
 /* ------------------------------ dates, as the app prints them ------------------------------ */
 

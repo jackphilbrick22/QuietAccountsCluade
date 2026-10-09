@@ -7,7 +7,7 @@
 import { Inbox, PhoneCall } from "lucide-react";
 import { Chip } from "../../../src/components/table";
 import { Pill } from "../../../src/components/ui";
-import { C, initials, short } from "../data";
+import { C, initials, short, TH } from "../data";
 import { and, css, enter, leave, lerp, out, outCubic, outQuad, pop, prog, steps, type M } from "../motion";
 import { MeaningChip } from "../parts";
 import { L, T } from "../timeline";
@@ -23,10 +23,18 @@ const noop = () => {};
 type Shown = (typeof C.replies.shown)[number];
 /** In the order the Replies view keeps them (content.ts sorts them): the ones who want the work first. */
 const sorted = C.replies.shown;
-/** As they came in. The first is already there when the view pans in; the rest arrive one at a time. */
+/**
+ * As they came in. All but the last two are already there when the view pans in (sorted: the pan lands on content);
+ * the last two arrive one at a time, 0.65 s apart: one lands in its place below, then the one we follow, on top (it
+ * came in last). However many replies a film shows, the beat keeps its time: his reply lands, it's labelled, then our
+ * answer opens under it.
+ */
 const arrival = [...sorted].sort((a, b) => (a.receivedAt < b.receivedAt ? -1 : 1));
-const arriveAt = (r: Shown) => (arrival.indexOf(r) === 0 ? -Infinity : S.arrive + (arrival.indexOf(r) - 1) * S.gap);
+const PRESENT = Math.max(1, arrival.length - 2);
+const arriveAt = (r: Shown) => (arrival.indexOf(r) < PRESENT ? -Infinity : S.arrive + (arrival.indexOf(r) - PRESENT) * S.gap);
 const featured = sorted.find((r) => r.name === C.featured.name) ?? sorted[0]!;
+/** Our answer opens once his reply has landed and been labelled (it lands 0.2 s after it arrives, labelled at 0.56 s). */
+const ACK = arriveAt(featured) + 600;
 
 const WANTS = ["wants_it", "wants_price", "question"];
 const QUIET = ["later", "unclear", "auto_reply", "bounce"];
@@ -45,8 +53,8 @@ const closedOut = (r: Shown) => !WANTS.includes(r.intent) && !QUIET.includes(r.i
 const opened = (t: number, r: Shown) => outCubic(prog(t, arriveAt(r), 380));
 const rowShown = (t: number, r: Shown) => enter(t, arriveAt(r) + 200, { dur: 420, rise: -6, blur: 2 });
 /** Our answer to her: its space opens first (the rows under it slide down), then the panel fades and rises into it. */
-const ackSpace = (t: number) => outCubic(prog(t, S.ack, 380));
-const ackPanel = (t: number) => enter(t, S.ack + 300, { dur: 420, rise: 8, blur: 2 });
+const ackSpace = (t: number) => outCubic(prog(t, ACK, 380));
+const ackPanel = (t: number) => enter(t, ACK + 300, { dur: 420, rise: 8, blur: 2 });
 
 export function RepliesScene({ t }: { t: number }) {
   if (t < S.pan || t > T.money.out + 400) return null;
@@ -78,10 +86,11 @@ export function RepliesScene({ t }: { t: number }) {
 const finalChips = { wanted: C.replies.chips.wantedTheWork, later: C.replies.chips.later, closed: C.replies.chips.closedOut, all: C.replies.chips.everything };
 function ReplyChips({ t }: { t: number }) {
   const at = (key: "wanted" | "later" | "closed" | "all") =>
+    // as the view stands when it pans in, then a step for each reply that arrives (the last lands on the tab's own count)
     steps(
       t,
-      chipsAt(arrival[0]!.receivedAt)[key],
-      arrival.slice(1).map((r, i) => ({ at: arriveAt(r) + 250, to: i === arrival.length - 2 ? finalChips[key] : chipsAt(r.receivedAt)[key] })),
+      chipsAt(arrival[PRESENT - 1]!.receivedAt)[key],
+      arrival.slice(PRESENT).map((r) => ({ at: arriveAt(r) + 250, to: r === arrival.at(-1) ? finalChips[key] : chipsAt(r.receivedAt)[key] })),
       500,
     );
   const chips = [
@@ -104,7 +113,7 @@ function ReplyChips({ t }: { t: number }) {
 function List({ t }: { t: number }) {
   const w = L.stage.narrow;
   const ack = ackSpace(t);
-  const lift = out(prog(t, S.ack - 100, 420));
+  const lift = out(prog(t, ACK - 100, 420));
   const fIdx = sorted.indexOf(featured);
   const above = (r: Shown) => sorted.slice(0, sorted.indexOf(r)).reduce((s, q) => s + opened(t, q) * ROW_H, 0) + (sorted.indexOf(r) > fIdx ? ack * ACK_H : 0);
   const boxH = PAD * 2 + sorted.reduce((s, q) => s + opened(t, q), 0) * ROW_H + ack * ACK_H;
@@ -131,7 +140,7 @@ function List({ t }: { t: number }) {
                 height: ROW_H,
                 borderBottom: isF && lift > 0 ? undefined : "1px solid var(--line)",
                 borderRadius: isF ? lerp(10, 14, lift) : 10,
-                boxShadow: isF && lift > 0 ? `0 0 0 1px rgba(236,236,240,${lift}), 0 30px 60px -30px rgba(70, 40, 170, ${0.38 * lift}), 0 2px 6px rgba(20, 10, 60, ${0.05 * lift})` : undefined,
+                boxShadow: isF && lift > 0 ? `0 0 0 1px color-mix(in srgb, var(--line) ${Math.round(lift * 100)}%, transparent), 0 30px 60px -30px rgba(${TH.shadow}, ${0.38 * lift}), 0 2px 6px rgba(${TH.shadow}, ${0.05 * lift})` : undefined,
               }}
             >
               <span className="grid size-[34px] shrink-0 place-items-center rounded-full border border-accent-line bg-accent-soft font-display text-[13.5px] text-accent-ink" style={{ opacity: dim }}>
@@ -148,7 +157,7 @@ function List({ t }: { t: number }) {
                 <span className="min-w-0 truncate text-[13px] text-ink-2">{r.text}</span>
               </div>
             </div>
-            {isF && r.ack && t >= S.ack + 300 && <Ack text={r.ack} m={ackPanel(t)} w={w} />}
+            {isF && r.ack && t >= ACK + 300 && <Ack text={r.ack} m={ackPanel(t)} w={w} />}
           </div>
         );
       })}

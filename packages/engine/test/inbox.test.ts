@@ -213,6 +213,17 @@ describe("weekday names (asOf Tue 2026-09-29)", () => {
     const until = findTimeExpressions("not until next friday", ASOF)[0]!;
     expect(until).toMatchObject({ kind: "defer", date: "2026-10-09", explicit: true, label: "next Friday" });
   });
+  it("a season it got worse in is the past, not when they want it: still a yes", () => {
+    for (const asOf of ["2026-04-15", "2026-02-11", "2026-07-01"]) {
+      for (const text of ["Still need it. The oak got worse over the winter honestly. When can you come?", "Yes please, the hedge grew a lot over the summer. Can you come next week?"]) {
+        const r = readReply({ text, asOf });
+        expect(r.intent).toBe("wants_it");
+        expect(r.extracted.followUpOn).toBeUndefined();
+      }
+    }
+    // a season ahead still defers
+    expect(readReply({ text: "Still want it but let's do it over the winter.", asOf: "2026-04-15" }).intent).toBe("later");
+  });
   it("sets a follow-up date for 'later' when they name next week's day", () => {
     const r = readReply({ text: "Not this week, we're away. Try me next friday.", asOf: ASOF });
     expect(r.intent).toBe("later");

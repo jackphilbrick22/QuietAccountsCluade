@@ -27,7 +27,10 @@ export interface CallListEntry {
   why: "big_quote" | "phone_only";
 }
 
-export function callList(ds: Dataset, result: ScanResult, limit = 25): CallList {
+/** How many of the biggest the summary keeps: enough for the welcome text to find its three of different kinds. */
+const CALL_LIST_KEPT = 60;
+
+export function callList(ds: Dataset, result: ScanResult, limit = CALL_LIST_KEPT): CallList {
   const byId = new Map(ds.customers.map((c) => [c.id, c]));
   const best = new Map<string, { o: Opportunity; why: CallListEntry["why"] }>();
   for (const o of result.opportunities) {

@@ -1,8 +1,23 @@
 /**
  * The film's beat sheet as data (STORYBOARD §5 and §9), in milliseconds on the loop, and its layout in CSS px on the
  * 1280 × 596 frame (rendered at 1.5x). The scenes read their times from here and nothing else.
+ *
+ * A one pass (fence, tree) closes on the pass's own last text, which asks him nothing: no YES to type, so its phone
+ * leaves 1.3 s sooner, and its offer (the pass promise, two sentences) holds 0.2 s longer. 34.4 s, against 35.5.
+ * Its hand-off text is taller than his screen (the quote, and the heads-up to re-price it), so it's shown in two views,
+ * its top and then its end, which takes 0.75 s; that comes out of the pass's last text, where the console answers the
+ * phone (what he paid) instead of both holding still.
  */
-export const DURATION = 35_500;
+import { C } from "./data";
+
+/** Fence and tree sell the one pass; lawn and cleaning the free 150 and then monthly. */
+export const ONE_PASS = C.offer.kind === "one_pass";
+/** How much sooner the one pass's close ends (no YES), and how much longer its offer holds. */
+const CUT = ONE_PASS ? 1300 : 0;
+const HOLD = ONE_PASS ? 200 : 0;
+/** How much longer a one pass's hand-off text takes (two views), paid for out of its close. */
+const HANDOFF = ONE_PASS ? 750 : 0;
+export const DURATION = 35_500 - CUT + HOLD;
 export const FPS = 30;
 export const FRAME = { w: 1280, h: 596, scale: 1.5 };
 
@@ -52,14 +67,26 @@ export const T = {
    * softly to the paragraph that asks for his OK, he types it; then the console schedules every note; then our answer.
    */
   ok: { phoneIn: 9050, welcome: 9480, hand: 10800, typeOk: 12000, tap: 12260, send: 12600, flip: 13400, reply: 14450 },
-  /** Beat 5: the first day's notes go out; every reply is read, sorted and answered (Notes → Replies). */
-  send: { sent: 15300, sentGap: 90, sending: 15300, pan: 15950, panDur: 1650, arrive: 17800, gap: 650, ack: 19050 },
-  /** Beat 6: we text him the one who wants the work (the chip, then the phone), and his BOOKED. */
-  handoff: { chip: 20050, text: 20450, type: 22350, tap: 22800, send: 23140, reply: 23650 },
+  /**
+   * Beat 5: the first day's notes go out; every reply is read, sorted and answered (Notes → Replies). The last two
+   * replies arrive from `arrive`, `gap` apart, the one we follow last (18.45 s); our answer opens 0.6 s after it.
+   */
+  send: { sent: 15300, sentGap: 90, sending: 15300, pan: 15950, panDur: 1650, arrive: 17800, gap: 650 },
+  /**
+   * Beat 6: we text him the one who wants the work (the chip, then the phone), and his BOOKED. A one pass's hand-off
+   * comes in on its top (the name, the quote, the heads-up), held 0.65 s once it's in, then goes to its end (`end`, a
+   * 0.8 s sine: the longest move on his phone, never a lurch), held, before BOOKED.
+   */
+  handoff: { chip: 20050, text: 20450, end: 21650, endDur: 800, type: 22350 + HANDOFF, tap: 22800 + HANDOFF, send: 23140 + HANDOFF, reply: 23650 + HANDOFF },
   /** Beat 7: it shows up in his results (Overview); the round's other bookings land as the weeks go by. */
-  money: { out: 24450, tiles: 24600, ledger: 24750, featured: 25250, rest: 26200, restGap: 420 },
-  /** Beat 8: the round's last text, his YES; the offer; back to the empty canvas. */
-  close: { text: 27550, type: 29350, tap: 29700, send: 30040, reply: 30500, phoneOut: 32200, offer: 32400, chip1: 32750, chip2: 32930, out: 34750 },
+  money: { out: 24450 + HANDOFF, tiles: 24600 + HANDOFF, ledger: 24750 + HANDOFF, featured: 25250 + HANDOFF, rest: 26200 + HANDOFF, restGap: 420 },
+  /**
+   * Beat 8: the round's last text, his YES; the offer; back to the empty canvas. A one pass's last text has nothing to
+   * answer: once he's read it, the console answers it instead, one thing at a time: the state pill to "Pass done"
+   * (`charges`), Booked to the pass's end (`booked`: the jobs past the ledger's last row, marked with the day the pass
+   * ended), and the billing figure to the console's own Charges figure, what he paid (`chargesFig`).
+   */
+  close: { text: 27550 + HANDOFF, charges: 29900, booked: 30100, chargesFig: 30300, type: 29350, tap: 29700, send: 30040, reply: 30500, phoneOut: 32200 - CUT, offer: 32400 - CUT, chip1: 32750 - CUT, chip2: 32930 - CUT, out: 34750 - CUT + HOLD },
 };
 
 /** Which side acts, from when (STORYBOARD §3): the other side, if it's on screen, recedes to `IDLE`. */
@@ -74,6 +101,7 @@ export const FOCUS: { at: number; to: "console" | "phone" }[] = [
   { at: T.handoff.text - 150, to: "phone" },
   { at: T.money.out - 50, to: "console" },
   { at: T.close.text - 150, to: "phone" },
+  ...(ONE_PASS ? [{ at: T.close.charges - 150, to: "console" as const }] : []),
   { at: T.close.phoneOut, to: "console" },
 ];
 

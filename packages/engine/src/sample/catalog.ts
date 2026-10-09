@@ -49,6 +49,10 @@ export const CATALOG: Partial<Record<TradeId, CatalogItem[]>> = {
     { title: "Fence repair - 2 sections", low: 450, high: 1400, weight: 4 },
     { title: "Chain link 4' - dog run", low: 1800, high: 3800, weight: 2 },
     { title: "Replace gate + latch", low: 400, high: 1100, weight: 3 },
+    // a New England shop's other everyday installs, so an owner's list reads like his own (not nine privacy fences in a row)
+    { title: "Split rail fence - 200 ft", low: 2400, high: 5200, weight: 2 },
+    { title: "White picket fence - front yard", low: 2200, high: 4800, weight: 2 },
+    { title: "Wood stockade fence - 120 ft", low: 3200, high: 6400, weight: 2 },
   ],
   concrete: [
     { title: "Replace driveway 24x40", low: 7500, high: 16000, weight: 4, addOn: { name: "Seal after cure", low: 350, high: 800 } },

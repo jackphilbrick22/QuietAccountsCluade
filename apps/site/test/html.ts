@@ -7,6 +7,10 @@ import { LABEL, PAGES, type SitePage } from "../src/trades.ts";
 /** The pages as the build writes them (markers filled), and plain-text views of them for the word rules. */
 export const page = (id: string) => PAGES.find((p) => p.id === id)!;
 export const lawn = page("lawn");
+/** The all-trades site's pages that carry the film drop-down (film.test.ts), each its own trade's film. */
+export const FILMED = ["lawn-site", "cleaning-site", "fence-site", "tree-site"];
+/** Their cold email pages, the link in each trade's "show me" reply: the film too. */
+export const FILMED_COLD = FILMED.map((id) => id.replace(/-site$/, "-cold-email-page"));
 
 export function rendered(file: string, page?: SitePage): string {
   return renderPage(readFileSync(new URL(`../${file}`, import.meta.url), "utf8"), page);

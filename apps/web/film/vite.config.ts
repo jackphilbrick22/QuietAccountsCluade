@@ -12,5 +12,6 @@ export default defineConfig({
   base: "./",
   plugins: [react(), tailwindcss()],
   build: { outDir: `${root}dist`, emptyOutDir: true, target: "es2022", chunkSizeWarningLimit: 4000, assetsInlineLimit: 0 },
-  server: { port: 5190, strictPort: false },
+  // the trade pages' logo marks come from apps/site/src/assets (film/src/theme.ts)
+  server: { port: 5190, strictPort: false, fs: { allow: [decodeURIComponent(new URL("../../..", import.meta.url).pathname)] } },
 });

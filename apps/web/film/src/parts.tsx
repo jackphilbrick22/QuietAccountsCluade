@@ -6,6 +6,20 @@ import type { CSSProperties, ReactNode } from "react";
 import type { LucideIcon } from "lucide-react";
 import { cx } from "../../src/components/ui";
 import { clamp, css, lerp, out, type M } from "./motion";
+import { TH } from "./data";
+
+/** The trade's logo mark (theme.ts): the rail's, and the phone's thread header's. */
+export function Mark({ size, className }: { size: number; className?: string }) {
+  return <img src={TH.mark} width={size} height={size} alt="" className={className ?? "shrink-0 rounded-[22%]"} />;
+}
+
+/**
+ * The " · " between the parts of a line (the client page's header line, a note card's head). Its spaces are the
+ * theme's to set: Instrument Sans's word space is narrow enough that the dots crowd the words (theme.ts).
+ */
+export function Sep() {
+  return <span className="film-sep">{" · "}</span>;
+}
 
 /* ------------------------------ chips ------------------------------ */
 

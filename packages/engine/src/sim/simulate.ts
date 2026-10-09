@@ -79,7 +79,8 @@ export function simulate(state: AccountState, from: ISODate, days: number, opts:
       const at = new Date(Date.parse(`${touch.dueAt}:00Z`) + lagHours * 3600000).toISOString().slice(0, 19);
       const c = state.dataset.customers.find((cc) => cc.id === touch.customerId);
       const text = pick(SIM_REPLIES[intent] ?? SIM_REPLIES.wants_it!, r)
-        .replace("{job}", opp?.jobPhrase.replace(/^the /, "") ?? "tree")
+        // the thing itself, as a homeowner says it: "the oak got worse over the winter", not "the oak removal"
+        .replace("{job}", opp?.jobPhrase.replace(/^the /, "").replace(/ (removal|pruning|grinding|trimming|treatment|cabling)\b/, "") ?? "tree")
         .replace("{signer}", b.signerName)
         .replace("{phone}", c?.phones[0] ? fmtPhone(c.phones[0]) : "")
         .replace("{day}", ["Tuesday", "Thursday", "next Monday"][Math.floor(r() * 3)]!);

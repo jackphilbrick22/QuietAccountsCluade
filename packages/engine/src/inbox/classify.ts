@@ -543,6 +543,15 @@ function pastBefore(text: string, index: number): boolean {
     /\b(passed|died|moved|sold|was|were|did|had|got|happened|started|finished|came|went|bought|removed|pumped|cut|fell)\s+(?:in|on|back in|during|over|around|this|last)?\s*$/.test(before);
 }
 
+/**
+ * A season or month that says when something happened, by what it did then: "the oak got worse over the winter", "it
+ * grew a lot in the spring", "got really bad over the summer". The words before the time (and its own "over the")
+ * read as the past: not when they want the work.
+ */
+function gotPast(text: string, index: number, pre: string): boolean {
+  return /\b(?:got|gotten|grew|grown)\s+(?:[a-z']+\s+){0,2}(?:over|during|through|in|this|last)\s+(?:the\s+)?$/.test(`${text.slice(Math.max(0, index - 30), index)}${pre}`);
+}
+
 function pushExpr(out: TimeExpr[], e: TimeExpr): void {
   // Keep the longer / more specific of two overlapping matches.
   for (let i = 0; i < out.length; i++) {
@@ -576,7 +585,7 @@ export function findTimeExpressions(text: string, asOf: ISODate): TimeExpr[] {
     const season: Season = word.startsWith("spring") ? "spring" : word.startsWith("summer") ? "summer" : word.startsWith("winter") ? "winter" : "fall";
     if (word === "fall" && !pre.trim() && !/^(?:fall|the fall|in the fall)$/.test(whole)) continue; // "the tree could fall"
     if (word === "fall" && /^(?:the |to |of )$/.test(pre)) continue;
-    if (/\b(last|past)\b/.test(pre)) {
+    if (/\b(last|past)\b/.test(pre) || gotPast(t, m.index, pre)) {
       pushExpr(out, { phrase: m[0].trim(), index: m.index, end: m.index + m[0].length, kind: "past", label: "", spec: 0 });
       continue;
     }
@@ -607,7 +616,7 @@ export function findTimeExpressions(text: string, asOf: ISODate): TimeExpr[] {
     const onlyMonth = whole === word || whole === `in ${word}` || whole === `maybe ${word}` || whole === `maybe in ${word}`;
     if (!isFullSafe && !pre.trim() && !dayStr && !onlyMonth) continue;
     if (word === "may" && !dayStr && !/\b(early|mid|middle of|late|end of|beginning of|start of|first of|in|until|till|til|after|before|by|around|next|sometime in|come|through|thru)\s*$/.test(pre) && !onlyMonth) continue;
-    if (/\b(last|past|since)\b/.test(pre) || pastBefore(t, m.index)) {
+    if (/\b(last|past|since)\b/.test(pre) || pastBefore(t, m.index) || gotPast(t, m.index, pre)) {
       pushExpr(out, { phrase: m[0].trim(), index: m.index, end: m.index + m[0].length, kind: "past", label: "", spec: 0 });
       continue;
     }

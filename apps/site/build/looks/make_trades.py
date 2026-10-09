@@ -67,6 +67,12 @@ Q = {
 FINDS = {"cleaning": "find every client who stopped booking.", "fence": "find every quote that never booked.",
          "tree": "find every quote that never booked.", "painting": "find every estimate that never booked."}
 ONE_PASS_FINAL_TICKS = "<li>No card to start</li><li>No contract</li><li>Never more than $1,000</li>"
+# The film drop-down (Oct 8, 2026): the service running for a made-up company in the trade, one tap away under the three
+# lines that say what we do, where he's just understood it and wants to see it's real. Build/render.ts fills the marker
+# from the trade's film in public/film/<trade>/. Its cold email page (where an owner from an email lands) has it too, at
+# the end of "What happens after you press start". Painting waits for its own film.
+FILM = ["lawn", "cleaning", "fence", "tree"]
+FILM_MARK = "  <!--qa:film-->\n"
 
 ICON = {
     "list": '<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/>',
@@ -276,7 +282,7 @@ def lines(trade):
   <p>We <span class="ico">{icon("search")}</span> {FINDS[trade]}</p>
   <p>Then we <span class="ico">{icon("mail")}</span> write each one a note from your office.</p>
   <p>Every yes <span class="ico">{icon("phone")}</span> is texted to you.</p>
-</div></section>'''
+{FILM_MARK if trade in FILM else ""}</div></section>'''
 
 
 def how(n):
@@ -467,7 +473,7 @@ def cold_page(trade):
     <li><span class="when">The next weekday morning</span><h3>The first notes go out.</h3><p>Up to three short notes over a week or two. A person reads every reply, and every yes is texted to you the same day, like this:</p><!--qa:handoff--></li>
     <li><span class="when">{when}</span><h3>{h3}</h3><p>{p}</p></li>
   </ol>
-</div></section>
+{FILM_MARK if trade in FILM else ""}</div></section>
 
 <section class="sec" id="results"><div class="wrap">
   <h2>{n["results_h2"]}</h2>
@@ -500,7 +506,19 @@ def lawn_pages():
     assert main.count(a) == 1
     main = main.replace(a, a + f"  {switcher('lawn')}\n")
     main = main.replace("<body>", '<body class="t-lawn">', 1)
+    # the film, under the three lines, as on every filmed trade's page
+    a = re.search(r'<section class="sec lines"[^>]*><div class="wrap">\n.*?\n(?=</div></section>)', main, re.S)
+    assert a and "lawn" in FILM
+    main = main[:a.end()] + FILM_MARK + main[a.end():]
+    # its cold email page, the link in the "show me" reply, where an owner from an email lands: the film too, closed, at
+    # the end of "What happens after you press start" (what it shows), in the lawn page's look
     cold = open(f"{SITE}/green-cold-email-page/index.html", encoding="utf-8").read()
+    a = '<link rel="stylesheet" href="/src/green.css">'
+    assert cold.count(a) == 1
+    cold = cold.replace(a, a + '\n<link rel="stylesheet" href="/src/trade.css">').replace("<body>", '<body class="t-lawn">', 1)
+    a = re.search(r'<section class="sec" id="next"><div class="wrap">\n.*?</ol>\n', cold, re.S)
+    assert a
+    cold = cold[:a.end()] + FILM_MARK + cold[a.end():]
     return main, cold
 
 

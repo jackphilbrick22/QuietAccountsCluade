@@ -75,6 +75,14 @@ export interface TradePlaybook {
   objects: [RegExp, string][];
   /** Location words -> phrase appended to the object ("driveway" -> "by the driveway"). */
   places: [RegExp, string][];
+  /**
+   * The work done to an object, by the service its title names, so the phrase says what was quoted, not only what
+   * it was quoted on: a tree company's "Oak removal + stump" is "the oak removal", its "Crown thinning, 3 maples"
+   * "the maple pruning" (an owner's book of removals and pruning, not of oaks and maples). The object as written
+   * for the work: "the hedges" trimmed is "the hedge trimming" ("" keeps an object alone); `words` in the title name
+   * the work before its service does ("Cable & brace" is cabling). Unset: the object alone.
+   */
+  objectWork?: { service: Record<string, string>; words?: [RegExp, string][]; object?: Record<string, string> };
   /** Why quotes die in this trade — feeds the angle choice and the owner education screen. */
   whyQuotesDie: string[];
   /** Best-performing angles for dead quotes, in order. */

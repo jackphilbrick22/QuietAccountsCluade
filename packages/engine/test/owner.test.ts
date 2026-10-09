@@ -48,12 +48,12 @@ describe("the hand-off text", () => {
   });
   it("a quote shows the quote as sent", () => {
     const st = account();
-    expect(handoffText(st, reply(st, "c1", "unanswered_quote"))).toContain("Quote #1182: Jul 14 · $2,400 · birch by the driveway");
+    expect(handoffText(st, reply(st, "c1", "unanswered_quote"))).toContain("Quote #1182: Jul 14 · $2,400 · birch removal by the driveway");
   });
   it("a request that never got a price says so, with no made-up amount", () => {
     const st = account();
     const text = handoffText(st, reply(st, "c3", "unquoted_request"));
-    expect(text).toContain("Request: Aug 20 · never priced · spruce over the house");
+    expect(text).toContain("Request: Aug 20 · never priced · spruce removal over the house");
     expect(text.split("\n")[1]).not.toMatch(/\$/);
   });
   it("work that came due shows when it was last done, not the due date", () => {
@@ -75,6 +75,15 @@ describe("the instant answer to 'how much?'", () => {
   it("never thanks a household by a made-up first name", () => {
     const st = account();
     expect(ackFor(st, reply(st, "c3", "unquoted_request"))!.text).toMatch(/^Thanks\. /);
+  });
+  it("keeps the time they asked to be called, when the call-back can keep it", () => {
+    const st = account();
+    const asked = { ...reply(st, "c1", "unanswered_quote"), text: "Yes please. Can you call me after 5? 603-555-0142", extracted: { phone: "+16035550142", bestTime: "after 5" } };
+    const a = ackFor(st, asked)!;
+    expect(a.text).toMatch(/give you a call at \(603\) 555-0142 today after 5 to get it on the schedule\./);
+    expect(a.promise).toBe("you'll call them today after 5");
+    // a window the day's call can't promise (weekends, mornings at 2pm) is left to the owner
+    expect(ackFor(st, { ...asked, extracted: { bestTime: "weekends" } })!.text).toMatch(/give you a call today to get it on the schedule\./);
   });
 });
 

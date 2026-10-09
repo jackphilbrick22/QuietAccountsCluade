@@ -16,7 +16,8 @@
         "threeQuarters": 10150,
         "high": 19575
       }
-    }
+    },
+    "inboxes": 1
   },
   "company": {
     "name": "Desrochers Lawn & Landscape",
@@ -44,8 +45,14 @@
   "export": {
     "software": "Jobber",
     "receivedAt": "2026-02-08T21:47",
-    "fileName": "Jobs Report.csv",
-    "rows": 3645,
+    "files": [
+      {
+        "fileName": "Jobs Report.csv",
+        "kind": "job",
+        "rows": 3645
+      }
+    ],
+    "quotes": 0,
     "records": 3645,
     "customers": 1120,
     "years": "2021–2026"
@@ -106,6 +113,13 @@
           "title": "Mowing visit",
           "on": "2025-04-21",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2025-04-21",
+          "total": 55,
+          "number": "3938"
         }
       },
       {
@@ -125,6 +139,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-04-23",
           "total": 2400
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-04-23",
+          "total": 2400,
+          "number": "1177"
         }
       },
       {
@@ -144,6 +165,13 @@
           "title": "Fertilization & weed control program",
           "on": "2023-11-08",
           "total": 525
+        },
+        "record": {
+          "kind": "job",
+          "title": "Fertilization & weed control program",
+          "on": "2023-11-08",
+          "total": 525,
+          "number": "1019"
         }
       },
       {
@@ -163,6 +191,13 @@
           "title": "Mowing visit",
           "on": "2025-06-06",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2025-06-06",
+          "total": 55,
+          "number": "3054"
         }
       },
       {
@@ -182,6 +217,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-09-17",
           "total": 1475
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-09-17",
+          "total": 1475,
+          "number": "1324"
         }
       },
       {
@@ -201,6 +243,13 @@
           "title": "Mowing visit",
           "on": "2025-07-30",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2025-07-30",
+          "total": 55,
+          "number": "1885"
         }
       },
       {
@@ -220,6 +269,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-07-30",
           "total": 1850
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-07-30",
+          "total": 1850,
+          "number": "1298"
         }
       },
       {
@@ -239,6 +295,13 @@
           "title": "Fertilization & weed control program",
           "on": "2024-06-19",
           "total": 350
+        },
+        "record": {
+          "kind": "job",
+          "title": "Fertilization & weed control program",
+          "on": "2024-06-19",
+          "total": 350,
+          "number": "1258"
         }
       },
       {
@@ -258,6 +321,13 @@
           "title": "Mowing visit",
           "on": "2025-06-25",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2025-06-25",
+          "total": 55,
+          "number": "4145"
         }
       },
       {
@@ -277,6 +347,13 @@
           "title": "Weekly mowing - season",
           "on": "2023-05-29",
           "total": 2325
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2023-05-29",
+          "total": 2325,
+          "number": "886"
         }
       },
       {
@@ -296,6 +373,13 @@
           "title": "Weekly mowing - season",
           "on": "2023-04-21",
           "total": 1425
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2023-04-21",
+          "total": 1425,
+          "number": "862"
         }
       },
       {
@@ -315,6 +399,13 @@
           "title": "Mowing visit",
           "on": "2024-10-18",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2024-10-18",
+          "total": 55,
+          "number": "3909"
         }
       }
     ],
@@ -336,6 +427,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-04-23",
           "total": 2400
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-04-23",
+          "total": 2400,
+          "number": "1177"
         }
       },
       {
@@ -355,6 +453,13 @@
           "title": "Fertilization & weed control program",
           "on": "2023-11-08",
           "total": 525
+        },
+        "record": {
+          "kind": "job",
+          "title": "Fertilization & weed control program",
+          "on": "2023-11-08",
+          "total": 525,
+          "number": "1019"
         }
       },
       {
@@ -374,6 +479,13 @@
           "title": "Mowing visit",
           "on": "2025-06-06",
           "total": 55
+        },
+        "record": {
+          "kind": "job",
+          "title": "Mowing visit",
+          "on": "2025-06-06",
+          "total": 55,
+          "number": "3054"
         }
       },
       {
@@ -393,6 +505,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-09-17",
           "total": 1475
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-09-17",
+          "total": 1475,
+          "number": "1324"
         }
       },
       {
@@ -412,6 +531,13 @@
           "title": "Weekly mowing - season",
           "on": "2024-07-30",
           "total": 1850
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2024-07-30",
+          "total": 1850,
+          "number": "1298"
         }
       },
       {
@@ -431,6 +557,13 @@
           "title": "Fertilization & weed control program",
           "on": "2024-06-19",
           "total": 350
+        },
+        "record": {
+          "kind": "job",
+          "title": "Fertilization & weed control program",
+          "on": "2024-06-19",
+          "total": 350,
+          "number": "1258"
         }
       },
       {
@@ -450,6 +583,13 @@
           "title": "Weekly mowing - season",
           "on": "2023-05-29",
           "total": 2325
+        },
+        "record": {
+          "kind": "job",
+          "title": "Weekly mowing - season",
+          "on": "2023-05-29",
+          "total": 2325,
+          "number": "886"
         }
       }
     ]
@@ -603,6 +743,13 @@
       "title": "Mowing visit",
       "on": "2025-06-06",
       "total": 55
+    },
+    "record": {
+      "kind": "job",
+      "title": "Mowing visit",
+      "on": "2025-06-06",
+      "total": 55,
+      "number": "3054"
     },
     "phone": "+16039599461",
     "note": {
@@ -797,7 +944,7 @@
       "asked": 7
     },
     "endOfRun": {
-      "asOf": "2026-03-26",
+      "asOf": "2026-03-05",
       "booked": 6,
       "bookedValue": 9975,
       "contacted": 150,
@@ -805,6 +952,7 @@
       "replied": 16,
       "askedToComeBack": 9
     },
+    "billing": null,
     "ledger": [
       {
         "name": "Holly Evans",

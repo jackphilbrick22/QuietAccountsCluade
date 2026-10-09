@@ -4,12 +4,20 @@
  * device scale 1.5, steps the film clock at 30 fps, screenshots every frame and pipes them to ffmpeg.
  *
  *   pnpm --filter @qa/web film:build                    (vite build --config film/vite.config.ts → film/dist)
- *   node film/render.mjs                                → film/out/quiet-accounts-film.{mp4,webm}, -1280.mp4 (for small
- *                                                         screens), -poster.jpg (a strong frame, --poster <ms>),
- *                                                         -first.jpg (frame 0, the loop's start)
- *   node film/render.mjs --trade cleaning               → film/out/quiet-accounts-film-cleaning.* (content.cleaning.json)
+ *   node film/render.mjs --trade lawn                   → apps/site/public/film/lawn/film.mp4 (1920 wide), film-1280.mp4
+ *                                                         (for laptops at 1x), poster.jpg (a strong frame, --poster <ms>)
+ *   node film/render.mjs --trade cleaning               → apps/site/public/film/cleaning/… (content.cleaning.json, the
+ *                                                         cleaning page's look); fence and tree the same
+ *   node film/render.mjs --trade fence --cut phone      → apps/site/public/film/fence/film-phone.mp4 (1080 × 1080, the
+ *                                                         phone cut: camera.ts), poster-phone.jpg, start-phone.jpg
  *   node film/render.mjs --stills 0,7500,12650 --out d  → one PNG per moment (ms), nothing encoded
  *   node film/render.mjs --frames <dir>                 keeps every frame's PNG there (for contact sheets)
+ *
+ * Every render also writes the first frame as start.jpg (start-phone.jpg): what the page shows while the film loads,
+ * so the film starts where its poster left off (poster.jpg, a strong moment, is for a viewer who'd rather press play).
+ *
+ * No WebM: the films ship on the trade pages, where a second encoding is page weight for no gain (every browser plays
+ * the H.264 MP4).
  *
  * Checks before it calls a render good (STORYBOARD §7): the fonts are loaded; the outer 30 output px (the 20 CSS px
  * margin) are white in every 15th frame; the last frame matches the first (t = the loop's length vs 0, mean
@@ -27,27 +35,31 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, "dist");
-const OUT = join(HERE, "out");
+/** The site's public folder: each trade's film beside its page. */
+const SITE_FILM = resolve(HERE, "../../site/public/film");
 const args = process.argv.slice(2);
 const opt = (name, dflt) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? (args[i + 1] && !args[i + 1].startsWith("--") ? args[i + 1] : true) : dflt;
 };
 const trade = opt("trade", "lawn");
+/** "phone": the phone cut (film/src/camera.ts), a square for small screens */
+const cut = opt("cut", null);
 const FPS = 30;
 /** the loop's length: the film page's own (film/src/timeline.ts), read once the page is up */
 let DURATION = 0;
-const W = 1280;
-const H = 596;
-const SCALE = 1.5;
+/** the page's layout size and scale: the film's 1280 × 596 at 1.5, or the phone cut's 480 × 480 at 2.25 */
+const W = cut === "phone" ? 480 : 1280;
+const H = cut === "phone" ? 480 : 596;
+const SCALE = cut === "phone" ? 2.25 : 1.5;
 
 function findFfmpeg() {
   const cands = [process.env.FFMPEG, resolve(HERE, "../../../../results/bin/ffmpeg"), "/home/user/QuietAccountsCluade/.claude/worktrees/results/bin/ffmpeg", "ffmpeg"].filter(Boolean);
   for (const c of cands) {
     const r = spawnSync(c, ["-hide_banner", "-encoders"], { encoding: "utf8" });
-    if (r.status === 0 && r.stdout.includes("libx264") && r.stdout.includes("libvpx-vp9")) return c;
+    if (r.status === 0 && r.stdout.includes("libx264")) return c;
   }
-  throw new Error("No ffmpeg with libx264 and libvpx-vp9: set FFMPEG=/path/to/ffmpeg");
+  throw new Error("No ffmpeg with libx264: set FFMPEG=/path/to/ffmpeg");
 }
 
 /* ------------------------------ serve film/dist ------------------------------ */
@@ -116,7 +128,8 @@ function wordsOk(text, allowedFree) {
 const pw = await import(join(dirname(process.execPath), "../lib/node_modules/playwright/index.mjs"));
 const ffmpeg = findFfmpeg();
 const server = await serve();
-const url = `http://127.0.0.1:${server.address().port}/index.html${trade !== "lawn" ? `?trade=${trade}` : ""}`;
+const query = new URLSearchParams({ ...(trade !== "lawn" ? { trade } : {}), ...(cut ? { cut } : {}) }).toString();
+const url = `http://127.0.0.1:${server.address().port}/index.html${query ? `?${query}` : ""}`;
 const browser = await pw.chromium.launch({ args: ["--force-color-profile=srgb", "--disable-lcd-text", "--font-render-hinting=none", "--hide-scrollbars"] });
 const page = await browser.newPage({ viewport: { width: W, height: H }, deviceScaleFactor: SCALE, colorScheme: "light", reducedMotion: "no-preference" });
 const errors = [];
@@ -125,6 +138,8 @@ page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
 await page.goto(url, { waitUntil: "load" });
 await page.evaluate(() => window.__film.ready);
 DURATION = await page.evaluate(() => window.__film.duration);
+const size = await page.evaluate(() => window.__film.size);
+if (size.w !== W || size.h !== H) throw new Error(`The page is ${size.w} × ${size.h}, not ${W} × ${H}`);
 const fontsOk = await page.evaluate(() => window.__film.fontsOk());
 if (!fontsOk) throw new Error("Fonts not loaded (Cal Sans / Inter): refusing to render");
 const shot = async (ms) => {
@@ -148,24 +163,31 @@ if (stills) {
 
 const framesDir = opt("frames", null);
 if (framesDir) mkdirSync(framesDir, { recursive: true });
+const OUT = resolve(opt("dest", join(SITE_FILM, trade)));
 mkdirSync(OUT, { recursive: true });
-const base = join(OUT, trade === "lawn" ? "quiet-accounts-film" : `quiet-accounts-film-${trade}`);
+const base = join(OUT, cut === "phone" ? "film-phone" : "film");
+const suffix = cut === "phone" ? "-phone" : "";
 const color = ["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv"];
 const enc = (outFile, codec) =>
   spawn(ffmpeg, ["-y", "-v", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "png", "-i", "-", ...color, ...codec, "-an", outFile], { stdio: ["pipe", "inherit", "inherit"] });
 const x264 = (crf) => ["-c:v", "libx264", "-profile:v", "high", "-preset", "slow", "-tune", "animation", "-crf", String(crf), "-x264-params", "aq-mode=3", "-movflags", "+faststart"];
-const mp4 = enc(`${base}.mp4`, x264(opt("crf", 20)));
-const webm = enc(`${base}.webm`, ["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", String(opt("vp9crf", 32)), "-row-mt", "1", "-deadline", "good", "-cpu-used", "2"]);
-// a 1280 × 596 MP4 for small screens (a phone shows it about 375 px wide): the same frames, scaled down
-const small = spawn(
-  ffmpeg,
-  ["-y", "-v", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "png", "-i", "-", "-vf", "scale=1280:596:flags=lanczos,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv", ...x264(Number(opt("crf", 20)) + 2), "-an", `${base}-1280.mp4`],
-  { stdio: ["pipe", "inherit", "inherit"] },
-);
+// the phone cut is one file (1080 × 1080, CRF 26: a phone's data, and it reads the same as at 22); the film is two:
+// 1920 wide, and 1280 for laptops
+const mp4 = enc(`${base}.mp4`, x264(cut === "phone" ? Number(opt("crf", 20)) + 6 : opt("crf", 20)));
+// a 1280 × 596 MP4 for laptops at 1x: the same frames, scaled down
+const small =
+  cut === "phone"
+    ? null
+    : spawn(
+        ffmpeg,
+        ["-y", "-v", "error", "-f", "image2pipe", "-framerate", String(FPS), "-c:v", "png", "-i", "-", "-vf", "scale=1280:596:flags=lanczos,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709", "-color_range", "tv", ...x264(Number(opt("crf", 20)) + 2), "-an", `${base}-1280.mp4`],
+        { stdio: ["pipe", "inherit", "inherit"] },
+      );
+const encs = [mp4, ...(small ? [small] : [])];
 const write = (p, buf) => new Promise((r) => (p.stdin.write(buf) ? r() : p.stdin.once("drain", r)));
 const closed = (p) => new Promise((r, j) => p.on("close", (c) => (c === 0 ? r() : j(new Error(`ffmpeg exited ${c}`)))));
 // listen for each encoder's exit from the start: it may finish while the word checks below are still running
-const encoders = Promise.all([closed(mp4), closed(webm), closed(small)]);
+const encoders = Promise.all(encs.map(closed));
 
 const frames = Math.round((DURATION / 1000) * FPS);
 const posterFrame = Math.round((Number(opt("poster", 22000)) / 1000) * FPS);
@@ -183,12 +205,10 @@ for (let i = 0; i < frames; i++) {
     const worst = edgeWhite(rgb(ffmpeg, png), W * SCALE, H * SCALE);
     if (worst < 254) problems.push(`frame ${i} (t ${ms.toFixed(0)} ms): edge pixel ${worst}, not white`);
   }
-  await Promise.all([write(mp4, png), write(webm, png), write(small, png)]);
+  await Promise.all(encs.map((e) => write(e, png)));
   if (i % 60 === 0) process.stdout.write(`\r  frame ${i}/${frames}  ${((Date.now() - t0) / 1000).toFixed(0)} s`);
 }
-mp4.stdin.end();
-webm.stdin.end();
-small.stdin.end();
+for (const e of encs) e.stdin.end();
 
 // the seam: t = DURATION must be the first frame again
 const last = await shot(DURATION);
@@ -221,16 +241,21 @@ for (let ms = 250; ms < DURATION; ms += 500) {
 }
 
 await encoders;
-// the poster: a strong frame for when a browser won't autoplay; and frame 0, for a page that wants no change at all
-// between the poster and the first frame of the loop
-const jpg = (png, out) => spawnSync(ffmpeg, ["-y", "-v", "error", "-f", "png_pipe", "-i", "-", "-q:v", "3", out], { input: png });
-jpg(first, `${base}-first.jpg`);
-jpg(poster ?? first, `${base}-poster.jpg`);
+// the poster: a strong frame, for a viewer who'd rather press play (reduced motion); and the first frame, what the page
+// shows while the film loads, so it starts where its picture left off. A 1280-wide one too, as the film.
+const jpg = (png, out, scale) => spawnSync(ffmpeg, ["-y", "-v", "error", "-f", "png_pipe", "-i", "-", ...(scale ? ["-vf", `scale=${scale}:flags=lanczos`] : []), "-q:v", "3", out], { input: png });
+const stillsOut = [`poster${suffix}.jpg`, `start${suffix}.jpg`, ...(cut === "phone" ? [] : ["poster-1280.jpg", "start-1280.jpg"])];
+jpg(poster ?? first, join(OUT, `poster${suffix}.jpg`));
+jpg(first, join(OUT, `start${suffix}.jpg`));
+if (cut !== "phone") {
+  jpg(poster ?? first, join(OUT, "poster-1280.jpg"), "1280:596");
+  jpg(first, join(OUT, "start-1280.jpg"), "1280:596");
+}
 await browser.close();
 server.close();
 
 console.log(`\n  ${frames} frames in ${((Date.now() - t0) / 1000).toFixed(0)} s; seam ${seam.toFixed(3)}/255`);
-for (const f of [`${base}.mp4`, `${base}.webm`, `${base}-1280.mp4`, `${base}-poster.jpg`, `${base}-first.jpg`]) console.log(`  ${f}  ${(statSync(f).size / 1e6).toFixed(2)} MB`);
+for (const f of [`${base}.mp4`, ...(small ? [`${base}-1280.mp4`] : []), ...stillsOut.map((x) => join(OUT, x))]) console.log(`  ${f}  ${(statSync(f).size / 1e6).toFixed(2)} MB`);
 if (errors.length) problems.push(...errors.map((e) => `page error: ${e}`));
 if (problems.length) {
   console.log(`\nCHECKS FAILED:\n  ${problems.join("\n  ")}`);

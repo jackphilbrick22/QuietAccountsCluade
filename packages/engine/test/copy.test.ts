@@ -416,6 +416,15 @@ describe("a wood deck's stain", () => {
     expect(n.body).toContain("We did the deck staining for you back in March 2024, and you're coming up on when it's due again. Every 2½ years is the rule of thumb.");
     expect(n.flags).toEqual([]);
   });
+
+  it("long past its due date, it's due for another one, not 'coming up on' it", () => {
+    const ds = deckDs(job("j1", "c1", { title: "Deck stain & seal", total: 1600, completedOn: ago(1200) }));
+    const o = oneOpp(scan(ds), "c1", "service_due");
+    const n = renderNote(o, ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
+    expect(n.body).toMatch(/We did the deck staining for you back in \w+ 2023, so you're due for another one\. Every 2½ years is the rule of thumb\./);
+    expect(n.body).not.toMatch(/coming up on/);
+    expect(n.flags).toEqual([]);
+  });
 });
 
 /* ------------------------------------------------------------------ */

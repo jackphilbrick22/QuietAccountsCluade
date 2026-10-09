@@ -1,7 +1,8 @@
 /**
  * The owner's phone: his part of the service, by text. It comes in once (beat 4) and stays beside the console until
  * the offer: the welcome text with the first note, his OK and our answer; the hand-off text, his BOOKED and our
- * answer; the round's last text (its tally and its price line), his YES and our answer. Every word is content.json's
+ * answer; the round's last text (its tally and its price line), his YES and our answer, or on a one pass, the pass's
+ * last text (its tally and what he paid), which asks him nothing. Every word is content.json's
  * (the engine's texts and the server's replies). Drawn in CSS, iOS colours: grey incoming bubbles, SMS green for his.
  *
  * Its camera moves little (STORYBOARD §3): the welcome text lands on its top (the note he's saying OK to) and hands
@@ -11,11 +12,12 @@
  */
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowUp, BatteryFull, ChevronRight, Plus, Signal, Wifi } from "lucide-react";
-import { LogoMark } from "../../src/components/ui";
-import { C, clock, day, statusClock } from "./data";
+import { C, clock, day, statusClock, TH } from "./data";
+import { PHONE_FONT } from "./theme";
+import { Mark } from "./parts";
 import { dim } from "./focus";
 import { clamp, css, easeIn, enter, lerp, outCubic, outQuad, press, prog, sine, still, type M } from "./motion";
-import { L, T } from "./timeline";
+import { L, ONE_PASS, T } from "./timeline";
 
 const O = T.ok;
 const H = T.handoff;
@@ -33,6 +35,7 @@ const MAX_SPEED = 12 / (1000 / 30);
 type Item = { key: string; kind: "date" | "in" | "out"; at: number; text: string; bold?: string };
 const tx = C.ownerTexts;
 const close = tx.close;
+const yes = close?.yes ?? null;
 const dateLine = (iso: string) => ({ bold: day(iso), text: ` at ${clock(iso)}` });
 const ITEMS: Item[] = [
   { key: "d1", kind: "date", at: O.welcome, ...dateLine(tx.welcome.at) },
@@ -48,8 +51,12 @@ const ITEMS: Item[] = [
     ? ([
         { key: "d4", kind: "date", at: X.text, ...dateLine(close.at) },
         { key: "close", kind: "in", at: X.text + 120, text: close.text },
-        { key: "yes", kind: "out", at: X.send, text: close.yes.text },
-        { key: "yesReply", kind: "in", at: X.reply, text: close.yes.reply },
+        ...(yes
+          ? [
+              { key: "yes", kind: "out", at: X.send, text: yes.text },
+              { key: "yesReply", kind: "in", at: X.reply, text: yes.reply },
+            ]
+          : []),
       ] as Item[])
     : []),
 ];
@@ -59,7 +66,7 @@ const CLOCKS: { at: number; iso: string }[] = [
   { at: O.hand + 140, iso: tx.ok.at },
   { at: H.text - 150, iso: tx.handoff.at },
   { at: H.type - 150, iso: tx.booked.at },
-  ...(close ? [{ at: X.text - 150, iso: close.at }, { at: X.type - 150, iso: close.yes.at }] : []),
+  ...(close ? [{ at: X.text - 150, iso: close.at }, ...(yes ? [{ at: X.type - 150, iso: yes.at }] : [])] : []),
 ];
 /** The welcome text's paragraph that asks for his OK (the engine's "Reply OK and the first … go out"). */
 const WELCOME_PARAS = tx.welcome.text.split("\n\n");
@@ -67,8 +74,12 @@ const OK_PARA = WELCOME_PARAS.findIndex((p) => /\bReply OK\b/.test(p));
 
 type Geo = { items: Record<string, { top: number; h: number }>; okPara: { top: number; h: number } | null };
 
-/** The thread's two soft handovers: to the paragraph that asks for his OK, and, once he's sent it, to the thread's end. */
-const HANDS = [O.hand, O.send];
+/**
+ * The thread's soft handovers: to the paragraph that asks for his OK, and, once he's sent it, to the thread's end. A
+ * one pass's hand-off text is taller than his screen: it comes in on a third, to its top (the name, the quote and the
+ * heads-up, held), and goes to its end (held) only once he's read that.
+ */
+const HANDS = [O.hand, O.send, ...(ONE_PASS ? [H.text] : [])];
 const HAND_OUT = 200;
 const HAND_IN_AT = 140;
 const HAND_IN = 380;
@@ -118,9 +129,9 @@ export function Phone({ t }: { t: number }) {
 
   return (
     // always laid out (its thread is measured once, after the fonts load), hidden while off screen
-    <div className="absolute" style={css(visible ? m : { ...m, o: 0 }, { left: L.phone.x, top: L.phone.y, width: L.phone.w, height: L.phone.h, zIndex: 70, transformOrigin: "50% 100%" })}>
+    <div className="absolute" style={css(visible ? m : { ...m, o: 0 }, { left: L.phone.x, top: L.phone.y, width: L.phone.w, height: L.phone.h, zIndex: 70, transformOrigin: "50% 100%", fontFamily: PHONE_FONT, fontStretch: "100%" })}>
       {/* the bezel is a ring, not a filled shape: while the screen fades, the page shows through it, never a grey slab */}
-      <div className="absolute inset-0 rounded-[38px]" style={{ border: "6px solid #16161A", boxShadow: "0 18px 30px -20px rgba(20, 10, 60, 0.42), 0 2px 8px rgba(20, 10, 60, 0.10), inset 0 0 0 1.5px #2a2a30", opacity: bezelO, willChange: "opacity" }} />
+      <div className="absolute inset-0 rounded-[38px]" style={{ border: "6px solid #16161A", boxShadow: `0 18px 30px -20px rgba(${TH.shadow}, 0.42), 0 2px 8px rgba(${TH.shadow}, 0.10), inset 0 0 0 1.5px #2a2a30`, opacity: bezelO, willChange: "opacity" }} />
       <div className="absolute overflow-hidden rounded-[32px] bg-white" style={{ left: 6, top: 6, width: SCREEN.w, height: SCREEN.h, opacity: screenO, willChange: "opacity" }}>
         <div className="absolute right-0 left-0 overflow-hidden" style={{ top: TOP, height: VIEW, maskImage: EDGE, WebkitMaskImage: EDGE }}>
           {views.map((v, i) => (
@@ -168,6 +179,14 @@ function scrollAt(t: number, g: Geo): number {
   if (t >= O.send) s = bottomOf("ok");
   for (const it of ITEMS) {
     if (it.kind === "date" || it.key === "welcome" || it.key === "ok" || !g.items[it.key]) continue;
+    if (ONE_PASS && it.key === "handoff") {
+      // its top: the date line at the top of his screen; later, its end, scrolled to as gently as any text
+      if (t < H.text) continue;
+      s = Math.max(s, g.items.d2!.top - 4);
+      const to = bottomOf("handoff");
+      if (to > s) s = lerp(s, to, sine(prog(t, H.end, Math.max(H.endDur, ((to - s) * Math.PI) / 2 / MAX_SPEED))));
+      continue;
+    }
     const to = bottomOf(it.key);
     if (t < it.at - 120 || to <= s) continue;
     const dur = Math.max(420, ((to - s) * Math.PI) / 2 / MAX_SPEED);
@@ -188,7 +207,7 @@ function fieldAt(t: number): { text: string; o: number; tapAt: number } | null {
   return (
     typing(O.typeOk, O.tap, O.send, tx.ok.text, 110) ??
     typing(H.type, H.tap, H.send, tx.booked.text, 30) ??
-    (close ? typing(X.type, X.tap, X.send, close.yes.text, 110) : null)
+    (yes ? typing(X.type, X.tap, X.send, yes.text, 110) : null)
   );
 }
 
@@ -280,7 +299,7 @@ function ThreadHeader() {
   return (
     <div className="absolute right-0 left-0 flex flex-col items-center gap-[3px] border-b border-[#ececf0] bg-white/95" style={{ top: 38, height: TOP - 38 }}>
       <span className="grid size-[30px] place-items-center overflow-hidden rounded-full">
-        <LogoMark size={30} className="rounded-full" />
+        <Mark size={30} className="rounded-full" />
       </span>
       <span className="flex items-center gap-[1px] text-[10px] leading-none text-[#0a0a0b]">
         Quiet Accounts <ChevronRight size={8} strokeWidth={2.5} className="text-[#8e8e93]" />

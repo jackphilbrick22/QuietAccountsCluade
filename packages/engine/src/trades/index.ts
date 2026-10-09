@@ -96,7 +96,22 @@ function pluralize(phrase: string, matched: string): string {
 }
 
 /**
- * The phrase a person would use for the work: "the oak by the driveway",
+ * The object with the work its title names, for a trade that says them together (tree: "the oak removal", "the maple
+ * pruning", "the stump grinding", "the hedge trimming"), or undefined for the object alone (storm work, a lot
+ * clearing, a trade without `objectWork`). The object is its one-word phrase: "the maple pruning" for three maples.
+ */
+function objectWork(pb: TradePlaybook, phrase: string, title: string, lineItems: LineItem[], trade: TradeId): string | undefined {
+  const ow = pb.objectWork;
+  if (!ow) return undefined;
+  if (ow.object && phrase in ow.object) return ow.object[phrase] || undefined;
+  const text = [title, ...lineItems.slice(0, 3).map((l) => l.name)].join(" · ");
+  const { service, matched } = classifyService(title, lineItems, [trade]);
+  const noun = ow.words?.find(([re]) => re.test(text))?.[1] ?? (matched ? ow.service[service.id] : undefined);
+  return noun && !phrase.endsWith(` ${noun}`) ? `${phrase} ${noun}` : undefined;
+}
+
+/**
+ * The phrase a person would use for the work: "the oak removal by the driveway",
  * "the pines over the garage", "the septic pump-out".
  */
 export function jobPhrase(title: string, trade: TradeId, lineItems: LineItem[] = [], custom: [RegExp, string][] = []): string {
@@ -108,6 +123,12 @@ export function jobPhrase(title: string, trade: TradeId, lineItems: LineItem[] =
   for (const [re, phrase] of pb.objects) {
     const m = text.match(re);
     if (m) {
+      // the work done to it, when the trade names it with the object ("the oak removal", "the maple pruning")
+      const worked = objectWork(pb, phrase, title, lineItems, trade);
+      if (worked !== undefined) {
+        object = worked;
+        break;
+      }
       object = pluralize(phrase, m[0]);
       const counted =
         new RegExp(`\\b(two|three|four|five|six|several|multiple|[2-9]|1[0-9]|2[0-9])\\s+(?!(?:gal|gallons?|ft|foot|feet|sq|yds?|yards?|in|inch|lf|x|tons?|acres?|sections?|zones?|panels?|posts?|stor(?:y|ies)|br|bed(?:room)?s?|bath(?:room)?s?|hours?|hrs?|visits?|weeks?|months?|years?)\\b)(\\w+\\s+)?${m[0]}`, "i").test(text) ||

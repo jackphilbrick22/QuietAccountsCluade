@@ -14,17 +14,35 @@ const shop = (...titles: [string, number][]) => titles.flatMap(([t, n]) => Array
 
 describe("trade playbooks", () => {
   it("phrases jobs the way people talk", () => {
-    expect(jobPhrase("Oak removal + stump", "tree")).toBe("the oak");
+    expect(jobPhrase("Oak removal + stump", "tree")).toBe("the oak removal");
     expect(jobPhrase("Two pines over garage", "tree")).toBe("the pines over the garage");
-    expect(jobPhrase("Crown thinning, 3 maples", "tree")).toBe("the maples");
-    expect(jobPhrase("Hazard ash near house", "tree")).toBe("the ash over the house");
-    expect(jobPhrase("Stump grinding x3", "tree")).toBe("the stumps");
+    expect(jobPhrase("Crown thinning, 3 maples", "tree")).toBe("the maple pruning");
+    expect(jobPhrase("Hazard ash near house", "tree")).toBe("the ash removal over the house");
+    expect(jobPhrase("Stump grinding x3", "tree")).toBe("the stump grinding");
     expect(jobPhrase("Pump out 1000 gal tank", "septic")).toBe("the pump-out");
     expect(jobPhrase("Effluent pump replacement", "septic")).toBe("the effluent pump");
     expect(jobPhrase("Routine pumping", "septic")).toBe("the pump-out");
     expect(jobPhrase("150 ft 6' cedar privacy", "fence")).toBe("the privacy fence");
+    expect(jobPhrase("Vinyl privacy fence - back yard", "fence")).toBe("the vinyl fence in the backyard");
+    expect(jobPhrase("Split rail fence - 200 ft", "fence")).toBe("the split rail fence");
+    expect(jobPhrase("White picket fence - front yard", "fence")).toBe("the picket fence out front");
     expect(jobPhrase("Replace driveway 24x40", "concrete")).toBe("the driveway");
     expect(jobPhrase("Something odd", "tree")).toBe("the tree work");
+  });
+  it("names a tree company's work with the tree: its removals and pruning, not a list of oaks and maples", () => {
+    expect(jobPhrase("Remove leaning birch by driveway", "tree")).toBe("the birch removal by the driveway");
+    expect(jobPhrase("Deadwood removal - large oak", "tree")).toBe("the oak pruning");
+    expect(jobPhrase("Prune 2 oaks off power line", "tree")).toBe("the oak pruning by the lines");
+    expect(jobPhrase("Cable & brace silver maple", "tree")).toBe("the maple cabling");
+    expect(jobPhrase("Emerald ash borer treatment", "tree")).toBe("the ash treatment");
+    expect(jobPhrase("Hedge trimming & shaping", "tree")).toBe("the hedge trimming");
+    // storm work and clearing keep their object
+    expect(jobPhrase("Storm cleanup - split maple", "tree")).toBe("the maple");
+    expect(jobPhrase("Lot clearing 1/2 acre", "tree")).toBe("the lot clearing");
+    expect(jobPhrase("Clearance pruning over roof", "tree")).toBe("the pruning");
+    // a fence repair is a repair, a new fence its kind
+    expect(jobPhrase("Vinyl fence repair - 3 panels", "fence")).toBe("the vinyl fence repair");
+    expect(jobPhrase("Replace gate + latch", "fence")).toBe("the gate");
   });
   it("classifies services with repair/hazard words winning over materials", () => {
     expect(classifyService("Oak removal + stump", [], ["tree"]).service.id).toBe("tree.removal");
@@ -38,10 +56,10 @@ describe("trade playbooks", () => {
   it("never counts across line items or units: a line item repeating the title stays singular", () => {
     const li = (name: string) => [{ name, total: 0 }];
     expect(jobPhrase("AC replacement - 3 ton", "hvac", li("AC replacement"))).toBe("the AC");
-    expect(jobPhrase("Lot clearing 1/2 acre", "tree", li("Lot clearing 1/2 acre"))).toBe("the lot");
-    expect(jobPhrase("Fence repair - 2 sections", "fence", li("Fence repair - 2 sections"))).toBe("the fence");
+    expect(jobPhrase("Lot clearing 1/2 acre", "tree", li("Lot clearing 1/2 acre"))).toBe("the lot clearing");
+    expect(jobPhrase("Fence repair - 2 sections", "fence", li("Fence repair - 2 sections"))).toBe("the fence repair");
     expect(jobPhrase("Replace 2 AC units", "hvac")).toBe("the ACs");
-    expect(jobPhrase("Remove 2 cherry trees", "tree")).toBe("the cherries");
+    expect(jobPhrase("Storm cleanup - 2 cherry trees", "tree")).toBe("the cherries");
     // a service phrase never takes an "s": "the house washs"
     expect(jobPhrase("2 house washes", "pressure_washing")).toBe("the house wash");
   });

@@ -401,15 +401,30 @@ export const TEMPLATES: Record<string, NoteTemplate[]> = {
       id: "s1",
       angle: "due_now",
       subject: "{job}",
-      needs: ["nearTerm", "interval"],
+      needs: ["nearTerm", "interval", "dueSoon"],
       body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, and you're coming up on when it's due again. {interval} is the rule of thumb.\n\nWant me to get you on the schedule? Reply with a week that works.\n\n{signer}",
     },
     {
       id: "s1h",
       angle: "due_now",
       subject: "{job}",
-      needs: ["held", "interval"],
+      needs: ["held", "interval", "dueSoon"],
       body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, and you're coming up on when it's due again. {interval} is the rule of thumb.\n\n{waitLine} Want me to put you down for the first open week in {seasonMonth}?\n\n{signer}",
+    },
+    {
+      // it came due a while ago (a deep clean every 6 months, the last one 17 months back): not "coming up on" it
+      id: "s1o",
+      angle: "due_now",
+      subject: "{job}",
+      needs: ["nearTerm", "interval", "overdue"],
+      body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, so you're due for another one. {interval} is the rule of thumb.\n\nWant me to get you on the schedule? Reply with a week that works.\n\n{signer}",
+    },
+    {
+      id: "s1oh",
+      angle: "due_now",
+      subject: "{job}",
+      needs: ["held", "interval", "overdue"],
+      body: "Hi {first},\n\nIt's {signer} at {company}. We did {job} for you {when}, so you're due for another one. {interval} is the rule of thumb.\n\n{waitLine} Want me to put you down for the first open week in {seasonMonth}?\n\n{signer}",
     },
     {
       // seasonal work that comes back every year (holiday lights): ask the plain question, no rule of thumb

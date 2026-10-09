@@ -318,6 +318,173 @@ const watch = new IntersectionObserver((entries) => {
 const hiders = all("[data-hides-sticky]");
 for (const el of hiders.length ? [...hiders, ...all("#final")] : all("#hero, #final")) watch.observe(el);
 
+/* ------------------------------ the film: closed, nothing of it loads; open, it plays where it is ------------------------------ */
+
+const film = document.querySelector<HTMLElement>("#film");
+if (film) {
+  const k = $("#filmK");
+  const panel = $("#filmPanel");
+  const fs = $("#filmFs");
+  const pp = $<HTMLButtonElement>("#filmPP");
+  type Video = HTMLVideoElement & { webkitEnterFullscreen?: () => void; webkitRequestFullscreen?: () => Promise<void> | void };
+  const v = film.querySelector("video") as Video;
+  /**
+   * The square cut (close on what acts, so its words read): a phone held upright, and a tablet or window up to 900 px
+   * that's taller than a phone on its side (at 768 the wide film's words are 8 px). A phone on its side gets the wide
+   * film, as tall as his screen allows, and full screen.
+   */
+  const phone = () => matchMedia("(max-width: 599px), (max-width: 899px) and (min-height: 500px)").matches;
+  /** Which cut, chosen once, when he first opens it: the square; else the 1920 film where the screen has the pixels for it (a tablet at 2x), the 1280 one where it doesn't. */
+  const cut = () => (phone() ? "-phone" : film.getBoundingClientRect().width * (devicePixelRatio || 1) > 1300 ? "" : "-1280");
+  const isOpen = () => k.getAttribute("aria-expanded") === "true";
+  /** He paused it (the button, or a tap on the film): it stays paused, whatever the scrolling does. */
+  let held = false;
+  /** Enough of it on his screen to be worth playing (a quarter): off screen it rests, and costs no battery. */
+  let seen = false;
+  let shut = 0;
+  let begin = 0;
+  /** When he closed it: opened again a while later, it starts from its beginning, not mid-story. */
+  let closedAt = 0;
+  /** Past the open's ease: from here the film plays whenever it can. */
+  let running = false;
+  const label = (paused: boolean) => {
+    pp.setAttribute("aria-pressed", String(paused));
+  };
+  /**
+   * The one big play in the middle: waiting for him (reduced motion, or a browser that won't start it on its own). It
+   * says what it does then, "Play the film", not a pressed "Pause"; playing, it's the pause toggle again.
+   */
+  const waiting = (on: boolean) => {
+    pp.classList.toggle("film-wait", on);
+    pp.setAttribute("aria-label", on ? "Play the film" : "Pause the film");
+    if (on) pp.removeAttribute("aria-pressed");
+    else label(held);
+  };
+  const play = () => {
+    v.play().then(
+      () => waiting(false),
+      // only a real refusal waits for him; a pause or a close before it started (AbortError) is no refusal
+      (e: DOMException) => {
+        if (e?.name === "NotAllowedError" && isOpen()) waiting(true);
+      },
+    );
+  };
+  /** Play when it's open, on screen, and he hasn't paused it; otherwise rest. */
+  const settle = () => {
+    if (isOpen() && seen && !held && !pp.classList.contains("film-wait")) play();
+    else if (!v.paused) v.pause();
+  };
+  new IntersectionObserver(
+    ([e]) => {
+      seen = !!e && e.intersectionRatio >= 0.25;
+      if (isOpen() && running) settle();
+    },
+    { threshold: [0, 0.25, 0.5] },
+  ).observe(v);
+  const toggle = () => {
+    if (!isOpen()) return;
+    if (pp.classList.contains("film-wait")) {
+      held = false;
+      waiting(false);
+      play();
+      return;
+    }
+    held = !v.paused;
+    label(held);
+    if (held) v.pause();
+    else play();
+  };
+  pp.addEventListener("click", toggle);
+  v.addEventListener("click", toggle);
+
+  /**
+   * After opening: if the film would end below his screen, scroll just enough to show it, the row still on screen under
+   * the page's floating header, and its Example line with it when they fit; on a short screen (a phone on its side) the
+   * film alone, whole under the header (it's never taller than that). The bar at the bottom steps aside while it's on
+   * screen.
+   */
+  const showWhole = (still: boolean) => {
+    const head = (document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0) + 8;
+    const room = innerHeight - 8;
+    // where it will be once open: laid out whole inside the closed panel, only clipped
+    const row = k.getBoundingClientRect().top;
+    const vid = v.getBoundingClientRect();
+    const cap = $("#filmCap").getBoundingClientRect().bottom;
+    const all = cap - row <= room - head;
+    const by = Math.min((all ? cap : vid.bottom) - room, (all || vid.bottom - row <= room - head ? row : vid.top) - head);
+    if (by > 0) scrollBy({ top: by, behavior: still ? "instant" : "smooth" });
+  };
+
+  k.addEventListener("click", () => {
+    const open = !isOpen();
+    const still = smooth() === "auto";
+    k.setAttribute("aria-expanded", String(open));
+    clearTimeout(shut);
+    clearTimeout(begin);
+    running = false;
+    if (!open) {
+      v.pause();
+      film.classList.remove("open");
+      closedAt = Date.now();
+      watch.unobserve(v);
+      inView.delete(v);
+      stick();
+      shut = window.setTimeout(() => (panel.hidden = true), still ? 0 : 520);
+      return;
+    }
+    if (closedAt && Date.now() - closedAt > 3000) v.currentTime = 0;
+    if (!v.src) {
+      const at = v.dataset.film!;
+      const c = cut();
+      // until it plays, its own first frame (it starts where its picture leaves off); held for him, a strong moment
+      v.poster = `${at}${still ? "poster" : "start"}${c}.jpg`;
+      v.src = `${at}film${c}.mp4`;
+      v.classList.toggle("cut-phone", c === "-phone");
+      // he asked for it: it loads now, even while it waits for his play
+      v.preload = "auto";
+    }
+    held = false;
+    panel.hidden = false;
+    pp.hidden = false;
+    // never taller than his screen under the page's header (a phone on its side)
+    film.style.setProperty("--film-head", `${document.querySelector(".top")?.getBoundingClientRect().bottom ?? 0}px`);
+    watch.observe(v);
+    // full screen where it's bigger than the page: not for the square cut, already its screen's shape
+    fs.hidden = v.classList.contains("cut-phone") || !(v.requestFullscreen || v.webkitRequestFullscreen || v.webkitEnterFullscreen);
+    // laid out closed first, so it opens from there
+    void panel.offsetHeight;
+    film.classList.add("open");
+    showWhole(still);
+    // with reduced motion it doesn't start on its own: the big play waits for him
+    if (still) {
+      waiting(true);
+      return;
+    }
+    waiting(false);
+    // it starts once the panel has opened, so its first frames aren't spent on the ease
+    begin = window.setTimeout(() => {
+      running = true;
+      settle();
+    }, 480);
+  });
+
+  fs.addEventListener("click", async () => {
+    // before its size is known, an iPad's full screen can refuse: wait for it (a moment at most), then go
+    if (v.readyState < 1) await new Promise((r) => (v.addEventListener("loadedmetadata", r, { once: true }), setTimeout(r, 1200)));
+    try {
+      if (v.requestFullscreen) await v.requestFullscreen();
+      else if (v.webkitRequestFullscreen) await v.webkitRequestFullscreen();
+      else v.webkitEnterFullscreen?.();
+    } catch {
+      try {
+        v.webkitEnterFullscreen?.();
+      } catch {
+        // not allowed: it plays on the page as it was
+      }
+    }
+  });
+}
+
 /* ------------------------------ the money ------------------------------ */
 
 const calc = document.querySelector<HTMLElement>("#calc");

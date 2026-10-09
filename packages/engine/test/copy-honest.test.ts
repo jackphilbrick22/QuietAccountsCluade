@@ -211,7 +211,7 @@ describe("follow-ups thread under note 1", () => {
     const ds = dataset({ customers: [customer("c1")], requests: [request("r1", "c1", { title: "Spruce out back leaning", createdOn: ago(40) })] });
     const o = oneOpp(scan(ds), "c1", "unquoted_request");
     const [n1, n2, n3] = notes(ds, o, ds.customers[0]!, ASOF);
-    expect(n1!.subject).toBe("your quote for the spruce");
+    expect(n1!.subject).toBe("your quote for the spruce removal");
     expect(n2!.subject).toBe(`Re: ${n1!.subject}`);
     expect(n3!.subject).toBe(`Re: ${n1!.subject}`);
   });
@@ -256,13 +256,13 @@ describe("plain grammar", () => {
   it("never 'the stumps is handled'", () => {
     const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Stump grinding x3", sentOn: ago(60) })] });
     const n = renderNote(oneOpp(scan(ds), "c1", "unanswered_quote"), ds.customers[0]!, { ds, sendOn: ASOF }, 3)!;
-    expect(main(n)).toContain("If you've already taken care of the stumps, no need to reply.");
+    expect(main(n)).toContain("If you've already taken care of the stump grinding, no need to reply.");
     expect(main(n)).not.toMatch(/\bis handled\b/);
   });
   it("never 'out back back in April'", () => {
     const ds = dataset({ customers: [customer("c1")], quotes: [quote("q1", "c1", { title: "Remove spruce in backyard", status: "approved", approvedOn: "2026-04-10", sentOn: "2026-04-01" })] });
     const n = renderNote(oneOpp(scan(ds), "c1", "approved_unscheduled"), ds.customers[0]!, { ds, sendOn: ASOF }, 1)!;
-    expect(main(n)).toContain("the spruce in the backyard back in April");
+    expect(main(n)).toContain("the spruce removal in the backyard back in April");
     expect(main(n)).not.toMatch(/back back/);
   });
   it("says 'about 2½ years', never '2.4 years'", () => {

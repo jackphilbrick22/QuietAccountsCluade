@@ -1,6 +1,7 @@
 import type { BusinessProfile, Customer, Dataset, Features, ISODate, ISODateTime, MessageAngle, Opportunity, ServiceRequest } from "../model.ts";
 import { classifyService, classifyWork, climateOf, findService, growingSeason, jobPhrase, monthsUntilSeason, playbook, SEASONAL_TRADES, seasonFit, sellingWindow, stateOf, UNKNOWN_SERVICE_ID } from "../trades/index.ts";
 import { alwaysOnFor, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
+import { dueDate } from "../breakage/detect.ts";
 import { addDays, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, intervalWords, mondayOf, MONTH_NAMES, monthName, pickBy, spokenWhen, streetName } from "../util.ts";
 import { lint } from "./lint.ts";
 import { quoteById, scheduledWork, type ScheduledWork } from "../lookup.ts";
@@ -77,6 +78,10 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   const lineMonths = svc?.timingMonths?.[climate] ?? svc?.season[climate] ?? svc?.season.cold ?? [];
   const timingLine = svc?.timingLine?.[climate] && (!lineMonths.length || lineMonths.includes(month)) ? svc.timingLine[climate]! : "";
   const dueAsk = holdForSeason ? "" : svc?.dueAsk ?? "";
+  // a service that came due a month or more before the note goes is due now, not "coming up on" it (a deep clean every
+  // 6 months, the last one 17 months back)
+  const dueOn = o.type === "service_due" && svc?.reserviceMonths && doneOn ? dueDate(svc, doneOn) : undefined;
+  const overdue = !!dueOn && daysBetween(dueOn, rc.sendOn) > OVERDUE_DAYS;
   // a seasonal shop's lapsed regulars hear about the window the note goes out in: fall clean-up, or spots for spring
   const window = o.type === "lapsed_regular" && SEASONAL_TRADES.has(b.trade) ? sellingWindow(growingSeason(b), rc.sendOn) : undefined;
   const t: Record<string, string> = {
@@ -104,6 +109,8 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
     freeLook: (b.voice.freeLook ?? playbook(b.trade).freeLook) ? " No charge to look." : "",
     // seasonal work that just comes back around asks its own question instead of a rule of thumb
     interval: svc?.reserviceMonths && !dueAsk ? intervalWords(svc.reserviceMonths) : "",
+    dueSoon: overdue ? "" : "yes",
+    overdue: overdue ? "yes" : "",
     dueAsk,
     service: svc?.label.toLowerCase() ?? "",
     years: doneOn ? humanAge(daysBetween(doneOn, rc.sendOn)) : "",
@@ -160,6 +167,9 @@ function tokens(o: Opportunity, c: Customer, b: BusinessProfile, rc: RenderConte
   }
   return t;
 }
+
+/** How long past its due date a service's note says "you're due for another one" rather than "coming up on" it. */
+const OVERDUE_DAYS = 30;
 
 /** How long after a regular's last visit a note still reads "we haven't been by since …" rather than "we used to". */
 const RECENT_LAPSE_DAYS = 90;

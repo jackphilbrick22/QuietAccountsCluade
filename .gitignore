@@ -13,6 +13,6 @@ playwright-report/
 dist.zip
 .scratch*/
 
-# the film's review contact sheets (made by apps/web/film/render.mjs)
-apps/web/film/out/sheets/
+# the films review contact sheets and scratch output (apps/web/film/sheets.py); the films themselves are in apps/site/public/film
+apps/web/film/out/
 __pycache__/

@@ -2,6 +2,44 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-09 — a film per trade, behind a drop-down on its page
+
+Jack (Oct 8): a drop-down on each industry page ("want to see demo"), starting with cleaning, fence, tree and
+landscaping, each film with its own industry's company and info and its page's colours, fitting the page without
+breaking it up; and mockups of the pages with the film in them.
+- Four films in apps/site/public/film/<trade>/ (lawn, cleaning, fence, tree): the 1920-wide film, a 1280-wide cut and
+  a square phone cut (a camera follows the action so the app's text reads on a 390 px phone), each with its posters,
+  about 8 MB a trade. The lawn film is the Oct 8 one re-made in the lawn page's green; the violet one is gone from
+  apps/web/film/out (it's at 3ea29c9).
+- Each film wears its page's look (apps/web/film/src/theme.ts: accent, the colour beside it, faces, logo mark) and
+  has its own made-up company in a real town near Concord, NH, web-searched for clashes (apps/web/film/profiles.ts):
+  Desrochers Lawn & Landscape (Bow), Theriault Home Cleaning (Hopkinton), Boisvert Fence Co. (Pembroke), Corriveau
+  Tree Service (Henniker). Every word on screen is the engine's or the
+  server's output for that company. Fence and tree run the one pass ($250 a booking, never more than $1,000); lawn and
+  cleaning the monthly plan.
+- The page: under the three lines that say what we do, a quiet row, "Want to see it run? 35 seconds of it working for
+  a <trade> company. No sound." Closed, nothing of the film loads; open, it plays in place, muted and looping, scrolled
+  into view under the header, with pause and full screen; the cut fits the screen (phone, 1280, 1920). Also on the
+  cold email pages, closed, at the end of "What happens after you press start". Painting waits for its own film.
+- Engine changes the films brought (reviewed Oct 9, kept): a service long past due says "so you're due for another
+  one", not "coming up on when it's due"; tree work is named with what was quoted ("the oak removal", "the maple
+  pruning", "the hedge trimming"); fence knows split rail, picket and stockade, and calls a repair "the fence repair";
+  replies like "the oak got worse over the winter" read as the past, not a time to do the work; the welcome text's
+  call list names three different kinds of job with their whole amounts; owner texts put thousands separators in
+  counts ("Asked 1,206"); an ack keeps the time asked ("tomorrow after 5"); cleaning and painting get their own
+  hand-off marks; the fence sample quotes split rail, picket and stockade. Tests updated.
+- Calls for Jack (apps/web/film/STORYBOARD.md §10 has them all):
+  - The caption under the film says "Example · A made-up <trade> company. The notes and texts are what our software
+    writes." The site's rule labels every example; the film itself says nothing of the kind. One line in
+    apps/site/build/render.ts if he wants it gone.
+  - Lawn and tree are both green, as their pages are; they differ in the glow beside it, the logo, company and words.
+  - The one pass is the whole list, so fence and tree show big numbers (about 1,250 people and 22 fence jobs).
+  - The landscaping page's film is a mowing company's, the film he approved.
+  - H.264 playback was checked frame by frame in the renderer, not in Safari or Chrome on a real phone: open one page
+    on his iPhone before sending traffic to it.
+- Mockups: every trade page at 1280 and 390, closed and open (published as an artifact for Jack).
+- Engine 1,800, server 632, site 483.
+
 ## 2026-10-08 — the service film
 
 Jack (Oct 8): a demo video of the service, with the software as its backdrop, made like the video on smartlead.ai's

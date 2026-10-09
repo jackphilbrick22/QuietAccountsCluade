@@ -12,7 +12,8 @@ import { DrawCheck, HeadRow } from "../parts";
 import { L, T } from "../timeline";
 
 const N = T.note;
-const COLS = "minmax(0,1.5fr) minmax(0,1.2fr) minmax(0,0.4fr) minmax(0,1fr) minmax(0,1.45fr)";
+/** The send time, who, which note and the status take what they need; the subject (a one pass's run long) the rest. */
+const COLS = "148px 128px 34px minmax(0,1fr) 150px";
 const noop = () => {};
 export const NOTES = { chipsTop: 170, boxTop: 218, rowH: 38 };
 

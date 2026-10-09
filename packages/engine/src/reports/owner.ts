@@ -3,6 +3,7 @@ import type { AccountState } from "../runtime/state.ts";
 import { addDays, addMonths, daysBetween, fmtMoney, fmtPhone, greetingName, humanAge, isoWeekKey, mondayOf, monthName, round2, sum } from "../util.ts";
 import { CALL_OVER_AMOUNT, soldMonthly, STALE_QUOTE_DAYS } from "../breakage/assumptions.ts";
 import { pickWorked } from "../breakage/detect.ts";
+import type { CallListEntry } from "../breakage/calllist.ts";
 import { pct, quietRates } from "../breakage/quiet.ts";
 import { refillRate } from "../breakage/refill.ts";
 import { billsPass, holdsPlace, isMonth, isOnePass, NOT_OURS_WHY, ONE_PASS, passPaid } from "../plans.ts";
@@ -24,7 +25,7 @@ export function wantedWords(plan: Pick<PlanState, "kind">): { label: string; pas
 
 function tradeMark(b: BusinessProfile): string {
   return (
-    ({ tree: "🌳", septic: "🚛", lawn: "🌱", landscape: "🌿", fence: "🪵", concrete: "🧱", pressure_washing: "💦", gutter: "🏠", pool: "🏊", pest: "🐜", hvac: "❄️", roofing: "🏠" } as Record<string, string>)[b.trade] ?? "🔔"
+    ({ tree: "🌳", septic: "🚛", lawn: "🌱", landscape: "🌿", fence: "🪵", concrete: "🧱", pressure_washing: "💦", gutter: "🏠", pool: "🏊", pest: "🐜", hvac: "❄️", roofing: "🏠", cleaning: "🧽", painting: "🎨" } as Record<string, string>)[b.trade] ?? "🔔"
   );
 }
 
@@ -144,6 +145,9 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
     while ([0, 6].includes(new Date(`${d}T12:00:00Z`).getUTCDay())) d = addDays(d, 1);
     when = d === addDays(today, 1) ? "tomorrow" : `on ${WEEKDAY[new Date(`${d}T12:00:00Z`).getUTCDay()]}`;
   }
+  // the time they asked to be called, when it's one the call-back can keep on that day ("after 5", "after work")
+  const asked = r.extracted.bestTime && /^after /.test(r.extracted.bestTime) ? ` ${r.extracted.bestTime}` : "";
+  const callWhen = `${when}${asked}`;
   const isOwner = b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase();
   const at = r.extracted.phone ? ` at ${fmtPhone(r.extracted.phone)}` : "";
   const hi = first ? `Thanks ${first}.` : "Thanks.";
@@ -155,9 +159,9 @@ export function ackFor(state: AccountState, r: Reply): { text: string; promise: 
     r.intent === "question"
       ? `${first ? `Thanks ${first}, good question.` : "Good question."} ${isOwner ? "I'll get back to you" : `I've passed it to ${b.ownerFirstName}, who'll get back to you`} ${when}.`
       : r.intent === "wants_price"
-        ? `${hi} ${who} give you a call${at} ${when} to go over it and get you ${quoted ? "an updated price" : "a price"}.`
-        : `${hi} ${who} give you a call${at} ${when} to get it on the schedule.`;
-  const promise = r.intent === "question" ? `you'll get back to them ${when}` : `you'll call them ${when}`;
+        ? `${hi} ${who} give you a call${at} ${callWhen} to go over it and get you ${quoted ? "an updated price" : "a price"}.`
+        : `${hi} ${who} give you a call${at} ${callWhen} to get it on the schedule.`;
+  const promise = r.intent === "question" ? `you'll get back to them ${when}` : `you'll call them ${callWhen}`;
   return { text: `${body}\n\n${b.signerName}\n${b.name}`, promise };
 }
 
@@ -189,8 +193,8 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
   const pass = isOnePass(b.plan);
   const lastDay = state.touches.filter((t) => t.status === "planned" || t.status === "approved").map((t) => t.dueAt.slice(0, 10)).sort().pop() ?? firstDay;
   const rest = pass
-    ? `then the rest of your ${people}, newest first, each one about their own job. It's one pass through your list: the last notes go out ${monthName(lastDay)} ${Number(lastDay.slice(8))}.`
-    : `then the rest of your ${people} over the next few weeks${later.length ? ` (the last ${later.length} from ${dayWords(later.map((t) => t.dueAt.slice(0, 10)).sort()[0]!)})` : ""} — each one about their own job, to the people most likely to answer.`;
+    ? `then the rest of your ${people.toLocaleString("en-US")}, newest first, each one about their own job. It's one pass through your list: the last notes go out ${monthName(lastDay)} ${Number(lastDay.slice(8))}.`
+    : `then the rest of your ${people.toLocaleString("en-US")} over the next few weeks${later.length ? ` (the last ${later.length} from ${dayWords(later.map((t) => t.dueAt.slice(0, 10)).sort()[0]!)})` : ""} — each one about their own job, to the people most likely to answer.`;
   const cut = sample ? sample.body.lastIndexOf(`\n\n${b.name}`) : -1;
   const body = sample ? (cut > 0 ? sample.body.slice(0, cut) : sample.body).trim() : "";
   return [
@@ -198,8 +202,8 @@ export function kickoffText(state: AccountState, firstDay: ISODate, people: numb
     ``,
     ...(body ? [b.signerName.trim().toLowerCase() === b.ownerFirstName.trim().toLowerCase() ? `Here's the first note, going out in your name:` : `Here's the first note, going out from ${b.signerName}:`, ``, body, ``] : []),
     opts.awaitOk === false
-      ? `Starting ${day}, the first ${onDay || people} go out, ${rest} You don't have to do anything.`
-      : `Reply OK and the first ${onDay || people} go out ${day}, ${rest} Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
+      ? `Starting ${day}, the first ${(onDay || people).toLocaleString("en-US")} go out, ${rest} You don't have to do anything.`
+      : `Reply OK and the first ${(onDay || people).toLocaleString("en-US")} go out ${day}, ${rest} Want anything changed? Just tell me what. Nothing goes out until you say OK.`,
     ``,
     `When someone ${wantedWords(b.plan).present}, I'll text you their name, number and what they said. Just reply:`,
     `BOOKED 2400 (the amount) when you book one`,
@@ -355,7 +359,7 @@ export function passEndText(state: AccountState, asOf: ISODate): string {
   const paid = passPaid(b.plan);
   const cap = (b.plan.pricePerBooking ?? ONE_PASS.pricePerBooking) * (b.plan.capBookings ?? ONE_PASS.capBookings);
   return [
-    `${b.ownerFirstName}, your list is done. Asked ${asked.size}, ${wrote} wrote back, ${wanted} ${wantedWords(b.plan).past}, ${booked} booked. ${!paid ? "You paid nothing." : paid >= cap ? `You paid ${fmtMoney(paid)}, the cap.` : `You paid ${fmtMoney(paid)}.`}`,
+    `${b.ownerFirstName}, your list is done. Asked ${asked.size.toLocaleString("en-US")}, ${wrote.toLocaleString("en-US")} wrote back, ${wanted.toLocaleString("en-US")} ${wantedWords(b.plan).past}, ${booked.toLocaleString("en-US")} booked. ${!paid ? "You paid nothing." : paid >= cap ? `You paid ${fmtMoney(paid)}, the cap.` : `You paid ${fmtMoney(paid)}.`}`,
     refill?.monthly
       ? `About ${refill.perMonth} more of your past customers stop coming or come due each month. That's enough to keep this going monthly: reply here and Jack will text you how it works.`
       : `I'll check back next season.`,
@@ -378,8 +382,33 @@ function callListLines(state: AccountState): string[] {
   const cl = state.summary?.callList;
   if (!cl?.people) return [];
   const parts = [cl.bigQuotes ? `${cl.bigQuotes} quote${cl.bigQuotes === 1 ? "" : "s"} over ${fmtMoney(state.dataset.business.callOverAmount ?? CALL_OVER_AMOUNT)}` : "", cl.phoneOnly ? `${cl.phoneOnly} with only a phone number` : ""].filter(Boolean);
-  const top = cl.top.slice(0, 3).map((x) => `${x.name} ${fmtPhone(x.phone)}${x.job ? ` (${x.job}, ${fmtMoney(x.value, { compact: true })})` : ""}`);
+  const top = callListNamed(cl.top).map((x) => `${x.name} ${fmtPhone(x.phone)}${x.job ? ` (${x.job}, ${fmtMoney(x.value)})` : ""}`);
   return [`Worth a call from you (we don't email these): ${parts.join(" and ")}, ${fmtMoney(cl.value, { compact: true })} in all. Biggest first: ${top.join("; ")}.`, ``];
+}
+
+/**
+ * The three the welcome text names out of the call list, biggest first. Never one job at one amount twice ("vinyl
+ * fence in the backyard, $12k" three times over reads as one line copied), and a kind of job already named gives its
+ * next place to the biggest of another kind worth at least half as much (the biggest vinyl fence, privacy fence and
+ * pool fence tell him what's there); a lawn shop's book is mowing, so its mowing stays when nothing else comes close.
+ * Each with its whole amount, as the hand-off prints a quote ("$12,350", never "$12k", which rounds two quotes alike).
+ */
+export function callListNamed(top: CallListEntry[], n = 3): CallListEntry[] {
+  const named: CallListEntry[] = [];
+  const sameKind = (a: CallListEntry, b: CallListEntry) => !!a.job && a.job === b.job;
+  for (let i = 0; i < top.length && named.length < n; ) {
+    const x = top[i]!;
+    if (named.includes(x) || named.some((y) => sameKind(x, y) && y.value === x.value)) {
+      i++;
+      continue;
+    }
+    // its kind is named: its place goes to the biggest of a kind not named yet, if that's worth half as much (and it
+    // waits for the next place)
+    const other = named.some((y) => sameKind(x, y)) ? top.find((z) => !named.includes(z) && !!z.job && !named.some((y) => sameKind(z, y)) && z.value >= x.value / 2) : undefined;
+    named.push(other ?? x);
+    if (!other) i++;
+  }
+  return named.sort((a, b) => b.value - a.value);
 }
 
 /** Old quotes get re-priced, not honored by accident. */
