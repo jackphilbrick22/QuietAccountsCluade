@@ -278,7 +278,7 @@ input[type=range]:focus-visible::-moz-range-thumb{box-shadow:0 0 0 5px rgba(106,
 /* main page: how it works, three steps on grey panels */
 .steps{display:grid;gap:36px;margin-top:48px;text-align:center}
 @media (min-width:860px){.steps{grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}}
-.panel{height:280px;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px;background:var(--soft);border:1px solid #EFEFF3}
+.panel{min-height:280px;border-radius:24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:20px;background:var(--soft);border:1px solid #EFEFF3}
 .panel .eg-pill{background:#E9E9EE}
 .steps h3{font-size:24px;margin-top:22px}
 .steps h3+p{font-size:16px;line-height:1.55;color:var(--ink-3);margin:8px auto 0;max-width:34ch}

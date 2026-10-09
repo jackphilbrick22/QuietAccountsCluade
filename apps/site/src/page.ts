@@ -323,8 +323,9 @@ for (const el of hiders.length ? [...hiders, ...all("#final")] : all("#hero, #fi
 
 /* ------------------------------ the film: it plays where it is, while he can see it ------------------------------ */
 
-const film = document.querySelector<HTMLElement>("#film");
-if (film) {
+/** Sets the film going. Called below through a catch: the film is the page's feature, but the money calculator and
+ * everything after it are the page's own, so nothing a browser makes of the film may stop them. */
+function filmOn(film: HTMLElement) {
   const fs = $("#filmFs");
   const pp = $<HTMLButtonElement>("#filmPP");
   type Video = HTMLVideoElement & { webkitEnterFullscreen?: () => void; webkitRequestFullscreen?: () => Promise<void> | void; webkitDisplayingFullscreen?: boolean };
@@ -504,6 +505,14 @@ if (film) {
       }
     }
   });
+}
+const film = document.querySelector<HTMLElement>("#film");
+if (film) {
+  try {
+    filmOn(film);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
 /* ------------------------------ the money ------------------------------ */

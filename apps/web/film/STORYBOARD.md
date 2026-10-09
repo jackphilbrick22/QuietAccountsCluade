@@ -343,12 +343,12 @@ imported, not copied).
 |---|---|---|---|---|
 | Lawn | `green.css` | field green `#1B5A31` | harvest yellow `#FFD23F` | Archivo: headings wide and heavy (`font-stretch` 112–118 %, weight 750–780), text at normal width |
 | Cleaning | `trade-cleaning.css` | deep teal `#075156` | sunny yellow `#FEC827` | Instrument Sans (headings 500), Instrument Serif for the card title, as the page sets its section titles |
-| Fence | `trade-fence.css` | cedar `#7A4423` | sky `#8FD0FF` | Archivo, as lawn |
+| Fence | `trade-fence.css` (the painting page's look since Oct 9: vinyl navy, not cedar) | navy `#22345C` | coral `#FF8566` | Archivo, as lawn |
 | Tree | `trade-tree.css` | conifer `#1E4D33` | arborist orange `#FF8A2A` | Archivo, as lawn |
 
 His phone is his, not the page: its texts stay in Inter (the stand-in for the iPhone's face), its bubbles iOS's.
 The note card's chip "About their own job" carries the trade's own icon (sprout, sparkles, fence, a pine: round 6, the deciduous tree read as a bell at 14 px). The money (the
-Booked figure, the ledger's values, the Charges figure) is in the page's accent, as each page colours its money (cedar on
+Booked figure, the ledger's values, the Charges figure) is in the page's accent, as each page colours its money (navy on
 fence, teal on cleaning); the app's green is only for a status (Sent, Sending). Instrument Sans's word space is narrow,
 so on cleaning the " · " between the parts of a line gets a little more room (`.film-sep`).
 
