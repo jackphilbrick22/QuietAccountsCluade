@@ -41,8 +41,13 @@ it should just be there and play where it is, on its own.
   scripts off, and a phone turned twice in a moment. Still for Jack: open one page on his iPhone and watch it start on
   its own, with Low Power Mode off and on.
 - The zip for Netlify: `pnpm build:site` writes apps/site/dist.zip (not in git). For Jack to download, the latest one
-  is also on its own branch, `site-zip` (quietaccounts-site.zip and a short README; replaced, never added to, so the
-  main branch's history doesn't carry 37 MB a build). The ten preview links (the trade pages and their cold email
+  is also on its own branch, `site-zip` (quietaccounts-site.zip and a README; replaced, never added to, so the main
+  branch's history doesn't carry 37 MB a build).
+- Not live yet (Oct 9). Jack asked to put it live, but the live quietaccounts.com isn't this build alone: its Oct 8
+  deploy (from outside this repo) adds the Jobber app's functions, 72 redirects, /privacy, /terms, a renewal letter
+  page with a link to it on the trade pages, its own start form markup, and /for/<company> pages that need the old
+  assets. Deploying this build would remove them, so nothing was deployed. The site-zip README says how to merge it
+  into the folder the site is deployed from. The ten preview links (the trade pages and their cold email
   pages, published as artifacts) were updated in place with this build.
 - Engine 1,800, server 632, site 496 (485 before the review).
 
@@ -838,8 +843,11 @@ one test client from import to the first OK.
   nginx. After the first boot open the console's Setup box, point the host's health check at /api/health, and turn on
   volume snapshots or copy a backup off the host now and then.
 - (A7) Either build the site with VITE_SERVER_URL set to the server's https URL (and that site origin in
-  SIGNUP_ORIGINS), or leave it unset and turn on Netlify form detection (form "start"). Drag apps/site/dist (or
-  dist.zip) to Netlify. The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address
+  SIGNUP_ORIGINS), or leave it unset and turn on Netlify form detection (form "start"). Don't drag apps/site/dist
+  or dist.zip to Netlify on its own any more: since Oct 8, quietaccounts.com (project brilliant-sorbet-d89cb5) is
+  deployed from somewhere else and also carries the Jobber functions, 72 redirects, /privacy, /terms, the renewal
+  letter page and the /for/<company> pages, and a deploy replaces the whole site. Merge the build into that folder
+  instead (the steps are in the README on branch site-zip). The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address
   must exist and reach the server's import before launch. Check /lawn and /lawn?co=Your+Company on a phone, then
   send one test sign-up.
 - (A6) Set SIGNUP_ORIGINS to the site's address (for example https://quietaccounts.com) in production, or the
