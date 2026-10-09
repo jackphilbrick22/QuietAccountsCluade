@@ -40,7 +40,10 @@ it should just be there and play where it is, on its own.
   932 × 430 and 1280: the pause on the picture, full screen and back, Tab to the pause, a film that can't decode,
   scripts off, and a phone turned twice in a moment. Still for Jack: open one page on his iPhone and watch it start on
   its own, with Low Power Mode off and on.
-- The zip for Netlify, as before: `pnpm build:site` writes apps/site/dist.zip (not in git).
+- The zip for Netlify: `pnpm build:site` writes apps/site/dist.zip (not in git). For Jack to download, the latest one
+  is also on its own branch, `site-zip` (quietaccounts-site.zip and a short README; replaced, never added to, so the
+  main branch's history doesn't carry 37 MB a build). The ten preview links (the trade pages and their cold email
+  pages, published as artifacts) were updated in place with this build.
 - Engine 1,800, server 632, site 496 (485 before the review).
 
 ## 2026-10-09 — a film per trade, behind a drop-down on its page
