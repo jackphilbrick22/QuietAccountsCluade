@@ -57,15 +57,16 @@
 .film{margin:32px calc(-1 * var(--gutter)) 0}
 @media (min-width:860px){.film{margin-top:64px}}
 .film figure{margin:0}
-.film-v{position:relative}
-/* never taller than his screen under the page's floating header, 60 px (a phone on its side): the film's white edges
-   meet the page's white, so a film held to the height draws no bars */
-.film video{display:block;width:100%;height:auto;max-height:calc(100svh - 76px);aspect-ratio:1920/894;background:#FFFFFF;cursor:pointer}
+/* the box is the picture, so its pause sits on the film, never in the page's white beside it: never taller than his
+   screen under the page's floating header, 60 px (a phone on its side), and centred when that makes it narrower */
+.film-v{position:relative;max-width:calc((100svh - 76px) * 1920 / 894);margin-inline:auto}
+.film video{display:block;width:100%;height:auto;aspect-ratio:1920/894;background:#FFFFFF;cursor:pointer}
 /* the square cut (film-phone.mp4), framed close on whatever is acting so its words read: a phone held upright, and a
    tablet or window up to 900 px that's taller than a phone on its side. The same rule as `phone` in page.ts, which
    picks the file: change one, change the other. A square is already its screen's shape: no full screen */
 @media (max-width:599px),(max-width:899px) and (min-height:500px){
-  .film video{aspect-ratio:1/1;max-width:min(100%,560px);margin-inline:auto}
+  .film video{aspect-ratio:1/1}
+  .film-v{max-width:min(100%,560px,100svh - 76px)}
   .film-more{display:none}
 }
 /* pause and play: a tap on the film, or this. Small in its corner, there when he looks for it; while it waits for him

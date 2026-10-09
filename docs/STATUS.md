@@ -11,10 +11,13 @@ it should just be there and play where it is, on its own.
   as wide as the section, its white edges in the page's white, with the Example line under it, word for word.
 - It plays by itself, muted, looping and in place, as smartlead.ai's does, while a quarter of it is on his screen; off
   screen it rests (battery), and it plays again when it's back, unless he paused it. Pause: a tap on the film, or its
-  button (a real toggle, shown on touch screens and on keyboard focus), as WCAG 2.2.2 asks of anything moving over 5 s.
+  button (a real toggle, shown on touch screens and on keyboard focus, and there from the start, so Tab comes to it
+  before "Full screen"), as WCAG 2.2.2 asks of anything moving over 5 s. "Pause" always pauses, even while the film
+  rests; a pause in the browser's own full screen player is kept too.
 - It costs nothing until he's near it: no src and no poster in the page; three-quarters of a screen away the page picks
-  the cut (the square one on a phone, the 1280 or 1920 film) and its first frame. A visitor who never reads that far
-  down loads none of it.
+  the cut (the square one on a phone, the 1280 or 1920 film) and its first frame. A visitor who never scrolls that near
+  it loads none of it; on a tall screen whose first view reaches that far (an iPad Pro held upright, a 2560 × 1300
+  window), it loads straight away.
 - Nothing on the page moves when it loads: the box has its shape from the stylesheet before anything loads, the square
   one by the same media query the page picks the square cut with (a test holds the two equal). A phone turned on its
   side mid-film gets the wide cut at the same moment, playing or paused as it was.
@@ -23,12 +26,22 @@ it should just be there and play where it is, on its own.
   Power Mode) gets the same still and play; a pause before it started is no refusal.
 - Kept: the phone's bottom bar steps aside while the film is on screen; full screen for the wide cuts; the film's
   spoken label and description. Painting and every other page stay without a film.
+- Reviewed by three critics (real devices, look and page flow, code and tests). Fixed: on a tablet held upright and a
+  phone held sideways the pause floated in the white beside the picture (the film's box is now the picture itself);
+  "Full screen" took the three lines' headline type on the trade pages; with scripts off, the browser showed its own
+  dark, empty player (now there's no film); a film that can't load or decode now shows its strong still, with no
+  button that does nothing; turning a phone and back before the new cut loaded restarted the film; a tap on the film
+  in full screen fought the browser's own player. The square's strong still (`poster-phone.jpg`, what reduced motion
+  and Low Power Mode show) is now 20.0 s, the replies with our answer filling the square, not his phone beside the
+  canvas's hard edge.
 - Checked in Chromium with WebM stand-ins for the films (this Chromium plays no H.264) and the pages' own fonts: the
   lawn, cleaning, fence and tree pages and the fence cold email page at 390 (a phone at 2x) and 1280, each playing a
-  few seconds in, and the whole fence page at 390. Still for Jack: open one page on his iPhone and watch it start on
+  few seconds in, and the whole fence page at 390. After the review, the same way at 390, 768 × 1024, 844 × 390,
+  932 × 430 and 1280: the pause on the picture, full screen and back, Tab to the pause, a film that can't decode,
+  scripts off, and a phone turned twice in a moment. Still for Jack: open one page on his iPhone and watch it start on
   its own, with Low Power Mode off and on.
 - The zip for Netlify, as before: `pnpm build:site` writes apps/site/dist.zip (not in git).
-- Engine 1,800, server 632, site 485.
+- Engine 1,800, server 632, site 496 (485 before the review).
 
 ## 2026-10-09 — a film per trade, behind a drop-down on its page
 

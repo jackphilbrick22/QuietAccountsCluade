@@ -491,7 +491,7 @@ the Notes table starts with the welcome text's note; the fence's jobs are a fenc
 **Oct 9: the drop-down became a film that plays in place.** Jack wanted it seen, not behind a row most people won't
 open: the row is gone, and the film sits where the panel opened, playing by itself, muted and looping, while it's on
 his screen, loading only once he's near it (`docs/STATUS.md`, Oct 9, has the rest). What follows is the Oct 8 drop-down;
-its cuts, pictures and pause carry over.
+its cuts, pictures and pause carry over, but for the square's strong still, now 20.0 s (section 11).
 
 Each film plays on its own trade's page of the all-trades site (`lawn-site/`, `cleaning-site/`, `fence-site/`,
 `tree-site/`), behind the "Want to see it run?" row under the three lines that say what we do. The site has its own
@@ -616,5 +616,8 @@ shows 390 px across, so the console's text reads at 7–9 px (the note card, sho
   text, the offer, and home to where the loop began while everything fades (the seam holds).
 - **Its edges melt into the page** on all four sides (14 px of white, then a fade: 44 px at the sides, where the camera
   cuts through the window, 26 at top and bottom), so it draws no box on the page's white.
-- **Its own stills:** `start-phone.jpg` (frame 0) and `poster-phone.jpg` (22.0 s, his phone with the hand-off).
+- **Its own stills:** `start-phone.jpg` (frame 0) and `poster-phone.jpg` (20.0 s, the replies with our answer, filling
+  the square and melting into the page on all four sides; `render.mjs --cut phone` picks it). Until Oct 9 it was 22.0 s,
+  his phone with the hand-off, where the canvas beside it ends in a hard edge 70% across: on the page, a box with a
+  right edge, under the big play of reduced motion or Low Power Mode.
 

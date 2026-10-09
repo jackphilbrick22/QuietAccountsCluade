@@ -190,7 +190,9 @@ const closed = (p) => new Promise((r, j) => p.on("close", (c) => (c === 0 ? r() 
 const encoders = Promise.all(encs.map(closed));
 
 const frames = Math.round((DURATION / 1000) * FPS);
-const posterFrame = Math.round((Number(opt("poster", 22000)) / 1000) * FPS);
+// the film's strong frame is 22.0 s (the sorted replies, our answer, the hand-off on his phone); the square's is 20.0 s,
+// the replies with our answer filling it (at 22.0 it's on his phone, beside the canvas's hard edge)
+const posterFrame = Math.round((Number(opt("poster", cut === "phone" ? 20000 : 22000)) / 1000) * FPS);
 const problems = [];
 let first;
 let poster;

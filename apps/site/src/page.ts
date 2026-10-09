@@ -324,7 +324,7 @@ const film = document.querySelector<HTMLElement>("#film");
 if (film) {
   const fs = $("#filmFs");
   const pp = $<HTMLButtonElement>("#filmPP");
-  type Video = HTMLVideoElement & { webkitEnterFullscreen?: () => void; webkitRequestFullscreen?: () => Promise<void> | void };
+  type Video = HTMLVideoElement & { webkitEnterFullscreen?: () => void; webkitRequestFullscreen?: () => Promise<void> | void; webkitDisplayingFullscreen?: boolean };
   const v = film.querySelector("video") as Video;
   const at = v.dataset.film!;
   // muted in the markup too: an iPhone plays a film on its own, in place, only when it's muted
@@ -342,14 +342,21 @@ if (film) {
   const still = matchMedia("(prefers-reduced-motion: reduce)").matches || !!(navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData;
   /** The cut it shows: none until he's near it. */
   let cut: string | undefined;
-  /** He paused it (the button, or a tap on the film): it stays paused, whatever the scrolling does. */
+  /** He paused it (its button, a tap on the film, or the browser's own player in full screen): it stays paused, whatever the scrolling does. */
   let held = false;
   /** Enough of it on his screen to be worth playing (a quarter): off screen it rests, and costs no battery. */
   let seen = false;
+  /** Any of it on his screen: his play plays it there, but not off his screen, where it waits until it's back. */
+  let shown = false;
   /** Where a new cut picks up (a phone turned on its side mid-film), once it knows its length. */
   let from = 0;
+  /** It can't play here (its file won't load, or won't decode): its strong still stays, with nothing to press. */
+  let broken = false;
   const waits = () => pp.classList.contains("film-wait");
+  /** In full screen the browser's own player is his, and the page leaves the film to it. */
+  const full = () => document.fullscreenElement === v || (document as Document & { webkitFullscreenElement?: Element }).webkitFullscreenElement === v || !!v.webkitDisplayingFullscreen;
   const picture = (name: "start" | "poster") => {
+    if (cut === undefined) return;
     const src = `${at}${name}${cut}.jpg`;
     if (v.getAttribute("poster") !== src) v.poster = src;
   };
@@ -369,49 +376,61 @@ if (film) {
     v.preload = "auto";
     v.src = `${at}film${cut}.mp4`;
   };
+  /** It won't play here: its strong still under the Example line, and no button that does nothing. */
+  const fail = () => {
+    broken = true;
+    picture("poster");
+    pp.hidden = fs.hidden = true;
+    v.style.cursor = "auto";
+  };
   const play = () => {
     v.play().then(
       () => waiting(false),
       // only a real refusal (an iPhone in Low Power Mode) waits for him; a pause or a new cut before it started (AbortError) is no refusal
       (e: DOMException) => {
         if (e?.name === "NotAllowedError") waiting(true);
+        else if (e?.name === "NotSupportedError") fail();
       },
     );
   };
   /** Play while it's on his screen and he hasn't paused it; otherwise rest. */
   const settle = () => {
+    if (broken || full()) return;
     if (cut !== undefined && seen && !held && !waits()) {
       if (v.paused) play();
     } else if (!v.paused) v.pause();
   };
 
-  // about a screen away: the cut for his screen and its picture. Nothing of it loads before, so a page he never reads
-  // that far down never loads it
-  const near = new IntersectionObserver(
-    ([e]) => {
-      if (!e?.isIntersecting) return;
-      near.disconnect();
-      cut = cutFor();
-      pp.hidden = false;
-      waiting(still);
-      if (!still) load();
-      settle();
-    },
-    { rootMargin: "75% 0px" },
-  );
+  // about a screen away (or his first press, if that comes sooner): the cut for his screen and its picture. Nothing of
+  // it loads before, so a page he never scrolls near the film never loads it
+  const arrive = () => {
+    if (cut !== undefined) return;
+    near.disconnect();
+    cut = cutFor();
+    waiting(still);
+    if (!still) load();
+    settle();
+  };
+  const near = new IntersectionObserver(([e]) => e?.isIntersecting && arrive(), { rootMargin: "75% 0px" });
   near.observe(v);
   new IntersectionObserver(
     ([e]) => {
-      seen = !!e && e.intersectionRatio >= 0.25;
+      shown = !!e?.isIntersecting;
+      seen = shown && e!.intersectionRatio >= 0.25;
       settle();
     },
     { threshold: [0, 0.25, 0.5] },
   ).observe(v);
   // the bar at the bottom of a phone steps aside while the film is on his screen
   watch.observe(v);
+  // its pause is there from the start, so a keyboard comes to it before the film's "Full screen"
+  pp.hidden = false;
+  waiting(still);
 
+  /** His press: "Pause" pauses and holds it paused, pressed again it plays; waiting for his play, it's that. */
   const toggle = () => {
-    if (cut === undefined) return;
+    if (broken) return;
+    arrive();
     if (waits()) {
       held = false;
       waiting(false);
@@ -419,13 +438,30 @@ if (film) {
       play();
       return;
     }
-    held = !v.paused;
+    held = !held;
     pp.setAttribute("aria-pressed", String(held));
     if (held) v.pause();
-    else play();
+    else if (shown) play();
   };
   pp.addEventListener("click", toggle);
-  v.addEventListener("click", toggle);
+  // in full screen a tap is the browser's own player's
+  v.addEventListener("click", () => full() || toggle());
+  // the browser's own player pauses it or plays it in full screen: that's his choice too, kept when he's back on the page
+  for (const type of ["pause", "play"])
+    v.addEventListener(type, () => {
+      if (!full() || waits()) return;
+      held = v.paused;
+      pp.setAttribute("aria-pressed", String(held));
+    });
+  const back = () => {
+    if (full()) return;
+    pp.setAttribute("aria-pressed", String(held));
+    settle();
+  };
+  document.addEventListener("fullscreenchange", back);
+  document.addEventListener("webkitfullscreenchange", back);
+  v.addEventListener("webkitendfullscreen", back);
+  v.addEventListener("error", fail);
 
   // a phone turned on its side, or back: the box changes shape (trade.css), and the film takes the cut for it, at the
   // same moment, playing or paused as it was
@@ -434,9 +470,10 @@ if (film) {
     if (cut === undefined || next === cut) return;
     const playing = !v.paused;
     cut = next;
-    picture(waits() ? "poster" : "start");
-    if (!v.getAttribute("src")) return;
-    from = v.currentTime;
+    picture(waits() || broken ? "poster" : "start");
+    if (!v.getAttribute("src") || broken) return;
+    // turned back before the new cut knew its length: it still picks up where the first one was
+    if (v.readyState) from = v.currentTime;
     load();
     if (playing) play();
   });

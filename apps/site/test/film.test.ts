@@ -12,7 +12,7 @@ import { blocks, count, FILMED, FILMED_COLD, rendered, textOf } from "./html.ts"
  * owner from an email lands) have it too, at the end of "What happens after you press start". (How it plays, rests and
  * loads, in a browser: dist.test.ts.)
  */
-const filmOf = (h: string) => /<div class="film" id="film">[\s\S]*?<\/figure>\n[\s\S]*?<\/p>\n<\/div>/.exec(h)?.[0] ?? "";
+const filmOf = (h: string) => /<div class="film" id="film">[\s\S]*?<\/figure>\n[\s\S]*?<\/div>\n<\/div>/.exec(h)?.[0] ?? "";
 
 describe.each([...FILMED, ...FILMED_COLD])("/%s's film", (id) => {
   const p = viewPage(TRADE_SITE.find((v) => v.id === id)!);
@@ -72,9 +72,17 @@ describe.each([...FILMED, ...FILMED_COLD])("/%s's film", (id) => {
     expect(cap).not.toMatch(/<button/);
   });
 
-  it("can be paused: a real toggle button over it, which says so (shown once the film is there to pause)", () => {
+  it("can be paused: a real toggle button over it, which says so (shown by the page's script, which plays the film)", () => {
     expect(film).toContain('<button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden>');
     expect(film).toContain('<button type="button" class="film-fs" id="filmFs" hidden>');
+    // full screen on a line of its own, not a paragraph: on the trade pages `.lines p` is the three lines' big type
+    expect(film).toMatch(/<div class="film-more"><button [^>]*id="filmFs"/);
+    expect(film).not.toMatch(/<p\b/);
+  });
+
+  it("is no film at all without scripts, not the browser's own empty player in its place", () => {
+    expect(h).toContain(`<noscript><style>#film{display:none}</style></noscript>\n<div class="film" id="film">`);
+    expect(count(h, "<noscript>")).toBe(1);
   });
 
   it("isn't a second call to action: not the button, not its words, no arrow, no link away", () => {
@@ -96,7 +104,7 @@ describe("the film", () => {
     const css = readFileSync(new URL("../src/trade.css", import.meta.url), "utf8");
     const js = readFileSync(new URL("../src/page.ts", import.meta.url), "utf8");
     const rule = (q: string) => q.replace(/\s+/g, "");
-    const square = /@media ([^{]+)\{\s*\.film video\{aspect-ratio:1\/1;/.exec(css)?.[1];
+    const square = /@media ([^{]+)\{\s*\.film video\{aspect-ratio:1\/1[;}]/.exec(css)?.[1];
     const phone = /const phone = matchMedia\("([^"]+)"\)/.exec(js)?.[1];
     expect(square).toBeDefined();
     expect(rule(square!)).toBe(rule(phone!));

@@ -302,7 +302,8 @@ export function filmSeconds(trade: string, name = "film.mp4"): number {
  * the three lines that say what we do. It plays where it is, muted and looping, while he can see it. It costs nothing
  * until he's near it: the video has no src and no poster here; page.ts picks the cut for his screen (the square one
  * on a phone, else the 1280 or 1920 film) and its first frame as the picture until it plays. Made up, so labeled an
- * example right under it, like every other example.
+ * example right under it, like every other example. Without scripts there's nothing to play: no film at all, not the
+ * browser's own empty player.
  */
 function film(p: SitePage): string {
   if (!p.film) throw new Error(`<!--qa:film--> needs a film in src/trades.ts for ${p.id}`);
@@ -313,9 +314,10 @@ function film(p: SitePage): string {
   const pause = `<svg viewBox="0 0 24 24" aria-hidden="true"><rect fill="currentColor" x="6.5" y="5" width="4" height="14" rx="1.2"/><rect fill="currentColor" x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>`;
   const expand = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
   const label = `A ${secs}-second film, no sound: we write, in the owner's name, to ${to}, read every reply, and text the owner when one wants the work.`;
-  return `<div class="film" id="film">
+  return `<noscript><style>#film{display:none}</style></noscript>
+<div class="film" id="film">
   <figure><div class="film-v"><video muted loop playsinline preload="none" width="1920" height="894" data-film="${at}" aria-label="${esc(label)}" aria-describedby="filmEg filmCapT"></video><button type="button" class="film-pp" id="filmPP" aria-pressed="false" aria-label="Pause the film" hidden><span class="film-pp-i">${pause}${play}</span></button></div><figcaption id="filmCap"><span class="eg-pill" id="filmEg">Example</span><span id="filmCapT">A made-up ${esc(kind)} company. The notes and texts are what our software writes.</span></figcaption></figure>
-  <p class="film-more"><button type="button" class="film-fs" id="filmFs" hidden>${expand}Full screen</button></p>
+  <div class="film-more"><button type="button" class="film-fs" id="filmFs" hidden>${expand}Full screen</button></div>
 </div>`;
 }
 

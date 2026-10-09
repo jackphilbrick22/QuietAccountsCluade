@@ -101,16 +101,17 @@ describe.runIf(playwright)("in Chromium", () => {
   /**
    * The built site at http://site.test, offline: fonts fall back, and every POST is answered by `post`. With reduced
    * motion, as the page honors it, so a click never waits out a smooth scroll (`motion` turns it back on), and `before`
-   * runs ahead of the page's own scripts. `scale` is the screen's pixels to a CSS pixel; `touch`, a phone's touch screen.
+   * runs ahead of the page's own scripts. `scale` is the screen's pixels to a CSS pixel; `touch`, a phone's touch screen;
+   * `script: false`, a browser with scripts off.
    */
   async function open(
     path: string,
     from = dist,
     post: (r: Any) => Promise<void> = (r) => r.fulfill({ status: 200, body: "" }),
     width = 390,
-    { motion = false, before, height = 844, scale = 1, touch = false }: { motion?: boolean; before?: (page: Any) => Promise<unknown>; height?: number; scale?: number; touch?: boolean } = {},
+    { motion = false, before, height = 844, scale = 1, touch = false, script = true }: { motion?: boolean; before?: (page: Any) => Promise<unknown>; height?: number; scale?: number; touch?: boolean; script?: boolean } = {},
   ) {
-    const page = await browser.newPage({ viewport: { width, height }, reducedMotion: motion ? "no-preference" : "reduce", deviceScaleFactor: scale, isMobile: touch, hasTouch: touch });
+    const page = await browser.newPage({ viewport: { width, height }, reducedMotion: motion ? "no-preference" : "reduce", deviceScaleFactor: scale, isMobile: touch, hasTouch: touch, javaScriptEnabled: script });
     await before?.(page);
     const cors = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type" };
     await page.route(/^https?:\/\/(?!site\.test)/, (r: Any) => {
@@ -861,22 +862,35 @@ describe.runIf(playwright)("in Chromium", () => {
 
   /**
    * Playwright's Chromium plays no H.264 (Chrome and Safari do), so the page's play() and pause() are counted rather
-   * than run (and `paused` and `currentTime` follow them), and every path the page asks for is kept: what's checked is
-   * what it loads, when, and what it asks the film to do. `refuse` makes the first play() fail the way a browser's can;
-   * `saveData`, a phone saving data.
+   * than run (and `paused`, `currentTime` and `readyState` follow them: a new src starts paused at 0, not knowing its
+   * length until a test sends its loadedmetadata), and every path the page asks for is kept: what's checked is what it
+   * loads, when, and what it asks the film to do. The MP4's error here (a file this Chromium can't decode) is kept from
+   * the page, as it would never come in Chrome or Safari; `broken` lets it through, with play() failing as it does for a
+   * file that can't play. `refuse` makes the first play() fail the way a browser's can; `saveData`, a phone saving data.
    */
-  function filmPage(asked: string[], { refuse, saveData }: { refuse?: "AbortError" | "NotAllowedError"; saveData?: boolean } = {}) {
+  function filmPage(asked: string[], { refuse, saveData, broken }: { refuse?: "AbortError" | "NotAllowedError"; saveData?: boolean; broken?: boolean } = {}) {
     return async (page: Any) => {
       page.on("request", (r: Any) => asked.push(new URL(r.url()).pathname));
       await page.addInitScript(
-        ([refuse, saveData]: [string | undefined, boolean]) => {
+        ([refuse, saveData, broken]: [string | undefined, boolean, boolean]) => {
           const w = window as Any;
-          w.__film = { play: 0, pause: 0 };
+          w.__film = { play: 0, pause: 0, errors: broken };
           const paused = new WeakMap<HTMLMediaElement, boolean>();
           const time = new WeakMap<HTMLMediaElement, number>();
+          const ready = new WeakMap<HTMLMediaElement, number>();
           Object.defineProperty(HTMLMediaElement.prototype, "paused", { configurable: true, get() { return paused.get(this) ?? true; } });
+          Object.defineProperty(HTMLMediaElement.prototype, "readyState", { configurable: true, get() { return ready.get(this) ?? 0; } });
+          const src = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, "src")!;
+          Object.defineProperty(HTMLMediaElement.prototype, "src", {
+            configurable: true,
+            get() { return src.get!.call(this); },
+            set(u: string) { paused.set(this, true); time.set(this, 0); ready.set(this, 0); src.set!.call(this, u); },
+          });
+          addEventListener("loadedmetadata", (e) => e.target instanceof HTMLMediaElement && ready.set(e.target, 1), true);
+          addEventListener("error", (e) => e.target instanceof HTMLMediaElement && !w.__film.errors && e.stopImmediatePropagation(), true);
           HTMLMediaElement.prototype.play = function () {
             w.__film.play++;
+            if (broken) return Promise.reject(new DOMException("no supported source", "NotSupportedError"));
             if (refuse && w.__film.play === 1) return Promise.reject(new DOMException("refused", refuse));
             paused.set(this, false);
             return Promise.resolve();
@@ -889,7 +903,7 @@ describe.runIf(playwright)("in Chromium", () => {
           Object.defineProperty(HTMLMediaElement.prototype, "currentTime", { configurable: true, get() { return time.get(this) ?? 0; }, set(t: number) { time.set(this, t); w.__film.seek = t; } });
           if (saveData) Object.defineProperty(Navigator.prototype, "connection", { configurable: true, get: () => ({ saveData: true }) });
         },
-        [refuse, !!saveData],
+        [refuse, !!saveData, !!broken],
       );
     };
   }
@@ -898,7 +912,7 @@ describe.runIf(playwright)("in Chromium", () => {
     page.evaluate(() => {
       const v = document.querySelector("video")!;
       const pp = document.querySelector<HTMLElement>("#filmPP")!;
-      return { ...(window as Any).__film, src: new URL(v.getAttribute("src") || "x:", location.href).pathname, poster: v.getAttribute("poster"), controls: v.controls, autoplay: v.autoplay, ppHidden: pp.hidden, wait: pp.classList.contains("film-wait"), pressed: pp.getAttribute("aria-pressed"), label: pp.getAttribute("aria-label") };
+      return { ...(window as Any).__film, src: new URL(v.getAttribute("src") || "x:", location.href).pathname, poster: v.getAttribute("poster"), controls: v.controls, autoplay: v.autoplay, ppHidden: pp.hidden, fsHidden: document.querySelector<HTMLElement>("#filmFs")!.hidden, wait: pp.classList.contains("film-wait"), pressed: pp.getAttribute("aria-pressed"), label: pp.getAttribute("aria-label") };
     });
   const filmAsked = (asked: string[]) => asked.filter((p) => p.startsWith("/film/"));
   /** Put the film's top `y` px down his screen. */
@@ -910,6 +924,15 @@ describe.runIf(playwright)("in Chromium", () => {
       return { x: v.x, width: v.width, height: v.height, below: document.querySelector(below)!.getBoundingClientRect().top + scrollY };
     }, below);
   const playing = (page: Any, n: number) => page.waitForFunction((n: number) => (window as Any).__film.play === n, n);
+  /** Its pause sits on the film, inside the picture, never in the page's white beside it. */
+  async function onFilm(page: Any, id = "") {
+    const v = await box(page, "video");
+    const pp = await box(page, "#filmPP");
+    expect(pp.x, id).toBeGreaterThanOrEqual(v.x);
+    expect(pp.y, id).toBeGreaterThanOrEqual(v.y);
+    expect(pp.x + pp.width, id).toBeLessThanOrEqual(v.x + v.width);
+    expect(pp.y + pp.height, id).toBeLessThanOrEqual(v.y + v.height);
+  }
   const sticky = (page: Any) => page.evaluate(() => document.querySelector("#sticky")!.classList.contains("show"));
 
   it("the film: nothing of it loads at the top of the page; about a screen away, his trade's cut and its first frame, and nothing on the page moves; on his screen, it plays by itself, muted and looping", async () => {
@@ -921,7 +944,8 @@ describe.runIf(playwright)("in Chromium", () => {
       await page.waitForLoadState("load");
       await page.waitForTimeout(300);
       expect(filmAsked(asked), id).toEqual([]);
-      expect(await film(page), id).toMatchObject({ src: "", poster: null, play: 0, ppHidden: true, controls: false, autoplay: false });
+      // its pause is there from the start, for a keyboard to come to; nothing of the film is
+      expect(await film(page), id).toMatchObject({ src: "", poster: null, play: 0, ppHidden: false, label: "Pause the film", pressed: "false", controls: false, autoplay: false });
       const before = await layout(page, below);
       // the box is the wide film's shape before anything of it loads, as wide as the section
       expect(before.width, id).toBe(1120);
@@ -983,35 +1007,134 @@ describe.runIf(playwright)("in Chromium", () => {
     }
   }, 60_000);
 
-  it("the film: a tap on it (or its button) pauses it and another plays it; off his screen it rests, and comes back playing; paused by him, it stays paused", async () => {
+  it("the film: it plays once a quarter of it is on his screen; a tap on it (or its button) pauses it and another plays it; off his screen it rests, and comes back playing; paused by him, it stays paused", async () => {
     const page = await open("/fence-site", dist, undefined, 1280, { motion: true, before: filmPage([]), height: 800 });
     await page.waitForLoadState("load");
-    await filmAt(page, 160);
+    // its top 40 of 521 px on his screen: it waits, loaded; 200 px of it, more than a quarter: it plays; 50 px: it rests
+    await filmAt(page, 800 - 40);
+    await page.waitForFunction(() => document.querySelector("video")!.getAttribute("src"));
+    await page.waitForTimeout(300);
+    expect(await film(page)).toMatchObject({ play: 0, pause: 0 });
+    await filmAt(page, 800 - 200);
     await playing(page, 1);
-    // playing, it rests off his screen and plays again when it's back
-    await filmAt(page, -2000);
+    await filmAt(page, 800 - 50);
     await page.waitForFunction(() => (window as Any).__film.pause === 1);
     await filmAt(page, 160);
     await playing(page, 2);
+    // playing, it rests off his screen and plays again when it's back
+    await filmAt(page, -2000);
+    await page.waitForFunction(() => (window as Any).__film.pause === 2);
+    await filmAt(page, 160);
+    await playing(page, 3);
     await page.click("video");
-    expect(await film(page)).toMatchObject({ play: 2, pause: 2, pressed: "true" });
+    expect(await film(page)).toMatchObject({ play: 3, pause: 3, pressed: "true" });
     // paused by him, it stays paused when it scrolls away and back
     await filmAt(page, -2000);
     await page.waitForTimeout(200);
     await filmAt(page, 160);
     await page.waitForTimeout(300);
-    expect(await film(page)).toMatchObject({ play: 2, pressed: "true" });
+    expect(await film(page)).toMatchObject({ play: 3, pressed: "true" });
     await page.locator("#filmPP").click();
-    expect(await film(page)).toMatchObject({ play: 3, pressed: "false" });
+    expect(await film(page)).toMatchObject({ play: 4, pressed: "false" });
     // the button is a real toggle a keyboard can reach, and shows itself when it has the focus
     await page.mouse.move(0, 0);
     await page.locator("#filmPP").focus();
     await page.keyboard.press("Enter");
-    expect(await film(page)).toMatchObject({ pause: 3, pressed: "true" });
+    expect(await film(page)).toMatchObject({ pause: 4, pressed: "true" });
     await page.keyboard.press("Space");
-    expect(await film(page)).toMatchObject({ play: 4, pressed: "false" });
+    expect(await film(page)).toMatchObject({ play: 5, pressed: "false" });
     await page.waitForFunction(() => getComputedStyle(document.querySelector("#filmPP")!).opacity === "1");
+    // its "Pause" pauses, even while it rests off his screen: back on it, it stays paused
+    const press = () => page.evaluate(() => document.querySelector<HTMLElement>("#filmPP")!.click());
+    await filmAt(page, -2000);
+    await page.waitForFunction(() => (window as Any).__film.pause === 5);
+    await press();
+    expect(await film(page)).toMatchObject({ play: 5, pressed: "true", label: "Pause the film" });
+    await filmAt(page, 160);
+    await page.waitForTimeout(300);
+    expect(await film(page)).toMatchObject({ play: 5, pressed: "true" });
+    // and pressed again off his screen, it waits to be back on it to play
+    await filmAt(page, -2000);
+    await page.waitForTimeout(200);
+    await press();
+    await page.waitForTimeout(200);
+    expect(await film(page)).toMatchObject({ play: 5, pressed: "false" });
+    await filmAt(page, 160);
+    await playing(page, 6);
     await page.close();
+  }, 30_000);
+
+  it("the film: a keyboard comes to its pause before anything else of it, and Enter pauses it", async () => {
+    for (const [width, height] of [[1280, 800], [390, 844]]) {
+      const page = await open("/fence-site", dist, undefined, width, { motion: true, before: filmPage([]), height });
+      await page.waitForLoadState("load");
+      await page.focus("#submit");
+      await page.keyboard.press("Tab");
+      expect(await page.evaluate(() => document.activeElement!.id), `${width}`).toBe("filmPP");
+      await page.keyboard.press("Enter");
+      await page.waitForTimeout(400);
+      expect(await film(page), `${width}`).toMatchObject({ pressed: "true", label: "Pause the film" });
+      expect(await page.evaluate(() => document.querySelector("video")!.paused), `${width}`).toBe(true);
+      await page.close();
+    }
+  }, 30_000);
+
+  it("the film in full screen: a tap is the browser's own player's, and his pause there is kept when he's back on the page", async () => {
+    const page = await open("/fence-site", dist, undefined, 1280, { motion: true, before: filmPage([]), height: 800 });
+    await page.waitForLoadState("load");
+    await filmAt(page, 160);
+    await playing(page, 1);
+    await page.locator("#filmFs").click();
+    await page.waitForFunction(() => document.fullscreenElement === document.querySelector("video"), undefined, { timeout: 5000 });
+    // a tap on the film there is for the browser's player: the page's own toggle stays out of it
+    await page.mouse.click(640, 400);
+    await page.waitForTimeout(200);
+    expect(await film(page)).toMatchObject({ play: 1, pause: 0, pressed: "false" });
+    // his pause in the player
+    await page.evaluate(() => {
+      const v = document.querySelector("video")!;
+      v.pause();
+      v.dispatchEvent(new Event("pause"));
+    });
+    expect(await film(page)).toMatchObject({ pressed: "true" });
+    await page.evaluate(() => document.exitFullscreen());
+    await page.waitForFunction(() => !document.fullscreenElement);
+    await filmAt(page, -2000);
+    await page.waitForTimeout(200);
+    await filmAt(page, 160);
+    await page.waitForTimeout(300);
+    expect(await film(page)).toMatchObject({ play: 1, pressed: "true" });
+    expect(await page.evaluate(() => document.querySelector("video")!.paused)).toBe(true);
+    await page.close();
+  }, 30_000);
+
+  it("the film that can't play here (its file won't load or decode): its strong still, and no button that does nothing; without scripts, no film at all", async () => {
+    const page = await open("/fence-site", dist, undefined, 1280, { motion: true, before: filmPage([], { broken: true }), height: 800 });
+    await page.waitForLoadState("load");
+    await filmAt(page, 160);
+    await page.waitForFunction(() => document.querySelector<HTMLElement>("#filmPP")!.hidden);
+    expect(await film(page)).toMatchObject({ poster: "/film/fence/poster-1280.jpg", ppHidden: true, fsHidden: true, controls: false });
+    await page.close();
+    // gone after it played (a dropped connection): the same, and a tap on it does nothing
+    const phone = await open("/lawn-site", dist, undefined, 390, { motion: true, before: filmPage([]), scale: 2, touch: true });
+    await phone.waitForLoadState("load");
+    await filmAt(phone, 300);
+    await playing(phone, 1);
+    await phone.evaluate(() => {
+      (window as Any).__film.errors = true;
+      document.querySelector("video")!.dispatchEvent(new Event("error"));
+    });
+    expect(await film(phone)).toMatchObject({ poster: "/film/lawn/poster-phone.jpg", ppHidden: true });
+    await phone.locator("video").click();
+    expect(await film(phone)).toMatchObject({ play: 1 });
+    await phone.close();
+    // scripts off: the browser would show its own empty player in the film's place; the page shows nothing there
+    for (const width of [390, 1280]) {
+      const off = await open("/fence-site", dist, undefined, width, { script: false });
+      expect(await off.locator("#film").isVisible(), `${width}`).toBe(false);
+      expect(await off.locator("#film").count(), `${width}`).toBe(1);
+      await off.close();
+    }
   }, 30_000);
 
   it("the film: a pause before it started is no refusal; a browser that won't start it shows the strong still and waits for his play", async () => {
@@ -1125,7 +1248,11 @@ describe.runIf(playwright)("in Chromium", () => {
       const v = await box(page, "video");
       expect(v.y, id).toBeGreaterThanOrEqual(top.y + top.height);
       expect(v.y + v.height, id).toBeLessThanOrEqual(390);
-      expect(v.width, id).toBe(844);
+      // its box is the picture, as wide as his screen's height allows and centred, with its pause on it
+      expect(v.width / v.height, id).toBeCloseTo(1920 / 894, 1);
+      expect(v.height, id).toBeCloseTo(390 - 76, 0);
+      expect(Math.abs(v.x + v.width / 2 - 422), id).toBeLessThan(1);
+      await onFilm(page, id);
       expect(await sticky(page), id).toBe(false);
       expect(await page.locator("#filmFs").isVisible(), id).toBe(true);
       await page.close();
@@ -1143,6 +1270,8 @@ describe.runIf(playwright)("in Chromium", () => {
     const v = await box(page, "video");
     expect([v.width, v.height]).toEqual([before.width, before.height]);
     expect(await page.locator("#filmFs").isVisible()).toBe(false);
+    // its pause on the square, not in the white beside it
+    await onFilm(page);
     await page.close();
   }, 30_000);
 
@@ -1151,18 +1280,33 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.waitForLoadState("load");
     await filmAt(page, 300);
     await playing(page, 1);
-    await page.evaluate(() => (document.querySelector("video")!.currentTime = 12.5));
+    const cut = (name: string) => page.waitForFunction((name: string) => document.querySelector("video")!.getAttribute("src") === `/film/fence/${name}`, name);
+    /** The cut on screen knows its length now (its loadedmetadata), and is `t` seconds in. */
+    const at = (t: number) =>
+      page.evaluate((t: number) => {
+        const v = document.querySelector("video")!;
+        v.dispatchEvent(new Event("loadedmetadata"));
+        v.currentTime = t;
+        (window as Any).__film.seek = null;
+      }, t);
+    await at(12.5);
     await page.setViewportSize({ width: 844, height: 390 });
-    await page.waitForFunction(() => document.querySelector("video")!.getAttribute("src") === "/film/fence/film-1280.mp4");
+    await cut("film-1280.mp4");
     // the new cut was asked to play straight away, as the last one was
     expect(await film(page)).toMatchObject({ poster: "/film/fence/start-1280.jpg", play: 2, pressed: "false", wait: false });
-    // once the new cut knows its length, it's sent to where the last one was
-    await page.evaluate(() => {
-      const v = document.querySelector("video")!;
-      v.currentTime = 0;
-      v.dispatchEvent(new Event("loadedmetadata"));
-    });
+    // turned back before the new cut knew its length: the square again, and once it knows its length, it's sent to
+    // where the first one was
+    await page.setViewportSize({ width: 390, height: 844 });
+    await cut("film-phone.mp4");
+    expect(await film(page)).toMatchObject({ poster: "/film/fence/start-phone.jpg", play: 3 });
+    await page.evaluate(() => document.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")));
     expect((await film(page)).seek).toBe(12.5);
+    // on its side again, a while later: from where it is then
+    await at(14);
+    await page.setViewportSize({ width: 844, height: 390 });
+    await cut("film-1280.mp4");
+    await page.evaluate(() => document.querySelector("video")!.dispatchEvent(new Event("loadedmetadata")));
+    expect((await film(page)).seek).toBe(14);
     // paused by him, the turn back leaves it paused, in the square again
     await filmAt(page, 68);
     await page.waitForFunction(() => !document.querySelector("video")!.paused);
