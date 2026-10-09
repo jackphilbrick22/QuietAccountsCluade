@@ -2,6 +2,46 @@
 
 Updated every loop iteration. Newest first.
 
+## 2026-10-09 — the whole website in one zip
+
+Jack (Oct 9) wants one finished zip with everything in it, and nothing for him to add or sign in to.
+
+**The zip.** quietaccounts-com-complete-2026-10-09.zip (38.3 MB, 141 files) is on branch `site-zip`, with a direct
+download that needs no sign-in:
+https://github.com/jackphilbrick22/QuietAccountsCluade/raw/site-zip/quietaccounts-com-complete-2026-10-09.zip
+
+A copy is in the private archive (quietaccounts-site, branch `archive`, `archive/website/`), with its check report and
+screenshots.
+
+**What's in it:**
+- every page and file quietaccounts.com serves on Oct 9;
+- the live page-not-found page (404.html), which the first copy missed because it answers 404;
+- the trade and cold email pages swapped for the ones where the film plays on the page, with the renewal letter button
+  kept;
+- the films.
+
+**Checks:**
+- All 30 pages were opened at 390 and 1280: every file they ask for is there, no script errors, no sideways scroll, the
+  films play, the letter buttons are there.
+- make_complete.py found every link inside the site resolves and every old file is kept.
+- The download link was fetched back and matches byte for byte (sha256 0212f42e…5b658f).
+
+The public branch holds only what the site already shows anyone. The two /for/ pages are noindex, and carry a business
+name and town.
+
+**Searched for the missing parts, not found:**
+- GitHub (all four repos, every branch);
+- Google Drive (zips, "quiet", "jobber", the function names);
+- Gmail (attachments);
+- this account's Claude sessions.
+
+The Netlify connector only reads deploy details, and this cloud session can't see Jack's computer.
+
+**Still not in the zip:** the 10 Netlify functions and the 72 redirect rules. They exist only in the Oct 8 deploy and the
+folder it was made from. Uploading the zip as it is would switch off the Jobber connection, /api/room, the hourly room
+sweep and the redirects, so nothing was deployed. With the deploy's files, make_complete.py makes the full deploy in a
+minute.
+
 ## 2026-10-09 — everything kept in GitHub, and the complete site zip
 
 Jack (Oct 9): the new zip must have everything the old one did, and everything made should be kept in GitHub.
@@ -57,9 +97,9 @@ it should just be there and play where it is, on its own.
   932 × 430 and 1280: the pause on the picture, full screen and back, Tab to the pause, a film that can't decode,
   scripts off, and a phone turned twice in a moment. Still for Jack: open one page on his iPhone and watch it start on
   its own, with Low Power Mode off and on.
-- The zip for Netlify: `pnpm build:site` writes apps/site/dist.zip (not in git). For Jack to download, the latest one
-  is also on its own branch, `site-zip` (quietaccounts-site.zip and a README; replaced, never added to, so the main
-  branch's history doesn't carry 37 MB a build).
+- The zip for Netlify: `pnpm build:site` writes apps/site/dist.zip (not in git). Branch `site-zip` holds the latest
+  zip for Jack to download, with a README. Since the later Oct 9 entry it's the whole website in one zip, not the
+  build alone. The branch is replaced, never added to, so the main branch's history doesn't carry 37 MB a build.
 - Not live yet (Oct 9). Jack asked to put it live, but the live quietaccounts.com isn't this build alone: its Oct 8
   deploy (from outside this repo) adds the Jobber app's functions, 72 redirects, /privacy, /terms, a renewal letter
   page with a link to it on the trade pages, its own start form markup, and /for/<company> pages that need the old
@@ -864,7 +904,7 @@ one test client from import to the first OK.
   or dist.zip to Netlify on its own any more: since Oct 8, quietaccounts.com (project brilliant-sorbet-d89cb5) is
   deployed from somewhere else and also carries the Jobber functions, 72 redirects, /privacy, /terms, the renewal
   letter page and the /for/<company> pages, and a deploy replaces the whole site. Merge the build into that folder
-  instead (the steps are in the README on branch site-zip). The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address
+  instead, with archive/tools/make_complete.py in the private quietaccounts-site repo. The lawn page tells owners to forward their export to quotes@quietaccounts.com: that address
   must exist and reach the server's import before launch. Check /lawn and /lawn?co=Your+Company on a phone, then
   send one test sign-up.
 - (A6) Set SIGNUP_ORIGINS to the site's address (for example https://quietaccounts.com) in production, or the
