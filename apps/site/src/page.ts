@@ -12,6 +12,9 @@ import AuditWorker from "./worker.ts?worker";
  * name, cell and the consent box. No engine here: the notes were written at build time, and this only fills in his
  * company and name. The engine comes only with a file he drops after signing up, in the audit's worker.
  */
+// Jobber sends an owner back with ?code=: to whatever page he lands on, it's the Jobber function's (it opens his room)
+if (/[?&]code=/.test(location.search)) location.replace(`/jobber/manage${location.search}`);
+
 const $ = <T extends HTMLElement = HTMLElement>(sel: string) => document.querySelector(sel) as T;
 const all = <T extends HTMLElement = HTMLElement>(sel: string) => [...document.querySelectorAll<T>(sel)];
 const server = import.meta.env.VITE_SERVER_URL?.replace(/\/+$/, "");

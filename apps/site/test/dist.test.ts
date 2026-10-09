@@ -76,8 +76,9 @@ describe("the build", () => {
     const js = files(dist).filter((f) => extname(f) === ".js");
     expect(js.map((f) => f.replace(/-[\w-]{8}\.js$/, ""))).toEqual(["assets/page", "assets/worker"]);
     const page = readFileSync(join(dist, js[0]!), "utf8");
-    // (the film's few controls are in it too: its cut for his screen, when it loads, plays and rests, pause and play)
-    expect(page.length).toBeLessThan(13_000);
+    // (the film's few controls are in it too: its cut for his screen, when it loads, plays and rests, pause and play;
+    // and the Jobber ?code= hand-off)
+    expect(page.length).toBeLessThan(13_200);
     expect(page).not.toMatch(/lapsed_regular|We used to take care|libphonenumber/);
     // the page only names the worker; nothing loads it until a file is dropped (below)
     expect(page).toContain(`new Worker("/${js[1]}"`);
@@ -260,6 +261,27 @@ describe.runIf(playwright)("in Chromium", () => {
     await page.waitForFunction(() => document.activeElement?.id === "revealH");
     expect(await page.locator("#reveal .nb").textContent()).toBe(exampleNote("lawn", "Green Acre Lawn", EXAMPLE_SIGNER).main);
     expect(posts).toHaveLength(0);
+    await page.close();
+  });
+
+  it("a Jobber ?code= on any page goes on to /jobber/manage with its query, as the live site's pages do; a page without one stays", async () => {
+    for (const path of ["/lawn-site/?code=abc&state=xyz", "/tree-cold-email-page/?code=abc", "/painting-site/?state=1&code=abc"]) {
+      const page = await browser.newPage();
+      await page.route(/^https?:\/\/(?!site\.test)/, (r: Any) => r.abort());
+      await page.route("http://site.test/**", (r: Any) => {
+        const at = new URL(r.request().url()).pathname;
+        if (at === "/jobber/manage") return r.fulfill({ body: "the Jobber function", contentType: "text/plain" });
+        let file = join(dist, at);
+        if (!existsSync(file) || statSync(file).isDirectory()) file = join(file, "index.html");
+        return r.fulfill({ body: readFileSync(file), contentType: TYPES[extname(file)] });
+      });
+      await page.goto(`http://site.test${path}`).catch(() => undefined);
+      await page.waitForURL(`http://site.test/jobber/manage${path.slice(path.indexOf("?"))}`);
+      await page.close();
+    }
+    const page = await open("/lawn-site/?co=Acme+Lawn");
+    await page.waitForLoadState("load");
+    expect(new URL(page.url()).pathname).toBe("/lawn-site/");
     await page.close();
   });
 
